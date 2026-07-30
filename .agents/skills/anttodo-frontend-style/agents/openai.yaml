@@ -1,0 +1,4 @@
+interface:
+  display_name: "AntTodo 前端样式"
+  short_description: "Match and verify AntTodo frontend visuals"
+  default_prompt: "Use $anttodo-frontend-style to implement this AntTodo UI from the supplied reference."

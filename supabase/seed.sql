@@ -1,0 +1,3 @@
+-- Product demo data lives in the client-side ?demo=1 mode so local Auth remains realistic.
+-- After `supabase db reset`, create an account through the UI; the workspace trigger will
+-- provision the owner membership automatically. Unlabeled tasks belong to the inbox.

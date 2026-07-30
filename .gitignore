@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+playwright-report/
+test-results/
+coverage/
+.DS_Store
+.env
+.env.*
+!.env.example
+supabase/.branches/
+supabase/.temp/
+supabase/functions/.env
+*.log
+*.tsbuildinfo
