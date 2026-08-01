@@ -44,6 +44,7 @@ export type Profile = {
 export type Workspace = {
   id: string;
   name: string;
+  slug: string;
   created_by: string;
   role?: WorkspaceRole;
 };

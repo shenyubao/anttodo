@@ -15,8 +15,20 @@ const now = new Date();
 const userId = "demo-user";
 
 export const demoWorkspaces: Workspace[] = [
-  { id: "workspace-team", name: "AntTodo 产品团队", created_by: userId, role: "owner" },
-  { id: "workspace-personal", name: "个人空间", created_by: userId, role: "owner" },
+  {
+    id: "workspace-team",
+    name: "AntTodo 产品团队",
+    slug: "anttodo-product",
+    created_by: userId,
+    role: "owner",
+  },
+  {
+    id: "workspace-personal",
+    name: "个人空间",
+    slug: "personal",
+    created_by: userId,
+    role: "owner",
+  },
 ];
 
 const labels: Label[] = [

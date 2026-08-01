@@ -30,7 +30,7 @@ export default {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
     const body = (await req.json()) as AdminRequest;
-    const userId = ctx.userClaims?.sub;
+    const userId = ctx.userClaims?.id;
     const userEmail = ctx.userClaims?.email;
     if (!userId) return jsonError("Authentication required", 401);
 

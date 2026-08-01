@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(101);
+select plan(105);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -266,6 +266,39 @@ select is(
   ),
   0,
   'workspace creation does not add an inbox label'
+);
+select ok(
+  (
+    select slug
+    from public.workspaces
+    where id = '20000000-0000-0000-0000-000000000002'
+  ) is not null,
+  'workspace creation without slug receives an auto-generated slug'
+);
+select throws_ok(
+  $$
+    insert into public.workspaces (id, name, slug, created_by)
+    values (
+      '20000000-0000-0000-0000-000000000003',
+      'Duplicate slug workspace',
+      (select slug from public.workspaces where id = '20000000-0000-0000-0000-000000000002'),
+      '10000000-0000-0000-0000-000000000001'
+    )
+  $$,
+  '23505',
+  null,
+  'workspace slug must be unique'
+);
+select ok(
+  public.is_workspace_slug_available('brand-new-team-slug'),
+  'unused workspace slug is available'
+);
+select ok(
+  not public.is_workspace_slug_available(
+    (select slug from public.workspaces where id = '20000000-0000-0000-0000-000000000002'),
+    '20000000-0000-0000-0000-000000000003'
+  ),
+  'existing workspace slug is unavailable to another workspace'
 );
 select lives_ok(
   $$

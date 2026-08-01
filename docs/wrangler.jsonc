@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "anttodo-docs",
+  "compatibility_date": "2026-07-31",
+  "workers_dev": true,
+  "preview_urls": true,
+  "assets": {
+    "directory": "./build",
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    {
+      "pattern": "docs.anttodo.com",
+      "custom_domain": true
+    }
+  ]
+}

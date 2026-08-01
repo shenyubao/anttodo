@@ -1,0 +1,57 @@
+---
+sidebar_position: 1
+slug: /
+title: 项目介绍
+---
+
+# 项目介绍
+
+AntTodo 是一款面向团队的待办应用。Web 与 macOS 桌面端共用同一套 React
+源码，Electron 仅作为轻量且安全的外壳。后端由 Supabase 提供身份认证、
+Postgres、行级安全（RLS）、实时能力、Vault、Edge Functions 以及连接器定时任务。
+
+## 核心能力
+
+### 认证与团队空间
+
+- 手机号验证码登录
+- 支持多个团队空间，以及成员邀请
+- 角色包含 `owner`、`admin`、`member`
+
+### 智能视图
+
+- **所有**：查看可见范围内的全部任务
+- **今天**：聚焦当日到期或安排的任务
+- **指派给我**：只看与自己相关的待办
+- **收集箱**：无标签任务的归宿（收集箱本身不是标签）
+
+### 任务管理
+
+任务支持标题、描述、状态、日期、优先级、负责人、子任务，以及活动记录，方便团队跟踪从创建到完成的全过程。
+
+### 标签与权限
+
+- 树形标签结构，子标签默认继承权限，也可明确解除继承
+- 多标签任务采用严格的权限交集
+- 团队空间的所有者和管理员可以管理该空间内的所有标签
+
+### 离线可用
+
+查询结果会缓存到 IndexedDB。断网时仍可阅读已缓存内容；写操作必须在网络可用时执行。
+
+### 连接器同步
+
+- 提供 Mock 连接器，用于验证增量拉取、回写、重试与冲突处理
+- 支持增量同步状态、出站队列与运行日志
+- 双向同步产生冲突时会明确记录，由用户选择保留本地或远端版本，禁止静默覆盖
+
+### 桌面端
+
+macOS 客户端基于安全的 Electron 壳（沙箱、禁用 Node 集成），可打包为未签名的 DMG / ZIP 安装包。
+
+## 技术栈
+
+- 前端：React 19、TypeScript、Vite、Tailwind CSS、Radix UI、TanStack Query
+- 后端：Supabase（Postgres / Auth / Realtime / Vault / Cron / Edge Functions）
+- 桌面：Electron、electron-builder
+- 测试：Vitest、Playwright、pgTAP

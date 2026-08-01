@@ -9,7 +9,7 @@ export default {
   fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
-    const userId = ctx.userClaims?.sub;
+    const userId = ctx.userClaims?.id;
     if (!userId) return jsonError("Authentication required", 401);
 
     const body = await req.json().catch(() => null) as { action?: string } | null;

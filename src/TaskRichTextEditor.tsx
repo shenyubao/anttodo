@@ -230,7 +230,10 @@ function EditorToolbar(props: EditorToolbarProps) {
       <div className="rich-toolbar-immersive-out">
         <ImmersiveButton {...props} />
       </div>
-      <div className="rich-editor-toolbar" aria-label="文本样式">
+      <div
+        className={`rich-editor-toolbar${props.disabled ? " is-disabled" : ""}`}
+        aria-label="文本样式"
+      >
         <span className="rich-toolbar-block-type">
           <Type className="rich-toolbar-block-type-icon" aria-hidden="true" />
           <BlockTypeSelect />

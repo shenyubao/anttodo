@@ -191,7 +191,8 @@ export function chineseCalendarDetail(date: Date): ChineseCalendarDetail {
   try {
     const detail = getDayDetail(key);
     const weekend = date.getDay() === 0 || date.getDay() === 6;
-    if (isHoliday(key) && !weekend) holidayLabel = "休";
+    const ordinaryWeekend = detail.name === "Saturday" || detail.name === "Sunday";
+    if (isHoliday(key) && (!weekend || !ordinaryWeekend)) holidayLabel = "休";
     if (isWorkday(key) && weekend) holidayLabel = "班";
     holidayName = holidayLabel ? detail.name || null : null;
   } catch {

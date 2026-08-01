@@ -19,14 +19,13 @@ export type TaskListGroup = {
 };
 
 export const DEFAULT_TASK_LIST_PREFERENCE = {
-  grouping: "custom",
+  grouping: "none",
   sort: "custom",
   direction: "asc",
   show_labels: false,
 } as const;
 
 export const TASK_GROUPING_OPTIONS: Array<{ value: TaskListGrouping; label: string }> = [
-  { value: "custom", label: "自定义" },
   { value: "due", label: "时间" },
   { value: "created", label: "创建时间" },
   { value: "label", label: "标签" },
@@ -60,10 +59,15 @@ export function resolveTaskListPreference(
 ) {
   const found = preferences.find((item) => item.list_key === listKey);
   if (!found) return { ...DEFAULT_TASK_LIST_PREFERENCE, list_key: listKey };
-  return {
+  const resolved = {
     ...DEFAULT_TASK_LIST_PREFERENCE,
     ...found,
     show_labels: found.show_labels ?? false,
+  };
+  return {
+    ...resolved,
+    // “自定义分组”已下线；兼容历史偏好，统一展示为无分组。
+    grouping: resolved.grouping === "custom" ? "none" : resolved.grouping,
   };
 }
 

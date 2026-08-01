@@ -1,7 +1,12 @@
 packages:
   - "."
+  - "docs"
 allowBuilds:
+  '@swc/core': true
+  core-js: true
   electron-winstaller: false
+  esbuild: true
+  workerd: true
 minimumReleaseAgeExclude:
   - '@playwright/test@1.62.0'
   - '@radix-ui/react-compose-refs@1.1.5'

@@ -18,6 +18,11 @@ import {
   preferenceModelToRow,
   preferenceRowToModel,
 } from "./dateTimePreferences";
+import {
+  isValidWorkspaceSlug,
+  normalizeWorkspaceSlug,
+  suggestWorkspaceSlug,
+} from "./workspaceSlug";
 
 type TaskRow = Omit<Task, "label_ids" | "subtasks"> & {
   task_labels?: Array<{ label_id: string }>;
@@ -252,18 +257,84 @@ export async function setTaskListOrder(
   assertNoError(error);
 }
 
+function mapWorkspaceWriteError(error: {
+  message: string;
+  code?: string;
+}): Error {
+  if (error.code === "23505") {
+    return new Error("团队 Slug 已被占用，请换一个。");
+  }
+  if (error.code === "23514") {
+    return new Error("团队名称或 Slug 格式不正确。");
+  }
+  return new Error(error.message);
+}
+
 export async function createWorkspace(
   client: SupabaseClient,
   name: string,
   userId: string,
 ) {
+  const trimmedName = name.trim();
+  let slug = suggestWorkspaceSlug(trimmedName);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const { data, error } = await client
+      .from("workspaces")
+      .insert({ name: trimmedName, slug, created_by: userId })
+      .select()
+      .single();
+    if (!error) return data as Workspace;
+    if (error.code !== "23505") throw mapWorkspaceWriteError(error);
+    slug = `${suggestWorkspaceSlug(trimmedName).slice(0, 36)}-${crypto
+      .randomUUID()
+      .replace(/-/g, "")
+      .slice(0, 6)}`;
+  }
+
+  throw new Error("团队 Slug 已被占用，请换一个。");
+}
+
+export async function updateWorkspace(
+  client: SupabaseClient,
+  workspaceId: string,
+  patch: { name?: string; slug?: string },
+) {
+  const payload: { name?: string; slug?: string } = {};
+  if (patch.name !== undefined) {
+    payload.name = patch.name.trim();
+  }
+  if (patch.slug !== undefined) {
+    const slug = normalizeWorkspaceSlug(patch.slug);
+    if (!isValidWorkspaceSlug(slug)) {
+      throw new Error("团队 Slug 格式不正确。");
+    }
+    payload.slug = slug;
+  }
+
   const { data, error } = await client
     .from("workspaces")
-    .insert({ name, created_by: userId })
+    .update(payload)
+    .eq("id", workspaceId)
     .select()
     .single();
-  assertNoError(error);
+  if (error) throw mapWorkspaceWriteError(error);
   return data as Workspace;
+}
+
+export async function isWorkspaceSlugAvailable(
+  client: SupabaseClient,
+  slug: string,
+  workspaceId?: string,
+) {
+  const normalized = normalizeWorkspaceSlug(slug);
+  if (!isValidWorkspaceSlug(normalized)) return false;
+  const { data, error } = await client.rpc("is_workspace_slug_available", {
+    p_slug: normalized,
+    p_workspace_id: workspaceId ?? null,
+  });
+  assertNoError(error);
+  return Boolean(data);
 }
 
 export async function createTask(
@@ -315,4 +386,20 @@ export async function assignTask(
   });
   assertNoError(error);
   return data as Task;
+}
+
+export async function toggleTaskLabel(
+  client: SupabaseClient,
+  taskId: string,
+  labelId: string,
+  selected: boolean,
+) {
+  const { error } = selected
+    ? await client.from("task_labels").insert({ task_id: taskId, label_id: labelId })
+    : await client
+        .from("task_labels")
+        .delete()
+        .eq("task_id", taskId)
+        .eq("label_id", labelId);
+  assertNoError(error);
 }

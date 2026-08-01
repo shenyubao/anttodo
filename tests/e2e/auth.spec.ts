@@ -19,11 +19,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("uses a two-step mainland phone OTP flow", async ({ page }) => {
-  await expect(page.getByRole("tab", { name: "手机号登录" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-  await expect(page.getByRole("tab", { name: "钉钉扫码" })).toBeVisible();
+  await expect(page.getByLabel("手机号验证码登录")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "钉钉扫码" })).toHaveCount(0);
+  await expect(page.getByText("CorpId", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("国家或地区区号")).toBeDisabled();
   await expect(page.getByText("邮箱", { exact: true })).toHaveCount(0);
   await expect(page.getByText("密码", { exact: true })).toHaveCount(0);
@@ -45,16 +43,9 @@ test("uses a two-step mainland phone OTP flow", async ({ page }) => {
   await expect(page.getByPlaceholder("请输入手机号")).toHaveValue("13800138000");
 });
 
-test("shows a non-interactive DingTalk mock", async ({ page }) => {
-  await page.getByRole("tab", { name: "钉钉扫码" }).click();
-  await expect(page.getByLabel("钉钉登录模拟二维码")).toBeVisible();
-  await expect(page.getByText("扫码登录能力暂未开放")).toBeVisible();
-  await expect(page.getByRole("button", { name: "暂未开放" })).toBeDisabled();
-});
-
 test("keeps the login card usable on a narrow viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("tab", { name: "手机号登录" })).toBeVisible();
+  await expect(page.getByLabel("手机号验证码登录")).toBeVisible();
   await expect(page.getByPlaceholder("请输入手机号")).toBeVisible();
   await expect(page.locator(".auth-preview")).toBeHidden();
 });
@@ -82,5 +73,6 @@ test("previews a workspace invite before asking the visitor to sign in", async (
   await expect(page.getByText("管理员可以管理团队成员、标签权限和连接器。"))
     .toBeVisible();
   await page.getByRole("button", { name: "登录后加入" }).click();
-  await expect(page.getByRole("tab", { name: "手机号登录" })).toBeVisible();
+  await expect(page.getByLabel("手机号验证码登录")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "钉钉扫码" })).toHaveCount(0);
 });

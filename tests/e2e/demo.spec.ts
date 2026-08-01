@@ -16,6 +16,246 @@ test("demo task flow and details drawer", async ({ page }) => {
   await expect(page.locator(".detail-title")).toHaveValue(demoTaskTitle);
 });
 
+test("calendar opens the reusable task dialog and manages labels", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+
+  const eventTitle = "优化任务详情抽屉交互";
+  await page.getByText(eventTitle, { exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `任务详情：${eventTitle}` });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveCSS("width", "400px");
+  await expect(dialog).toHaveCSS("height", "300px");
+  await expect(dialog).toHaveCSS("border-radius", "14px");
+  await expect(page.getByRole("separator", { name: "调整详情面板宽度" })).toHaveCount(0);
+  await expect(dialog.getByRole("textbox", { name: "任务标题" })).toHaveValue(eventTitle);
+
+  await dialog.getByRole("button", { name: "管理任务标签" }).click();
+  const menu = dialog.getByRole("menu", { name: "选择任务标签" });
+  await expect(menu.getByRole("menuitemcheckbox", { name: "桌面与 Web" }))
+    .toHaveAttribute("aria-checked", "true");
+  await menu.getByRole("menuitemcheckbox", { name: "产品研发" }).click();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "产品研发" }))
+    .toHaveAttribute("aria-checked", "true");
+  await menu.getByRole("menuitemcheckbox", { name: "桌面与 Web" }).click();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "桌面与 Web" }))
+    .toHaveAttribute("aria-checked", "false");
+
+  await dialog.getByRole("button", { name: "管理任务标签" }).click();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
+test("mind map is full width and supports creation, details, and date dragging", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "思维导图" }).click();
+
+  await expect(page.locator(".calendar-sidebar")).toHaveCount(0);
+  await expect(page.getByRole("separator", { name: "调整侧边栏宽度" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "隐藏日历列表" })).toHaveCount(0);
+  await expect(page.locator(".mind-map-canvas .react-flow")).toBeVisible();
+  await page.getByRole("button", { name: "一览全部" }).click();
+  await expect(page.getByText("任务清单", { exact: true })).toBeVisible();
+  const inboxBranch = page.locator(".react-flow__node-inbox");
+  const unscheduledBranch = page.locator(".react-flow__node-unscheduled");
+  await expect(inboxBranch).toContainText("收集箱");
+  await expect(unscheduledBranch).toContainText("未排期");
+  const inboxBox = await inboxBranch.boundingBox();
+  const unscheduledBox = await unscheduledBranch.boundingBox();
+  expect(inboxBox).not.toBeNull();
+  expect(unscheduledBox).not.toBeNull();
+  expect(inboxBox!.y).toBeLessThan(unscheduledBox!.y);
+  const monthNode = page.locator(".react-flow__node-month").first();
+  const weekNode = page.locator(".react-flow__node-week").first();
+  const dayNode = page.locator(".react-flow__node-day").first();
+  await expect(monthNode).toHaveCSS("width", "88px");
+  await expect(weekNode).toHaveCSS("width", "144px");
+  await expect(dayNode).toHaveCSS("width", "110px");
+  const dateNodeBackgrounds = await Promise.all([monthNode, weekNode, dayNode].map(
+    (node) => node.locator(".mind-map-node").evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    ),
+  ));
+  expect(new Set(dateNodeBackgrounds).size).toBe(1);
+  const labelNode = page.locator(".react-flow__node-label").first();
+  const taskNode = page.locator(".react-flow__node-task").first();
+  await expect(labelNode).toBeVisible();
+  await expect(labelNode.locator(".mind-map-label-content > svg")).toBeVisible();
+  const labelBackground = await labelNode.locator(".mind-map-node-label")
+    .evaluate((node) => getComputedStyle(node).backgroundColor);
+  const taskBackground = await taskNode.locator(".mind-map-node-task")
+    .evaluate((node) => getComputedStyle(node).backgroundColor);
+  expect(labelBackground).not.toBe(taskBackground);
+  await expect(page.locator(".react-flow__node-task").filter({
+    hasText: demoTaskTitle,
+  })).toHaveCount(2);
+
+  const targetDay = page.locator(".react-flow__node-day").first();
+  await targetDay.click();
+  await page.keyboard.press("Enter");
+  const draft = page.getByRole("textbox", { name: "新待办标题" });
+  await expect(draft).toBeFocused();
+  await draft.fill("思维导图快捷创建");
+  await draft.press("Enter");
+
+  const createdTask = page.locator(".react-flow__node-task").filter({
+    hasText: "思维导图快捷创建",
+  });
+  await expect(createdTask).toBeVisible();
+  await createdTask.getByRole("button", { name: "完成任务" }).click();
+  await expect(createdTask.locator(".mind-map-node-task")).toHaveClass(/completed/);
+  await createdTask.click();
+  const createdDialog = page.getByRole("dialog", {
+    name: "任务详情：思维导图快捷创建",
+  });
+  await expect(createdDialog).toBeVisible();
+  await expect(page.getByRole("separator", { name: "调整详情面板宽度" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "一览全部" }).click();
+  const unscheduledTask = page.locator(".react-flow__node-task").filter({
+    hasText: "记录下一轮产品想法",
+  });
+  const sourceBox = await unscheduledTask.boundingBox();
+  const targetBox = await targetDay.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    targetBox!.x + targetBox!.width / 2,
+    targetBox!.y + targetBox!.height / 2,
+    { steps: 16 },
+  );
+  await page.mouse.up();
+  await unscheduledTask.click();
+  const draggedDialog = page.getByRole("dialog", {
+    name: "任务详情：记录下一轮产品想法",
+  });
+  await expect(draggedDialog.locator(".detail-due-trigger")).not.toContainText("无日期");
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+  await expect(page.locator(".calendar-sidebar")).toBeVisible();
+  await expect(page.locator(".calendar-all-check")).toHaveClass(/active/);
+});
+
+test("mind map creates labels, inherits labels, and exposes context deletion", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "思维导图" }).click();
+
+  await page.getByRole("button", { name: "一览全部" }).click();
+  const productLabel = page.locator(".react-flow__node-label").filter({
+    hasText: "产品研发",
+  }).first();
+  await productLabel.click();
+  await page.getByRole("button", { name: "新增标签" }).click();
+  const labelDialog = page.getByRole("dialog", { name: "添加标签" });
+  await expect(labelDialog.getByRole("combobox")).toHaveValue("product");
+  await labelDialog.getByPlaceholder("名称").fill("导图子标签");
+  await labelDialog.getByRole("button", { name: "保存" }).click();
+  await expect(labelDialog).toBeHidden();
+  await expect(page.getByText("导图子标签", { exact: true })).toHaveCount(0);
+
+  await productLabel.click();
+  await page.getByRole("button", { name: "新增任务" }).click();
+  const taskInput = page.getByRole("textbox", { name: "新待办标题" });
+  await taskInput.fill("导图标签任务");
+  await taskInput.press("Enter");
+  await page.getByRole("button", { name: "一览全部" }).click();
+
+  const createdTask = page.locator(".react-flow__node-task").filter({
+    hasText: "导图标签任务",
+  });
+  await expect(createdTask).toBeVisible();
+  await createdTask.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "删除任务" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "任务详情：导图标签任务" })).toHaveCount(0);
+
+  const backendLabel = page.locator(".react-flow__node-label").filter({
+    hasText: "Supabase 后端",
+  }).first();
+  await backendLabel.click({ button: "right" });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("menuitem", { name: "删除标签" }).click();
+  await expect(page.locator(".react-flow__node-label").filter({
+    hasText: "Supabase 后端",
+  })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await expect(page.getByText("导图标签任务", { exact: true })).toBeVisible();
+  await expect(page.getByText("导图子标签", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "思维导图" }).click();
+  await page.getByRole("button", { name: "一览全部" }).click();
+  const inheritedTask = page.locator(".react-flow__node-task").filter({
+    hasText: "导图标签任务",
+  });
+  await inheritedTask.click({ button: "right" });
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("menuitem", { name: "删除任务" }).click();
+  await expect(inheritedTask).toHaveCount(0);
+});
+
+test("mind map dragging adds labels and moving to inbox clears them", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "思维导图" }).click();
+  await page.getByRole("button", { name: "一览全部" }).click();
+  await page.waitForTimeout(300);
+
+  const taskTitle = "记录下一轮产品想法";
+  const sourceTask = page.locator(".react-flow__node-task").filter({ hasText: taskTitle });
+  const targetLabel = page.locator(".react-flow__node-label").filter({
+    hasText: "产品研发",
+  }).first();
+  const sourceBox = await sourceTask.boundingBox();
+  const labelBox = await targetLabel.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(labelBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(labelBox!.x + labelBox!.width / 2, labelBox!.y + labelBox!.height / 2, {
+    steps: 16,
+  });
+  await expect(targetLabel).toHaveClass(/mind-map-drop-target/);
+  await page.mouse.up();
+
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await page.getByText("产品研发", { exact: true }).first().click();
+  await expect(
+    page.getByText(taskTitle, { exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "思维导图" }).click();
+  await page.getByRole("button", { name: "一览全部" }).click();
+  await page.waitForTimeout(300);
+  const labeledTask = page.locator(".react-flow__node-task").filter({ hasText: taskTitle });
+  const inbox = page.locator(".react-flow__node-inbox");
+  const labeledBox = await labeledTask.boundingBox();
+  const inboxBox = await inbox.boundingBox();
+  expect(labeledBox).not.toBeNull();
+  expect(inboxBox).not.toBeNull();
+  await page.mouse.move(labeledBox!.x + labeledBox!.width / 2, labeledBox!.y + labeledBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(inboxBox!.x + inboxBox!.width / 2, inboxBox!.y + inboxBox!.height / 2, {
+    steps: 12,
+  });
+  await expect(inbox).toHaveClass(/mind-map-drop-target/);
+  await page.mouse.up();
+
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  await page.getByRole("button", { name: /^收集箱/ }).click();
+  await expect(page.getByText(taskTitle, { exact: true })).toBeVisible();
+});
+
 test("task search matches titles and descriptions and opens the result", async ({
   page,
 }) => {
@@ -73,7 +313,10 @@ test("task search handles no results, escape, overlay, and mobile access", async
 
 test("task detail and labels follow the desktop reference layout", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
-  await openDemoTask(page);
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitem", { name: "显示标签" }).click();
+  await page.getByText(demoTaskTitle, { exact: true }).click();
 
   const detailWidth = await page.locator(".task-detail").evaluate(
     (element) => element.getBoundingClientRect().width,
@@ -200,22 +443,45 @@ test("settings matches the reference geometry and reads account data", async ({ 
     "AntTodo 产品团队",
   );
   const settingsTabLabels = await dialog.locator(".settings-tab").allTextContents();
-  expect(settingsTabLabels.indexOf("团队与权限")).toBe(
-    settingsTabLabels.indexOf("连接器") - 1,
+  expect(settingsTabLabels.indexOf("团队管理")).toBe(
+    settingsTabLabels.indexOf("成员管理") - 1,
+  );
+  expect(settingsTabLabels.indexOf("成员管理")).toBe(
+    settingsTabLabels.indexOf("单点登录") - 1,
   );
   expect(settingsTabLabels).toEqual([
     "账户与安全",
     "日期与时间",
-    "团队与权限",
-    "连接器",
     "快捷键",
+    "团队管理",
+    "成员管理",
+    "单点登录",
     "关于",
   ]);
+  await expect(dialog.locator(".settings-tab-group-title")).toHaveText([
+    "基础配置",
+    "团队配置",
+  ]);
+  await expect(dialog.getByRole("button", { name: "连接器", exact: true })).toHaveCount(0);
 
-  await dialog.getByRole("button", { name: "团队与权限", exact: true }).click();
-  await expect(dialog.getByRole("heading", { name: "AntTodo 产品团队" })).toBeVisible();
-  await expect(dialog.getByText("产品同学", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("combobox", { name: "产品同学的角色" })).toHaveValue("member");
+  await dialog.getByRole("button", { name: "团队管理", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "团队管理" })).toBeVisible();
+  await expect(dialog.getByRole("textbox", { name: "团队名称" })).toHaveValue(
+    "AntTodo 产品团队",
+  );
+  await expect(dialog.getByRole("textbox", { name: "团队 Slug" })).toHaveValue(
+    "anttodo-product",
+  );
+  await expect(dialog.getByLabel("团队访问地址")).toContainText(
+    "anttodo-product.team.anttodo.com",
+  );
+  await dialog.getByRole("textbox", { name: "团队名称" }).fill("AntTodo 演示团队");
+  await dialog.getByRole("textbox", { name: "团队 Slug" }).fill("anttodo-demo");
+  await dialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText("团队信息已更新", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("textbox", { name: "团队名称" })).toHaveValue(
+    "AntTodo 演示团队",
+  );
   await expect(dialog.getByRole("region", { name: "邀请链接" })).toBeVisible();
   const inviteSwitch = dialog.getByRole("switch", { name: "启用邀请链接" });
   await expect(inviteSwitch).not.toBeChecked();
@@ -229,11 +495,15 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await dialog.getByRole("button", { name: "复制链接" }).click();
   await expect(page.locator(".toast")).toContainText("演示邀请链接已复制");
 
-  await dialog.getByRole("button", { name: "连接器", exact: true }).click();
-  await expect(dialog.getByRole("heading", { name: "可用连接器" })).toBeVisible();
-  await expect(dialog.getByText("钉钉待办", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("云效工作项", { exact: true })).toBeVisible();
-  await expect(dialog.locator(".connector-settings-card")).toHaveCount(2);
+  await dialog.getByRole("button", { name: "成员管理", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "AntTodo 演示团队" })).toBeVisible();
+  await expect(dialog.getByText("产品同学", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "产品同学的角色" })).toHaveValue("member");
+  await expect(dialog.getByRole("region", { name: "邀请链接" })).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "单点登录", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "单点登录" })).toBeVisible();
+  await expect(dialog.getByText("钉钉企业登录", { exact: true })).toBeVisible();
 
   await dialog.getByRole("button", { name: "日期与时间", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "日期与时间" })).toBeVisible();
@@ -648,7 +918,7 @@ test("account menu contains workspace, settings, and sign-out actions", async ({
   await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
 
   await expect(page.getByRole("menuitem", { name: "切换团队" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "团队与权限" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "成员管理" })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "设置" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "退出登录" })).toBeVisible();
 

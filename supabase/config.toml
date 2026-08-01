@@ -464,3 +464,21 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/send-sms/deno.json"
 entrypoint = "./functions/send-sms/index.ts"
+
+[functions.account-admin]
+enabled = true
+verify_jwt = true
+import_map = "./functions/account-admin/deno.json"
+entrypoint = "./functions/account-admin/index.ts"
+
+[functions.sso-admin]
+enabled = true
+verify_jwt = true
+import_map = "./functions/sso-admin/deno.json"
+entrypoint = "./functions/sso-admin/index.ts"
+
+[functions.dingtalk-sso]
+enabled = true
+verify_jwt = false
+import_map = "./functions/dingtalk-sso/deno.json"
+entrypoint = "./functions/dingtalk-sso/index.ts"

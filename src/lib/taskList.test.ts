@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Label, Member, Task } from "../types";
-import { groupTasks, sortTasks } from "./taskList";
+import { groupTasks, resolveTaskListPreference, sortTasks } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
 const labels: Label[] = [
@@ -34,6 +34,19 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
 });
 
 describe("task list grouping and sorting", () => {
+  it("falls back from the removed custom grouping to no grouping", () => {
+    expect(resolveTaskListPreference([], "all").grouping).toBe("none");
+    expect(resolveTaskListPreference([{
+      user_id: "u",
+      workspace_id: "w",
+      list_key: "all",
+      grouping: "custom",
+      sort: "custom",
+      direction: "asc",
+      show_labels: false,
+    }], "all").grouping).toBe("none");
+  });
+
   it("keeps null values last in either due-date direction", () => {
     const tasks = [
       task("none"),

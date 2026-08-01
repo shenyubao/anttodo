@@ -79,9 +79,14 @@ SEND_SMS_HOOK_SECRETS=v1,whsec_<base64-secret>
 `config.toml` 中的 Twilio 占位值只用于绕过当前 Supabase CLI 的本地 Phone
 Provider 开关校验，Send SMS Hook 会完全替代它；不得填写真实 Twilio 凭据。
 
-`VITE_PUBLIC_APP_URL` 是邀请链接使用的 Web 站点根地址。浏览器开发环境可回退到
-当前 HTTP(S) origin；打包后的 Electron 使用 `file:` origin，因此线上构建必须
-显式配置该值才能复制可公开访问的邀请链接。
+`VITE_PUBLIC_APP_URL` 是主站 Web 根地址（邀请链接与钉钉回调）。团队 SSO
+入口使用 `https://app.anttodo.com/team/{slug}` 格式；主站根路径仅暴露手机号
+登录，团队访问路径仅暴露钉钉 SSO。本地可用
+`http://localhost:5173/team/{slug}` 调试团队登录页。
+
+浏览器开发环境可回退到当前 HTTP(S) origin；打包后的 Electron 使用 `file:`
+origin，因此线上构建必须显式配置 `VITE_PUBLIC_APP_URL` 才能复制可公开访问的
+邀请链接与团队访问地址。
 
 ## 本地 Supabase
 
@@ -128,6 +133,17 @@ supabase functions serve send-sms --env-file .env.local --no-verify-jwt
    `/functions/v1/send-sms`，并把生成的签名密钥同步到 Function Secrets。
 5. 将短信最短发送间隔设为 60 秒，并按实际成本配置 SMS/IP 限流。
 
+## 文档站
+
+产品文档位于 `docs/`（Docusaurus），线上地址为
+[https://docs.anttodo.com](https://docs.anttodo.com)。
+
+```bash
+pnpm docs:dev
+pnpm docs:build
+pnpm deploy:docs
+```
+
 ## 构建和测试
 
 ```bash
@@ -155,6 +171,7 @@ pnpm package:mac
 ## 目录
 
 ```text
+docs/                     Docusaurus 文档站（docs.anttodo.com）
 electron/                 Electron main/preload
 src/                      共享 React 客户端
 supabase/migrations/      数据库与 RLS

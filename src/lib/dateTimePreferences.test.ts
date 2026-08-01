@@ -68,5 +68,8 @@ describe("date and time preferences", () => {
 
   it("returns lunar and official adjustment metadata without network access", () => {
     expect(chineseCalendarDetail(new Date(2026, 9, 1)).lunarLabel).toBeTruthy();
+    expect(chineseCalendarDetail(new Date(2026, 8, 26)).holidayLabel).toBe("休");
+    expect(chineseCalendarDetail(new Date(2026, 8, 20)).holidayLabel).toBe("班");
+    expect(chineseCalendarDetail(new Date(2026, 8, 19)).holidayLabel).toBeNull();
   });
 });

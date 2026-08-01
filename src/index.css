@@ -121,13 +121,11 @@ a {
 .brand-mark {
   width: 42px;
   height: 42px;
-  display: grid;
-  place-items: center;
+  display: block;
+  flex: 0 0 auto;
+  object-fit: cover;
   border-radius: 13px;
-  color: white;
-  font-size: 21px;
-  font-weight: 800;
-  background: linear-gradient(145deg, #6f8cff, #4868e9);
+  background: #4772fa;
   box-shadow: 0 12px 26px rgb(74 105 235 / 28%);
 }
 
@@ -195,7 +193,6 @@ a {
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  font-size: 17px;
 }
 
 .invite-loading {
@@ -382,21 +379,35 @@ a {
 
 .phone-input-group {
   display: grid;
-  grid-template-columns: 145px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
 }
 
-.phone-input-group select {
+.phone-country {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   width: 100%;
   height: 44px;
   border: 1px solid #dfe2e7;
   border-right: 0;
   border-radius: 9px 0 0 9px;
-  padding: 0 30px 0 12px;
+  padding: 0 6px;
   color: #5d626d;
   background: #f7f8fa;
   font-size: 13px;
+  line-height: 1;
+  cursor: default;
+}
+
+.phone-country:disabled {
   opacity: 1;
-  -webkit-text-fill-color: #5d626d;
+  color: #5d626d;
+}
+
+.phone-country-flag {
+  font-size: 15px;
+  line-height: 1;
 }
 
 .phone-input-group input {
@@ -408,7 +419,7 @@ a {
   box-shadow: 0 0 0 3px rgb(71 114 250 / 12%);
 }
 
-.phone-input-group:focus-within select,
+.phone-input-group:focus-within .phone-country,
 .phone-input-group:focus-within input {
   border-color: #4772fa;
   box-shadow: none;
@@ -491,13 +502,6 @@ a {
   background: var(--line);
 }
 
-.auth-footnote {
-  color: #a0a5ae;
-  text-align: center;
-  font-size: 11px;
-  margin: 18px 0 0;
-}
-
 .dingtalk-login {
   min-height: 282px;
   display: grid;
@@ -507,7 +511,8 @@ a {
   text-align: center;
 }
 
-.dingtalk-qr {
+.dingtalk-qr,
+.dingtalk-qr-frame {
   position: relative;
   width: 168px;
   height: 168px;
@@ -519,6 +524,12 @@ a {
   color: #191919;
   background: white;
   box-shadow: 0 8px 24px rgb(25 25 25 / 6%);
+}
+
+.dingtalk-qr-frame {
+  width: 300px;
+  height: 300px;
+  overflow: hidden;
 }
 
 .dingtalk-qr svg {
@@ -560,6 +571,17 @@ a {
 .dingtalk-login .button svg {
   width: 15px;
   height: 15px;
+}
+
+.dingtalk-login .auth-form {
+  width: 100%;
+  text-align: left;
+}
+
+.dingtalk-login .auth-form > strong,
+.dingtalk-login .auth-form > p {
+  display: block;
+  text-align: center;
 }
 
 .auth-preview {
@@ -665,6 +687,12 @@ a {
     minmax(370px, 1fr);
 }
 
+.app-shell.task-section.mind-map-section {
+  grid-template-columns:
+    var(--navigation-rail-width)
+    minmax(370px, 1fr);
+}
+
 .app-shell.detail-open {
   grid-template-columns:
     var(--navigation-rail-width)
@@ -706,6 +734,11 @@ body.is-panel-resizing {
 
 .window-traffic-lights {
   display: none;
+}
+
+body.is-electron.is-macos {
+  /* Wide enough for the traffic-light cluster (≈57px) to sit fully on the rail. */
+  --navigation-rail-width: 65px;
 }
 
 body.is-electron.is-macos .window-traffic-lights {
@@ -804,7 +837,7 @@ body.is-electron.is-macos .window-drag-strip {
   z-index: 1000;
   top: 0;
   right: 0;
-  left: 68px;
+  left: var(--navigation-rail-width);
   height: 10px;
   display: block;
   user-select: none;
@@ -816,6 +849,8 @@ body.is-electron.is-macos :where(
   .rail-drag-space,
   .workspace-switcher,
   .content-header,
+  .calendar-toolbar,
+  .mind-map-toolbar,
   .detail-toolbar
 ) {
   user-select: none;
@@ -856,6 +891,36 @@ body.is-electron.is-macos .rail-drag-space {
   display: block;
   width: 100%;
   height: 24px;
+}
+
+body.is-electron.is-macos .rail-avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 12px;
+  border-radius: 11px;
+}
+
+body.is-electron.is-macos .profile-menu-anchor {
+  width: 40px;
+  height: 49px;
+}
+
+body.is-electron.is-macos .rail-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+}
+
+body.is-electron.is-macos .rail-button svg {
+  width: 24px;
+  height: 24px;
+}
+
+body.is-electron.is-macos .rail-button.active svg {
+  width: 28px;
+  height: 28px;
+  padding: 3px;
+  border-radius: 6px;
 }
 
 .rail-avatar {
@@ -1412,6 +1477,1250 @@ body.is-electron.is-macos .rail-drag-space {
   background: #fff;
 }
 
+.calendar-sidebar {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.mini-calendar {
+  height: 290px;
+  flex: 0 0 290px;
+  padding: 0 16px 10px;
+  border-bottom: 1px solid rgb(25 25 25 / 6%);
+}
+
+.mini-calendar-header {
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mini-calendar-header strong {
+  color: #191919;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.mini-calendar-header > div {
+  display: flex;
+  align-items: center;
+}
+
+.mini-calendar-header button {
+  width: 26px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mini-calendar-header button:hover {
+  background: rgb(25 25 25 / 5%);
+}
+
+.mini-calendar-header button:focus-visible {
+  outline: none;
+  background: rgb(25 25 25 / 5%);
+}
+
+.mini-calendar-header svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
+
+.mini-calendar-header .mini-calendar-today {
+  width: 22px;
+}
+
+.mini-calendar-today > span {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.mini-calendar-weekdays,
+.mini-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.mini-calendar-weekdays {
+  height: 28px;
+  align-items: center;
+  color: rgb(25 25 25 / 42%);
+  font-size: 12px;
+  text-align: center;
+}
+
+.mini-calendar-grid {
+  grid-template-rows: repeat(6, 31px);
+}
+
+.mini-calendar-grid > button {
+  position: relative;
+  min-width: 0;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  padding: 0 0 5px;
+  border: 0;
+  border-radius: 7px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.mini-calendar-grid > button:hover {
+  background: rgb(25 25 25 / 5%);
+}
+
+.mini-calendar-grid > button:focus-visible {
+  outline: none;
+  background: rgb(25 25 25 / 5%);
+}
+
+.mini-calendar-grid > button.outside {
+  color: rgb(25 25 25 / 32%);
+}
+
+.mini-calendar-grid > button.today > span:first-child {
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #4772fa;
+}
+
+.mini-calendar-grid > button > i {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #4772fa;
+  transform: translateX(-50%);
+}
+
+.calendar-holiday-badge {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.calendar-holiday-badge.holiday {
+  background: #35c88a;
+}
+
+.calendar-holiday-badge.workday {
+  background: #ff7085;
+}
+
+.mini-calendar-grid .calendar-holiday-badge {
+  position: absolute;
+  z-index: 1;
+  top: -1px;
+  right: -1px;
+  transform: scale(.82);
+}
+
+.calendar-sidebar-heading {
+  height: 64px;
+  flex: 0 0 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+}
+
+.calendar-sidebar-heading > span {
+  color: #191919;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.calendar-sidebar-heading > button {
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  color: rgb(25 25 25 / 45%);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.calendar-sidebar-heading > button:hover {
+  color: #191919;
+  background: rgb(25 25 25 / 5%);
+}
+
+.calendar-list {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 10px 10px 14px;
+}
+
+.calendar-all-item {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 0 10px;
+  border: 0;
+  border-radius: 9px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.calendar-all-item:hover {
+  background: rgb(25 25 25 / 4%);
+}
+
+.calendar-all-item strong {
+  font-weight: 500;
+}
+
+.calendar-all-check {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(25 25 25 / 18%);
+  border-radius: 50%;
+  color: #fff;
+}
+
+.calendar-all-check.active {
+  border-color: #4772fa;
+  background: #4772fa;
+}
+
+.calendar-all-check svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.5;
+}
+
+.calendar-list-item {
+  width: 100%;
+  height: 36px;
+  display: grid;
+  grid-template-columns: 16px 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.calendar-list-item:hover {
+  background: rgb(25 25 25 / 4%);
+}
+
+.calendar-visibility-check {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(25 25 25 / 18%);
+  border-radius: 4px;
+  color: #fff;
+}
+
+.calendar-visibility-check svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.7;
+}
+
+.calendar-list-icon {
+  display: grid;
+  place-items: center;
+}
+
+.calendar-list-icon svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
+.calendar-list-item > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-label-tree {
+  min-width: 0;
+}
+
+.calendar-label-tree-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.calendar-label-tree-row .calendar-list-item {
+  min-width: 0;
+  flex: 1;
+}
+
+.calendar-label-expander,
+.calendar-label-expander-spacer {
+  width: 20px;
+  height: 36px;
+  flex: 0 0 20px;
+}
+
+.calendar-label-expander {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: rgb(25 25 25 / 48%);
+  background: transparent;
+  cursor: pointer;
+}
+
+.calendar-label-expander:hover,
+.calendar-label-expander:focus-visible {
+  color: #191919;
+  background: rgb(25 25 25 / 5%);
+  outline: none;
+}
+
+.calendar-label-expander svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 1.8;
+}
+
+.calendar-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  color: #191919;
+  background: #fff;
+}
+
+.calendar-toolbar {
+  position: relative;
+  z-index: 12;
+  height: 64px;
+  flex: 0 0 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 16px 0 20px;
+  background: #fff;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+}
+
+.calendar-toolbar-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.calendar-sidebar-toggle {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+}
+
+.calendar-sidebar-toggle:hover,
+.calendar-sidebar-toggle:focus-visible {
+  background: rgb(25 25 25 / 5%);
+  outline: none;
+}
+
+.calendar-sidebar-toggle svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.8;
+}
+
+.calendar-toolbar-title h1 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-toolbar-actions,
+.calendar-date-navigation {
+  display: flex;
+  align-items: center;
+}
+
+.calendar-toolbar-actions {
+  gap: 16px;
+}
+
+.calendar-view-anchor {
+  position: relative;
+}
+
+.calendar-view-trigger {
+  min-width: 62px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px 0 11px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  color: #191919;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.calendar-view-trigger:hover,
+.calendar-view-trigger[aria-expanded="true"] {
+  background: rgb(25 25 25 / 4%);
+}
+
+.calendar-view-trigger svg {
+  width: 13px;
+  height: 13px;
+  color: rgb(25 25 25 / 45%);
+}
+
+.calendar-date-navigation {
+  height: 30px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.calendar-date-navigation button {
+  height: 28px;
+  min-width: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0 10px;
+  border: 0;
+  border-right: 1px solid rgb(25 25 25 / 8%);
+  color: #191919;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.calendar-date-navigation button:last-child {
+  border-right: 0;
+}
+
+.calendar-date-navigation button:hover {
+  background: rgb(25 25 25 / 4%);
+}
+
+.calendar-date-navigation svg {
+  width: 15px;
+  height: 15px;
+}
+
+.calendar-view-menu {
+  position: absolute;
+  z-index: 50;
+  top: 38px;
+  right: 0;
+  width: 192px;
+  padding: 6px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  animation: profile-menu-in 130ms ease;
+}
+
+.calendar-view-row {
+  position: relative;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 0;
+}
+
+.calendar-view-row.with-divider {
+  height: 43px;
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid rgb(25 25 25 / 8%);
+}
+
+.calendar-view-row > button {
+  min-width: 0;
+  height: 32px;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.calendar-view-row > button:hover {
+  background: rgb(25 25 25 / 5%);
+}
+
+.calendar-view-row.active > button {
+  color: #4772fa;
+}
+
+.calendar-view-check {
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.calendar-view-check svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+}
+
+.calendar-view-shortcut {
+  width: 42px;
+  color: rgb(25 25 25 / 32%);
+  font-size: 12px;
+  text-align: right;
+}
+
+.calendar-view-row select {
+  width: 52px;
+  height: 26px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  outline: none;
+  color: rgb(25 25 25 / 42%);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.calendar-view-row select:hover,
+.calendar-view-row select:focus-visible {
+  color: #191919;
+  background: rgb(25 25 25 / 5%);
+}
+
+.calendar-canvas {
+  --fc-classic-primary: #4772fa;
+  --fc-classic-event: #4772fa;
+  --fc-classic-event-contrast: #191919;
+  --fc-classic-today: rgb(71 114 250 / 5%);
+  --fc-classic-now: #ff6161;
+  --fc-classic-background: #fff;
+  --fc-classic-faint: rgb(25 25 25 / 3%);
+  --fc-classic-muted: rgb(25 25 25 / 5%);
+  --fc-classic-strong: rgb(25 25 25 / 8%);
+  --fc-classic-foreground: #191919;
+  --fc-classic-faint-foreground: rgb(25 25 25 / 34%);
+  --fc-classic-muted-foreground: rgb(25 25 25 / 45%);
+  --fc-classic-border: rgb(25 25 25 / 7%);
+  --fc-classic-strong-border: rgb(25 25 25 / 12%);
+
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.calendar-canvas > div {
+  color: #191919;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.calendar-canvas [role="columnheader"] {
+  min-height: 32px;
+  color: rgb(25 25 25 / 42%);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.calendar-canvas [role="gridcell"] a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.calendar-canvas [role="gridcell"] > div:first-child {
+  padding: 6px 7px 0;
+}
+
+.calendar-canvas [role="gridcell"] [role="button"] {
+  min-height: 19px;
+  margin-inline: 3px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.calendar-main-day-top {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.calendar-main-day-top .calendar-holiday-badge {
+  flex: 0 0 16px;
+}
+
+@media (min-width: 901px) {
+  .app-shell.task-section.calendar-sidebar-collapsed {
+    grid-template-columns:
+      var(--navigation-rail-width)
+      minmax(370px, 1fr);
+  }
+
+  .app-shell.task-section.detail-open.calendar-sidebar-collapsed {
+    grid-template-columns:
+      var(--navigation-rail-width)
+      minmax(320px, 1fr)
+      var(--detail-width);
+  }
+}
+
+.calendar-canvas .calendar-event-completed {
+  opacity: 0.56;
+}
+
+.calendar-canvas .calendar-event-completed * {
+  text-decoration: line-through;
+}
+
+.mind-map-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  color: #191919;
+  background: #fff;
+}
+
+.mind-map-toolbar {
+  position: relative;
+  z-index: 12;
+  height: 64px;
+  flex: 0 0 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  background: #fff;
+}
+
+.mind-map-toolbar-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.mind-map-toolbar-title h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.mind-map-readonly,
+.mind-map-error {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mind-map-readonly {
+  color: rgb(25 25 25 / 48%);
+  background: rgb(25 25 25 / 5%);
+}
+
+.mind-map-error {
+  overflow: hidden;
+  max-width: 240px;
+  color: #d34242;
+  background: rgb(255 97 97 / 9%);
+  text-overflow: ellipsis;
+}
+
+.mind-map-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mind-map-toolbar-actions button {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  color: #191919;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.mind-map-toolbar-actions button:hover,
+.mind-map-toolbar-actions button:focus-visible {
+  outline: none;
+  background: rgb(25 25 25 / 4%);
+}
+
+.mind-map-toolbar-actions svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
+
+.mind-map-canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: #fbfbfc;
+}
+
+.mind-map-canvas:focus {
+  outline: none;
+}
+
+.mind-map-canvas .react-flow {
+  font-family: inherit;
+}
+
+.mind-map-canvas .react-flow__node {
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+}
+
+.mind-map-node {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 13px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 10px;
+  color: #191919;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(25 25 25 / 5%);
+  font-size: 13px;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background 120ms ease,
+    opacity 120ms ease;
+}
+
+.mind-map-node-collapsible {
+  gap: 8px;
+  cursor: pointer;
+}
+
+.mind-map-node-collapsible:focus-visible {
+  outline: none;
+  border-color: #4772fa;
+  box-shadow: 0 0 0 3px rgb(71 114 250 / 13%);
+}
+
+.mind-map-collapse-indicator {
+  width: 20px;
+  height: 24px;
+  flex: 0 0 20px;
+  display: grid;
+  place-items: center;
+  margin-right: -6px;
+  border-radius: 7px;
+  color: rgb(25 25 25 / 42%);
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.mind-map-node-collapsible:hover .mind-map-collapse-indicator,
+.mind-map-node-collapsible:focus-visible .mind-map-collapse-indicator {
+  color: #4772fa;
+  background: rgb(71 114 250 / 8%);
+}
+
+.mind-map-collapse-indicator > svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
+}
+
+.mind-map-node-root {
+  justify-content: center;
+  border-color: #4772fa;
+  border-radius: 12px;
+  color: #fff;
+  background: #4772fa;
+  box-shadow: 0 5px 16px rgb(71 114 250 / 22%);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mind-map-node-month {
+  border-color: rgb(71 114 250 / 22%);
+  color: #315ad7;
+  font-weight: 600;
+}
+
+.mind-map-node-month,
+.mind-map-node-week,
+.mind-map-node-day {
+  background: #f2f5ff;
+}
+
+.mind-map-node-week {
+  color: rgb(25 25 25 / 68%);
+}
+
+.mind-map-node-day {
+  border-color: rgb(71 114 250 / 16%);
+  font-weight: 500;
+}
+
+.mind-map-node-inbox,
+.mind-map-node-unscheduled {
+  color: rgb(25 25 25 / 58%);
+  background: rgb(25 25 25 / 3%);
+  font-weight: 500;
+}
+
+.mind-map-node-inbox {
+  border-color: rgb(71 114 250 / 14%);
+  color: #315ad7;
+  background: rgb(71 114 250 / 5%);
+}
+
+.mind-map-node-label {
+  border-color: color-mix(in srgb, var(--mind-map-label-color) 22%, transparent);
+  color: rgb(25 25 25 / 72%);
+  background: color-mix(in srgb, var(--mind-map-label-color) 9%, white);
+  font-weight: 600;
+}
+
+.mind-map-label-content,
+.mind-map-date-content {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mind-map-label-content > svg,
+.mind-map-date-content > svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  stroke-width: 1.8;
+}
+
+.mind-map-label-content > svg {
+  color: var(--mind-map-label-color);
+}
+
+.mind-map-date-content > svg {
+  color: #4772fa;
+}
+
+.mind-map-label-content > span,
+.mind-map-date-content > span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mind-map-node-task {
+  padding: 0 10px;
+  cursor: grab;
+}
+
+.mind-map-node-task:active {
+  cursor: grabbing;
+}
+
+.mind-map-node.selected {
+  border-color: #4772fa;
+  box-shadow: 0 0 0 3px rgb(71 114 250 / 13%);
+}
+
+.mind-map-node-root.selected {
+  box-shadow:
+    0 0 0 3px rgb(71 114 250 / 18%),
+    0 5px 16px rgb(71 114 250 / 22%);
+}
+
+.react-flow__node.mind-map-drop-target .mind-map-node {
+  border-color: #4772fa;
+  background: rgb(71 114 250 / 9%);
+  box-shadow: 0 0 0 4px rgb(71 114 250 / 12%);
+}
+
+.mind-map-branch-label,
+.mind-map-task-content > span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mind-map-branch-label {
+  flex: 1;
+}
+
+.mind-map-task-content {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mind-map-task-content > span {
+  flex: 1;
+}
+
+.mind-map-node.completed {
+  color: rgb(25 25 25 / 44%);
+  background: rgb(25 25 25 / 2%);
+}
+
+.mind-map-node.completed .mind-map-task-content > span {
+  text-decoration: line-through;
+}
+
+.mind-map-task-toggle {
+  width: 22px;
+  height: 28px;
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: rgb(25 25 25 / 38%);
+  background: transparent;
+  cursor: pointer;
+}
+
+.mind-map-task-toggle:not(:disabled):hover,
+.mind-map-task-toggle:not(:disabled):focus-visible {
+  outline: none;
+  color: #4772fa;
+  background: rgb(71 114 250 / 8%);
+}
+
+.mind-map-task-toggle:disabled {
+  cursor: default;
+}
+
+.mind-map-node.completed .mind-map-task-toggle {
+  color: #4772fa;
+}
+
+.mind-map-task-toggle svg,
+.mind-map-draft-form > svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
+.mind-map-draft-form {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mind-map-draft-form input {
+  min-width: 0;
+  height: 30px;
+  flex: 1;
+  padding: 0 3px;
+  border: 0;
+  outline: none;
+  color: #191919;
+  background: transparent;
+  font: inherit;
+}
+
+.mind-map-draft-form input::placeholder {
+  color: rgb(25 25 25 / 32%);
+}
+
+.mind-map-node-spinner {
+  color: #4772fa;
+  animation: spin 0.8s linear infinite;
+}
+
+.mind-map-node .react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mind-map-canvas .react-flow__edge-path {
+  stroke: rgb(71 114 250 / 32%);
+  stroke-width: 1.5;
+}
+
+.mind-map-canvas .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 9%);
+}
+
+.mind-map-canvas .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  border-bottom-color: rgb(25 25 25 / 8%);
+  color: #191919;
+  background: #fff;
+}
+
+.mind-map-canvas .react-flow__controls-button:hover {
+  background: #f6f6f7;
+}
+
+.mind-map-bottom-bar {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: 70px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 16%);
+  transform: translateX(-50%);
+}
+
+.mind-map-bottom-bar > button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.mind-map-bottom-bar > button:hover,
+.mind-map-bottom-bar > button:focus-visible {
+  outline: none;
+  color: #315ad7;
+  background: rgb(71 114 250 / 8%);
+}
+
+.mind-map-bottom-bar > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.mind-map-bottom-bar svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+.mind-map-bottom-divider {
+  width: 1px;
+  height: 20px;
+  background: rgb(25 25 25 / 8%);
+}
+
+.mind-map-menu-scrim {
+  position: fixed;
+  z-index: 59;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.mind-map-context-menu {
+  position: fixed;
+  z-index: 60;
+  width: 164px;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  animation: profile-menu-in 130ms ease;
+}
+
+.mind-map-context-menu button {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border: 0;
+  color: #d34242;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.mind-map-context-menu button:hover,
+.mind-map-context-menu button:focus-visible {
+  outline: none;
+  background: rgb(25 25 25 / 5%);
+}
+
+.mind-map-context-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.mind-map-context-menu svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+@media (max-width: 760px) {
+  .mind-map-toolbar {
+    padding-right: 10px;
+    padding-left: 11px;
+  }
+
+  .mind-map-toolbar-actions button span,
+  .mind-map-readonly,
+  .mind-map-error {
+    display: none;
+  }
+
+  .mind-map-toolbar-actions button {
+    width: 30px;
+    padding: 0;
+  }
+
+  .mind-map-bottom-bar {
+    bottom: 66px;
+  }
+
+  .mind-map-bottom-bar > button {
+    width: 38px;
+    padding: 0;
+  }
+
+  .mind-map-bottom-bar > button span {
+    display: none;
+  }
+}
+
 .content-header {
   height: 64px;
   flex: 0 0 64px;
@@ -1627,6 +2936,10 @@ body.is-electron.is-macos .rail-drag-space {
 
 .task-group {
   margin-top: 0;
+}
+
+.task-group ~ .task-group {
+  margin-top: 12px;
 }
 
 .task-group-header {
@@ -2066,6 +3379,169 @@ body.is-electron.is-macos .rail-drag-space {
   box-shadow: -8px 0 30px rgb(35 42 64 / 4%);
 }
 
+.task-detail-dialog-overlay {
+  position: fixed;
+  z-index: 1190;
+  inset: 0;
+  background: rgb(255 255 255 / 8%);
+}
+
+.task-detail-dialog {
+  position: fixed;
+  z-index: 1200;
+  top: 50%;
+  left: 50%;
+  width: min(400px, calc(100vw - 24px));
+  height: min(300px, calc(100vh - 24px));
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  outline: 0;
+  background: #fff;
+  box-shadow: 0 18px 54px rgb(0 0 0 / 18%);
+  transform: translate(-50%, -50%);
+  animation: task-detail-dialog-in 150ms ease-out;
+}
+
+.task-detail-dialog > .task-detail {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+}
+
+@keyframes task-detail-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px)) scale(0.985);
+  }
+}
+
+.task-detail-dialog .detail-toolbar {
+  height: 48px;
+  flex-basis: 48px;
+  gap: 2px;
+  padding: 0 12px 0 16px;
+}
+
+.task-detail-dialog .detail-toolbar > button:not(.detail-complete-trigger),
+.task-detail-dialog .task-assignee-trigger,
+.task-detail-dialog .priority-trigger {
+  width: 31px;
+  height: 31px;
+}
+
+.task-detail-dialog .detail-toolbar > button:not(.detail-complete-trigger) svg,
+.task-detail-dialog .task-assignee-trigger > svg,
+.task-detail-dialog .priority-trigger svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.7;
+}
+
+.task-detail-dialog .detail-due-trigger {
+  max-width: 235px;
+  height: 34px;
+  grid-template-columns: 18px minmax(0, auto) auto;
+  gap: 6px;
+  padding: 0 6px;
+  color: #4772fa;
+  font-size: 14px;
+}
+
+.task-detail-dialog .detail-due-trigger svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.7;
+}
+
+.task-detail-dialog .detail-due-trigger > em {
+  font-size: 11px;
+}
+
+.detail-complete-trigger:focus-visible,
+.task-label-trigger:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 48%);
+  outline-offset: 2px;
+}
+
+.detail-toolbar-divider {
+  width: 1px;
+  height: 24px;
+  margin: 0 2px;
+  background: rgb(25 25 25 / 18%);
+}
+
+.task-detail-dialog .detail-body {
+  padding: 16px;
+}
+
+.task-detail-dialog .detail-title {
+  min-height: 38px;
+  color: #191919;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+}
+
+.task-detail-dialog .rich-editor-content.detail-description {
+  min-height: 86px;
+  color: #191919;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.task-detail-dialog .switch-mode {
+  width: 28px;
+  height: 28px;
+}
+
+.task-detail-dialog .switch-mode svg {
+  width: 18px;
+  height: 18px;
+}
+
+.task-detail-dialog .detail-footer {
+  min-height: 45px;
+  padding: 5px 12px 5px 16px;
+}
+
+.task-detail-dialog .detail-footer > button {
+  width: 31px;
+  height: 31px;
+}
+
+.task-detail-dialog .detail-footer > button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.task-detail-dialog .task-label-trigger {
+  min-height: 31px;
+  padding-inline: 0;
+}
+
+.task-detail-dialog .task-detail-label,
+.task-detail-dialog .task-label-inbox {
+  height: 26px;
+  padding: 0 5px;
+  color: #191919;
+  background: transparent;
+  font-size: 14px;
+}
+
+.task-detail-dialog .task-detail-label i {
+  width: 6px;
+  height: 6px;
+}
+
+.task-detail-dialog .task-label-inbox svg {
+  width: 18px;
+  height: 18px;
+}
+
 .detail-toolbar {
   height: 48px;
   flex: 0 0 48px;
@@ -2101,6 +3577,28 @@ body.is-electron.is-macos .rail-drag-space {
 .priority-trigger svg {
   width: 17px;
   height: 17px;
+}
+
+.detail-toolbar > button.detail-complete-trigger,
+.task-detail-dialog .detail-toolbar > button.detail-complete-trigger {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #4772fa;
+  border-radius: 5px;
+  color: #4772fa;
+  background: transparent;
+}
+
+.detail-toolbar > button.detail-complete-trigger:hover,
+.task-detail-dialog .detail-toolbar > button.detail-complete-trigger:hover {
+  background: transparent;
+}
+
+.detail-toolbar > button.detail-complete-trigger svg,
+.task-detail-dialog .detail-toolbar > button.detail-complete-trigger svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.4;
 }
 
 .detail-toolbar > div:not(.detail-toolbar-spacer) {
@@ -3427,6 +4925,178 @@ body.is-electron.is-macos .rail-drag-space {
   overflow: hidden;
 }
 
+.task-label-control {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.task-label-trigger {
+  max-width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 8px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.task-label-trigger:hover,
+.task-label-trigger.active {
+  background: rgb(25 25 25 / 5%);
+}
+
+.task-label-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.task-detail-label,
+.task-label-inbox {
+  height: 26px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: rgb(25 25 25 / 72%);
+  background: rgb(25 25 25 / 5%);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.task-detail-label i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.task-label-inbox {
+  color: #191919;
+  background: transparent;
+  font-size: 14px;
+}
+
+.task-label-inbox svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.task-label-menu {
+  position: absolute;
+  z-index: 1700;
+  left: 0;
+  bottom: 42px;
+  width: 220px;
+  max-height: min(300px, calc(100vh - 120px));
+  overflow-y: auto;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  color: #191919;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+}
+
+.task-label-menu > button {
+  width: 100%;
+  height: 34px;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  border: 0;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.task-label-menu > button:hover,
+.task-label-menu > button:focus-visible {
+  outline: 0;
+  background: rgb(25 25 25 / 5%);
+}
+
+.task-label-menu > button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.task-label-menu > button > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.task-label-menu > button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-label-menu > button > svg {
+  width: 16px;
+  height: 16px;
+  color: #4772fa;
+}
+
+.task-label-menu-empty,
+.task-label-menu-error {
+  margin: 7px 12px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.task-label-menu-empty {
+  color: rgb(25 25 25 / 45%);
+}
+
+.task-label-menu-error {
+  color: var(--danger);
+}
+
+@media (max-width: 700px) {
+  .task-detail-dialog {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+    border-radius: 20px;
+  }
+
+  .task-detail-dialog .detail-toolbar {
+    height: 72px;
+    flex-basis: 72px;
+    padding: 0 16px;
+  }
+
+  .task-detail-dialog .detail-due-trigger {
+    max-width: calc(100vw - 230px);
+    font-size: 15px;
+  }
+
+  .task-detail-dialog .detail-body {
+    padding: 24px 20px 16px;
+  }
+
+  .task-detail-dialog .detail-title {
+    font-size: 24px;
+  }
+
+  .task-detail-dialog .detail-footer {
+    padding-inline: 18px;
+  }
+}
+
 .detail-labels span {
   height: 26px;
   display: flex;
@@ -3863,6 +5533,10 @@ body.is-electron.is-macos .rail-drag-space {
   box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
 }
 
+.create-label-dialog {
+  height: 340px;
+}
+
 .merge-label-dialog {
   width: min(560px, calc(100vw - 40px));
   overflow: hidden;
@@ -4003,6 +5677,10 @@ body.is-electron.is-macos .rail-drag-space {
   pointer-events: none;
 }
 
+.edit-label-name input::placeholder {
+  color: rgb(25 25 25 / 35%);
+}
+
 .edit-label-name input:focus {
   border-color: #4772fa;
   background: transparent;
@@ -4073,6 +5751,29 @@ body.is-electron.is-macos .rail-drag-space {
     0 0 0 4px var(--label-color);
 }
 
+.label-color-option.none-color span {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgb(25 25 25 / 15%);
+  background: #fff;
+}
+
+.label-color-option.none-color span::after {
+  content: "";
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 140%;
+  height: 1.5px;
+  background: #ff6161;
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.label-color-option.none-color.selected span {
+  box-shadow:
+    0 0 0 2px white,
+    0 0 0 4px rgb(25 25 25 / 25%);
+}
+
 .label-color-option.custom-color span {
   background:
     radial-gradient(circle at 45% 52%, #ddec8a 0 8%, #aee0ad 26%, transparent 57%),
@@ -4081,6 +5782,64 @@ body.is-electron.is-macos .rail-drag-space {
 
 .label-color-option.custom-color.selected {
   border-color: color-mix(in srgb, var(--label-color) 65%, white);
+}
+
+.edit-label-parent-field {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: center;
+  gap: 0;
+  margin: 21px 20px 0;
+  color: #191919;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.edit-label-parent-field > span:first-child {
+  line-height: 36px;
+}
+
+.edit-label-parent-select {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.edit-label-parent-select select {
+  width: 100%;
+  height: 36px;
+  appearance: none;
+  padding: 0 32px 0 12px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  outline: none;
+  color: #191919;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: normal;
+  cursor: pointer;
+}
+
+.edit-label-parent-select select:focus {
+  border-color: #4772fa;
+}
+
+.edit-label-parent-select select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.edit-label-parent-select svg {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  color: rgb(25 25 25 / 45%);
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .edit-label-error {
@@ -4128,6 +5887,10 @@ body.is-electron.is-macos .rail-drag-space {
 @media (max-width: 420px), (max-height: 300px) {
   .edit-label-dialog {
     height: min(285px, calc(100vh - 16px));
+  }
+
+  .create-label-dialog {
+    height: min(340px, calc(100vh - 16px));
   }
 }
 
@@ -4187,8 +5950,30 @@ body.is-electron.is-macos .rail-drag-space {
   display: flex;
   flex-direction: column;
   flex: 1;
+  gap: 4px;
   overflow-y: auto;
   padding: 0 8px 16px;
+}
+
+.settings-tab-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-tab-group-separated {
+  margin-top: 14px;
+}
+
+.settings-tab-group-title {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: rgb(25 25 25 / 30%);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
 }
 
 .settings-tab {
@@ -4222,10 +6007,6 @@ body.is-electron.is-macos .rail-drag-space {
 .settings-tab:focus-visible:not(.active) {
   outline: 2px solid rgb(71 114 250 / 45%);
   outline-offset: -2px;
-}
-
-.settings-tab.separated {
-  margin-top: 18px;
 }
 
 .settings-tab svg {
@@ -4941,6 +6722,218 @@ body.is-electron.is-macos .rail-drag-space {
   line-height: 18px;
 }
 
+.team-mgmt-settings-panel,
+.sso-settings-panel {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.team-mgmt-settings-panel h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.team-mgmt-settings-lead,
+.team-mgmt-settings-readonly-note {
+  margin: 0;
+  color: rgb(25 25 25 / 55%);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.team-mgmt-settings-form {
+  display: grid;
+  gap: 14px;
+  max-width: 420px;
+}
+
+.team-mgmt-settings-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.team-mgmt-settings-form label > span {
+  color: rgb(25 25 25 / 55%);
+  font-size: 12px;
+}
+
+.team-mgmt-settings-form input {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgb(25 25 25 / 12%);
+  border-radius: 8px;
+  background: white;
+  color: #191919;
+  font-size: 14px;
+}
+
+.team-mgmt-settings-form input:focus-visible {
+  outline: 2px solid #4772fa;
+  outline-offset: 1px;
+}
+
+.team-mgmt-settings-form small {
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.team-mgmt-settings-readonly {
+  display: grid;
+  gap: 6px;
+}
+
+.team-mgmt-settings-readonly > span {
+  color: rgb(25 25 25 / 55%);
+  font-size: 12px;
+}
+
+.team-mgmt-settings-readonly code {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgb(25 25 25 / 4%);
+  color: #191919;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.team-mgmt-settings-form .button.primary {
+  justify-self: start;
+  min-width: 100px;
+}
+
+.sso-settings-panel h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.sso-settings-lead,
+.sso-settings-readonly-note {
+  margin: 0;
+  color: rgb(25 25 25 / 55%);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sso-settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sso-settings-header p {
+  margin: 6px 0 0;
+  color: rgb(25 25 25 / 55%);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sso-settings-form {
+  display: grid;
+  gap: 14px;
+  max-width: 420px;
+}
+
+.sso-settings-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.sso-settings-form label > span,
+.sso-settings-readonly > span {
+  color: rgb(25 25 25 / 55%);
+  font-size: 12px;
+}
+
+.sso-settings-form input {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgb(25 25 25 / 12%);
+  border-radius: 8px;
+  background: white;
+  color: #191919;
+  font-size: 14px;
+}
+
+.sso-settings-form input:focus-visible {
+  outline: 2px solid #4772fa;
+  outline-offset: 1px;
+}
+
+.sso-settings-readonly {
+  display: grid;
+  gap: 6px;
+}
+
+.sso-settings-readonly code {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgb(25 25 25 / 4%);
+  color: #191919;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.sso-settings-readonly small {
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sso-settings-detail {
+  display: grid;
+  gap: 0;
+  border: 1px solid rgb(25 25 25 / 8%);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.sso-settings-detail-row {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-top: 1px solid rgb(25 25 25 / 5%);
+}
+
+.sso-settings-detail-row:first-child {
+  border-top: 0;
+}
+
+.sso-settings-detail-row > span {
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.sso-settings-detail-row > strong {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  word-break: break-all;
+}
+
+.sso-settings-link {
+  color: #4772fa;
+}
+
+.sso-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.button.danger {
+  color: #d14343;
+}
+
 .settings-dialog-close {
   position: absolute;
   right: 14px;
@@ -4984,6 +6977,14 @@ body.is-electron.is-macos .rail-drag-space {
 
   .settings-tabs {
     padding-inline: 8px;
+  }
+
+  .settings-tab-group-separated {
+    margin-top: 10px;
+  }
+
+  .settings-tab-group-title {
+    display: none;
   }
 
   .settings-tab {
