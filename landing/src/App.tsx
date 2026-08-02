@@ -34,6 +34,7 @@ import {
 const LOGIN_URL = `${APP_ORIGIN}/`;
 const DOCS_URL = "https://docs.anttodo.com/";
 const SESSION_APP_ORIGIN = import.meta.env.DEV ? "http://127.0.0.1:5173" : APP_ORIGIN;
+const SUPPORT_EMAIL = "support@anttodo.com";
 
 const collectFeatures = [
   { icon: Cloud, title: "Web 与 Mac", copy: "随时捕捉临时冒出的 Action，在浏览器与桌面端保持同步。", status: "已上线" },
@@ -56,6 +57,13 @@ const reminderFeatures = [
 ];
 
 function App() {
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  if (path === "/privacy") return <PrivacyPage />;
+  if (path === "/support") return <SupportPage />;
+  return <MarketingApp />;
+}
+
+function MarketingApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [downloads, setDownloads] = useState<MacDownloads>(() => fallbackMacDownloads());
   const sessionFrameRef = useRef<HTMLIFrameElement>(null);
@@ -161,7 +169,6 @@ function App() {
               <a className="button button-primary" href={LOGIN_URL}>立即使用 Web 版 <ChevronRight /></a>
               <a className="button button-secondary" href="#download"><Apple /> 下载 Mac 版</a>
             </div>
-            <p className="hero-note"><Check /> Web 与 Mac 已上线，核心任务随时同步</p>
             <ProductWindow src="/product/tasks.jpg" alt="蚂蚁清单任务列表：主导航栏、侧边栏、主工作区与任务详情布局" priority />
           </div>
         </section>
@@ -280,10 +287,133 @@ function App() {
       <footer className="site-footer">
         <div className="container footer-grid">
           <div className="footer-brand"><a className="brand" href="#top"><img src="/anttodo-icon.png" alt="" /><span>蚂蚁清单</span></a><p>让团队里没有跟丢的待办事项</p></div>
-          <nav aria-label="页脚导航"><a href="#features">功能</a><a href="#membership">高级会员</a><a href="#download">下载</a><a href={DOCS_URL}>产品文档</a><a href={LOGIN_URL}>登录</a></nav>
+          <nav aria-label="页脚导航"><a href="#features">功能</a><a href="#membership">高级会员</a><a href="#download">下载</a><a href={DOCS_URL}>产品文档</a><a href="/support">技术支持</a><a href="/privacy">隐私政策</a><a href={LOGIN_URL}>登录</a></nav>
           <p className="copyright">© {new Date().getFullYear()} AntTodo. All rights reserved.</p>
         </div>
       </footer>
+    </div>
+  );
+}
+
+function LegalHeader() {
+  return (
+    <header className="legal-header">
+      <div className="container legal-nav">
+        <a className="brand" href="/" aria-label="返回蚂蚁清单首页">
+          <img src="/anttodo-icon.png" alt="" />
+          <span>蚂蚁清单</span>
+        </a>
+        <nav aria-label="帮助导航">
+          <a href="/support">技术支持</a>
+          <a href="/privacy">隐私政策</a>
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+function LegalFooter() {
+  return (
+    <footer className="legal-footer">
+      <div className="container">
+        <span>© {new Date().getFullYear()} AntTodo</span>
+        <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
+      </div>
+    </footer>
+  );
+}
+
+function PrivacyPage() {
+  return (
+    <div className="legal-shell">
+      <LegalHeader />
+      <main className="container legal-page">
+        <span className="legal-kicker">ANTTODO PRIVACY</span>
+        <h1>隐私政策</h1>
+        <p className="legal-lead">蚂蚁清单尊重并保护你的隐私。本政策说明我们在提供 Web、macOS 与 iOS 服务时如何处理信息。</p>
+        <p className="legal-updated">更新日期：2026 年 8 月 2 日</p>
+
+        <section>
+          <h2>我们处理的信息</h2>
+          <p>为完成登录与账号管理，我们会处理你主动提供的手机号、电子邮箱或企业联合登录标识。为提供任务协作功能，我们会存储你创建的任务、标签、评论、附件、提醒、团队空间信息以及你选择上传的头像。</p>
+          <p>服务运行期间可能产生必要的设备、网络、操作日志与崩溃诊断信息，用于保障安全、排查故障和改进稳定性。</p>
+        </section>
+
+        <section>
+          <h2>使用目的</h2>
+          <ul>
+            <li>提供身份验证、任务管理、同步、提醒和团队协作功能；</li>
+            <li>保护账号与服务安全，防止滥用并定位故障；</li>
+            <li>响应你的支持请求并改进产品体验。</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>共享与第三方服务</h2>
+          <p>我们不会出售你的个人信息，也不会将数据用于跨 App 或网站跟踪。为运行服务，我们会使用必要的云基础设施、身份认证、短信或企业登录服务商；这些服务商仅在提供相应能力所需的范围内处理信息。</p>
+        </section>
+
+        <section>
+          <h2>存储、安全与保留</h2>
+          <p>数据传输使用行业通用的加密连接。我们采用访问控制和最小权限原则保护数据。信息仅在提供服务、履行法定义务或解决争议所需的期限内保留。</p>
+        </section>
+
+        <section>
+          <h2>你的选择与权利</h2>
+          <p>你可以在应用内查看和修改个人资料，也可以在“账户设置”中申请删除账号。账号删除会按照产品提示处理关联数据；法律要求保留的信息除外。你也可以联系我们提出访问、更正或删除请求。</p>
+        </section>
+
+        <section>
+          <h2>儿童隐私</h2>
+          <p>蚂蚁清单不是面向 13 岁以下儿童设计的服务，我们不会有意收集 13 岁以下儿童的个人信息。</p>
+        </section>
+
+        <section>
+          <h2>联系我们</h2>
+          <p>如对本政策或个人信息处理有疑问，请发送邮件至 <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>。</p>
+        </section>
+      </main>
+      <LegalFooter />
+    </div>
+  );
+}
+
+function SupportPage() {
+  return (
+    <div className="legal-shell">
+      <LegalHeader />
+      <main className="container legal-page support-page">
+        <span className="legal-kicker">ANTTODO SUPPORT</span>
+        <h1>技术支持</h1>
+        <p className="legal-lead">我们会帮助你解决登录、同步、提醒、团队协作和账户管理相关问题。</p>
+
+        <section className="support-grid">
+          <article>
+            <h2>快速体验</h2>
+            <p>首次打开应用时，可点击“先查看产品演示”直接体验任务、标签、日历和思维导图，无需注册账号。</p>
+          </article>
+          <article>
+            <h2>登录与同步</h2>
+            <p>请确认网络连接可用，并使用手机号验证码或团队提供的企业登录入口。离线状态下应用仅提供只读访问。</p>
+          </article>
+          <article>
+            <h2>提醒没有出现</h2>
+            <p>请在 iPhone“设置”中允许蚂蚁清单发送通知，并确认任务提醒时间和系统时区设置正确。</p>
+          </article>
+          <article>
+            <h2>账户与数据</h2>
+            <p>头像、邮箱与账号删除入口位于应用内账户设置。删除账号前请确认不再需要相关团队空间与任务数据。</p>
+          </article>
+        </section>
+
+        <section className="support-contact">
+          <h2>联系支持</h2>
+          <p>请描述设备型号、系统版本、问题发生步骤和错误提示，我们会尽快回复。</p>
+          <a className="button button-primary" href={`mailto:${SUPPORT_EMAIL}`}>发送邮件至 {SUPPORT_EMAIL}</a>
+          <a className="text-link" href={DOCS_URL}>查看产品文档 <ChevronRight /></a>
+        </section>
+      </main>
+      <LegalFooter />
     </div>
   );
 }
@@ -298,7 +428,7 @@ function FeatureCard({ icon: Icon, title, copy, status }: { icon: typeof Cloud; 
 }
 
 function ProductWindow({ src, alt, priority = false }: { src: string; alt: string; priority?: boolean }) {
-  return <figure className="product-window"><div className="window-bar" aria-hidden="true"><span /><span /><span /><em>蚂蚁清单</em></div><img src={src} alt={alt} loading={priority ? "eager" : "lazy"} fetchPriority={priority ? "high" : "auto"} /></figure>;
+  return <figure className="product-window"><img src={src} alt={alt} loading={priority ? "eager" : "lazy"} fetchPriority={priority ? "high" : "auto"} /></figure>;
 }
 
 function PlanCard({ icon, title, copy, features, cta, href, featured = false }: { icon: ReactNode; title: string; copy: string; features: string[]; cta: string; href: string; featured?: boolean }) {
