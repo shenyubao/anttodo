@@ -20,8 +20,11 @@ export default {
     const { error } = await ctx.supabaseAdmin.auth.admin.deleteUser(userId);
     if (error) {
       const ownsStorageObjects = /storage|object/i.test(error.message);
+      const successorAtLimit = error.message.includes("workspace_successor_quota_exceeded");
       return jsonError(
-        ownsStorageObjects
+        successorAtLimit
+          ? "团队成员均已达到团队所有权配额，请先删除相关团队或联系成员释放名额。"
+          : ownsStorageObjects
           ? "请先删除由此账户上传的附件，再重试删除账户。"
           : "账户暂时无法删除，请稍后重试。",
         409,

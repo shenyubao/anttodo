@@ -137,6 +137,8 @@ test("notes hide and restore preserved task state across every entry surface", a
   await detail.getByRole("button", { name: "关闭详情" }).click();
 
   const noteTitle = "优化任务详情抽屉交互";
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitemcheckbox", { name: "显示已完成" }).click();
   row = page.locator(".task-row").filter({ hasText: noteTitle });
   await row.locator(".task-checkbox").click();
   row = page.locator(".task-row").filter({ hasText: noteTitle });
@@ -201,6 +203,25 @@ test("calendar opens the reusable task dialog and manages labels", async ({ page
   await dialog.getByRole("button", { name: "管理任务标签" }).click();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+});
+
+test("mind map fills the mobile workspace", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "打开导航" }).click();
+  await page
+    .getByRole("complementary", { name: "移动端导航" })
+    .getByRole("button", { name: "思维导图" })
+    .click();
+
+  const shellBounds = await page.locator(".app-shell").boundingBox();
+  const workspaceBounds = await page.locator(".workspace-main").boundingBox();
+  const canvasBounds = await page.locator(".mind-map-canvas").boundingBox();
+  expect(shellBounds?.width).toBe(390);
+  expect(workspaceBounds?.width).toBe(390);
+  expect(canvasBounds?.width).toBe(390);
+  await expect(page.getByRole("heading", { name: "思维导图" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开导航" })).toBeVisible();
 });
 
 test("mind map is full width and supports creation, details, and date dragging", async ({ page }) => {

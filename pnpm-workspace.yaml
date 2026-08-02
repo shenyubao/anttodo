@@ -1,11 +1,13 @@
 packages:
   - "."
   - "docs"
+  - "landing"
 allowBuilds:
   '@swc/core': true
   core-js: true
   electron-winstaller: false
   esbuild: true
+  sharp: true
   workerd: true
 minimumReleaseAgeExclude:
   - '@playwright/test@1.62.0'

@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { Capacitor } from "@capacitor/core";
 import { queryPersister } from "./lib/persistence";
 import App from "./App";
 import "./index.css";
@@ -11,6 +12,10 @@ if (window.anttodoDesktop) {
   if (window.anttodoDesktop.platform === "darwin") {
     document.body.classList.add("is-macos");
   }
+}
+
+if (Capacitor.isNativePlatform()) {
+  document.body.classList.add("is-capacitor", `is-${Capacitor.getPlatform()}`);
 }
 
 const queryClient = new QueryClient({

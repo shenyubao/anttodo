@@ -254,6 +254,7 @@ export type TaskListPreference = {
   sort: TaskListSort;
   direction: SortDirection;
   show_labels: boolean;
+  show_completed: boolean;
   updated_at?: string;
 };
 

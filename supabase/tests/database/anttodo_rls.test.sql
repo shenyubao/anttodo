@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(134);
+select plan(137);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -861,6 +861,17 @@ select is(
   false,
   'show_labels defaults to false for a newly saved preference'
 );
+select is(
+  (
+    select show_completed
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  false,
+  'show_completed defaults to false for a newly saved preference'
+);
 select lives_ok(
   $$
     update public.task_list_preferences
@@ -881,6 +892,27 @@ select is(
   ),
   true,
   'show_labels persists after update'
+);
+select lives_ok(
+  $$
+    update public.task_list_preferences
+    set show_completed = true
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  'a user can update show_completed on their preference'
+);
+select is(
+  (
+    select show_completed
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  true,
+  'show_completed persists after update'
 );
 select lives_ok(
   $$

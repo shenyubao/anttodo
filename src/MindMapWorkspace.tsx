@@ -30,6 +30,7 @@ import {
   Circle,
   Crosshair,
   LoaderCircle,
+  Menu,
   Maximize2,
   NotebookPen,
   Plus,
@@ -449,6 +450,7 @@ type MindMapCanvasProps = {
   bundle: WorkspaceBundle;
   dateTimePreferences: DateTimePreferences;
   online: boolean;
+  onMenu: () => void;
   onSelectTask: (taskId: string) => void;
   onCreateTask: (input: CreateTaskInput) => Promise<unknown>;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
@@ -462,6 +464,7 @@ function MindMapCanvas({
   bundle,
   dateTimePreferences,
   online,
+  onMenu,
   onSelectTask,
   onCreateTask,
   onUpdateTask,
@@ -809,6 +812,7 @@ function MindMapCanvas({
     <div className="mind-map-workspace">
       <header className="mind-map-toolbar">
         <div className="mind-map-toolbar-title">
+          <button className="mobile-menu" aria-label="打开导航" onClick={onMenu}><Menu /></button>
           <h1>思维导图</h1>
           {!online && <span className="mind-map-readonly">离线只读</span>}
           {error && <span className="mind-map-error" role="status">{error}</span>}

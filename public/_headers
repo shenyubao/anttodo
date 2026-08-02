@@ -1,0 +1,9 @@
+/auth/session-bridge
+  Content-Security-Policy: frame-ancestors https://anttodo.com https://www.anttodo.com http://127.0.0.1:4174 http://localhost:4174
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff
+
+/auth/session-bridge/
+  Content-Security-Policy: frame-ancestors https://anttodo.com https://www.anttodo.com http://127.0.0.1:4174 http://localhost:4174
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff

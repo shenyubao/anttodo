@@ -13,6 +13,7 @@ Functions 和定时同步。
 - IndexedDB 查询缓存；断网时可读、不可写。
 - Mock 连接器、增量同步状态、出站队列、运行日志和冲突处理。
 - 安全的 Electron 壳与未签名 macOS DMG/ZIP 构建。
+- 基于 Capacitor 的 iOS 原生壳，与 Web/macOS 共享 React 应用。
 
 ## 技术栈
 
@@ -49,6 +50,16 @@ pnpm dev
 ```bash
 pnpm dev:mac
 ```
+
+同步 Web 构建产物与 iOS 工程，然后用 Xcode 打开：
+
+```bash
+pnpm ios:sync
+pnpm ios:open
+```
+
+iOS Bundle Identifier 默认为 `com.anttodo.ios`。首次真机构建时，在 Xcode 的
+Signing & Capabilities 中选择 Apple Developer Team，并让 Xcode 自动管理签名。
 
 ## 环境变量
 
@@ -153,6 +164,7 @@ pnpm build
 pnpm test:e2e
 pnpm package:mac
 pnpm package:mac:all
+pnpm ios:sync
 ```
 
 `pnpm package:mac` 会在 `release/` 生成未签名的 DMG 和 ZIP。Apple Developer

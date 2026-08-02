@@ -502,7 +502,7 @@ export function CalendarWorkspace({
           <button
             className="calendar-sidebar-toggle"
             onClick={onToggleSidebar}
-            aria-label={sidebarVisible ? "隐藏日历列表" : "显示日历列表"}
+            aria-label={sidebarVisible ? "打开导航或隐藏日历列表" : "打开导航或显示日历列表"}
             aria-pressed={sidebarVisible}
           >
             <PanelLeft />

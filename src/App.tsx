@@ -152,6 +152,11 @@ import {
   resolveAppLocation,
 } from "./lib/appHost";
 import {
+  isSessionBridgePath,
+  resolveSessionBridgeParentOrigin,
+  sessionStatusMessage,
+} from "./lib/sessionBridge";
+import {
   normalizeWorkspaceSlug,
   suggestWorkspaceSlug,
   workspaceSlugValidationMessage,
@@ -283,6 +288,7 @@ export default function App() {
   const pathname = window.location.pathname;
   const inviteId = workspaceInviteIdFromPath(pathname);
   const dingtalkCallback = isDingtalkCallbackPath(pathname);
+  const sessionBridge = isSessionBridgePath(pathname);
   const appHost = resolveAppLocation(pathname);
   const teamSlug = appHost.kind === "team" ? appHost.slug : null;
   const loginSurface = teamSlug ? "team-sso" : "phone";
@@ -383,6 +389,9 @@ export default function App() {
   if (demoMode) return <DemoApplication />;
   if (!hasSupabaseConfig || !supabase) return <MissingConfig />;
   if (!authReady) return <Splash label="正在恢复工作区…" />;
+  if (sessionBridge) {
+    return <SessionBridgeScreen authenticated={Boolean(session)} />;
+  }
   if (desktopAuthStatus?.state === "processing") {
     return <Splash label="正在完成钉钉登录…" />;
   }
@@ -419,6 +428,27 @@ export default function App() {
       phone={session.user.phone ?? ""}
       preferredTeamSlug={teamSlug}
     />
+  );
+}
+
+function SessionBridgeScreen({ authenticated }: { authenticated: boolean }) {
+  const [shared, setShared] = useState(false);
+  useEffect(() => {
+    const parentOrigin = resolveSessionBridgeParentOrigin(
+      window.location.search,
+      document.referrer,
+      import.meta.env.DEV,
+    );
+    if (!parentOrigin || window.parent === window) return;
+    window.parent.postMessage(sessionStatusMessage(authenticated), parentOrigin);
+    setShared(true);
+  }, [authenticated]);
+
+  return (
+    <main className="session-bridge-screen">
+      <BrandMark />
+      <p>{shared ? "登录状态已确认" : "此页面用于官网登录状态确认"}</p>
+    </main>
   );
 }
 
@@ -1035,7 +1065,7 @@ function AuthScreen({
     }
     const loginUrl = buildWorkspaceTeamLoginUrl(
       normalizedSlug,
-      window.location.protocol === "file:"
+      !["http:", "https:"].includes(window.location.protocol)
         ? import.meta.env.VITE_PUBLIC_APP_URL
         : undefined,
       window.location.origin,
@@ -2122,6 +2152,26 @@ function DemoApplication() {
     return Promise.resolve();
   }
 
+  if (workspaces.length === 0) {
+    return (
+      <CreateWorkspaceScreen
+        identity="沈宇宝"
+        busy={false}
+        onCreate={(name) => {
+          const created = {
+            id: crypto.randomUUID(),
+            name,
+            slug: suggestWorkspaceSlug(name),
+            created_by: "demo-user",
+            role: "owner" as const,
+          };
+          setWorkspaces([created]);
+          setWorkspaceId(created.id);
+        }}
+      />
+    );
+  }
+
   return (
     <WorkspaceApplication
       workspaces={workspaces}
@@ -2196,7 +2246,7 @@ function DemoApplication() {
         if (selected.name !== confirmationName) throw new Error("团队名称不匹配。");
         const remaining = workspaces.filter((item) => item.id !== targetWorkspaceId);
         setWorkspaces(remaining);
-        if (workspaceId === targetWorkspaceId && remaining[0]) setWorkspaceId(remaining[0].id);
+        if (workspaceId === targetWorkspaceId) setWorkspaceId(remaining[0]?.id ?? "");
       }}
       onCreateTask={async (input) => {
         const createdAt = new Date().toISOString();
@@ -3019,6 +3069,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [mobileSidebar, setMobileSidebar] = useState(false);
+  const [mobileAppSidebar, setMobileAppSidebar] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false);
@@ -3054,6 +3105,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }, [props.workspaceId]);
 
   function toggleCalendarSidebar() {
+    if (window.matchMedia("(max-width: 640px)").matches) {
+      setMobileAppSidebar(true);
+      return;
+    }
     if (window.matchMedia("(max-width: 900px)").matches) {
       setCalendarSidebarCollapsed(false);
       setMobileSidebar(true);
@@ -3075,6 +3130,22 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 
   const calendarSection = appSection === "calendar";
   const dialogSection = appSection === "calendar" || appSection === "mindmap";
+
+  function changeSection(section: AppSection) {
+    setAppSection(section);
+    setSelectedTaskId(null);
+    setMobileSidebar(false);
+    setMobileAppSidebar(false);
+    setMindMapCreateLabel(null);
+  }
+
+  function openMobileNavigation() {
+    if (window.matchMedia("(max-width: 640px)").matches) {
+      setMobileAppSidebar(true);
+      return;
+    }
+    setMobileSidebar(true);
+  }
 
   return (
     <main
@@ -3102,16 +3173,68 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onWorkspaceChange={props.onWorkspaceChange}
         onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
         onSearch={() => setSearchDialogOpen(true)}
-        onSectionChange={(section) => {
-          setAppSection(section);
-          setSelectedTaskId(null);
-          setMobileSidebar(false);
-          setMindMapCreateLabel(null);
-        }}
+        onSectionChange={changeSection}
         onSettings={() => setSettingsDialogOpen(true)}
         onMarkNotificationRead={props.onMarkNotificationRead}
         onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
         onOpenNotificationTask={(taskId) => {
+          setAppSection("tasks");
+          setSmartView("all");
+          setSelectedLabelId(null);
+          setSelectedTaskId(taskId);
+        }}
+        onSignOut={props.onSignOut}
+      />
+      <MobileAppSidebar
+        open={mobileAppSidebar}
+        activeSection={appSection}
+        online={props.online}
+        userName={props.currentUserName}
+        workspaces={props.workspaces}
+        workspaceId={props.workspaceId}
+        bundle={props.bundle}
+        smartView={smartView}
+        selectedLabelId={selectedLabelId}
+        visibleCalendarIds={visibleCalendarIds}
+        notifications={props.notifications}
+        notificationsLoading={props.notificationsLoading}
+        onClose={() => setMobileAppSidebar(false)}
+        onWorkspaceChange={props.onWorkspaceChange}
+        onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
+        onSectionChange={changeSection}
+        onSmartView={(view) => {
+          setSmartView(view);
+          setSelectedLabelId(null);
+          setSelectedTaskId(null);
+          setMobileAppSidebar(false);
+        }}
+        onLabel={(labelId) => {
+          setSelectedLabelId(labelId);
+          setSelectedTaskId(null);
+          setMobileAppSidebar(false);
+        }}
+        onToggleCalendar={(id) => setVisibleCalendarIds((current) => {
+          const next = new Set(current);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        })}
+        onShowAllCalendars={() => setVisibleCalendarIds((current) => {
+          const ids = ["inbox", ...props.bundle.labels.map((label) => label.id)];
+          return ids.every((id) => current.has(id)) ? new Set() : new Set(ids);
+        })}
+        onSearch={() => {
+          setMobileAppSidebar(false);
+          setSearchDialogOpen(true);
+        }}
+        onSettings={() => {
+          setMobileAppSidebar(false);
+          setSettingsDialogOpen(true);
+        }}
+        onMarkNotificationRead={props.onMarkNotificationRead}
+        onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
+        onOpenNotificationTask={(taskId) => {
+          setMobileAppSidebar(false);
           setAppSection("tasks");
           setSmartView("all");
           setSelectedLabelId(null);
@@ -3181,7 +3304,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           online={props.online}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
-          onMenu={() => setMobileSidebar(true)}
+          onMenu={openMobileNavigation}
           onSearch={() => setSearchDialogOpen(true)}
           onSelectTask={setSelectedTaskId}
           onCreateTask={props.onCreateTask}
@@ -3208,6 +3331,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           bundle={props.bundle}
           dateTimePreferences={props.dateTimePreferences}
           online={props.online}
+          onMenu={openMobileNavigation}
           onSelectTask={setSelectedTaskId}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
@@ -3560,6 +3684,295 @@ function NavigationRail({
         onOpenTask={onOpenNotificationTask}
       />
     </nav>
+  );
+}
+
+function MobileAppSidebar({
+  open,
+  activeSection,
+  online,
+  userName,
+  workspaces,
+  workspaceId,
+  bundle,
+  smartView,
+  selectedLabelId,
+  visibleCalendarIds,
+  notifications,
+  notificationsLoading,
+  onClose,
+  onWorkspaceChange,
+  onCreateWorkspace,
+  onSectionChange,
+  onSmartView,
+  onLabel,
+  onToggleCalendar,
+  onShowAllCalendars,
+  onSearch,
+  onSettings,
+  onMarkNotificationRead,
+  onMarkAllNotificationsRead,
+  onOpenNotificationTask,
+  onSignOut,
+}: {
+  open: boolean;
+  activeSection: AppSection;
+  online: boolean;
+  userName: string;
+  workspaces: Workspace[];
+  workspaceId: string;
+  bundle: WorkspaceBundle;
+  smartView: SmartView;
+  selectedLabelId: string | null;
+  visibleCalendarIds: Set<string>;
+  notifications: AppNotification[];
+  notificationsLoading: boolean;
+  onClose: () => void;
+  onWorkspaceChange: (id: string) => void;
+  onCreateWorkspace: () => void;
+  onSectionChange: (section: AppSection) => void;
+  onSmartView: (view: SmartView) => void;
+  onLabel: (id: string) => void;
+  onToggleCalendar: (id: string) => void;
+  onShowAllCalendars: () => void;
+  onSearch: () => void;
+  onSettings: () => void;
+  onMarkNotificationRead: (notificationId: string) => Promise<void>;
+  onMarkAllNotificationsRead: () => Promise<void>;
+  onOpenNotificationTask: (taskId: string) => void;
+  onSignOut: () => unknown;
+}) {
+  const [workspaceListOpen, setWorkspaceListOpen] = useState(false);
+  const [collapsedLabels, setCollapsedLabels] = useState<Record<string, boolean>>({});
+  const currentWorkspace = workspaces.find((item) => item.id === workspaceId);
+  const openTasks = bundle.tasks.filter(isActiveTask);
+  const calendarIds = ["inbox", ...bundle.labels.map((label) => label.id)];
+  const allCalendarsVisible = calendarIds.every((id) => visibleCalendarIds.has(id));
+
+  useEffect(() => {
+    if (!open) {
+      setWorkspaceListOpen(false);
+      return;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, open]);
+
+  return (
+    <>
+      <button
+        className={clsx("mobile-app-sidebar-scrim", open && "open")}
+        aria-label="关闭导航"
+        tabIndex={open ? 0 : -1}
+        onClick={onClose}
+      />
+      <aside
+        className={clsx("mobile-app-sidebar", open && "open")}
+        aria-label="移动端导航"
+        aria-hidden={!open}
+      >
+        <header className="mobile-app-sidebar-header">
+          <button
+            className="mobile-workspace-trigger"
+            type="button"
+            aria-expanded={workspaceListOpen}
+            onClick={() => setWorkspaceListOpen((value) => !value)}
+          >
+            <span className="mobile-account-avatar">{initials(userName)}</span>
+            <span className="mobile-workspace-copy">
+              <strong>{currentWorkspace?.name ?? "团队空间"}</strong>
+              <small>{userName}</small>
+            </span>
+            <ChevronsUpDown />
+          </button>
+          <div className="mobile-app-sidebar-actions">
+            <button type="button" className="mobile-sidebar-icon-button" aria-label="搜索" onClick={onSearch}>
+              <Search />
+            </button>
+            <NotificationBell
+              notifications={notifications}
+              loading={notificationsLoading}
+              online={online}
+              onRead={onMarkNotificationRead}
+              onReadAll={onMarkAllNotificationsRead}
+              onOpenTask={onOpenNotificationTask}
+            />
+          </div>
+        </header>
+
+        {workspaceListOpen && (
+          <div className="mobile-workspace-list" aria-label="切换团队空间">
+            {workspaces.map((workspace) => (
+              <button
+                type="button"
+                key={workspace.id}
+                className={clsx(workspace.id === workspaceId && "active")}
+                aria-pressed={workspace.id === workspaceId}
+                onClick={() => {
+                  onWorkspaceChange(workspace.id);
+                  onClose();
+                }}
+              >
+                <span className="workspace-initial">{initials(workspace.name).slice(0, 1)}</span>
+                <span>{workspace.name}</span>
+                {workspace.id === workspaceId && <Check />}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="mobile-workspace-create"
+              disabled={!online}
+              onClick={() => {
+                onClose();
+                onCreateWorkspace();
+              }}
+            >
+              <Plus />
+              <span>创建团队空间</span>
+            </button>
+          </div>
+        )}
+
+        <nav className="mobile-section-nav" aria-label="应用视图">
+          <button
+            type="button"
+            className={clsx(activeSection === "tasks" && "active")}
+            aria-pressed={activeSection === "tasks"}
+            onClick={() => onSectionChange("tasks")}
+          >
+            <CheckCircle2 /><span>待办</span>
+          </button>
+          <button
+            type="button"
+            className={clsx(activeSection === "calendar" && "active")}
+            aria-pressed={activeSection === "calendar"}
+            onClick={() => onSectionChange("calendar")}
+          >
+            <CalendarDays /><span>日历</span>
+          </button>
+          <button
+            type="button"
+            className={clsx(activeSection === "mindmap" && "active")}
+            aria-pressed={activeSection === "mindmap"}
+            onClick={() => onSectionChange("mindmap")}
+          >
+            <Workflow /><span>思维导图</span>
+          </button>
+        </nav>
+
+        <div className="mobile-sidebar-context">
+          {activeSection === "tasks" && (
+            <>
+              <div className="mobile-sidebar-section-title">智能视图</div>
+              <div className="mobile-task-views">
+                <SidebarItem
+                  active={!selectedLabelId && smartView === "all"}
+                  icon={<LayoutList />}
+                  label="所有"
+                  count={openTasks.length}
+                  onClick={() => onSmartView("all")}
+                />
+                <SidebarItem
+                  active={!selectedLabelId && smartView === "today"}
+                  icon={<CalendarDays />}
+                  label="今天"
+                  count={openTasks.filter((task) => task.due_at && isSameDay(new Date(task.due_at), new Date())).length}
+                  onClick={() => onSmartView("today")}
+                />
+                <SidebarItem
+                  active={!selectedLabelId && smartView === "assigned"}
+                  icon={<UserRound />}
+                  label="指派给我"
+                  onClick={() => onSmartView("assigned")}
+                />
+                <SidebarItem
+                  active={!selectedLabelId && smartView === "inbox"}
+                  icon={<Inbox />}
+                  label="收集箱"
+                  count={openTasks.filter((task) => task.label_ids.length === 0).length}
+                  onClick={() => onSmartView("inbox")}
+                />
+              </div>
+              <div className="mobile-sidebar-section-title">标签</div>
+              <div className="label-tree mobile-label-tree">
+                <LabelTree
+                  labels={bundle.labels}
+                  canManageLabel={() => false}
+                  selectedId={selectedLabelId}
+                  countForLabel={(labelId) => openTasks.filter((task) => task.label_ids.includes(labelId)).length}
+                  onSelect={onLabel}
+                  onContext={() => undefined}
+                  collapsed={collapsedLabels}
+                  onToggle={(labelId) => setCollapsedLabels((current) => ({
+                    ...current,
+                    [labelId]: !current[labelId],
+                  }))}
+                  draggingId={null}
+                  dropTargetId={null}
+                  onDragStart={() => undefined}
+                  onDragEnd={() => undefined}
+                  onDragOver={() => undefined}
+                  onDrop={() => undefined}
+                />
+              </div>
+            </>
+          )}
+
+          {activeSection === "calendar" && (
+            <>
+              <div className="mobile-sidebar-section-title">日历列表</div>
+              <div className="mobile-calendar-list">
+                <button type="button" onClick={onShowAllCalendars} aria-pressed={allCalendarsVisible}>
+                  <CalendarDays /><span>所有</span>{allCalendarsVisible && <Check />}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(visibleCalendarIds.has("inbox") && "active")}
+                  onClick={() => onToggleCalendar("inbox")}
+                  aria-pressed={visibleCalendarIds.has("inbox")}
+                >
+                  <Inbox /><span>收集箱</span>{visibleCalendarIds.has("inbox") && <Check />}
+                </button>
+                {bundle.labels.map((label) => (
+                  <button
+                    type="button"
+                    key={label.id}
+                    className={clsx(visibleCalendarIds.has(label.id) && "active")}
+                    onClick={() => onToggleCalendar(label.id)}
+                    aria-pressed={visibleCalendarIds.has(label.id)}
+                  >
+                    <Tag style={{ color: label.color || undefined }} />
+                    <span>{label.name}</span>
+                    {visibleCalendarIds.has(label.id) && <Check />}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {activeSection === "mindmap" && (
+            <p className="mobile-mindmap-hint">拖动画布查看任务关系，或使用底部操作栏新增任务和标签。</p>
+          )}
+        </div>
+
+        <footer className="mobile-app-sidebar-footer">
+          <button type="button" onClick={onSettings}><Settings /><span>设置</span></button>
+          <button
+            type="button"
+            className="danger"
+            onClick={() => {
+              onClose();
+              void onSignOut();
+            }}
+          >
+            <LogOut /><span>退出登录</span>
+          </button>
+        </footer>
+      </aside>
+    </>
   );
 }
 
@@ -5110,7 +5523,10 @@ function TaskWorkspace({
   );
 
   async function savePreference(
-    patch: Partial<Pick<TaskListPreference, "grouping" | "sort" | "direction" | "show_labels">>,
+    patch: Partial<Pick<
+      TaskListPreference,
+      "grouping" | "sort" | "direction" | "show_labels" | "show_completed"
+    >>,
   ) {
     if (!online) return;
     await onSaveTaskListPreference({
@@ -5121,6 +5537,7 @@ function TaskWorkspace({
       sort: preference.sort,
       direction: preference.direction,
       show_labels: preference.show_labels,
+      show_completed: preference.show_completed,
       ...patch,
     });
   }
@@ -5177,7 +5594,7 @@ function TaskWorkspace({
     <>
       <header className="content-header">
         <div className="header-title">
-          <button className="mobile-menu" onClick={onMenu}><Menu /></button>
+          <button className="mobile-menu" aria-label="打开导航" onClick={onMenu}><Menu /></button>
           <h1>{title}</h1>
           <span>{tasks.filter(isActiveTask).length}</span>
         </div>
@@ -5198,10 +5615,13 @@ function TaskWorkspace({
             hasSelectedLabel={Boolean(selectedLabel)}
             canManageSelectedLabel={canManageSelectedLabel}
             showLabels={preference.show_labels}
+            showCompleted={preference.show_completed}
             online={online}
             onOpenPermissions={() => setLabelSettingsOpen(true)}
             onToggleShowLabels={() =>
               void savePreference({ show_labels: !preference.show_labels })}
+            onToggleShowCompleted={() =>
+              void savePreference({ show_completed: !preference.show_completed })}
           />
         </div>
       </header>
@@ -5231,7 +5651,8 @@ function TaskWorkspace({
             当前显示离线缓存，恢复网络后会自动刷新
           </div>
         )}
-        {groups.length === 0 && completedTasks.length === 0 ? (
+        {groups.length === 0
+          && !(preference.show_completed && completedTasks.length > 0) ? (
           <div className="empty-state">
             <CheckCircle2 />
             <h2>这里很清爽</h2>
@@ -5271,7 +5692,7 @@ function TaskWorkspace({
             ))}
           </DndContext>
         )}
-        {completedTasks.length > 0 && (
+        {preference.show_completed && completedTasks.length > 0 && (
           <TaskGroup
             id="completed"
             title="已完成"
@@ -5312,16 +5733,20 @@ function LabelActionsMenu({
   hasSelectedLabel,
   canManageSelectedLabel,
   showLabels,
+  showCompleted,
   online,
   onOpenPermissions,
   onToggleShowLabels,
+  onToggleShowCompleted,
 }: {
   hasSelectedLabel: boolean;
   canManageSelectedLabel: boolean;
   showLabels: boolean;
+  showCompleted: boolean;
   online: boolean;
   onOpenPermissions: () => void;
   onToggleShowLabels: () => void;
+  onToggleShowCompleted: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -5370,6 +5795,18 @@ function LabelActionsMenu({
             }}
           >
             <span>{showLabels ? "隐藏标签" : "显示标签"}</span>
+          </button>
+          <button
+            role="menuitemcheckbox"
+            aria-checked={showCompleted}
+            disabled={!online}
+            onClick={() => {
+              onToggleShowCompleted();
+              setOpen(false);
+            }}
+          >
+            <span>显示已完成</span>
+            {showCompleted && <Check />}
           </button>
         </div>
       )}
@@ -5865,6 +6302,10 @@ function TaskRow({
         >
           {sortedSubtasks.map((subtask) => {
             const pending = pendingSubtaskIds.has(subtask.id);
+            const subtaskAssignee = members.find(
+              (member) => member.user_id === subtask.assignee_id,
+            );
+            const subtaskDueStatus = getDueStatus(subtask.due_at, now);
             return (
               <article
                 key={subtask.id}
@@ -5887,10 +6328,26 @@ function TaskRow({
                 </button>
                 <button
                   type="button"
-                  className="task-list-subtask-title"
+                  className="task-list-subtask-content"
                   onClick={onSelect}
                 >
-                  {subtask.title}
+                  <span className="task-main-line">
+                    <span className="task-list-subtask-title">{subtask.title}</span>
+                    <span className="task-meta">
+                      {subtaskDueStatus && (
+                        <time className={subtaskDueStatus.overdue ? "overdue" : ""}>
+                          {subtaskDueStatus.label}
+                        </time>
+                      )}
+                      {subtaskAssignee && (
+                        <MemberAvatar
+                          member={subtaskAssignee}
+                          className="task-assignee-avatar"
+                          title={`负责人：${subtaskAssignee.profile?.display_name ?? "团队成员"}`}
+                        />
+                      )}
+                    </span>
+                  </span>
                 </button>
               </article>
             );

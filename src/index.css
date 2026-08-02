@@ -39,6 +39,33 @@ body {
   font-size: 14px;
 }
 
+body.is-capacitor {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body.is-capacitor #root {
+  padding:
+    var(--safe-area-top)
+    var(--safe-area-right)
+    var(--safe-area-bottom)
+    var(--safe-area-left);
+}
+
+body.is-capacitor :where(input, textarea, [contenteditable="true"]) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+body.is-ios :where(input, textarea, select) {
+  font-size: 16px;
+}
+
 button,
 input,
 textarea,
@@ -155,6 +182,28 @@ a {
   grid-template-columns: minmax(420px, 0.85fr) minmax(520px, 1.15fr);
   overflow-y: auto;
   background: white;
+}
+
+.session-bridge-screen {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  color: rgb(25 25 25 / 55%);
+  background: #f6f7f9;
+  font-size: 13px;
+  text-align: center;
+}
+
+.session-bridge-screen .brand-mark {
+  width: 48px;
+  height: 48px;
+}
+
+.session-bridge-screen p {
+  margin: 0;
 }
 
 .auth-card {
@@ -3821,7 +3870,8 @@ body.is-electron.is-macos .rail-button.active svg {
   margin-left: 0;
 }
 
-.task-title + .task-meta {
+.task-title + .task-meta,
+.task-list-subtask-title + .task-meta {
   margin-left: auto;
 }
 
@@ -3892,21 +3942,30 @@ body.is-electron.is-macos .rail-button.active svg {
   stroke-width: 2.4;
 }
 
-.task-list-subtask-title {
+.task-list-subtask-content {
   min-width: 0;
   min-height: 40px;
   flex: 1;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
   padding: 0;
   border: 0;
   color: #191919;
   background: transparent;
   cursor: pointer;
   font: inherit;
+  text-align: left;
+}
+
+.task-list-subtask-title {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
   font-size: 14px;
   font-weight: 400;
   line-height: 21px;
-  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3916,7 +3975,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .task-list-subtask-checkbox:focus-visible,
-.task-list-subtask-title:focus-visible {
+.task-list-subtask-content:focus-visible {
   outline: 2px solid rgb(71 114 250 / 55%);
   outline-offset: -3px;
 }
@@ -10041,6 +10100,317 @@ body.is-electron.is-macos .rail-button.active svg {
   text-align: center;
 }
 
+.mobile-app-sidebar,
+.mobile-app-sidebar-scrim {
+  display: none;
+}
+
+.mobile-app-sidebar {
+  color: #191919;
+  background: #fff;
+}
+
+.mobile-app-sidebar-header {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+}
+
+.mobile-workspace-trigger {
+  min-width: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mobile-workspace-trigger:hover,
+.mobile-workspace-trigger:focus-visible {
+  outline: 0;
+  background: rgb(25 25 25 / 5%);
+}
+
+.mobile-account-avatar {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  border-radius: 10px;
+  color: #fff;
+  background: #4772fa;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mobile-workspace-copy {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.mobile-workspace-copy strong,
+.mobile-workspace-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-workspace-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.mobile-workspace-copy small {
+  color: rgb(25 25 25 / 45%);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.mobile-workspace-trigger > svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  margin-right: 5px;
+  color: rgb(25 25 25 / 45%);
+}
+
+.mobile-app-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mobile-sidebar-icon-button,
+.mobile-app-sidebar-actions .rail-button {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  color: rgb(25 25 25 / 68%);
+  background: transparent;
+  cursor: pointer;
+}
+
+.mobile-sidebar-icon-button:hover,
+.mobile-sidebar-icon-button:focus-visible,
+.mobile-app-sidebar-actions .rail-button:hover,
+.mobile-app-sidebar-actions .rail-button:focus-visible {
+  outline: 0;
+  color: #191919;
+  background: rgb(25 25 25 / 5%);
+}
+
+.mobile-sidebar-icon-button svg,
+.mobile-app-sidebar-actions .rail-button svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.mobile-workspace-list {
+  max-height: min(240px, 32vh);
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  background: #fafafa;
+}
+
+.mobile-workspace-list button {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 9px;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.mobile-workspace-list button:hover,
+.mobile-workspace-list button:focus-visible,
+.mobile-workspace-list button.active {
+  outline: 0;
+  background: rgb(25 25 25 / 6%);
+}
+
+.mobile-workspace-list button > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-workspace-list button > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.mobile-workspace-list .mobile-workspace-create {
+  margin-top: 5px;
+  border-top: 1px solid rgb(25 25 25 / 5%);
+  border-radius: 0 0 9px 9px;
+  color: #4772fa;
+}
+
+.mobile-workspace-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.mobile-section-nav {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+}
+
+.mobile-section-nav button,
+.mobile-calendar-list button,
+.mobile-app-sidebar-footer button {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  color: rgb(25 25 25 / 78%);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.mobile-section-nav button:hover,
+.mobile-section-nav button:focus-visible,
+.mobile-section-nav button.active,
+.mobile-calendar-list button:hover,
+.mobile-calendar-list button:focus-visible,
+.mobile-calendar-list button.active,
+.mobile-app-sidebar-footer button:hover,
+.mobile-app-sidebar-footer button:focus-visible {
+  outline: 0;
+  color: #191919;
+  background: rgb(25 25 25 / 6%);
+}
+
+.mobile-section-nav button.active {
+  color: #4772fa;
+}
+
+.mobile-section-nav svg,
+.mobile-calendar-list svg,
+.mobile-app-sidebar-footer svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
+  stroke-width: 1.8;
+}
+
+.mobile-sidebar-context {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0 12px;
+  overscroll-behavior: contain;
+}
+
+.mobile-sidebar-section-title {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  color: rgb(25 25 25 / 30%);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mobile-task-views {
+  display: grid;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.mobile-task-views .sidebar-item {
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  padding-inline: 12px;
+}
+
+.mobile-label-tree {
+  padding: 0 8px;
+}
+
+.mobile-label-tree .label-row {
+  min-height: 40px;
+}
+
+.mobile-calendar-list {
+  display: grid;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.mobile-calendar-list button > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-calendar-list button > svg:last-child {
+  width: 15px;
+  height: 15px;
+  color: #4772fa;
+}
+
+.mobile-mindmap-hint {
+  margin: 12px 20px;
+  color: rgb(25 25 25 / 45%);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.mobile-app-sidebar-footer {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 2px;
+  padding: 8px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom));
+  border-top: 1px solid rgb(25 25 25 / 5%);
+  background: #fff;
+}
+
+.mobile-app-sidebar-footer button.danger {
+  color: #e5484d;
+}
+
 .sidebar-scrim {
   display: none;
 }
@@ -10163,6 +10533,63 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 @media (max-width: 640px) {
+  .mobile-app-sidebar-scrim {
+    position: fixed;
+    z-index: 60;
+    inset: 0;
+    display: block;
+    padding: 0;
+    border: 0;
+    visibility: hidden;
+    opacity: 0;
+    background: rgb(25 29 40 / 28%);
+    transition: opacity 180ms ease, visibility 180ms ease;
+    pointer-events: none;
+  }
+
+  .mobile-app-sidebar-scrim.open {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-app-sidebar {
+    position: fixed;
+    z-index: 61;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 88vw);
+    display: flex;
+    flex-direction: column;
+    visibility: hidden;
+    transform: translateX(-104%);
+    box-shadow: 12px 0 35px rgb(25 31 48 / 18%);
+    transition: transform 180ms ease, visibility 180ms ease;
+    pointer-events: none;
+  }
+
+  body.is-capacitor .mobile-app-sidebar,
+  body.is-capacitor .task-detail {
+    top: var(--safe-area-top);
+    right: var(--safe-area-right);
+    bottom: var(--safe-area-bottom);
+    left: var(--safe-area-left);
+  }
+
+  .mobile-app-sidebar.open {
+    visibility: visible;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  .mobile-app-sidebar .notification-panel {
+    position: fixed;
+    inset: 70px 10px auto 10px;
+    width: auto;
+    max-height: calc(100vh - 82px);
+  }
+
   .navigation-rail {
     display: none;
   }
@@ -10181,6 +10608,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
   .app-shell,
   .app-shell.task-section,
+  .app-shell.task-section.mind-map-section,
   .app-shell.detail-open {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -23,6 +23,7 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   sort: "custom",
   direction: "asc",
   show_labels: false,
+  show_completed: false,
 } as const;
 
 export function effectiveTaskPriority(task: Task) {
@@ -75,6 +76,7 @@ export function resolveTaskListPreference(
     ...DEFAULT_TASK_LIST_PREFERENCE,
     ...found,
     show_labels: found.show_labels ?? false,
+    show_completed: found.show_completed ?? false,
   };
   return {
     ...resolved,

@@ -47,7 +47,22 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       show_labels: false,
+      show_completed: false,
     }], "all").grouping).toBe("none");
+  });
+
+  it("defaults show_completed to false and preserves saved value", () => {
+    expect(resolveTaskListPreference([], "all").show_completed).toBe(false);
+    expect(resolveTaskListPreference([{
+      user_id: "u",
+      workspace_id: "w",
+      list_key: "all",
+      grouping: "none",
+      sort: "custom",
+      direction: "asc",
+      show_labels: false,
+      show_completed: true,
+    }], "all").show_completed).toBe(true);
   });
 
   it("keeps null values last in either due-date direction", () => {
