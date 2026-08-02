@@ -6,6 +6,7 @@ import {
   type DingtalkPublicConfig,
 } from "../_shared/dingtalk-sso.ts";
 import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
+import { buildEventNotificationCard } from "../_shared/dingtalk-notification-cards.ts";
 
 const SCENARIO_BY_TYPE: Record<string, string> = {
   comment_mention: "task_new_comment",
@@ -153,6 +154,14 @@ export default {
     const appUrl = (Deno.env.get("PUBLIC_APP_URL") ?? "https://app.anttodo.com").replace(/\/$/, "");
     const openUrl =
       `${appUrl}/?workspace=${notification.workspace_id}&task=${notification.task_id}`;
+    const dingtalkCard = buildEventNotificationCard({
+      notificationType: notification.notification_type,
+      actorName: actor?.display_name ?? "团队成员",
+      taskTitle: task?.title ?? "",
+      taskKind: task?.kind,
+      payload: (notification.payload ?? {}) as Record<string, unknown>,
+      openUrl,
+    });
 
     let systemSent = 0;
     if (systemOn) {
@@ -222,8 +231,7 @@ export default {
               },
               unionId: identity.subject,
               cachedUserId: identity.dingtalk_userid,
-              title: copy.title,
-              text: copy.body,
+              ...dingtalkCard,
             });
             if ("userId" in result && result.userId && result.userId !== identity.dingtalk_userid) {
               await ctx.supabaseAdmin

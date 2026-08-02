@@ -3,6 +3,7 @@ import { withSupabase } from "@supabase/server";
 import webpush from "web-push";
 import { parsePublicConfig } from "../_shared/dingtalk-sso.ts";
 import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
+import { buildDueReminderCard } from "../_shared/dingtalk-notification-cards.ts";
 
 const encoder = new TextEncoder();
 
@@ -85,7 +86,7 @@ export default {
 
     const { data: deliveries, error: deliveryError } = await ctx.supabaseAdmin
       .from("reminder_delivery_states")
-      .select("*, task_reminders!inner(id, task_id, tasks!inner(id, title, description, status, deleted_at, workspace_id))")
+      .select("*, task_reminders!inner(id, task_id, tasks!inner(id, title, description, status, deleted_at, workspace_id, due_at, due_start_at, due_is_all_day, due_timezone))")
       .is("acknowledged_at", null)
       .is("cancelled_at", null)
       .lte("next_delivery_at", now.toISOString())
@@ -146,6 +147,16 @@ export default {
       }
 
       if (dingtalkOn) {
+        const openUrl = `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`;
+        const card = buildDueReminderCard({
+          taskTitle: task.title,
+          description: task.description,
+          dueAt: task.due_at,
+          dueStartAt: task.due_start_at,
+          allDay: task.due_is_all_day,
+          timeZone: task.due_timezone,
+          openUrl,
+        });
         const { data: provider } = await ctx.supabaseAdmin
           .from("workspace_sso_providers")
           .select("id, public_config, credential_hint, enabled")
@@ -174,8 +185,7 @@ export default {
                 },
                 unionId: identity.subject,
                 cachedUserId: identity.dingtalk_userid,
-                title: task.title || "AntTodo 提醒",
-                text: task.description?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
+                ...card,
               });
               if ("userId" in result && result.userId && result.userId !== identity.dingtalk_userid) {
                 await ctx.supabaseAdmin

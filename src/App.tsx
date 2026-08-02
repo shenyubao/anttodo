@@ -165,6 +165,11 @@ import {
   resolveAppLocation,
 } from "./lib/appHost";
 import {
+  appRoutePath,
+  parseAppRoute,
+  type AppRoute,
+} from "./lib/appRoute";
+import {
   isSessionBridgePath,
   resolveSessionBridgeParentOrigin,
   sessionStatusMessage,
@@ -269,6 +274,11 @@ const DETAIL_MIN_WIDTH = 320;
 const DETAIL_MAX_WIDTH = 440;
 
 const ROOT_LABEL_DROP_TARGET = "__root__";
+
+function currentApplicationRoute() {
+  const hashRoute = parseAppRoute(window.location.hash.replace(/^#/, ""));
+  return hashRoute ?? parseAppRoute(window.location.pathname);
+}
 
 function useOnline() {
   const [online, setOnline] = useState(navigator.onLine);
@@ -1362,6 +1372,7 @@ function RemoteApplication({
     () => createSupabaseAttachmentService(client),
     [client],
   );
+  const requestedWorkspaceId = currentApplicationRoute()?.workspaceId ?? null;
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [commentsRevision, setCommentsRevision] = useState(0);
@@ -1394,8 +1405,11 @@ function RemoteApplication({
           (workspace) => workspace.slug === preferredTeamSlug,
         )
       : null;
+    const routeWorkspace = workspacesQuery.data.find(
+      (workspace) => workspace.id === requestedWorkspaceId,
+    );
     const preferred =
-      slugWorkspace ?? pendingWorkspace ?? workspacesQuery.data[0];
+      slugWorkspace ?? routeWorkspace ?? pendingWorkspace ?? workspacesQuery.data[0];
 
     if (!workspaceId) {
       setWorkspaceId(preferred.id);
@@ -1409,7 +1423,7 @@ function RemoteApplication({
     if (pendingWorkspaceId) {
       window.sessionStorage.removeItem("anttodo:pending-workspace");
     }
-  }, [workspaceId, workspacesQuery.data, preferredTeamSlug]);
+  }, [workspaceId, workspacesQuery.data, preferredTeamSlug, requestedWorkspaceId]);
 
   const bundleQuery = useQuery({
     queryKey: ["workspace-bundle", workspaceId],
@@ -2243,7 +2257,11 @@ function DemoApplication() {
   const online = useOnline();
   const attachmentService = useMemo(() => createDemoAttachmentService(), []);
   const [workspaces, setWorkspaces] = useState(demoWorkspaces);
-  const [workspaceId, setWorkspaceId] = useState(demoWorkspaces[0].id);
+  const requestedWorkspaceId = currentApplicationRoute()?.workspaceId;
+  const [workspaceId, setWorkspaceId] = useState(
+    () => demoWorkspaces.find((workspace) => workspace.id === requestedWorkspaceId)?.id
+      ?? demoWorkspaces[0].id,
+  );
   const [bundle, setBundle] = useState(createDemoBundle);
   const [notice, setNotice] = useState("你正在浏览演示空间，所有改动只保存在当前页面");
   const [inviteLink, setInviteLink] = useState<WorkspaceInviteLink | null>(null);
@@ -3325,10 +3343,24 @@ function PanelResizeHandle({
 
 function WorkspaceApplication(props: WorkspaceAppProps) {
   const workspace = props.workspaces.find((item) => item.id === props.workspaceId)!;
-  const [smartView, setSmartView] = useState<SmartView>("all");
-  const [appSection, setAppSection] = useState<AppSection>("tasks");
-  const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const initialRoute = currentApplicationRoute();
+  const workspaceInitialRoute = initialRoute?.workspaceId === props.workspaceId
+    ? initialRoute
+    : null;
+  const [smartView, setSmartView] = useState<SmartView>(
+    workspaceInitialRoute?.kind === "view" ? workspaceInitialRoute.view : "all",
+  );
+  const [appSection, setAppSection] = useState<AppSection>(
+    workspaceInitialRoute?.kind === "calendar" || workspaceInitialRoute?.kind === "mindmap"
+      ? workspaceInitialRoute.kind
+      : "tasks",
+  );
+  const [selectedLabelId, setSelectedLabelId] = useState<string | null>(
+    workspaceInitialRoute?.kind === "tag" ? workspaceInitialRoute.tagId : null,
+  );
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
+    workspaceInitialRoute?.kind === "task" ? workspaceInitialRoute.taskId : null,
+  );
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [mobileAppSidebar, setMobileAppSidebar] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
@@ -3362,9 +3394,149 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     ? currentTaskPermissionLevel(props.bundle, selectedTask, props.currentUserId) >= 2
     : false;
 
+  function writeRoute(route: AppRoute, replace = false) {
+    const path = appRoutePath(route);
+    const target = window.location.protocol === "file:"
+      ? `${window.location.pathname}${window.location.search}#${path}`
+      : `/${window.location.search}#${path}`;
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` === target) return;
+    window.history[replace ? "replaceState" : "pushState"](null, "", target);
+  }
+
+  function sectionRoute(): AppRoute {
+    if (appSection === "calendar") return { workspaceId: props.workspaceId, kind: "calendar" };
+    if (appSection === "mindmap") return { workspaceId: props.workspaceId, kind: "mindmap" };
+    if (selectedLabelId) {
+      return { workspaceId: props.workspaceId, kind: "tag", tagId: selectedLabelId };
+    }
+    return { workspaceId: props.workspaceId, kind: "view", view: smartView };
+  }
+
+  function selectTask(taskId: string) {
+    const task = props.bundle.tasks.find((item) => item.id === taskId);
+    if (!task) return;
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: "task",
+      taskId,
+      itemKind: task.kind === "note" ? "note" : "task",
+    });
+    setSelectedTaskId(taskId);
+  }
+
+  function closeTask() {
+    writeRoute(sectionRoute(), true);
+    setSelectedTaskId(null);
+  }
+
+  function selectSmartView(view: SmartView) {
+    writeRoute({ workspaceId: props.workspaceId, kind: "view", view });
+    setSmartView(view);
+    setSelectedLabelId(null);
+    setSelectedTaskId(null);
+  }
+
+  function selectLabel(labelId: string) {
+    writeRoute({ workspaceId: props.workspaceId, kind: "tag", tagId: labelId });
+    setSelectedLabelId(labelId);
+    setSelectedTaskId(null);
+  }
+
+  function changeWorkspace(workspaceId: string) {
+    writeRoute({ workspaceId, kind: "view", view: "all" });
+    props.onWorkspaceChange(workspaceId);
+  }
+
   useEffect(() => {
-    if (selectedTaskId && !selectedTask) setSelectedTaskId(null);
+    if (selectedTaskId && !selectedTask) {
+      setSelectedTaskId(null);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+    }
   }, [selectedTask, selectedTaskId]);
+
+  useEffect(() => {
+    const route = currentApplicationRoute();
+    if (!selectedTask || route?.kind !== "task" || route.taskId !== selectedTask.id) return;
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: "task",
+      taskId: selectedTask.id,
+      itemKind: selectedTask.kind === "note" ? "note" : "task",
+    }, true);
+  }, [props.workspaceId, selectedTask?.id, selectedTask?.kind]);
+
+  useEffect(() => {
+    if (selectedLabelId && !props.bundle.labels.some((label) => label.id === selectedLabelId)) {
+      setSelectedLabelId(null);
+      setSmartView("all");
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+    }
+  }, [props.bundle.labels, props.workspaceId, selectedLabelId]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const route = currentApplicationRoute();
+      if (!route) return;
+      if (route.workspaceId !== props.workspaceId) {
+        if (props.workspaces.some((workspace) => workspace.id === route.workspaceId)) {
+          props.onWorkspaceChange(route.workspaceId);
+        } else {
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+          setAppSection("tasks");
+          setSmartView("all");
+          setSelectedLabelId(null);
+          setSelectedTaskId(null);
+        }
+        return;
+      }
+      setMindMapCreateLabel(null);
+      setMobileSidebar(false);
+      setMobileAppSidebar(false);
+      if (route.kind === "calendar" || route.kind === "mindmap") {
+        setAppSection(route.kind);
+        setSelectedTaskId(null);
+        return;
+      }
+      setAppSection("tasks");
+      setSmartView(route.kind === "view" ? route.view : "all");
+      setSelectedLabelId(route.kind === "tag" ? route.tagId : null);
+      setSelectedTaskId(route.kind === "task" ? route.taskId : null);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [props.onWorkspaceChange, props.workspaceId, props.workspaces]);
+
+  useEffect(() => {
+    const route = currentApplicationRoute();
+    if (route?.workspaceId !== props.workspaceId) {
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+      setAppSection("tasks");
+      setSmartView("all");
+      setSelectedLabelId(null);
+      setSelectedTaskId(null);
+      return;
+    }
+    if (route.kind === "calendar" || route.kind === "mindmap") {
+      setAppSection(route.kind);
+      setSelectedTaskId(null);
+      return;
+    }
+    setAppSection("tasks");
+    setSmartView(route.kind === "view" ? route.view : "all");
+    setSelectedLabelId(route.kind === "tag" ? route.tagId : null);
+    if (route.kind === "task") {
+      const task = props.bundle.tasks.find((item) => item.id === route.taskId);
+      if (task) {
+        setSelectedTaskId(task.id);
+        writeRoute({
+          ...route,
+          itemKind: task.kind === "note" ? "note" : "task",
+        }, true);
+      }
+    } else {
+      setSelectedTaskId(null);
+    }
+  }, [props.workspaceId]);
 
   useEffect(() => {
     setSearchDialogOpen(false);
@@ -3398,7 +3570,16 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const dialogSection = appSection === "calendar" || appSection === "mindmap";
 
   function changeSection(section: AppSection) {
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: section === "tasks" ? "view" : section,
+      ...(section === "tasks" ? { view: "all" as const } : {}),
+    } as AppRoute);
     setAppSection(section);
+    if (section === "tasks") {
+      setSmartView("all");
+      setSelectedLabelId(null);
+    }
     setSelectedTaskId(null);
     setMobileSidebar(false);
     setMobileAppSidebar(false);
@@ -3440,7 +3621,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         workspaceId={props.workspaceId}
         notifications={props.notifications}
         notificationsLoading={props.notificationsLoading}
-        onWorkspaceChange={props.onWorkspaceChange}
+        onWorkspaceChange={changeWorkspace}
         onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
         onSearch={() => setSearchDialogOpen(true)}
         onSectionChange={changeSection}
@@ -3451,7 +3632,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setAppSection("tasks");
           setSmartView("all");
           setSelectedLabelId(null);
-          setSelectedTaskId(taskId);
+          selectTask(taskId);
         }}
         onSignOut={props.onSignOut}
       />
@@ -3473,18 +3654,15 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         notifications={props.notifications}
         notificationsLoading={props.notificationsLoading}
         onClose={() => setMobileAppSidebar(false)}
-        onWorkspaceChange={props.onWorkspaceChange}
+        onWorkspaceChange={changeWorkspace}
         onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
         onSectionChange={changeSection}
         onSmartView={(view) => {
-          setSmartView(view);
-          setSelectedLabelId(null);
-          setSelectedTaskId(null);
+          selectSmartView(view);
           setMobileAppSidebar(false);
         }}
         onLabel={(labelId) => {
-          setSelectedLabelId(labelId);
-          setSelectedTaskId(null);
+          selectLabel(labelId);
           setMobileAppSidebar(false);
         }}
         onToggleCalendar={(id) => setVisibleCalendarIds((current) => {
@@ -3512,7 +3690,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setAppSection("tasks");
           setSmartView("all");
           setSelectedLabelId(null);
-          setSelectedTaskId(taskId);
+          selectTask(taskId);
         }}
         onSignOut={props.onSignOut}
       />
@@ -3525,13 +3703,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         selectedLabelId={selectedLabelId}
         onCloseMobile={() => setMobileSidebar(false)}
         onSmartView={(view) => {
-          setSmartView(view);
-          setSelectedLabelId(null);
-          setSelectedTaskId(null);
+          selectSmartView(view);
         }}
         onLabel={(labelId) => {
-          setSelectedLabelId(labelId);
-          setSelectedTaskId(null);
+          selectLabel(labelId);
         }}
         onCreateLabel={props.onCreateLabel}
         onSaveLabelAccess={props.onSaveLabelAccess}
@@ -3580,7 +3755,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           dateTimePreferences={props.dateTimePreferences}
           onMenu={openMobileNavigation}
           onSearch={() => setSearchDialogOpen(true)}
-          onSelectTask={setSelectedTaskId}
+          onSelectTask={selectTask}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onToggleSubtask={props.onToggleSubtask}
@@ -3596,7 +3771,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           online={props.online}
           visibleCalendarIds={visibleCalendarIds}
           dateTimePreferences={props.dateTimePreferences}
-          onSelectTask={setSelectedTaskId}
+          onSelectTask={selectTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
           onNotice={props.onNotice}
           sidebarVisible={!calendarSidebarCollapsed}
@@ -3610,7 +3785,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           dateTimePreferences={props.dateTimePreferences}
           online={props.online}
           onMenu={openMobileNavigation}
-          onSelectTask={setSelectedTaskId}
+          onSelectTask={selectTask}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onToggleTaskLabel={props.onToggleTaskLabel}
@@ -3638,7 +3813,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             attachmentService={props.attachmentService}
             now={now}
             dateTimePreferences={props.dateTimePreferences}
-            onClose={() => setSelectedTaskId(null)}
+            onClose={closeTask}
             onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
             onSaveSchedule={(patch, schedule) =>
               props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
@@ -3673,7 +3848,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           attachmentService={props.attachmentService}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
-          onClose={() => setSelectedTaskId(null)}
+          onClose={closeTask}
           onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
           onSaveSchedule={(patch, schedule) =>
             props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
@@ -3710,9 +3885,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onOpenChange={setSearchDialogOpen}
         bundle={props.bundle}
         onSelectTask={(taskId) => {
+          setAppSection("tasks");
           setSmartView("all");
           setSelectedLabelId(null);
-          setSelectedTaskId(taskId);
+          selectTask(taskId);
           setSearchDialogOpen(false);
         }}
       />

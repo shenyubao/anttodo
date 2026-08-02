@@ -77,7 +77,9 @@ export async function sendDingtalkWorkNotice(input: {
   agentId: string;
   userIds: string[];
   title: string;
-  text: string;
+  markdown: string;
+  buttonText: string;
+  openUrl: string;
 }) {
   if (input.userIds.length === 0) return { skipped: true as const };
   const url = new URL("https://oapi.dingtalk.com/topapi/message/corpconversation/asyncsend_v2");
@@ -89,9 +91,12 @@ export async function sendDingtalkWorkNotice(input: {
       agent_id: Number(input.agentId) || input.agentId,
       userid_list: input.userIds.join(","),
       msg: {
-        msgtype: "text",
-        text: {
-          content: `${input.title}\n${input.text}`.slice(0, 2000),
+        msgtype: "action_card",
+        action_card: {
+          title: Array.from(input.title).slice(0, 128).join(""),
+          markdown: Array.from(input.markdown).slice(0, 1800).join(""),
+          single_title: Array.from(input.buttonText).slice(0, 64).join(""),
+          single_url: input.openUrl,
         },
       },
     }),
@@ -117,7 +122,9 @@ export async function sendDingtalkNotification(input: {
   unionId: string;
   cachedUserId?: string | null;
   title: string;
-  text: string;
+  markdown: string;
+  buttonText: string;
+  openUrl: string;
 }) {
   if (!input.credentials.agentId?.trim()) {
     return { skipped: "missing_agent_id" as const };
@@ -138,7 +145,9 @@ export async function sendDingtalkNotification(input: {
     agentId: input.credentials.agentId,
     userIds: [userId],
     title: input.title,
-    text: input.text,
+    markdown: input.markdown,
+    buttonText: input.buttonText,
+    openUrl: input.openUrl,
   });
   return { userId };
 }
