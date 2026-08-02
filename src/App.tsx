@@ -3432,6 +3432,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         activeSection={appSection}
         online={props.online}
         userName={props.currentUserName}
+        avatarUrl={
+          props.bundle.members.find((member) => member.user_id === props.currentUserId)
+            ?.profile?.avatar_url ?? null
+        }
         workspaces={props.workspaces}
         workspaceId={props.workspaceId}
         notifications={props.notifications}
@@ -3456,6 +3460,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         activeSection={appSection}
         online={props.online}
         userName={props.currentUserName}
+        avatarUrl={
+          props.bundle.members.find((member) => member.user_id === props.currentUserId)
+            ?.profile?.avatar_url ?? null
+        }
         workspaces={props.workspaces}
         workspaceId={props.workspaceId}
         bundle={props.bundle}
@@ -3779,6 +3787,7 @@ function NavigationRail({
   activeSection,
   online,
   userName,
+  avatarUrl,
   workspaces,
   workspaceId,
   notifications,
@@ -3796,6 +3805,7 @@ function NavigationRail({
   activeSection: AppSection;
   online: boolean;
   userName: string;
+  avatarUrl: string | null;
   workspaces: Workspace[];
   workspaceId: string;
   notifications: AppNotification[];
@@ -3855,7 +3865,11 @@ function NavigationRail({
             setWorkspaceMenuOpen(false);
           }}
         >
-          {initials(userName)}
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" className="rail-avatar-image" />
+          ) : (
+            initials(userName)
+          )}
         </button>
         {profileMenuOpen && (
           <div className="profile-menu" role="menu" aria-label="账户菜单">
@@ -3975,6 +3989,7 @@ function MobileAppSidebar({
   activeSection,
   online,
   userName,
+  avatarUrl,
   workspaces,
   workspaceId,
   bundle,
@@ -4002,6 +4017,7 @@ function MobileAppSidebar({
   activeSection: AppSection;
   online: boolean;
   userName: string;
+  avatarUrl: string | null;
   workspaces: Workspace[];
   workspaceId: string;
   bundle: WorkspaceBundle;
@@ -4064,7 +4080,13 @@ function MobileAppSidebar({
             aria-expanded={workspaceListOpen}
             onClick={() => setWorkspaceListOpen((value) => !value)}
           >
-            <span className="mobile-account-avatar">{initials(userName)}</span>
+            <span className="mobile-account-avatar">
+              {avatarUrl ? (
+                <img src={avatarUrl} alt="" className="mobile-account-avatar-image" />
+              ) : (
+                initials(userName)
+              )}
+            </span>
             <span className="mobile-workspace-copy">
               <strong>{currentWorkspace?.name ?? "团队空间"}</strong>
               <small>{userName}</small>

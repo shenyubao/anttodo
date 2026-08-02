@@ -1084,6 +1084,8 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 34px;
   display: grid;
   place-items: center;
+  overflow: hidden;
+  padding: 0;
   border-radius: 10px;
   margin: 2px 0 7px;
   color: #52606f;
@@ -1096,6 +1098,13 @@ body.is-electron.is-macos .rail-button.active svg {
     border-color 120ms ease,
     box-shadow 120ms ease,
     transform 120ms ease;
+}
+
+.rail-avatar-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .rail-avatar:hover,
@@ -11087,12 +11096,20 @@ body.is-electron.is-macos .desktop-update-banner {
   height: 36px;
   display: grid;
   place-items: center;
+  overflow: hidden;
   flex: 0 0 36px;
   border-radius: 10px;
   color: #fff;
   background: #4772fa;
   font-size: 11px;
   font-weight: 700;
+}
+
+.mobile-account-avatar-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .mobile-workspace-copy {
