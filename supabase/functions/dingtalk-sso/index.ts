@@ -14,6 +14,10 @@ import {
   placeholderDingtalkEmail,
   verifySsoStateClaims,
 } from "../_shared/dingtalk-sso.ts";
+import {
+  getDingtalkAppAccessToken,
+  resolveDingtalkUserId,
+} from "../_shared/dingtalk-messaging.ts";
 
 type DingtalkSsoRequest =
   | {
@@ -367,6 +371,22 @@ export default {
         }
       }
 
+      let dingtalkUserId: string | null = null;
+      try {
+        if (dingtalkUser.unionId?.trim()) {
+          const accessToken = await getDingtalkAppAccessToken({
+            appKey: publicConfig.appKey,
+            appSecret: String(appSecret),
+          });
+          dingtalkUserId = await resolveDingtalkUserId({
+            accessToken,
+            unionId: dingtalkUser.unionId.trim(),
+          });
+        }
+      } catch (cause) {
+        console.error("dingtalk userid resolve failed", cause);
+      }
+
       const { error: identityLinkError } = await ctx.supabaseAdmin
         .from("sso_identities")
         .upsert({
@@ -374,6 +394,7 @@ export default {
           subject,
           user_id: userId,
           last_workspace_id: workspaceId,
+          ...(dingtalkUserId ? { dingtalk_userid: dingtalkUserId } : {}),
           updated_at: new Date().toISOString(),
         }, { onConflict: "provider,subject" });
       if (identityLinkError) return jsonError("无法建立钉钉账号关联", 500);

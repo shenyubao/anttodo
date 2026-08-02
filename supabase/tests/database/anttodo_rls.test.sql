@@ -1032,12 +1032,19 @@ select is(
   'a view-only task member can read comments'
 );
 select is(
-  (select count(*)::integer from public.notifications where read_at is null),
+  (select count(*)::integer from public.notifications
+    where read_at is null
+      and notification_type in ('comment_mention', 'note_mentioned')),
   1,
   'a mentioned member receives one unread notification'
 );
 select lives_ok(
-  $$ update public.notifications set read_at = now() where read_at is null $$,
+  $$
+    update public.notifications
+    set read_at = now()
+    where read_at is null
+      and notification_type in ('comment_mention', 'note_mentioned')
+  $$,
   'a notification recipient can mark their notification read'
 );
 select lives_ok(

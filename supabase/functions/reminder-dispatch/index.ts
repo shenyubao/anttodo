@@ -1,8 +1,26 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
 import webpush from "web-push";
+import { parsePublicConfig } from "../_shared/dingtalk-sso.ts";
+import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
 
 const encoder = new TextEncoder();
+
+async function dueReminderPrefEnabled(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  userId: string,
+  channel: "system" | "dingtalk",
+) {
+  const { data } = await admin
+    .from("user_notification_preferences")
+    .select("system_enabled, dingtalk_enabled")
+    .eq("user_id", userId)
+    .eq("scenario", "task_due_reminder")
+    .maybeSingle();
+  if (!data) return true;
+  return channel === "system" ? data.system_enabled !== false : data.dingtalk_enabled !== false;
+}
 
 async function sha256(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
@@ -85,33 +103,110 @@ export default {
         continue;
       }
       const token = await tokenFor(delivery.id, acknowledgementSecret);
-      const { data: subscriptions } = await ctx.supabaseAdmin
-        .from("web_push_subscriptions")
-        .select("id, endpoint, p256dh, auth")
-        .eq("user_id", delivery.recipient_id)
-        .is("disabled_at", null);
-      const payload = JSON.stringify({
-        title: task.title || "AntTodo 提醒",
-        body: task.description?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
-        tag: `task-reminder:${delivery.id}`,
-        url: `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`,
-        acknowledgeUrl: functionUrl,
-        acknowledgementToken: token,
-      });
-      for (const subscription of subscriptions ?? []) {
-        try {
-          await webpush.sendNotification({
-            endpoint: subscription.endpoint,
-            keys: { p256dh: subscription.p256dh, auth: subscription.auth },
-          }, payload);
-          sent += 1;
-        } catch (cause) {
-          const statusCode = Number((cause as { statusCode?: number }).statusCode ?? 0);
-          if (statusCode === 404 || statusCode === 410) {
-            await ctx.supabaseAdmin.from("web_push_subscriptions")
-              .update({ disabled_at: now.toISOString() }).eq("id", subscription.id);
+      const systemOn = await dueReminderPrefEnabled(
+        ctx.supabaseAdmin,
+        delivery.recipient_id,
+        "system",
+      );
+      const dingtalkOn = await dueReminderPrefEnabled(
+        ctx.supabaseAdmin,
+        delivery.recipient_id,
+        "dingtalk",
+      );
+
+      if (systemOn) {
+        const { data: subscriptions } = await ctx.supabaseAdmin
+          .from("web_push_subscriptions")
+          .select("id, endpoint, p256dh, auth")
+          .eq("user_id", delivery.recipient_id)
+          .is("disabled_at", null);
+        const payload = JSON.stringify({
+          title: task.title || "AntTodo 提醒",
+          body: task.description?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
+          tag: `task-reminder:${delivery.id}`,
+          url: `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`,
+          acknowledgeUrl: functionUrl,
+          acknowledgementToken: token,
+        });
+        for (const subscription of subscriptions ?? []) {
+          try {
+            await webpush.sendNotification({
+              endpoint: subscription.endpoint,
+              keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+            }, payload);
+            sent += 1;
+          } catch (cause) {
+            const statusCode = Number((cause as { statusCode?: number }).statusCode ?? 0);
+            if (statusCode === 404 || statusCode === 410) {
+              await ctx.supabaseAdmin.from("web_push_subscriptions")
+                .update({ disabled_at: now.toISOString() }).eq("id", subscription.id);
+            }
           }
         }
+      }
+
+      if (dingtalkOn) {
+        const { data: provider } = await ctx.supabaseAdmin
+          .from("workspace_sso_providers")
+          .select("id, public_config, credential_hint, enabled")
+          .eq("workspace_id", task.workspace_id)
+          .eq("provider", "dingtalk")
+          .eq("enabled", true)
+          .maybeSingle();
+        const publicConfig = parsePublicConfig(provider?.public_config);
+        if (provider?.credential_hint && publicConfig?.agentId) {
+          const { data: secret } = await ctx.supabaseAdmin.rpc("get_sso_provider_secret", {
+            p_provider_id: provider.id,
+          });
+          const { data: identity } = await ctx.supabaseAdmin
+            .from("sso_identities")
+            .select("subject, dingtalk_userid")
+            .eq("provider", "dingtalk")
+            .eq("user_id", delivery.recipient_id)
+            .maybeSingle();
+          if (typeof secret === "string" && identity?.subject) {
+            try {
+              const result = await sendDingtalkNotification({
+                credentials: {
+                  appKey: publicConfig.appKey,
+                  appSecret: secret,
+                  agentId: publicConfig.agentId,
+                },
+                unionId: identity.subject,
+                cachedUserId: identity.dingtalk_userid,
+                title: task.title || "AntTodo 提醒",
+                text: task.description?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
+              });
+              if ("userId" in result && result.userId && result.userId !== identity.dingtalk_userid) {
+                await ctx.supabaseAdmin
+                  .from("sso_identities")
+                  .update({
+                    dingtalk_userid: result.userId,
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("provider", "dingtalk")
+                  .eq("subject", identity.subject);
+              }
+            } catch (cause) {
+              console.error("dingtalk due reminder failed", cause);
+            }
+          }
+        }
+      }
+
+      if (!systemOn && !dingtalkOn) {
+        // Preferencing both channels off: acknowledge delivery without pushing.
+        if (!delivery.first_sent_at) {
+          await ctx.supabaseAdmin.from("reminder_delivery_states").update({
+            first_sent_at: now.toISOString(),
+            cancelled_at: now.toISOString(),
+          }).eq("id", delivery.id);
+        } else {
+          await ctx.supabaseAdmin.from("reminder_delivery_states").update({
+            cancelled_at: now.toISOString(),
+          }).eq("id", delivery.id);
+        }
+        continue;
       }
 
       if (!delivery.first_sent_at) {

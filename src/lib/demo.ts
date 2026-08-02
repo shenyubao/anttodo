@@ -113,6 +113,7 @@ const task = (
   subtasks: [],
   reminders: [],
   reminder_persistent: false,
+  participant_ids: [],
   ...options,
 });
 
@@ -122,6 +123,7 @@ const tasks: Task[] = [
     priority: "high",
     due_at: subDays(now, 1).toISOString(),
     label_ids: ["product", "urgent"],
+    participant_ids: ["demo-member"],
     subtasks: [
       {
         id: "sub-1",
@@ -131,6 +133,7 @@ const tasks: Task[] = [
         position: 0,
         due_at: null,
         assignee_id: userId,
+        created_by: userId,
       },
       {
         id: "sub-2",
@@ -140,6 +143,7 @@ const tasks: Task[] = [
         position: 1,
         due_at: addDays(now, 1).toISOString(),
         assignee_id: "demo-member",
+        created_by: userId,
       },
     ],
   }),

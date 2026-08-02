@@ -13,6 +13,7 @@ import {
   Trash2,
   Type,
   UserRound,
+  UsersRound,
   X,
 } from "lucide-react";
 import {
@@ -63,6 +64,7 @@ export type TaskDetailProps = {
   onLoadAssignees: () => Promise<string[]>;
   onAssign: (assigneeId: string | null) => Promise<void>;
   onToggleLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
+  onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
   onCreateSubtask: (title: string) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
@@ -265,6 +267,184 @@ function TaskAssigneeControl({
             <p className="task-assignee-status">暂无可指派成员</p>
           )}
           {error && <p className="task-assignee-error" role="alert">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskParticipantsControl({
+  task,
+  bundle,
+  currentUserId,
+  online,
+  onLoadAssignees,
+  onToggleParticipant,
+}: {
+  task: Task;
+  bundle: WorkspaceBundle;
+  currentUserId: string;
+  online: boolean;
+  onLoadAssignees: () => Promise<string[]>;
+  onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [candidateIds, setCandidateIds] = useState<string[] | null>(null);
+  const [draftParticipantIds, setDraftParticipantIds] = useState(
+    () => new Set(task.participant_ids),
+  );
+  const [loading, setLoading] = useState(false);
+  const [savingUserId, setSavingUserId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const onLoadRef = useRef(onLoadAssignees);
+
+  useEffect(() => {
+    onLoadRef.current = onLoadAssignees;
+  }, [onLoadAssignees]);
+
+  useEffect(() => {
+    setDraftParticipantIds(new Set(task.participant_ids));
+  }, [task.id, task.participant_ids]);
+
+  useEffect(() => {
+    setOpen(false);
+    setCandidateIds(null);
+    setError("");
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    void onLoadRef.current()
+      .then((ids) => {
+        if (!cancelled) setCandidateIds(ids);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : "参与者列表加载失败，请重试");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, task.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const candidates = useMemo(
+    () => getAssignableMembers(bundle, task, currentUserId, candidateIds ?? []),
+    [bundle, candidateIds, currentUserId, task],
+  );
+
+  const menuMembers = useMemo(() => {
+    const selected = candidates.filter((member) => draftParticipantIds.has(member.user_id));
+    const unselected = candidates.filter((member) => !draftParticipantIds.has(member.user_id));
+    const selectedMissing = [...draftParticipantIds]
+      .filter((userId) => !candidates.some((member) => member.user_id === userId))
+      .map((userId) => bundle.members.find((member) => member.user_id === userId))
+      .filter((member): member is NonNullable<typeof member> => Boolean(member));
+    return [...selected, ...selectedMissing, ...unselected];
+  }, [bundle.members, candidates, draftParticipantIds]);
+
+  async function toggle(userId: string) {
+    if (!online || savingUserId) return;
+    const previous = new Set(draftParticipantIds);
+    const selected = !previous.has(userId);
+    const next = new Set(previous);
+    if (selected) next.add(userId);
+    else next.delete(userId);
+    setDraftParticipantIds(next);
+    setSavingUserId(userId);
+    setError("");
+    try {
+      await onToggleParticipant(task.id, userId, selected);
+    } catch (cause) {
+      setDraftParticipantIds(previous);
+      setError(cause instanceof Error ? cause.message : "参与者保存失败，请重试");
+    } finally {
+      setSavingUserId(null);
+    }
+  }
+
+  const participantCount = draftParticipantIds.size;
+
+  return (
+    <div className="task-participants-control" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={clsx(
+          "detail-participants-trigger",
+          open && "active",
+          participantCount > 0 && "has-participants",
+        )}
+        title="参与者"
+        aria-label={participantCount > 0 ? `参与者：${participantCount} 人` : "参与者"}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={!online}
+        onClick={() => {
+          setOpen((value) => !value);
+          setError("");
+        }}
+      >
+        <UsersRound />
+        {participantCount > 0 && (
+          <span className="detail-participants-count">{participantCount}</span>
+        )}
+      </button>
+      {open && (
+        <div className="task-participants-menu" role="menu" aria-label="管理参与者">
+          {loading && <p className="task-participants-status" role="status">正在读取成员…</p>}
+          {!loading && menuMembers.map((member) => {
+            const selected = draftParticipantIds.has(member.user_id);
+            return (
+              <button
+                key={member.user_id}
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={selected}
+                disabled={Boolean(savingUserId)}
+                onClick={() => void toggle(member.user_id)}
+              >
+                <MemberAvatar member={member} className="participants-menu-avatar" />
+                <span>
+                  {member.user_id === currentUserId
+                    ? "我"
+                    : member.profile?.display_name ?? "团队成员"}
+                </span>
+                {selected && <Check className="participants-selected-icon" />}
+              </button>
+            );
+          })}
+          {!loading && candidateIds && menuMembers.length === 0 && (
+            <p className="task-participants-status">暂无可选成员</p>
+          )}
+          {error && <p className="task-participants-error" role="alert">{error}</p>}
         </div>
       )}
     </div>
@@ -606,6 +786,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onLoadAssignees,
   onAssign,
   onToggleLabel,
+  onToggleParticipant,
   onCreateSubtask,
   onToggleSubtask,
   onUpdateSubtask,
@@ -899,6 +1080,14 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           bundle={bundle}
           online={writable}
           onToggleLabel={onToggleLabel}
+        />
+        <TaskParticipantsControl
+          task={task}
+          bundle={bundle}
+          currentUserId={currentUserId}
+          online={writable}
+          onLoadAssignees={onLoadAssignees}
+          onToggleParticipant={onToggleParticipant}
         />
         <button
           className={clsx("detail-text-style-trigger", toolbarOpen && "active")}

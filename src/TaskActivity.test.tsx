@@ -31,6 +31,21 @@ describe("task activity", () => {
       event_type: "task.assignee_changed",
       payload: { assignee_id: "missing-member" },
     }, task, [], DEFAULT_DATE_TIME_PREFERENCES).detail).toBe("成员");
+
+    expect(taskActivityPresentation({
+      ...baseEvent,
+      event_type: "task.participant_added",
+      payload: { user_id: "user-2", display_name: "产品同学" },
+    }, task, [], DEFAULT_DATE_TIME_PREFERENCES)).toMatchObject({
+      action: "添加了参与者",
+      detail: "产品同学",
+    });
+
+    expect(taskActivityPresentation({
+      ...baseEvent,
+      event_type: "task.participant_removed",
+      payload: { user_id: "user-2", display_name: "产品同学" },
+    }, task, [], DEFAULT_DATE_TIME_PREFERENCES).action).toBe("移除了参与者");
   });
 
   it("strips markdown and truncates long content previews", () => {

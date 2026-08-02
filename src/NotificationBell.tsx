@@ -1,6 +1,7 @@
 import { Bell, CheckCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MemberAvatar } from "./MemberAvatar";
+import { notificationHeadline, notificationSummary } from "./lib/notificationCopy";
 import { commentRelativeTime } from "./TaskComments";
 import type { AppNotification, Member } from "./types";
 
@@ -60,7 +61,7 @@ export function NotificationBell({
           <div className="notification-list">
             {loading && <p className="notification-empty">正在读取通知…</p>}
             {!loading && notifications.length === 0 && (
-              <p className="notification-empty">暂无引用提醒</p>
+              <p className="notification-empty">暂无通知</p>
             )}
             {notifications.map((item) => {
               const actor: Member = {
@@ -69,8 +70,7 @@ export function NotificationBell({
                 role: "member",
                 profile: item.actor,
               };
-              const summary = item.comment?.body.trim() ||
-                (item.comment?.image_uris.length ? "[图片]" : "评论中引用了你");
+              const summary = notificationSummary(item);
               return (
                 <button type="button" className={item.read_at ? "read" : "unread"} key={item.id}
                   onClick={async () => {
@@ -80,10 +80,9 @@ export function NotificationBell({
                   }}>
                   <MemberAvatar member={actor} className="notification-avatar" />
                   <span className="notification-copy">
-                    <span><strong>{item.actor?.display_name || "团队成员"}</strong> 在
-                      {item.task?.kind === "note" ? "笔记" : "待办"}中引用了你</span>
+                    <span>{notificationHeadline(item)}</span>
                     <em>{item.task?.title || "已删除内容"}</em>
-                    <span className="notification-summary">{summary}</span>
+                    {summary ? <span className="notification-summary">{summary}</span> : null}
                   </span>
                   <time dateTime={item.created_at}>{commentRelativeTime(item.created_at)}</time>
                 </button>

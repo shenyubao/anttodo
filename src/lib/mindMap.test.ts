@@ -29,6 +29,7 @@ function task(overrides: Partial<Task> = {}): Task {
     created_at: "2026-08-01T00:00:00.000Z",
     updated_at: "2026-08-01T00:00:00.000Z",
     label_ids: [],
+    participant_ids: [],
     subtasks: [],
     ...overrides,
     kind: overrides.kind ?? "todo",

@@ -666,6 +666,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
   expect(settingsTabLabels).toEqual([
     "账户与安全",
     "日期与时间",
+    "通知配置",
     "快捷键",
     "团队管理",
     "成员管理",

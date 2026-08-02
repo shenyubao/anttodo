@@ -22,6 +22,7 @@ function task(id: string, title: string, patch: Partial<Task> = {}): Task {
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
     label_ids: [],
+    participant_ids: [],
     subtasks: [],
     ...patch,
     kind: patch.kind ?? "todo",

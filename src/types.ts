@@ -148,6 +148,7 @@ export type Subtask = {
   position: number;
   due_at: string | null;
   assignee_id: string | null;
+  created_by: string | null;
 };
 
 export type ReminderRule = {
@@ -202,6 +203,7 @@ export type Task = {
   created_at: string;
   updated_at: string;
   label_ids: string[];
+  participant_ids: string[];
   subtasks: Subtask[];
   reminders: TaskReminder[];
   reminder_persistent: boolean;
@@ -241,14 +243,49 @@ export type TaskActivityPage = {
   nextCursor: { createdAt: string; id: string } | null;
 };
 
+export type NotificationScenario =
+  | "task_assigned"
+  | "task_due_reminder"
+  | "task_new_comment"
+  | "note_mentioned"
+  | "participant_title_changed"
+  | "participant_status_changed"
+  | "participant_new_comment"
+  | "participant_subtask_created"
+  | "participant_subtask_status_changed"
+  | "participant_subtask_title_changed";
+
+export type NotificationChannelPreferences = {
+  systemEnabled: boolean;
+  dingtalkEnabled: boolean;
+};
+
+export type NotificationPreferences = Record<
+  NotificationScenario,
+  NotificationChannelPreferences
+>;
+
+export type NotificationType =
+  | "comment_mention"
+  | "task_assigned"
+  | "task_new_comment"
+  | "note_mentioned"
+  | "participant_title_changed"
+  | "participant_status_changed"
+  | "participant_new_comment"
+  | "participant_subtask_created"
+  | "participant_subtask_status_changed"
+  | "participant_subtask_title_changed";
+
 export type AppNotification = {
   id: string;
   workspace_id: string;
   task_id: string;
-  comment_id: string;
+  comment_id: string | null;
   recipient_id: string;
   actor_id: string;
-  notification_type: "comment_mention";
+  notification_type: NotificationType;
+  payload?: Record<string, unknown>;
   read_at: string | null;
   created_at: string;
   actor?: Profile;

@@ -513,3 +513,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/reminder-ack/deno.json"
 entrypoint = "./functions/reminder-ack/index.ts"
+
+[functions.notification-dispatch]
+enabled = true
+verify_jwt = false
+import_map = "./functions/notification-dispatch/deno.json"
+entrypoint = "./functions/notification-dispatch/index.ts"

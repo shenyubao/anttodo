@@ -29,6 +29,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   created_at: "2026-07-29T01:00:00.000Z",
   updated_at: "2026-07-29T01:00:00.000Z",
   label_ids: [],
+  participant_ids: [],
   subtasks: [],
   ...patch,
   kind: patch.kind ?? "todo",

@@ -7529,9 +7529,138 @@ body.is-electron.is-macos .rail-button.active svg {
 .detail-footer > .detail-text-style-trigger:hover,
 .detail-footer > .detail-text-style-trigger.active,
 .detail-footer > .detail-comment-trigger:hover,
-.detail-footer > .detail-comment-trigger.active {
+.detail-footer > .detail-comment-trigger.active,
+.detail-footer > .task-participants-control > .detail-participants-trigger:hover,
+.detail-footer > .task-participants-control > .detail-participants-trigger.active {
   color: #4772fa;
   background: rgb(71 114 250 / 8%);
+}
+
+.task-participants-control {
+  position: relative;
+  display: inline-flex;
+}
+
+.detail-participants-trigger {
+  position: relative;
+  width: 31px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: #969ba4;
+  background: transparent;
+  cursor: pointer;
+}
+
+.detail-participants-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.detail-participants-trigger:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 55%);
+  outline-offset: 1px;
+}
+
+.detail-participants-count {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  border-radius: 999px;
+  color: #fff;
+  background: #4772fa;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 12px;
+}
+
+.task-participants-menu {
+  position: absolute;
+  z-index: 1700;
+  left: 0;
+  bottom: 42px;
+  width: 180px;
+  max-height: min(246px, calc(100vh - 120px));
+  overflow-y: auto;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  color: #191919;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+}
+
+.task-participants-menu > button {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border: 0;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 34px;
+  text-align: left;
+}
+
+.task-participants-menu > button:hover,
+.task-participants-menu > button:focus-visible {
+  background: rgb(25 25 25 / 5%);
+}
+
+.task-participants-menu > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.task-participants-menu > button > span:not(.member-avatar-image) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.participants-menu-avatar {
+  width: 20px;
+  height: 20px;
+  font-size: 9px;
+}
+
+.participants-selected-icon {
+  width: 14px;
+  height: 14px;
+  color: #4772fa;
+  opacity: 0;
+}
+
+.task-participants-menu > button[aria-checked="true"] .participants-selected-icon {
+  opacity: 1;
+}
+
+.task-participants-status,
+.task-participants-error {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.task-participants-status {
+  color: rgb(25 25 25 / 45%);
+}
+
+.task-participants-error {
+  color: var(--danger);
 }
 
 .detail-footer svg {
@@ -8601,6 +8730,72 @@ body.is-electron.is-macos .rail-button.active svg {
   font-size: 16px;
   font-weight: 500;
   line-height: 25px;
+}
+
+.notification-settings {
+  min-height: 100%;
+  color: #191919;
+}
+
+.notification-settings > h1 {
+  height: 25px;
+  margin: 0 18px 8px;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 25px;
+}
+
+.notification-settings-lead {
+  margin: 0 18px 16px;
+  color: rgb(25 25 25 / 55%);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.notification-settings-table {
+  overflow: hidden;
+  margin: 0 0 14px;
+  border-radius: 10px;
+  background: rgb(25 25 25 / 2%);
+}
+
+.notification-settings-header,
+.notification-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 18px;
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.notification-settings-table.has-dingtalk .notification-settings-header,
+.notification-settings-table.has-dingtalk .notification-settings-row {
+  grid-template-columns: minmax(0, 1fr) 72px 72px;
+}
+
+.notification-settings-header {
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notification-settings-header > span:not(:first-child),
+.notification-settings-row > .date-time-switch {
+  justify-self: center;
+}
+
+.notification-settings-row + .notification-settings-row {
+  border-top: 1px solid rgb(25 25 25 / 5%);
+}
+
+.notification-settings-hint {
+  margin: 0 18px 12px;
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .date-time-settings-card {

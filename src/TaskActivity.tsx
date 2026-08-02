@@ -8,6 +8,7 @@ import {
   Tag,
   Trash2,
   UserRound,
+  UsersRound,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -125,6 +126,14 @@ export function taskActivityPresentation(
       detail: memberName(event.payload.assignee_id, members),
       tone: "assign",
       icon: <UserRound />,
+    };
+  }
+  if (event.event_type === "task.participant_added" || event.event_type === "task.participant_removed") {
+    return {
+      action: event.event_type.endsWith("added") ? "添加了参与者" : "移除了参与者",
+      detail: String(event.payload.display_name ?? memberName(event.payload.user_id, members)),
+      tone: "assign",
+      icon: <UsersRound />,
     };
   }
   if (event.event_type === "task.label_added" || event.event_type === "task.label_removed") {

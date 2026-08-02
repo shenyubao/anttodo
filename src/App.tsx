@@ -44,6 +44,7 @@ import {
   KeyRound,
   Keyboard,
   LayoutList,
+  Bell,
   ListTodo,
   Link2,
   LockKeyhole,
@@ -84,6 +85,7 @@ import {
 import { initials, MemberAvatar } from "./MemberAvatar";
 import { MindMapWorkspace } from "./MindMapWorkspace";
 import { NotificationBell } from "./NotificationBell";
+import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { getPriorityOption } from "./PriorityControl";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
 import type { CreateCommentInput } from "./TaskComments";
@@ -102,6 +104,7 @@ import {
   loadDateTimePreferences,
   listTaskAssigneeIds,
   listTaskCommentCandidateIds,
+  loadNotificationPreferences,
   loadNotifications,
   loadTaskActivity,
   loadTaskComments,
@@ -111,10 +114,12 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
   saveDateTimePreferences,
+  saveNotificationPreference,
   saveTaskSchedule as saveTaskScheduleApi,
   saveTaskListPreference,
   setTaskListOrder,
   toggleTaskLabel as toggleTaskLabelApi,
+  toggleTaskParticipant as toggleTaskParticipantApi,
   updateTaskSection,
   updateTaskComment as updateTaskCommentApi,
   updateLabelWithAccess as updateLabelWithAccessApi,
@@ -136,6 +141,7 @@ import {
   updateDisplayName,
 } from "./lib/profile";
 import { ensureWebPushSubscription } from "./lib/webPush";
+import { defaultNotificationPreferences } from "./lib/notificationPreferences";
 import { searchTasks } from "./lib/taskSearch";
 import {
   TASK_GROUPING_OPTIONS,
@@ -217,6 +223,9 @@ import type {
   LabelAccessDraft,
   LabelAccessScope,
   Member,
+  NotificationChannelPreferences,
+  NotificationPreferences,
+  NotificationScenario,
   ReminderSchedule,
   Subtask,
   Task,
@@ -244,6 +253,7 @@ type AppSection = "tasks" | "calendar" | "mindmap";
 type SettingsTab =
   | "account"
   | "date"
+  | "notifications"
   | "team-mgmt"
   | "team"
   | "user-groups"
@@ -1410,11 +1420,42 @@ function RemoteApplication({
     queryKey: ["date-time-preferences", userId],
     queryFn: () => loadDateTimePreferences(client, userId),
   });
+  const notificationPreferencesQuery = useQuery({
+    queryKey: ["notification-preferences", userId],
+    queryFn: () => loadNotificationPreferences(client, userId),
+  });
   const notificationsQuery = useQuery({
     queryKey: ["notifications", workspaceId],
     queryFn: () => loadNotifications(client, workspaceId!),
     enabled: Boolean(workspaceId),
   });
+
+  const seenNotificationIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const items = notificationsQuery.data ?? [];
+    if (!items.length) return;
+    const known = seenNotificationIdsRef.current;
+    const isFirst = known.size === 0;
+    for (const item of items) {
+      if (known.has(item.id)) continue;
+      known.add(item.id);
+      if (isFirst || item.read_at) continue;
+      const title = item.task?.title || "AntTodo";
+      const body = item.actor?.display_name
+        ? `${item.actor.display_name} · ${title}`
+        : title;
+      try {
+        if (typeof window.Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification(title, { body, tag: `notification:${item.id}` });
+        }
+      } catch {
+        // Ignore notification permission / constructor failures.
+      }
+    }
+    if (isFirst) {
+      for (const item of items) known.add(item.id);
+    }
+  }, [notificationsQuery.data]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -1480,7 +1521,7 @@ function RemoteApplication({
       />
     );
   }
-  if (!workspaceId || bundleQuery.isLoading || dateTimePreferencesQuery.isLoading) {
+  if (!workspaceId || bundleQuery.isLoading || dateTimePreferencesQuery.isLoading || notificationPreferencesQuery.isLoading) {
     return <Splash label="正在整理任务…" />;
   }
   if (bundleQuery.error || !bundleQuery.data) {
@@ -1545,14 +1586,12 @@ function RemoteApplication({
     schedule: ReminderSchedule,
   ) {
     await saveTaskScheduleApi(client, taskId, patch, schedule);
-    if (schedule.reminders.length > 0 && !window.anttodoDesktop) {
-      try {
-        await ensureWebPushSubscription(client);
-      } catch (cause) {
-        setNotice(cause instanceof Error ? cause.message : "浏览器通知订阅失败");
-      }
-    }
     await refresh();
+    if (schedule.reminders.length > 0 && !window.anttodoDesktop) {
+      void ensureWebPushSubscription(client).catch((cause) => {
+        setNotice(cause instanceof Error ? cause.message : "浏览器通知订阅失败");
+      });
+    }
   }
 
   async function assignTask(taskId: string, assigneeId: string | null) {
@@ -1602,6 +1641,37 @@ function RemoteApplication({
 
     try {
       await toggleTaskLabelApi(client, taskId, labelId, selected);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+    await queryClient.invalidateQueries({ queryKey });
+  }
+
+  async function toggleTaskParticipant(
+    taskId: string,
+    userId: string,
+    selected: boolean,
+  ) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+      current
+        ? {
+            ...current,
+            tasks: current.tasks.map((task) => {
+              if (task.id !== taskId) return task;
+              const participantIds = new Set(task.participant_ids);
+              if (selected) participantIds.add(userId);
+              else participantIds.delete(userId);
+              return { ...task, participant_ids: [...participantIds] };
+            }),
+          }
+        : current,
+    );
+
+    try {
+      await toggleTaskParticipantApi(client, taskId, userId, selected);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -1858,6 +1928,23 @@ function RemoteApplication({
     }
   }
 
+  async function updateNotificationPreference(
+    scenario: NotificationScenario,
+    next: NotificationChannelPreferences,
+  ) {
+    const previous =
+      notificationPreferencesQuery.data ?? defaultNotificationPreferences();
+    const merged = { ...previous, [scenario]: next };
+    queryClient.setQueryData(["notification-preferences", userId], merged);
+    try {
+      await saveNotificationPreference(client, userId, scenario, next);
+    } catch (error) {
+      queryClient.setQueryData(["notification-preferences", userId], previous);
+      setNotice("通知配置保存失败，请稍后重试");
+      throw error;
+    }
+  }
+
   async function updateTaskListPreference(next: TaskListPreference) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -1957,6 +2044,9 @@ function RemoteApplication({
       dateTimePreferences={
         dateTimePreferencesQuery.data ?? DEFAULT_DATE_TIME_PREFERENCES
       }
+      notificationPreferences={
+        notificationPreferencesQuery.data ?? defaultNotificationPreferences()
+      }
       attachmentService={attachmentService}
       commentsRevision={commentsRevision}
       activityRevision={activityRevision}
@@ -2005,6 +2095,7 @@ function RemoteApplication({
       onUpdateTask={updateTask}
       onSaveTaskSchedule={saveTaskSchedule}
       onToggleTaskLabel={toggleTaskLabel}
+      onToggleTaskParticipant={toggleTaskParticipant}
       onLoadTaskAssignees={(taskId) => listTaskAssigneeIds(client, taskId)}
       onAssignTask={assignTask}
       onCreateSubtask={createSubtask}
@@ -2045,6 +2136,7 @@ function RemoteApplication({
       onUpdateEmail={updateAccountEmail}
       onDeleteAccount={deleteAccount}
       onUpdateDateTimePreferences={updateDateTimePreferences}
+      onUpdateNotificationPreference={updateNotificationPreference}
       onSaveTaskListPreference={updateTaskListPreference}
       onCreateTaskSection={addTaskSection}
       onUpdateTaskSection={editTaskSection}
@@ -2109,6 +2201,9 @@ function DemoApplication() {
   const [inviteLink, setInviteLink] = useState<WorkspaceInviteLink | null>(null);
   const [dateTimePreferences, setDateTimePreferences] = useState(
     DEFAULT_DATE_TIME_PREFERENCES,
+  );
+  const [notificationPreferences, setNotificationPreferences] = useState(
+    defaultNotificationPreferences,
   );
   const [demoComments, setDemoComments] = useState<TaskComment[]>(() => {
     const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
@@ -2258,6 +2353,7 @@ function DemoApplication() {
       currentUserPhone="+8613800138000"
       online={online}
       dateTimePreferences={dateTimePreferences}
+      notificationPreferences={notificationPreferences}
       attachmentService={attachmentService}
       commentsRevision={commentsRevision}
       activityRevision={activityRevision}
@@ -2346,6 +2442,7 @@ function DemoApplication() {
               created_at: createdAt,
               updated_at: createdAt,
               label_ids: input.labelIds,
+              participant_ids: [],
               subtasks: [],
               reminders: [],
               reminder_persistent: false,
@@ -2418,6 +2515,27 @@ function DemoApplication() {
           label_color: label?.color ?? "#8f959e",
         });
       }}
+      onToggleTaskParticipant={async (taskId, userId, selected) => {
+        setBundle((current) => ({
+          ...current,
+          tasks: current.tasks.map((task) => {
+            if (task.id !== taskId) return task;
+            const participantIds = new Set(task.participant_ids);
+            if (selected) participantIds.add(userId);
+            else participantIds.delete(userId);
+            return { ...task, participant_ids: [...participantIds] };
+          }),
+        }));
+        const member = bundle.members.find((item) => item.user_id === userId);
+        appendDemoActivity(
+          taskId,
+          selected ? "task.participant_added" : "task.participant_removed",
+          {
+            user_id: userId,
+            display_name: member?.profile?.display_name ?? "团队成员",
+          },
+        );
+      }}
       onLoadTaskAssignees={async (taskId) => {
         const task = bundle.tasks.find((item) => item.id === taskId);
         return task
@@ -2452,6 +2570,7 @@ function DemoApplication() {
                       position: task.subtasks.length,
                       due_at: null,
                       assignee_id: null,
+                      created_by: "demo-user",
                     },
                   ],
                 }
@@ -2889,6 +3008,9 @@ function DemoApplication() {
       onUpdateDateTimePreferences={async (next) => {
         setDateTimePreferences(next);
       }}
+      onUpdateNotificationPreference={async (scenario, next) => {
+        setNotificationPreferences((current) => ({ ...current, [scenario]: next }));
+      }}
       onSaveTaskListPreference={async (next) => {
         setBundle((current) => ({
           ...current,
@@ -2974,6 +3096,7 @@ type WorkspaceAppProps = {
   currentUserPhone: string;
   online: boolean;
   dateTimePreferences: DateTimePreferences;
+  notificationPreferences: NotificationPreferences;
   attachmentService: AttachmentService;
   commentsRevision: number;
   activityRevision: number;
@@ -3008,6 +3131,11 @@ type WorkspaceAppProps = {
   onToggleTaskLabel: (
     taskId: string,
     labelId: string,
+    selected: boolean,
+  ) => Promise<void>;
+  onToggleTaskParticipant: (
+    taskId: string,
+    userId: string,
     selected: boolean,
   ) => Promise<void>;
   onLoadTaskAssignees: (taskId: string) => Promise<string[]>;
@@ -3056,6 +3184,10 @@ type WorkspaceAppProps = {
   onUpdateEmail: (email: string) => Promise<void>;
   onDeleteAccount: () => Promise<void>;
   onUpdateDateTimePreferences: (preferences: DateTimePreferences) => Promise<void>;
+  onUpdateNotificationPreference: (
+    scenario: NotificationScenario,
+    preferences: NotificationChannelPreferences,
+  ) => Promise<void>;
   onSaveTaskListPreference: (preference: TaskListPreference) => Promise<void>;
   onCreateTaskSection: (listKey: string, name: string) => Promise<void>;
   onUpdateTaskSection: (
@@ -3458,6 +3590,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             onAssign={(assigneeId) =>
               props.onAssignTask(selectedTask.id, assigneeId)}
             onToggleLabel={props.onToggleTaskLabel}
+            onToggleParticipant={props.onToggleTaskParticipant}
             onCreateSubtask={(title) => props.onCreateSubtask(selectedTask.id, title)}
             onToggleSubtask={props.onToggleSubtask}
             onUpdateSubtask={props.onUpdateSubtask}
@@ -3491,6 +3624,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onLoadAssignees={() => props.onLoadTaskAssignees(selectedTask.id)}
           onAssign={(assigneeId) => props.onAssignTask(selectedTask.id, assigneeId)}
           onToggleLabel={props.onToggleTaskLabel}
+          onToggleParticipant={props.onToggleTaskParticipant}
           onCreateSubtask={(title) => props.onCreateSubtask(selectedTask.id, title)}
           onToggleSubtask={props.onToggleSubtask}
           onUpdateSubtask={props.onUpdateSubtask}
@@ -3559,7 +3693,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onUpdateEmail={props.onUpdateEmail}
         onDeleteAccount={props.onDeleteAccount}
         dateTimePreferences={props.dateTimePreferences}
+        notificationPreferences={props.notificationPreferences}
         onUpdateDateTimePreferences={props.onUpdateDateTimePreferences}
+        onUpdateNotificationPreference={props.onUpdateNotificationPreference}
         onNotice={props.onNotice}
       />
       <CreateWorkspaceDialog
@@ -7743,7 +7879,9 @@ function SettingsDialog({
   onUpdateEmail,
   onDeleteAccount,
   dateTimePreferences,
+  notificationPreferences,
   onUpdateDateTimePreferences,
+  onUpdateNotificationPreference,
   onNotice,
 }: {
   open: boolean;
@@ -7775,7 +7913,9 @@ function SettingsDialog({
   onUpdateEmail: WorkspaceAppProps["onUpdateEmail"];
   onDeleteAccount: WorkspaceAppProps["onDeleteAccount"];
   dateTimePreferences: DateTimePreferences;
+  notificationPreferences: NotificationPreferences;
   onUpdateDateTimePreferences: WorkspaceAppProps["onUpdateDateTimePreferences"];
+  onUpdateNotificationPreference: WorkspaceAppProps["onUpdateNotificationPreference"];
   onNotice: (message: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
@@ -7802,6 +7942,7 @@ function SettingsDialog({
       tabs: [
         { id: "account", label: "账户与安全", icon: UserRound },
         { id: "date", label: "日期与时间", icon: CalendarClock },
+        { id: "notifications", label: "通知配置", icon: Bell },
         { id: "shortcuts", label: "快捷键", icon: Keyboard },
       ],
     },
@@ -8031,6 +8172,14 @@ function SettingsDialog({
                 preferences={dateTimePreferences}
                 online={online}
                 onChange={onUpdateDateTimePreferences}
+              />
+            ) : activeTab === "notifications" ? (
+              <NotificationSettingsPanel
+                client={supabase}
+                workspaceId={workspace.id}
+                preferences={notificationPreferences}
+                online={online}
+                onChange={onUpdateNotificationPreference}
               />
             ) : activeTab === "team-mgmt" ? (
               <TeamManagementList

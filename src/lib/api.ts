@@ -6,6 +6,9 @@ import type {
   Label,
   LabelAccessDraft,
   Member,
+  NotificationChannelPreferences,
+  NotificationPreferences,
+  NotificationScenario,
   ReminderSchedule,
   SyncConflict,
   SyncRun,
@@ -26,14 +29,19 @@ import {
   preferenceModelToRow,
   preferenceRowToModel,
 } from "./dateTimePreferences";
+import { mergeNotificationPreferenceRows } from "./notificationPreferences";
 import {
   isValidWorkspaceSlug,
   normalizeWorkspaceSlug,
   suggestWorkspaceSlug,
 } from "./workspaceSlug";
 
-type TaskRow = Omit<Task, "label_ids" | "subtasks" | "reminders" | "reminder_persistent"> & {
+type TaskRow = Omit<
+  Task,
+  "label_ids" | "participant_ids" | "subtasks" | "reminders" | "reminder_persistent"
+> & {
   task_labels?: Array<{ label_id: string }>;
+  task_participants?: Array<{ user_id: string }>;
   subtasks?: Task["subtasks"];
   task_reminders?: Task["reminders"];
   task_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
@@ -221,7 +229,9 @@ export async function loadNotifications(
   const rows = (data ?? []) as AppNotification[];
   const actorIds = [...new Set(rows.map((item) => item.actor_id))];
   const taskIds = [...new Set(rows.map((item) => item.task_id))];
-  const commentIds = [...new Set(rows.map((item) => item.comment_id))];
+  const commentIds = [...new Set(
+    rows.flatMap((item) => (item.comment_id ? [item.comment_id] : [])),
+  )];
   const [profilesResult, tasksResult, commentsResult] = await Promise.all([
     actorIds.length
       ? client.from("profiles").select("id, display_name, avatar_url").in("id", actorIds)
@@ -241,10 +251,41 @@ export async function loadNotifications(
   const comments = new Map((commentsResult.data ?? []).map((item) => [item.id, item]));
   return rows.flatMap((item) => {
     const task = tasks.get(item.task_id);
-    const comment = comments.get(item.comment_id);
-    if (!task || !comment) return [];
+    if (!task) return [];
+    const comment = item.comment_id ? comments.get(item.comment_id) : undefined;
     return [{ ...item, actor: profiles.get(item.actor_id), task, comment }];
   });
+}
+
+export async function loadNotificationPreferences(
+  client: SupabaseClient,
+  userId: string,
+): Promise<NotificationPreferences> {
+  const { data, error } = await client
+    .from("user_notification_preferences")
+    .select("scenario, system_enabled, dingtalk_enabled")
+    .eq("user_id", userId);
+  assertNoError(error);
+  return mergeNotificationPreferenceRows(data ?? []);
+}
+
+export async function saveNotificationPreference(
+  client: SupabaseClient,
+  userId: string,
+  scenario: NotificationScenario,
+  preferences: NotificationChannelPreferences,
+) {
+  const { error } = await client
+    .from("user_notification_preferences")
+    .upsert({
+      user_id: userId,
+      scenario,
+      system_enabled: preferences.systemEnabled,
+      dingtalk_enabled: preferences.dingtalkEnabled,
+      updated_at: new Date().toISOString(),
+    });
+  assertNoError(error);
+  return preferences;
 }
 
 export async function markNotificationRead(
@@ -347,7 +388,7 @@ export async function loadWorkspaceBundle(
     client.from("labels").select("*").eq("workspace_id", workspaceId).order("position"),
     client
       .from("tasks")
-      .select("*, task_labels(label_id), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+      .select("*, task_labels(label_id), task_participants(user_id), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
       .eq("workspace_id", workspaceId)
       .is("deleted_at", null)
       .order("created_at", { ascending: false }),
@@ -475,6 +516,7 @@ export async function loadWorkspaceBundle(
         kind: row.kind ?? "todo",
         recurrence: row.recurrence ?? null,
         label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
+        participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
         subtasks: [...(row.subtasks ?? [])].sort((a, b) => a.position - b.position),
         reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
         reminder_persistent: settings?.persistent ?? false,
@@ -746,5 +788,21 @@ export async function toggleTaskLabel(
         .delete()
         .eq("task_id", taskId)
         .eq("label_id", labelId);
+  assertNoError(error);
+}
+
+export async function toggleTaskParticipant(
+  client: SupabaseClient,
+  taskId: string,
+  userId: string,
+  selected: boolean,
+) {
+  const { error } = selected
+    ? await client.from("task_participants").insert({ task_id: taskId, user_id: userId })
+    : await client
+        .from("task_participants")
+        .delete()
+        .eq("task_id", taskId)
+        .eq("user_id", userId);
   assertNoError(error);
 }
