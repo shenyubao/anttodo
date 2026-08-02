@@ -5690,6 +5690,10 @@ body.is-electron.is-macos .rail-button.active svg {
   background: rgb(25 25 25 / 5%);
 }
 
+.due-reminder-options > button[aria-pressed="true"] {
+  color: #4772fa;
+}
+
 .due-reminder-options svg {
   width: 15px;
   height: 15px;
@@ -5833,14 +5837,37 @@ body.is-electron.is-macos .rail-button.active svg {
   width: 62px;
 }
 
-.due-reminder-custom > .primary {
+.due-reminder-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 8px 12px 12px;
+}
+
+.due-reminder-custom .due-reminder-footer {
+  padding: 2px 0 0;
+}
+
+.due-reminder-footer button {
+  width: 100%;
   height: 30px;
-  border: 0;
+  padding: 0 12px;
   border-radius: 8px;
-  color: #fff;
-  background: #4772fa;
   cursor: pointer;
   font: inherit;
+  font-size: 14px;
+}
+
+.due-reminder-footer button.secondary {
+  border: 1px solid rgb(25 25 25 / 10%);
+  color: rgb(25 25 25 / 60%);
+  background: #fff;
+}
+
+.due-reminder-footer button.primary {
+  border: 1px solid transparent;
+  color: #fff;
+  background: #4772fa;
 }
 
 .due-notification-warning {

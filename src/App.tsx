@@ -2089,7 +2089,13 @@ function RemoteApplication({
           workspaceId,
           ...input,
         });
-        await refresh();
+        const queryKey = ["workspace-bundle", workspaceId];
+        queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+          current && created
+            ? appendCreatedTaskToBundle(current, created, input.labelIds)
+            : current,
+        );
+        void queryClient.invalidateQueries({ queryKey });
         return created;
       }}
       onUpdateTask={updateTask}
@@ -2145,6 +2151,48 @@ function RemoteApplication({
       onSignOut={() => client.auth.signOut()}
     />
   );
+}
+
+function appendCreatedTaskToBundle(
+  bundle: WorkspaceBundle,
+  created: Partial<Task> & Pick<Task, "id" | "workspace_id" | "title" | "created_by" | "created_at" | "updated_at">,
+  labelIds: string[],
+): WorkspaceBundle {
+  if (bundle.tasks.some((task) => task.id === created.id)) {
+    return bundle;
+  }
+
+  const task: Task = {
+    id: created.id,
+    workspace_id: created.workspace_id,
+    title: created.title,
+    description: created.description ?? "",
+    kind: created.kind ?? "todo",
+    status: created.status ?? "open",
+    priority: created.priority ?? "none",
+    due_at: created.due_at ?? null,
+    due_start_at: created.due_start_at ?? null,
+    due_is_all_day: created.due_is_all_day ?? false,
+    due_timezone: created.due_timezone ?? null,
+    recurrence: created.recurrence ?? null,
+    assignee_id: created.assignee_id ?? null,
+    created_by: created.created_by,
+    completed_at: created.completed_at ?? null,
+    deleted_at: created.deleted_at ?? null,
+    version: created.version ?? 1,
+    created_at: created.created_at,
+    updated_at: created.updated_at,
+    label_ids: labelIds,
+    participant_ids: [],
+    subtasks: [],
+    reminders: [],
+    reminder_persistent: false,
+  };
+
+  return {
+    ...bundle,
+    tasks: [task, ...bundle.tasks],
+  };
 }
 
 function applyDemoLabelAccess(

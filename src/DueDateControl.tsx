@@ -160,8 +160,10 @@ export function DueDateControl({
   const [repeatOpen, setRepeatOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [reminders, setReminders] = useState<ReminderRule[]>([]);
+  const [panelReminders, setPanelReminders] = useState<ReminderRule[]>([]);
   const [recurrence, setRecurrence] = useState<TaskRecurrence | null>(null);
   const [persistent, setPersistent] = useState(false);
+  const [panelPersistent, setPanelPersistent] = useState(false);
   const [customValue, setCustomValue] = useState(10);
   const [customUnit, setCustomUnit] = useState<ReminderUnit>("minute");
   const [customTime, setCustomTime] = useState("09:00");
@@ -203,8 +205,10 @@ export function DueDateControl({
       offset_unit: reminder.offset_unit,
       local_time: reminder.local_time ? reminder.local_time.slice(0, 5) : null,
     })));
+    setPanelReminders([]);
     setRecurrence(task.recurrence ?? null);
     setPersistent(Boolean(task.reminder_persistent));
+    setPanelPersistent(false);
     setReminderOpen(false);
     setRepeatOpen(false);
     setCustomOpen(false);
@@ -302,6 +306,13 @@ export function DueDateControl({
         ...TIMED_REMINDER_PRESETS,
         ...(tab === "range" ? [endReminderRule()] : []),
       ];
+  const reminderPresetKeys = new Set(reminderPresets.map((rule) => reminderRuleKey(rule)));
+  const customPanelReminders = panelReminders.filter(
+    (rule) => !reminderPresetKeys.has(reminderRuleKey(rule)),
+  );
+  const reminderOptions = [...reminderPresets, ...customPanelReminders];
+  const displayedReminders = reminderOpen ? panelReminders : reminders;
+  const displayedPersistent = reminderOpen ? panelPersistent : persistent;
 
   function selectRecurrence(freq: RecurrenceFreq | null) {
     if (!draftDueAnchor && freq) {
@@ -312,21 +323,48 @@ export function DueDateControl({
     setError("");
   }
 
-  function toggleReminder(rule: ReminderRule) {
-    const key = reminderRuleKey(rule);
-    setReminders((current) => {
-      const exists = current.some((item) => reminderRuleKey(item) === key);
-      if (exists) return current.filter((item) => reminderRuleKey(item) !== key);
-      try {
-        return normalizeReminderRules([...current, rule]);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "提醒设置无效");
-        return current;
-      }
-    });
+  function openReminderPanel() {
+    setPanelReminders(reminders.map((rule) => ({ ...rule })));
+    setPanelPersistent(persistent);
+    setCustomOpen(false);
+    setReminderOpen(true);
+    setRepeatOpen(false);
+    setError("");
   }
 
-  function addCustomReminder() {
+  function cancelReminderPanel() {
+    setReminderOpen(false);
+    setCustomOpen(false);
+    setPanelReminders([]);
+    setPanelPersistent(false);
+    setError("");
+  }
+
+  function confirmReminderPanel() {
+    setReminders(panelReminders.map((rule) => ({ ...rule })));
+    setPersistent(panelPersistent && panelReminders.length > 0);
+    setReminderOpen(false);
+    setCustomOpen(false);
+    setError("");
+  }
+
+  function togglePanelReminder(rule: ReminderRule) {
+    const key = reminderRuleKey(rule);
+    const exists = panelReminders.some((item) => reminderRuleKey(item) === key);
+    if (exists) {
+      const next = panelReminders.filter((item) => reminderRuleKey(item) !== key);
+      setPanelReminders(next);
+      if (next.length === 0) setPanelPersistent(false);
+      return;
+    }
+    try {
+      setPanelReminders(normalizeReminderRules([...panelReminders, rule]));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提醒设置无效");
+    }
+  }
+
+  function saveCustomReminder() {
     const rule: ReminderRule = {
       anchor: draftAllDay ? "start" : customAnchor,
       offset_value: customValue,
@@ -334,7 +372,13 @@ export function DueDateControl({
       local_time: draftAllDay ? customTime : null,
     };
     const key = reminderRuleKey(rule);
-    if (!reminders.some((item) => reminderRuleKey(item) === key)) toggleReminder(rule);
+    if (!panelReminders.some((item) => reminderRuleKey(item) === key)) {
+      togglePanelReminder(rule);
+    }
+    setCustomOpen(false);
+  }
+
+  function cancelCustomReminder() {
     setCustomOpen(false);
   }
 
@@ -357,6 +401,7 @@ export function DueDateControl({
     if (next === "point") {
       setReminders((current) => current.filter((rule) => rule.anchor === "start"));
     }
+    cancelReminderPanel();
     setTab(next);
     setError("");
   }
@@ -592,6 +637,7 @@ export function DueDateControl({
                     if (nextHasTime !== pointHasTime) {
                       setReminders([]);
                       setPersistent(false);
+                      cancelReminderPanel();
                     }
                     setPointHasTime(nextHasTime);
                     if (event.target.value) setPointTime(event.target.value);
@@ -672,6 +718,7 @@ export function DueDateControl({
                     setAllDay(event.target.checked);
                     setReminders([]);
                     setPersistent(false);
+                    cancelReminderPanel();
                   }}
                 />
                 <i />
@@ -700,13 +747,16 @@ export function DueDateControl({
               aria-label="提醒"
               aria-expanded={reminderOpen}
               onClick={() => {
-                setReminderOpen((value) => !value);
-                setRepeatOpen(false);
+                if (reminderOpen) {
+                  cancelReminderPanel();
+                } else {
+                  openReminderPanel();
+                }
               }}
             >
               <AlarmClock />
-              <span>{reminderSummary({ reminders, persistent, recurrence: null }, draftAllDay)}</span>
-              {reminders.length > 0 && <em>{reminders.length}</em>}
+              <span>{reminderSummary({ reminders: displayedReminders, persistent: displayedPersistent, recurrence: null }, draftAllDay)}</span>
+              {displayedReminders.length > 0 && <em>{displayedReminders.length}</em>}
               <ChevronDown />
             </button>
             <button
@@ -716,8 +766,7 @@ export function DueDateControl({
               className={recurrence ? "has-value" : undefined}
               onClick={() => {
                 setRepeatOpen((value) => !value);
-                setReminderOpen(false);
-                setCustomOpen(false);
+                cancelReminderPanel();
               }}
             >
               <RotateCcw />
@@ -758,8 +807,8 @@ export function DueDateControl({
               {!customOpen ? (
                 <>
                   <div className="due-reminder-options">
-                    {reminderPresets.map((rule) => {
-                      const selected = reminders.some(
+                    {reminderOptions.map((rule) => {
+                      const selected = panelReminders.some(
                         (item) => reminderRuleKey(item) === reminderRuleKey(rule),
                       );
                       return (
@@ -767,7 +816,7 @@ export function DueDateControl({
                           type="button"
                           key={reminderRuleKey(rule)}
                           aria-pressed={selected}
-                          onClick={() => toggleReminder(rule)}
+                          onClick={() => togglePanelReminder(rule)}
                         >
                           <span>{reminderRuleLabel(rule, draftAllDay)}</span>
                           {selected && <Check />}
@@ -790,17 +839,21 @@ export function DueDateControl({
                     </span>
                     <input
                       type="checkbox"
-                      checked={persistent}
-                      disabled={reminders.length === 0}
-                      onChange={(event) => setPersistent(event.target.checked)}
+                      checked={panelPersistent}
+                      disabled={panelReminders.length === 0}
+                      onChange={(event) => setPanelPersistent(event.target.checked)}
                     />
                     <i />
                   </label>
+                  <div className="due-reminder-footer">
+                    <button className="secondary" type="button" onClick={cancelReminderPanel}>取消</button>
+                    <button className="primary" type="button" onClick={confirmReminderPanel}>确定</button>
+                  </div>
                 </>
               ) : (
                 <div className="due-reminder-custom">
                   <header>
-                    <button type="button" aria-label="返回提醒预设" onClick={() => setCustomOpen(false)}>
+                    <button type="button" aria-label="返回提醒预设" onClick={cancelCustomReminder}>
                       <ChevronLeft />
                     </button>
                     <strong>自定义提醒</strong>
@@ -833,7 +886,10 @@ export function DueDateControl({
                   {draftAllDay && (
                     <label><span>时间</span><input type="time" value={customTime} onChange={(event) => setCustomTime(event.target.value)} /></label>
                   )}
-                  <button className="primary" type="button" onClick={addCustomReminder}>添加提醒</button>
+                  <div className="due-reminder-footer">
+                    <button className="secondary" type="button" onClick={cancelCustomReminder}>取消</button>
+                    <button className="primary" type="button" onClick={saveCustomReminder}>保存</button>
+                  </div>
                 </div>
               )}
             </section>

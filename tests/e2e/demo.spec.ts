@@ -971,7 +971,8 @@ test("due date picker saves point, range, all-day, and clear states", async ({ p
   await picker.getByRole("button", { name: "提醒" }).click();
   await expect(picker.getByRole("button", { name: "当天 (09:00)" })).toBeVisible();
   await expect(picker).toBeVisible();
-  await picker.getByRole("button", { name: "确定" }).click();
+  await picker.getByRole("region", { name: "提醒设置" }).getByRole("button", { name: "取消" }).click();
+  await picker.locator(".due-footer").getByRole("button", { name: "确定" }).click();
   await expect(page.locator(".detail-due-trigger")).toContainText("全天");
 
   await page.getByRole("button", { name: "设置到期时间" }).click();
@@ -1007,20 +1008,35 @@ test("reminder picker saves multiple, custom, all-day and persistent rules", asy
   const picker = page.getByRole("dialog", { name: "设置到期时间" });
   await picker.getByRole("button", { name: "明天", exact: true }).click();
   await picker.getByRole("button", { name: "提醒", exact: true }).click();
-  await picker.getByRole("button", { name: "准时" }).click();
-  await picker.getByRole("button", { name: "提前5分钟" }).click();
-  await picker.getByRole("checkbox", { name: /持续提醒/ }).check();
-  await picker.getByRole("button", { name: "自定义" }).click();
-  await picker.getByRole("spinbutton").fill("2");
-  await picker.locator(".due-reminder-custom select").last().selectOption("hour");
-  await picker.getByRole("button", { name: "添加提醒" }).click();
+  const reminderPanel = picker.getByRole("region", { name: "提醒设置" });
+  await reminderPanel.getByRole("button", { name: "准时" }).click();
+  await reminderPanel.getByRole("button", { name: "提前5分钟" }).click();
+  await reminderPanel.getByRole("checkbox", { name: /持续提醒/ }).check();
+  await reminderPanel.getByRole("button", { name: "自定义" }).click();
+  await reminderPanel.getByRole("spinbutton").fill("2");
+  await reminderPanel.locator(".due-reminder-custom select").last().selectOption("hour");
+  await reminderPanel.getByRole("button", { name: "保存" }).click();
+  await expect(reminderPanel.getByRole("button", { name: "提前2小时" })).toHaveAttribute("aria-pressed", "true");
+  await reminderPanel.getByRole("button", { name: "提前2小时" }).click();
+  await expect(reminderPanel.getByRole("button", { name: "提前2小时" })).toHaveCount(0);
+  await reminderPanel.getByRole("button", { name: "自定义" }).click();
+  await reminderPanel.getByRole("spinbutton").fill("2");
+  await reminderPanel.locator(".due-reminder-custom select").last().selectOption("hour");
+  await reminderPanel.getByRole("button", { name: "保存" }).click();
+  await reminderPanel.getByRole("button", { name: "确定" }).click();
   await expect(picker.getByRole("button", { name: "提醒", exact: true })).toContainText("3 个提醒");
-  await picker.getByRole("button", { name: "确定" }).click();
+  await picker.locator(".due-footer").getByRole("button", { name: "确定" }).click();
 
   await page.getByRole("button", { name: "设置到期时间" }).click();
   await picker.getByRole("button", { name: "提醒", exact: true }).click();
   await expect(picker.getByRole("button", { name: "准时" })).toHaveAttribute("aria-pressed", "true");
+  await expect(picker.getByRole("button", { name: "提前2小时" })).toHaveAttribute("aria-pressed", "true");
   await expect(picker.getByRole("checkbox", { name: /持续提醒/ })).toBeChecked();
+
+  await picker.getByRole("button", { name: "准时" }).click();
+  await picker.getByRole("region", { name: "提醒设置" }).getByRole("button", { name: "取消" }).click();
+  await picker.getByRole("button", { name: "提醒", exact: true }).click();
+  await expect(picker.getByRole("button", { name: "准时" })).toHaveAttribute("aria-pressed", "true");
 
   await picker.getByRole("button", { name: "提醒", exact: true }).click();
   await picker.locator(".due-time-row select").selectOption("");
