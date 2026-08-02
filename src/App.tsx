@@ -1321,7 +1321,7 @@ function AuthScreen({
           </div>
         </div>
         <h2>企业级待办跟进平台</h2>
-        <p>让天下没有跟丢的Action</p>
+        <p>让团队里没有跟丢的待办事项</p>
       </aside>
     </main>
   );

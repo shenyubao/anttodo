@@ -155,9 +155,8 @@ function App() {
           <div className="hero-orb hero-orb-one" aria-hidden="true" />
           <div className="hero-orb hero-orb-two" aria-hidden="true" />
           <div className="container hero-content">
-            <div className="eyebrow"><span /> 让每一个 Action 都有下落</div>
-            <h1>让天下没有<br /><span>跟丢的 Action</span></h1>
-            <p className="hero-copy">从灵感闪现到团队交付，蚂蚁清单帮你收集、整理并在正确的时间提醒每一件重要的事。</p>
+            <h1>让团队里没有跟丢的待办事项</h1>
+            <p className="hero-copy">蚂蚁清单，帮你收集、整理、跟进 整个团队的待办事项</p>
             <div className="hero-actions">
               <a className="button button-primary" href={LOGIN_URL}>立即使用 Web 版 <ChevronRight /></a>
               <a className="button button-secondary" href="#download"><Apple /> 下载 Mac 版</a>
@@ -280,7 +279,7 @@ function App() {
 
       <footer className="site-footer">
         <div className="container footer-grid">
-          <div className="footer-brand"><a className="brand" href="#top"><img src="/anttodo-icon.png" alt="" /><span>蚂蚁清单</span></a><p>让天下没有跟丢的 Action</p></div>
+          <div className="footer-brand"><a className="brand" href="#top"><img src="/anttodo-icon.png" alt="" /><span>蚂蚁清单</span></a><p>让团队里没有跟丢的待办事项</p></div>
           <nav aria-label="页脚导航"><a href="#features">功能</a><a href="#membership">高级会员</a><a href="#download">下载</a><a href={DOCS_URL}>产品文档</a><a href={LOGIN_URL}>登录</a></nav>
           <p className="copyright">© {new Date().getFullYear()} AntTodo. All rights reserved.</p>
         </div>
