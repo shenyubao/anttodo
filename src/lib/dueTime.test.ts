@@ -45,6 +45,7 @@ describe("due time helpers", () => {
   it("validates ranges and formats point and range labels", () => {
     const start = fromLocalDateTime("2026-07-20", "14:30");
     const end = fromLocalDateTime("2026-07-20", "15:30");
+    const multiDayEnd = fromLocalDateTime("2026-08-27", "10:30");
     expect(isValidDueRange(start, end)).toBe(true);
     expect(isValidDueRange(end, start)).toBe(false);
     expect(formatDueExact({
@@ -52,6 +53,11 @@ describe("due time helpers", () => {
       due_at: end.toISOString(),
       due_is_all_day: false,
     })).toContain("14:30–15:30");
+    expect(formatDueExact({
+      due_start_at: start.toISOString(),
+      due_at: multiDayEnd.toISOString(),
+      due_is_all_day: false,
+    })).toBe("7月20日–8月27日");
     expect(formatDueExact({
       due_start_at: null,
       due_at: end.toISOString(),

@@ -3,16 +3,20 @@ import {
   attachmentMarkdown,
   buildAttachmentPath,
   buildAttachmentUri,
+  buildCommentImagePath,
+  buildCommentImageUri,
   escapeMarkdownLabel,
   isSafeEditorUrl,
   MAX_ATTACHMENT_BYTES,
   parseAttachmentUri,
   validateAttachment,
+  validateCommentImage,
 } from "./attachments";
 
 const workspaceId = "20000000-0000-4000-8000-000000000001";
 const taskId = "40000000-0000-4000-8000-000000000001";
 const objectId = "50000000-0000-4000-8000-000000000001";
+const uploaderId = "10000000-0000-4000-8000-000000000001";
 
 describe("task attachments", () => {
   it("builds and parses a canonical attachment uri", () => {
@@ -37,6 +41,22 @@ describe("task attachments", () => {
     expect(isSafeEditorUrl("https://anttodo.cn/help")).toBe(true);
   });
 
+  it("builds and parses comment image uris scoped to the uploader", () => {
+    const path = buildCommentImagePath(
+      { workspaceId, taskId, uploaderId },
+      "webp",
+      objectId,
+    );
+    const uri = buildCommentImageUri(path);
+    expect(parseAttachmentUri(uri)).toEqual({
+      bucket: "comment-images",
+      path,
+      taskId,
+      uploaderId,
+      workspaceId,
+    });
+  });
+
   it("validates size, extension, and mime type", () => {
     expect(validateAttachment(new File(["image"], "screen.png", { type: "image/png" })))
       .toEqual({ contentType: "image/png", extension: "png", image: true });
@@ -48,6 +68,9 @@ describe("task attachments", () => {
     const oversized = new File(["x"], "large.pdf", { type: "application/pdf" });
     vi.spyOn(oversized, "size", "get").mockReturnValue(MAX_ATTACHMENT_BYTES + 1);
     expect(() => validateAttachment(oversized)).toThrow("附件不能超过 20MB");
+    expect(() => validateCommentImage(
+      new File(["text"], "notes.txt", { type: "text/plain" }),
+    )).toThrow("评论只能上传图片");
   });
 
   it("escapes labels and inserts image or file markdown", () => {

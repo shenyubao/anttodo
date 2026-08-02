@@ -25,6 +25,18 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   show_labels: false,
 } as const;
 
+export function effectiveTaskPriority(task: Task) {
+  return task.kind === "note" ? "none" : task.priority;
+}
+
+export function isActiveTask(task: Task) {
+  return task.kind === "note" || task.status === "open";
+}
+
+export function isCompletedTask(task: Task) {
+  return task.kind !== "note" && task.status === "completed";
+}
+
 export const TASK_GROUPING_OPTIONS: Array<{ value: TaskListGrouping; label: string }> = [
   { value: "due", label: "时间" },
   { value: "created", label: "创建时间" },
@@ -173,7 +185,8 @@ export function sortTasks(
       );
       directionApplied = true;
     } else if (sort === "priority") {
-      result = priorityRank[left.priority] - priorityRank[right.priority];
+      result = priorityRank[effectiveTaskPriority(left)]
+        - priorityRank[effectiveTaskPriority(right)];
     } else if (sort === "assignee") {
       result = nullableCompare(
         left.assignee_id ? memberName.get(left.assignee_id) : null,
@@ -204,7 +217,7 @@ export function groupTasks(input: {
   const {
     grouping, labels, members, sections, placements, now, preferences,
   } = input;
-  const tasks = input.tasks.filter((task) => task.status === "open");
+  const tasks = input.tasks.filter(isActiveTask);
   const sortGroup = (items: Task[]) =>
     sortTasks(items, input.sort, input.direction, labels, members, placements);
   const groups: TaskListGroup[] = [];
@@ -285,10 +298,10 @@ export function groupTasks(input: {
     }
     add("label:none", "无标签", tasks.filter((task) => task.label_ids.length === 0));
   } else if (grouping === "priority") {
-    add("priority:high", "高优先级", tasks.filter((task) => task.priority === "high"));
-    add("priority:medium", "中优先级", tasks.filter((task) => task.priority === "medium"));
-    add("priority:low", "低优先级", tasks.filter((task) => task.priority === "low"));
-    add("priority:none", "无优先级", tasks.filter((task) => task.priority === "none"));
+    add("priority:high", "高优先级", tasks.filter((task) => effectiveTaskPriority(task) === "high"));
+    add("priority:medium", "中优先级", tasks.filter((task) => effectiveTaskPriority(task) === "medium"));
+    add("priority:low", "低优先级", tasks.filter((task) => effectiveTaskPriority(task) === "low"));
+    add("priority:none", "无优先级", tasks.filter((task) => effectiveTaskPriority(task) === "none"));
   } else if (grouping === "assignee") {
     for (const member of [...members].sort((a, b) =>
       (a.profile?.display_name ?? a.user_id).localeCompare(

@@ -17,6 +17,8 @@ import {
   AlarmClock,
   CalendarDays,
   CalendarPlus,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -55,7 +57,28 @@ import {
   toTimeInput,
   weekdayLabels,
 } from "./lib/dateTimePreferences";
-import type { DateTimePreferences, Task } from "./types";
+import {
+  ALL_DAY_REMINDER_PRESETS,
+  TIMED_REMINDER_PRESETS,
+  endReminderRule,
+  normalizeReminderRules,
+  reminderRuleKey,
+  reminderRuleLabel,
+  reminderSummary,
+  reminderTriggerAt,
+} from "./lib/reminders";
+import {
+  currentNotificationPermission,
+  requestWebNotificationPermission,
+  type NotificationPermissionState,
+} from "./lib/webPush";
+import type {
+  DateTimePreferences,
+  ReminderRule,
+  ReminderSchedule,
+  ReminderUnit,
+  Task,
+} from "./types";
 
 function calendarDays(
   month: Date,
@@ -74,7 +97,9 @@ function calendarDays(
 }
 
 function initialPoint(task: Task) {
-  return roundUpToHalfHour(task.due_at ? new Date(task.due_at) : new Date());
+  return roundUpToHalfHour(task.due_start_at
+    ? new Date(task.due_start_at)
+    : task.due_at ? new Date(task.due_at) : new Date());
 }
 
 function formatDateField(value: string, preferences: DateTimePreferences) {
@@ -105,12 +130,14 @@ export function DueDateControl({
       Task,
       "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone"
     >,
+    schedule: ReminderSchedule,
   ) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"point" | "range">("point");
   const [pointDate, setPointDate] = useState("");
   const [pointTime, setPointTime] = useState("");
+  const [pointHasTime, setPointHasTime] = useState(true);
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -120,6 +147,16 @@ export function DueDateControl({
   const [displayedMonth, setDisplayedMonth] = useState(new Date());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [reminderOpen, setReminderOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [reminders, setReminders] = useState<ReminderRule[]>([]);
+  const [persistent, setPersistent] = useState(false);
+  const [customValue, setCustomValue] = useState(10);
+  const [customUnit, setCustomUnit] = useState<ReminderUnit>("minute");
+  const [customTime, setCustomTime] = useState("09:00");
+  const [customAnchor, setCustomAnchor] = useState<"start" | "end">("start");
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermissionState>(() => currentNotificationPermission());
   const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -134,9 +171,14 @@ export function DueDateControl({
     const end = task.due_start_at && task.due_at
       ? roundUpToHalfHour(new Date(task.due_at))
       : addHours(start, 1);
-    setTab(task.due_start_at ? "range" : "point");
+    const singleAllDay = Boolean(
+      task.due_is_all_day && task.due_start_at && task.due_at
+      && toDateInput(new Date(task.due_start_at), zone) === toDateInput(new Date(task.due_at), zone),
+    );
+    setTab(task.due_start_at && !singleAllDay ? "range" : "point");
     setPointDate(toDateInput(point, zone));
     setPointTime(toTimeInput(point, zone));
+    setPointHasTime(!singleAllDay);
     setStartDate(toDateInput(start, zone));
     setStartTime(toTimeInput(start, zone));
     setEndDate(toDateInput(end, zone));
@@ -144,6 +186,16 @@ export function DueDateControl({
     setAllDay(task.due_is_all_day);
     setTimeZone(zone);
     setDisplayedMonth(new Date(`${toDateInput(point, zone)}T12:00:00`));
+    setReminders((task.reminders ?? []).map((reminder) => ({
+      anchor: reminder.anchor,
+      offset_value: reminder.offset_value,
+      offset_unit: reminder.offset_unit,
+      local_time: reminder.local_time ? reminder.local_time.slice(0, 5) : null,
+    })));
+    setPersistent(Boolean(task.reminder_persistent));
+    setReminderOpen(false);
+    setCustomOpen(false);
+    setNotificationPermission(currentNotificationPermission());
     setError("");
   }
 
@@ -156,6 +208,8 @@ export function DueDateControl({
     task.due_start_at,
     task.due_is_all_day,
     task.due_timezone,
+    task.reminders,
+    task.reminder_persistent,
   ]);
 
   useEffect(() => {
@@ -199,7 +253,7 @@ export function DueDateControl({
     positionPopover();
     window.addEventListener("resize", positionPopover);
     return () => window.removeEventListener("resize", positionPopover);
-  }, [open, tab, allDay, error]);
+  }, [open, tab, allDay, pointHasTime, reminderOpen, customOpen, error]);
 
   const dueFields: DueFields = {
     due_at: task.due_at,
@@ -219,6 +273,39 @@ export function DueDateControl({
         "UTC",
       ];
   const status = getDueStatus(task.due_at, now);
+  const draftAllDay = tab === "point" ? !pointHasTime : allDay;
+  const reminderPresets = draftAllDay
+    ? ALL_DAY_REMINDER_PRESETS
+    : [
+        ...TIMED_REMINDER_PRESETS,
+        ...(tab === "range" ? [endReminderRule()] : []),
+      ];
+
+  function toggleReminder(rule: ReminderRule) {
+    const key = reminderRuleKey(rule);
+    setReminders((current) => {
+      const exists = current.some((item) => reminderRuleKey(item) === key);
+      if (exists) return current.filter((item) => reminderRuleKey(item) !== key);
+      try {
+        return normalizeReminderRules([...current, rule]);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "提醒设置无效");
+        return current;
+      }
+    });
+  }
+
+  function addCustomReminder() {
+    const rule: ReminderRule = {
+      anchor: draftAllDay ? "start" : customAnchor,
+      offset_value: customValue,
+      offset_unit: customUnit,
+      local_time: draftAllDay ? customTime : null,
+    };
+    const key = reminderRuleKey(rule);
+    if (!reminders.some((item) => reminderRuleKey(item) === key)) toggleReminder(rule);
+    setCustomOpen(false);
+  }
 
   function applyPreset(preset: DuePreset) {
     const date = getPresetDate(preset);
@@ -236,6 +323,9 @@ export function DueDateControl({
       setEndDate(toDateInput(end, timeZone));
       setEndTime(toTimeInput(end, timeZone));
     }
+    if (next === "point") {
+      setReminders((current) => current.filter((rule) => rule.anchor === "start"));
+    }
     setTab(next);
     setError("");
   }
@@ -250,7 +340,17 @@ export function DueDateControl({
       Task,
       "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone"
     >;
-    if (tab === "point") {
+    if (tab === "point" && !pointHasTime) {
+      const start = fromZonedDateTime(pointDate, "00:00", savedZone);
+      const end = fromZonedDateTime(pointDate, "23:59", savedZone);
+      end.setSeconds(59, 999);
+      patch = {
+        due_at: end.toISOString(),
+        due_start_at: start.toISOString(),
+        due_is_all_day: true,
+        due_timezone: savedZone,
+      };
+    } else if (tab === "point") {
       const dueAt = fromZonedDateTime(pointDate, pointTime, savedZone);
       if (Number.isNaN(dueAt.getTime())) {
         setError("请选择有效的日期和时间");
@@ -290,9 +390,29 @@ export function DueDateControl({
         due_timezone: savedZone,
       };
     }
+    let normalized: ReminderRule[];
+    try {
+      normalized = normalizeReminderRules(reminders);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提醒设置无效");
+      return;
+    }
+    if (normalized.length > 0) {
+      const permission = await requestWebNotificationPermission();
+      setNotificationPermission(permission);
+    }
+    const schedule = { reminders: normalized, persistent: persistent && normalized.length > 0 };
+    const hasExpiredReminder = normalized.some((rule) => {
+      const trigger = reminderTriggerAt({ ...task, ...patch }, rule);
+      return trigger ? new Date(trigger).getTime() <= now.getTime() : false;
+    });
     setBusy(true);
     try {
-      await onSave(patch);
+      await onSave(patch, schedule);
+      if (hasExpiredReminder) {
+        setError("部分提醒时间已过期，规则已保留但不会补发，请调整日期或提醒");
+        return;
+      }
       setOpen(false);
     } finally {
       setBusy(false);
@@ -307,7 +427,7 @@ export function DueDateControl({
         due_start_at: null,
         due_is_all_day: false,
         due_timezone: null,
-      });
+      }, { reminders: [], persistent: false });
       setOpen(false);
     } finally {
       setBusy(false);
@@ -427,7 +547,19 @@ export function DueDateControl({
               <label className="due-time-row">
                 <Clock3 />
                 <span>时间</span>
-                <select value={pointTime} onChange={(event) => setPointTime(event.target.value)}>
+                <select
+                  value={pointHasTime ? pointTime : ""}
+                  onChange={(event) => {
+                    const nextHasTime = Boolean(event.target.value);
+                    if (nextHasTime !== pointHasTime) {
+                      setReminders([]);
+                      setPersistent(false);
+                    }
+                    setPointHasTime(nextHasTime);
+                    if (event.target.value) setPointTime(event.target.value);
+                  }}
+                >
+                  <option value="">不要设置时间</option>
                   {HALF_HOUR_OPTIONS.map((time) => (
                     <option key={time} value={time}>
                       {timeOptionLabel(time, preferences)}
@@ -498,7 +630,11 @@ export function DueDateControl({
                 <input
                   type="checkbox"
                   checked={allDay}
-                  onChange={(event) => setAllDay(event.target.checked)}
+                  onChange={(event) => {
+                    setAllDay(event.target.checked);
+                    setReminders([]);
+                    setPersistent(false);
+                  }}
                 />
                 <i />
               </label>
@@ -521,13 +657,112 @@ export function DueDateControl({
           </datalist>
 
           <div className="due-placeholder-actions">
-            <button type="button" aria-label="提醒" aria-disabled="true" title="提醒功能暂未开放">
-              <AlarmClock /><span>准时</span><em>暂未开放</em><ChevronRight />
+            <button
+              type="button"
+              aria-label="提醒"
+              aria-expanded={reminderOpen}
+              onClick={() => setReminderOpen((value) => !value)}
+            >
+              <AlarmClock />
+              <span>{reminderSummary({ reminders, persistent }, draftAllDay)}</span>
+              {reminders.length > 0 && <em>{reminders.length}</em>}
+              <ChevronDown />
             </button>
             <button type="button" aria-label="重复" aria-disabled="true" title="重复功能暂未开放">
               <RotateCcw /><span>重复</span><em>暂未开放</em><ChevronRight />
             </button>
           </div>
+          {reminderOpen && (
+            <section className="due-reminder-panel" aria-label="提醒设置">
+              {!customOpen ? (
+                <>
+                  <div className="due-reminder-options">
+                    {reminderPresets.map((rule) => {
+                      const selected = reminders.some(
+                        (item) => reminderRuleKey(item) === reminderRuleKey(rule),
+                      );
+                      return (
+                        <button
+                          type="button"
+                          key={reminderRuleKey(rule)}
+                          aria-pressed={selected}
+                          onClick={() => toggleReminder(rule)}
+                        >
+                          <span>{reminderRuleLabel(rule, draftAllDay)}</span>
+                          {selected && <Check />}
+                        </button>
+                      );
+                    })}
+                    <button type="button" onClick={() => {
+                      if (draftAllDay && !["day", "week"].includes(customUnit)) {
+                        setCustomUnit("day");
+                      }
+                      setCustomOpen(true);
+                    }}>
+                      <span>自定义</span><ChevronRight />
+                    </button>
+                  </div>
+                  <label className="due-persistent-row">
+                    <span>
+                      <strong>持续提醒</strong>
+                      <small>每 2 分钟，最多 30 分钟</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={persistent}
+                      disabled={reminders.length === 0}
+                      onChange={(event) => setPersistent(event.target.checked)}
+                    />
+                    <i />
+                  </label>
+                </>
+              ) : (
+                <div className="due-reminder-custom">
+                  <header>
+                    <button type="button" aria-label="返回提醒预设" onClick={() => setCustomOpen(false)}>
+                      <ChevronLeft />
+                    </button>
+                    <strong>自定义提醒</strong>
+                  </header>
+                  {tab === "range" && !draftAllDay && (
+                    <label>
+                      <span>相对</span>
+                      <select value={customAnchor} onChange={(event) => setCustomAnchor(event.target.value as "start" | "end")}>
+                        <option value="start">开始时间</option>
+                        <option value="end">结束时间</option>
+                      </select>
+                    </label>
+                  )}
+                  <label>
+                    <span>提前</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="525600"
+                      value={customValue}
+                      onChange={(event) => setCustomValue(Math.max(0, Number(event.target.value) || 0))}
+                    />
+                    <select value={customUnit} onChange={(event) => setCustomUnit(event.target.value as ReminderUnit)}>
+                      {!draftAllDay && <option value="minute">分钟</option>}
+                      {!draftAllDay && <option value="hour">小时</option>}
+                      <option value="day">天</option>
+                      <option value="week">周</option>
+                    </select>
+                  </label>
+                  {draftAllDay && (
+                    <label><span>时间</span><input type="time" value={customTime} onChange={(event) => setCustomTime(event.target.value)} /></label>
+                  )}
+                  <button className="primary" type="button" onClick={addCustomReminder}>添加提醒</button>
+                </div>
+              )}
+            </section>
+          )}
+          {notificationPermission === "denied" && reminders.length > 0 && (
+            <p className="due-notification-warning">当前浏览器未授权通知；提醒会保存，但本机不会弹出通知。</p>
+          )}
+          {notificationPermission === "unsupported" && reminders.length > 0 && (
+            <p className="due-notification-warning">当前浏览器不支持 Web Push 通知。</p>
+          )}
           {error && <p className="due-error" role="alert">{error}</p>}
           <div className="due-footer">
             <button className="secondary" disabled={busy} onClick={() => void clear()}>清除</button>

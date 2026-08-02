@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const TASK_ATTACHMENT_BUCKET = "task-attachments";
+export const COMMENT_IMAGE_BUCKET = "comment-images";
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 const UUID_PATTERN =
@@ -33,6 +34,10 @@ export type AttachmentContext = {
   taskId: string;
 };
 
+export type CommentImageContext = AttachmentContext & {
+  uploaderId: string;
+};
+
 export type UploadedAttachment = {
   contentType: string;
   fileName: string;
@@ -47,12 +52,17 @@ export type AttachmentService = {
   remove: (uri: string) => Promise<void>;
   resolveImage: (uri: string) => Promise<string>;
   upload: (context: AttachmentContext, file: File) => Promise<UploadedAttachment>;
+  uploadCommentImage: (
+    context: CommentImageContext,
+    file: File,
+  ) => Promise<UploadedAttachment>;
 };
 
 type ParsedAttachmentUri = {
   bucket: string;
   path: string;
   taskId: string;
+  uploaderId?: string;
   workspaceId: string;
 };
 
@@ -91,6 +101,12 @@ export function validateAttachment(file: File) {
   };
 }
 
+export function validateCommentImage(file: File) {
+  const metadata = validateAttachment(file);
+  if (!metadata.image) throw new Error("评论只能上传图片");
+  return metadata;
+}
+
 export function buildAttachmentPath(
   context: AttachmentContext,
   extension: string,
@@ -109,22 +125,49 @@ export function buildAttachmentUri(path: string) {
   return `anttodo-storage://${TASK_ATTACHMENT_BUCKET}/${path}`;
 }
 
+export function buildCommentImagePath(
+  context: CommentImageContext,
+  extension: string,
+  id = crypto.randomUUID(),
+) {
+  if (
+    !UUID_PATTERN.test(context.workspaceId) ||
+    !UUID_PATTERN.test(context.taskId) ||
+    !UUID_PATTERN.test(context.uploaderId)
+  ) {
+    throw new Error("评论图片上下文无效");
+  }
+  if (!UUID_PATTERN.test(id) || !/^[a-z0-9]+$/i.test(extension)) {
+    throw new Error("评论图片路径无效");
+  }
+  return `${context.workspaceId}/${context.taskId}/${context.uploaderId}/${id}.${extension.toLowerCase()}`;
+}
+
+export function buildCommentImageUri(path: string) {
+  return `anttodo-storage://${COMMENT_IMAGE_BUCKET}/${path}`;
+}
+
 export function parseAttachmentUri(uri: string): ParsedAttachmentUri | null {
   try {
     const parsed = new URL(uri);
     if (parsed.protocol !== "anttodo-storage:") return null;
-    if (parsed.hostname !== TASK_ATTACHMENT_BUCKET) return null;
+    if (![TASK_ATTACHMENT_BUCKET, COMMENT_IMAGE_BUCKET].includes(parsed.hostname)) return null;
 
     const parts = parsed.pathname.replace(/^\/+/, "").split("/");
-    if (parts.length !== 3) return null;
-    const [workspaceId, taskId, objectName] = parts;
+    const isCommentImage = parsed.hostname === COMMENT_IMAGE_BUCKET;
+    if (parts.length !== (isCommentImage ? 4 : 3)) return null;
+    const [workspaceId, taskId] = parts;
+    const uploaderId = isCommentImage ? parts[2] : undefined;
+    const objectName = parts[isCommentImage ? 3 : 2];
     if (!UUID_PATTERN.test(workspaceId) || !UUID_PATTERN.test(taskId)) return null;
+    if (uploaderId && !UUID_PATTERN.test(uploaderId)) return null;
     if (!/^[0-9a-f-]{36}\.[a-z0-9]+$/i.test(objectName)) return null;
 
     return {
       bucket: parsed.hostname,
       path: parts.join("/"),
       taskId,
+      uploaderId,
       workspaceId,
     };
   } catch {
@@ -176,6 +219,26 @@ export function createSupabaseAttachmentService(
         image: metadata.image,
         path,
         uri: buildAttachmentUri(path),
+      };
+    },
+
+    async uploadCommentImage(context, file) {
+      const metadata = validateCommentImage(file);
+      const path = buildCommentImagePath(context, metadata.extension);
+      const { error } = await client.storage
+        .from(COMMENT_IMAGE_BUCKET)
+        .upload(path, file, {
+          cacheControl: "3600",
+          contentType: metadata.contentType,
+          upsert: false,
+        });
+      if (error) throw new Error(error.message);
+      return {
+        contentType: metadata.contentType,
+        fileName: file.name,
+        image: true,
+        path,
+        uri: buildCommentImageUri(path),
       };
     },
 
@@ -249,6 +312,29 @@ export function createDemoAttachmentService(): AttachmentService {
         contentType: metadata.contentType,
         fileName: file.name,
         image: metadata.image,
+        path,
+        uri,
+      };
+    },
+
+    async uploadCommentImage(context, file) {
+      const metadata = validateCommentImage(file);
+      let path: string;
+      try {
+        path = buildCommentImagePath(context, metadata.extension);
+      } catch {
+        path = buildCommentImagePath({
+          workspaceId: crypto.randomUUID(),
+          taskId: crypto.randomUUID(),
+          uploaderId: crypto.randomUUID(),
+        }, metadata.extension);
+      }
+      const uri = buildCommentImageUri(path);
+      objectUrls.set(uri, URL.createObjectURL(file));
+      return {
+        contentType: metadata.contentType,
+        fileName: file.name,
+        image: true,
         path,
         uri,
       };

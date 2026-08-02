@@ -25,6 +25,9 @@ function task(overrides: Partial<Task> = {}): Task {
     label_ids: [],
     subtasks: [],
     ...overrides,
+    kind: overrides.kind ?? "todo",
+    reminders: overrides.reminders ?? [],
+    reminder_persistent: overrides.reminder_persistent ?? false,
   };
 }
 
@@ -41,13 +44,36 @@ function label(
     name,
     color: `#${String(position + 1).padStart(6, "0")}`,
     position,
-    visibility: "workspace",
+    kind: "team",
+    view_scope: "all",
+    manage_scope: "users",
     inherit_permissions: parentId !== null,
     created_by: "user",
   };
 }
 
 describe("mind map tree", () => {
+  it("preserves note identity and hidden task state on task nodes", () => {
+    const note = task({
+      id: "note",
+      kind: "note",
+      status: "completed",
+      completed_at: "2026-08-01T01:00:00.000Z",
+      priority: "high",
+    });
+    const root = buildMindMapTree({
+      tasks: [note],
+      labels: [],
+      preferences: DEFAULT_DATE_TIME_PREFERENCES,
+    });
+    expect(root.children.at(-2)?.children[0].task).toMatchObject({
+      id: "note",
+      kind: "note",
+      status: "completed",
+      priority: "high",
+    });
+  });
+
   it("builds date, inbox and unscheduled branches without deleted tasks", () => {
     const root = buildMindMapTree({
       tasks: [

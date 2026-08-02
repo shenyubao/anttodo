@@ -1,8 +1,14 @@
 export type WorkspaceRole = "owner" | "admin" | "member";
 export type WorkspaceInviteRole = Exclude<WorkspaceRole, "owner">;
-export type LabelVisibility = "workspace" | "private" | "restricted";
+export type LabelKind = "private" | "team";
+export type LabelAccessScope = "inherit" | "all" | "users" | "groups";
+export type LabelPermission = "view" | "edit";
+export type LabelPermissionLevel = 1 | 2;
 export type TaskStatus = "open" | "completed" | "cancelled";
 export type TaskPriority = "none" | "low" | "medium" | "high";
+export type TaskKind = "todo" | "note";
+export type ReminderAnchor = "start" | "end";
+export type ReminderUnit = "minute" | "hour" | "day" | "week";
 export type ConnectorType = "mock" | "yunxiao" | "dingtalk";
 export type TimeFormat = "12h" | "24h";
 export type DateFormat = "mdy" | "dmy" | "ymd";
@@ -49,11 +55,34 @@ export type Workspace = {
   role?: WorkspaceRole;
 };
 
+export type UserQuota = {
+  user_id: string;
+  workspace_limit: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Member = {
   workspace_id: string;
   user_id: string;
   role: WorkspaceRole;
   profile?: Profile;
+};
+
+export type UserGroup = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserGroupMember = {
+  group_id: string;
+  workspace_id: string;
+  user_id: string;
+  added_at: string;
 };
 
 export type WorkspaceInviteLink = {
@@ -78,16 +107,37 @@ export type Label = {
   parent_id: string | null;
   name: string;
   color: string;
-  visibility: LabelVisibility;
+  kind: LabelKind;
+  view_scope: LabelAccessScope;
+  manage_scope: LabelAccessScope;
   inherit_permissions: boolean;
   position: number;
   created_by: string;
 };
 
-export type LabelAcl = {
+export type LabelUserAcl = {
   label_id: string;
+  workspace_id: string;
   user_id: string;
-  permission: "view" | "edit";
+  permission: LabelPermission;
+};
+
+export type LabelGroupAcl = {
+  label_id: string;
+  workspace_id: string;
+  group_id: string;
+  permission: LabelPermission;
+};
+
+export type LabelAccessDraft = {
+  name: string;
+  color: string;
+  parentId: string | null;
+  kind: LabelKind;
+  viewScope: LabelAccessScope;
+  manageScope: LabelAccessScope;
+  viewSubjectIds: string[];
+  manageSubjectIds: string[];
 };
 
 export type Subtask = {
@@ -96,6 +146,30 @@ export type Subtask = {
   title: string;
   completed: boolean;
   position: number;
+  due_at: string | null;
+  assignee_id: string | null;
+};
+
+export type ReminderRule = {
+  anchor: ReminderAnchor;
+  offset_value: number;
+  offset_unit: ReminderUnit;
+  local_time: string | null;
+};
+
+export type TaskReminder = ReminderRule & {
+  id: string;
+  task_id: string;
+  trigger_at: string;
+  position: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReminderSchedule = {
+  reminders: ReminderRule[];
+  persistent: boolean;
 };
 
 export type Task = {
@@ -103,6 +177,7 @@ export type Task = {
   workspace_id: string;
   title: string;
   description: string;
+  kind: TaskKind;
   status: TaskStatus;
   priority: TaskPriority;
   due_at: string | null;
@@ -118,6 +193,57 @@ export type Task = {
   updated_at: string;
   label_ids: string[];
   subtasks: Subtask[];
+  reminders: TaskReminder[];
+  reminder_persistent: boolean;
+};
+
+export type CommentMention = {
+  user_id: string;
+  display_name_snapshot: string;
+};
+
+export type TaskComment = {
+  id: string;
+  workspace_id: string;
+  task_id: string;
+  author_id: string;
+  body: string;
+  image_uris: string[];
+  created_at: string;
+  updated_at: string;
+  author?: Profile;
+  mentions: CommentMention[];
+};
+
+export type TaskActivityEvent = {
+  id: string;
+  workspace_id: string;
+  task_id: string;
+  actor_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+  actor?: Profile;
+};
+
+export type TaskActivityPage = {
+  items: TaskActivityEvent[];
+  nextCursor: { createdAt: string; id: string } | null;
+};
+
+export type AppNotification = {
+  id: string;
+  workspace_id: string;
+  task_id: string;
+  comment_id: string;
+  recipient_id: string;
+  actor_id: string;
+  notification_type: "comment_mention";
+  read_at: string | null;
+  created_at: string;
+  actor?: Profile;
+  task?: Pick<Task, "id" | "title" | "kind">;
+  comment?: Pick<TaskComment, "id" | "body" | "image_uris">;
 };
 
 export type TaskListPreference = {
@@ -188,8 +314,12 @@ export type SyncConflict = {
 
 export type WorkspaceBundle = {
   members: Member[];
+  userGroups: UserGroup[];
+  userGroupMembers: UserGroupMember[];
   labels: Label[];
-  labelAcls: LabelAcl[];
+  labelUserAcls: LabelUserAcl[];
+  labelGroupAcls: LabelGroupAcl[];
+  labelPermissionLevels: Record<string, LabelPermissionLevel>;
   tasks: Task[];
   connectors: Connector[];
   syncRuns: SyncRun[];

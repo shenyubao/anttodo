@@ -31,6 +31,7 @@ import {
   Crosshair,
   LoaderCircle,
   Maximize2,
+  NotebookPen,
   Plus,
   Tag,
   Trash2,
@@ -125,7 +126,8 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
       className={clsx(
         "mind-map-node",
         `mind-map-node-${data.kind}`,
-        data.task?.status === "completed" && "completed",
+        data.task?.kind !== "note" && data.task?.status === "completed" && "completed",
+        data.task?.kind === "note" && "note",
         data.draft && "draft",
         selected && "selected",
         data.collapsible && "mind-map-node-collapsible",
@@ -141,6 +143,7 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
         if (data.collapsible) data.onToggleCollapse?.(id);
       }}
       onKeyDown={(event) => {
+        if (event.defaultPrevented) return;
         if (!data.collapsible || (event.key !== "Enter" && event.key !== " ")) return;
         event.preventDefault();
         event.stopPropagation();
@@ -175,17 +178,21 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
           </form>
         ) : (
           <div className="mind-map-task-content">
-            <button
-              className="mind-map-task-toggle nodrag nopan"
-              aria-label={data.task?.status === "completed" ? "标记未完成" : "完成任务"}
-              disabled={!data.online}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (data.task) data.onToggleTask?.(data.task);
-              }}
-            >
-              {data.task?.status === "completed" ? <Check /> : <Circle />}
-            </button>
+            {data.task?.kind === "note" ? (
+              <span className="mind-map-note-icon" aria-label="笔记"><NotebookPen /></span>
+            ) : (
+              <button
+                className="mind-map-task-toggle nodrag nopan"
+                aria-label={data.task?.status === "completed" ? "标记未完成" : "完成任务"}
+                disabled={!data.online}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (data.task) data.onToggleTask?.(data.task);
+                }}
+              >
+                {data.task?.status === "completed" ? <Check /> : <Circle />}
+              </button>
+            )}
             <span title={data.label}>{data.label}</span>
           </div>
         )
@@ -505,7 +512,7 @@ function MindMapCanvas({
   }), [bundle.labels, bundle.tasks, dateTimePreferences, focusDateKey]);
 
   const toggleTask = useCallback(async (task: Task) => {
-    if (!online) return;
+    if (!online || task.kind === "note") return;
     setError("");
     try {
       await onUpdateTask(task.id, {
@@ -671,8 +678,9 @@ function MindMapCanvas({
     const isTask = node.data.kind === "task" && node.data.task;
     const isLabel = node.data.kind === "label" && node.data.labelId;
     if (!isTask && !isLabel) return;
+    const itemName = node.data.task?.kind === "note" ? "笔记" : "任务";
     const confirmed = isTask
-      ? window.confirm(`删除任务“${node.data.label}”？此操作会将任务移入已删除。`)
+      ? window.confirm(`删除${itemName}“${node.data.label}”？此操作会将${itemName}移入已删除。`)
       : window.confirm(`确定删除标签“${node.data.label}”吗？其子标签也会被删除。`);
     if (!confirmed) return;
     setContextBusy(true);
@@ -686,7 +694,7 @@ function MindMapCanvas({
       setContextMenu(null);
       setSelectedNodeId(null);
     } catch {
-      setError(isTask ? "任务删除失败，请重试" : "标签删除失败，请重试");
+      setError(isTask ? `${itemName}删除失败，请重试` : "标签删除失败，请重试");
     } finally {
       setContextBusy(false);
     }
@@ -826,6 +834,8 @@ function MindMapCanvas({
             setContextMenu(null);
             setSelectedNodeId(node.id);
             (event.target as HTMLElement).closest<HTMLElement>(".react-flow__node")?.focus();
+          }}
+          onNodeDoubleClick={(event, node) => {
             if (node.data.task && !(event.target as HTMLElement).closest("button, input")) {
               onSelectTask(node.data.task.id);
             }
@@ -912,7 +922,9 @@ function MindMapCanvas({
                 onClick={() => void deleteContextTarget()}
               >
                 <Trash2 />
-                {contextMenu.node.data.kind === "task" ? "删除任务" : "删除标签"}
+                {contextMenu.node.data.kind === "task"
+                  ? `删除${contextMenu.node.data.task?.kind === "note" ? "笔记" : "任务"}`
+                  : "删除标签"}
               </button>
             </div>
           </>

@@ -3,16 +3,19 @@ import {
   buildDingtalkCallbackUrl,
   DINGTALK_LOGIN_SCOPE,
   dingtalkExchangeOnce,
+  dingtalkDesktopCallbackUrl,
   dingtalkFrameLoginParams,
   dingtalkLoginErrorAction,
   dingtalkLoginErrorMessage,
   dingtalkOAuthAuthorizeUrl,
   dingtalkTokenHashOtpParams,
   edgeFunctionErrorMessage,
+  initialWorkspaceSsoProvider,
   isDingtalkCallbackPath,
   isDingtalkClientId,
   isDingtalkTransientLoginError,
   normalizeDingtalkLoginError,
+  parseWorkspaceSsoLoginConfig,
 } from "./sso";
 
 describe("dingtalk sso helpers", () => {
@@ -43,6 +46,15 @@ describe("dingtalk sso helpers", () => {
     expect(url.searchParams.get("client_id")).toBe("ding-app-key");
     expect(url.searchParams.get("corpId")).toBeNull();
     expect(url.searchParams.get("scope")).toBe(DINGTALK_LOGIN_SCOPE);
+  });
+
+  it("builds desktop callbacks only for 32-byte base64url handoff codes", () => {
+    const code = "a".repeat(43);
+    expect(dingtalkDesktopCallbackUrl(code)).toBe(
+      `anttodo://auth/callback?code=${code}`,
+    );
+    expect(dingtalkDesktopCallbackUrl("short")).toBeNull();
+    expect(dingtalkDesktopCallbackUrl(`${"a".repeat(42)}+`)).toBeNull();
   });
 
   it("builds DTFrameLogin params without corpId to avoid admin-only org scope", () => {
@@ -83,6 +95,59 @@ describe("dingtalk sso helpers", () => {
     expect(isDingtalkClientId("9b967827-3547-473f-aaa8-87004f9de90f")).toBe(false);
   });
 
+  it("parses supported enterprise SSO providers and ignores unknown providers", () => {
+    const parsed = parseWorkspaceSsoLoginConfig({
+      workspace: {
+        id: workspaceId,
+        name: "宇策科技",
+        slug: "yucekj",
+      },
+      providers: [
+        {
+          provider: "future-oidc",
+          displayName: "Future OIDC",
+          flow: "redirect",
+          config: {},
+        },
+        {
+          provider: "dingtalk",
+          displayName: "钉钉企业登录",
+          flow: "qr_or_redirect",
+          config: {
+            corpId: "dingcorp",
+            appKey: "ding-app-key",
+            agentId: null,
+            redirectUri: "https://app.anttodo.com/auth/dingtalk/callback",
+            state: `${workspaceId}.state`,
+          },
+        },
+      ],
+    });
+
+    expect(parsed?.workspace.slug).toBe("yucekj");
+    expect(parsed?.providers).toHaveLength(1);
+    expect(parsed?.providers[0]?.provider).toBe("dingtalk");
+    expect(initialWorkspaceSsoProvider(parsed?.providers ?? [])?.provider).toBe(
+      "dingtalk",
+    );
+  });
+
+  it("requires explicit provider selection when multiple providers are available", () => {
+    const provider = {
+      provider: "dingtalk" as const,
+      displayName: "钉钉企业登录",
+      flow: "qr_or_redirect" as const,
+      config: {
+        corpId: "dingcorp",
+        appKey: "ding-app-key",
+        agentId: null,
+        redirectUri: "https://app.anttodo.com/auth/dingtalk/callback",
+        state: `${workspaceId}.state`,
+      },
+    };
+    expect(initialWorkspaceSsoProvider([provider, { ...provider }])).toBeNull();
+  });
+
   it("reads edge function error bodies from FunctionsHttpError context", async () => {
     const response = new Response(JSON.stringify({ error: "钉钉授权码无效" }), {
       status: 502,
@@ -104,6 +169,7 @@ describe("dingtalk sso helpers", () => {
         runs += 1;
         return {
           ok: true as const,
+          mode: "web" as const,
           workspaceId,
           tokenHash: "hash",
         };

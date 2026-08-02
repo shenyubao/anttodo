@@ -66,6 +66,24 @@ describe("date and time preferences", () => {
     }, DEFAULT_DATE_TIME_PREFERENCES)).toContain("09:30");
   });
 
+  it("omits hours and minutes for multi-day timed ranges", () => {
+    const start = fromZonedDateTime("2026-08-07", "09:30", "Asia/Shanghai");
+    const sameDayEnd = fromZonedDateTime("2026-08-07", "10:30", "Asia/Shanghai");
+    const multiDayEnd = fromZonedDateTime("2026-08-27", "10:30", "Asia/Shanghai");
+    expect(formatDueWithPreferences({
+      due_at: sameDayEnd.toJSON(),
+      due_start_at: start.toJSON(),
+      due_is_all_day: false,
+      due_timezone: "Asia/Shanghai",
+    }, DEFAULT_DATE_TIME_PREFERENCES)).toBe("2026/08/07 09:30–10:30");
+    expect(formatDueWithPreferences({
+      due_at: multiDayEnd.toJSON(),
+      due_start_at: start.toJSON(),
+      due_is_all_day: false,
+      due_timezone: "Asia/Shanghai",
+    }, DEFAULT_DATE_TIME_PREFERENCES)).toBe("2026/08/07–2026/08/27");
+  });
+
   it("returns lunar and official adjustment metadata without network access", () => {
     expect(chineseCalendarDetail(new Date(2026, 9, 1)).lunarLabel).toBeTruthy();
     expect(chineseCalendarDetail(new Date(2026, 8, 26)).holidayLabel).toBe("休");

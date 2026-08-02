@@ -1,15 +1,23 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  AppNotification,
   Connector,
   DateTimePreferences,
   Label,
+  LabelAccessDraft,
   Member,
+  ReminderSchedule,
   SyncConflict,
   SyncRun,
   Task,
+  TaskActivityEvent,
+  TaskActivityPage,
+  TaskComment,
+  TaskKind,
   TaskListPreference,
   TaskSection,
   TaskPriority,
+  UserQuota,
   Workspace,
   WorkspaceBundle,
 } from "../types";
@@ -24,13 +32,242 @@ import {
   suggestWorkspaceSlug,
 } from "./workspaceSlug";
 
-type TaskRow = Omit<Task, "label_ids" | "subtasks"> & {
+type TaskRow = Omit<Task, "label_ids" | "subtasks" | "reminders" | "reminder_persistent"> & {
   task_labels?: Array<{ label_id: string }>;
   subtasks?: Task["subtasks"];
+  task_reminders?: Task["reminders"];
+  task_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
 };
 
 function assertNoError(error: { message: string } | null) {
   if (error) throw new Error(error.message);
+}
+
+function labelAccessRpcParams(draft: LabelAccessDraft) {
+  return {
+    p_name: draft.name.trim(),
+    p_color: draft.color,
+    p_kind: draft.kind,
+    p_view_scope: draft.viewScope,
+    p_manage_scope: draft.manageScope,
+    p_view_subject_ids: draft.kind === "team" && ["users", "groups"].includes(draft.viewScope)
+      ? draft.viewSubjectIds : [],
+    p_manage_subject_ids: draft.kind === "team" && ["users", "groups"].includes(draft.manageScope)
+      ? draft.manageSubjectIds : [],
+    p_inherit_permissions: Boolean(draft.parentId),
+  };
+}
+
+export async function createLabelWithAccess(
+  client: SupabaseClient,
+  workspaceId: string,
+  draft: LabelAccessDraft,
+) {
+  const { data, error } = await client.rpc("create_label_with_access", {
+    p_workspace_id: workspaceId,
+    p_parent_id: draft.parentId,
+    ...labelAccessRpcParams(draft),
+  });
+  assertNoError(error);
+  return data as Label;
+}
+
+export async function updateLabelWithAccess(
+  client: SupabaseClient,
+  labelId: string,
+  draft: LabelAccessDraft,
+) {
+  const { data, error } = await client.rpc("update_label_with_access", {
+    p_label_id: labelId,
+    ...labelAccessRpcParams(draft),
+  });
+  assertNoError(error);
+  return data as Label;
+}
+
+export async function loadTaskComments(
+  client: SupabaseClient,
+  taskId: string,
+): Promise<TaskComment[]> {
+  const { data, error } = await client
+    .from("task_comments")
+    .select("*, mentions:task_comment_mentions(user_id, display_name_snapshot)")
+    .eq("task_id", taskId)
+    .order("created_at", { ascending: true });
+  assertNoError(error);
+
+  const rows = (data ?? []) as Array<Omit<TaskComment, "author">>;
+  const authorIds = [...new Set(rows.map((comment) => comment.author_id))];
+  const profilesResult = authorIds.length
+    ? await client
+        .from("profiles")
+        .select("id, display_name, avatar_url")
+        .in("id", authorIds)
+    : { data: [], error: null };
+  assertNoError(profilesResult.error);
+  const profiles = new Map(
+    (profilesResult.data ?? []).map((profile) => [profile.id, profile]),
+  );
+  return rows.map((comment) => ({
+    ...comment,
+    mentions: comment.mentions ?? [],
+    author: profiles.get(comment.author_id),
+  }));
+}
+
+export async function loadTaskActivity(
+  client: SupabaseClient,
+  taskId: string,
+  cursor: TaskActivityPage["nextCursor"] = null,
+  limit = 50,
+): Promise<TaskActivityPage> {
+  const { data, error } = await client.rpc("list_task_activity", {
+    p_task_id: taskId,
+    p_before_created_at: cursor?.createdAt ?? null,
+    p_before_id: cursor?.id ?? null,
+    p_limit: limit,
+  });
+  assertNoError(error);
+
+  const rows = (data ?? []) as Array<Omit<TaskActivityEvent, "actor">>;
+  const actorIds = [...new Set(rows.flatMap((event) => event.actor_id ? [event.actor_id] : []))];
+  const profilesResult = actorIds.length
+    ? await client.from("profiles").select("id, display_name, avatar_url").in("id", actorIds)
+    : { data: [], error: null };
+  assertNoError(profilesResult.error);
+  const profiles = new Map((profilesResult.data ?? []).map((profile) => [profile.id, profile]));
+  const items = rows.map((event) => ({
+    ...event,
+    payload: event.payload ?? {},
+    actor: event.actor_id ? profiles.get(event.actor_id) : undefined,
+  }));
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor: items.length === limit && last
+      ? { createdAt: last.created_at, id: last.id }
+      : null,
+  };
+}
+
+export async function listTaskCommentCandidateIds(
+  client: SupabaseClient,
+  taskId: string,
+) {
+  const { data, error } = await client.rpc("list_task_comment_candidates", {
+    p_task_id: taskId,
+  });
+  assertNoError(error);
+  return (data ?? []).map((row: { user_id: string }) => row.user_id);
+}
+
+export async function createTaskComment(
+  client: SupabaseClient,
+  input: {
+    taskId: string;
+    body: string;
+    imageUris: string[];
+    mentionedUserIds: string[];
+  },
+) {
+  const { data, error } = await client.rpc("create_task_comment", {
+    p_task_id: input.taskId,
+    p_body: input.body,
+    p_image_uris: input.imageUris,
+    p_mentioned_user_ids: input.mentionedUserIds,
+  });
+  assertNoError(error);
+  return data as TaskComment;
+}
+
+export async function deleteTaskComment(
+  client: SupabaseClient,
+  commentId: string,
+) {
+  const { error } = await client.from("task_comments").delete().eq("id", commentId);
+  assertNoError(error);
+}
+
+export async function updateTaskComment(
+  client: SupabaseClient,
+  input: {
+    commentId: string;
+    body: string;
+    imageUris: string[];
+    mentionedUserIds: string[];
+  },
+) {
+  const { data, error } = await client.rpc("update_task_comment", {
+    p_comment_id: input.commentId,
+    p_body: input.body,
+    p_image_uris: input.imageUris,
+    p_mentioned_user_ids: input.mentionedUserIds,
+  });
+  assertNoError(error);
+  return data as TaskComment;
+}
+
+export async function loadNotifications(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<AppNotification[]> {
+  const { data, error } = await client
+    .from("notifications")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: false })
+    .limit(100);
+  assertNoError(error);
+  const rows = (data ?? []) as AppNotification[];
+  const actorIds = [...new Set(rows.map((item) => item.actor_id))];
+  const taskIds = [...new Set(rows.map((item) => item.task_id))];
+  const commentIds = [...new Set(rows.map((item) => item.comment_id))];
+  const [profilesResult, tasksResult, commentsResult] = await Promise.all([
+    actorIds.length
+      ? client.from("profiles").select("id, display_name, avatar_url").in("id", actorIds)
+      : Promise.resolve({ data: [], error: null }),
+    taskIds.length
+      ? client.from("tasks").select("id, title, kind").in("id", taskIds)
+      : Promise.resolve({ data: [], error: null }),
+    commentIds.length
+      ? client.from("task_comments").select("id, body, image_uris").in("id", commentIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  assertNoError(profilesResult.error);
+  assertNoError(tasksResult.error);
+  assertNoError(commentsResult.error);
+  const profiles = new Map((profilesResult.data ?? []).map((item) => [item.id, item]));
+  const tasks = new Map((tasksResult.data ?? []).map((item) => [item.id, item]));
+  const comments = new Map((commentsResult.data ?? []).map((item) => [item.id, item]));
+  return rows.flatMap((item) => {
+    const task = tasks.get(item.task_id);
+    const comment = comments.get(item.comment_id);
+    if (!task || !comment) return [];
+    return [{ ...item, actor: profiles.get(item.actor_id), task, comment }];
+  });
+}
+
+export async function markNotificationRead(
+  client: SupabaseClient,
+  notificationId: string,
+) {
+  const { error } = await client
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("id", notificationId);
+  assertNoError(error);
+}
+
+export async function markAllNotificationsRead(
+  client: SupabaseClient,
+  workspaceId: string,
+) {
+  const { error } = await client
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("workspace_id", workspaceId)
+    .is("read_at", null);
+  assertNoError(error);
 }
 
 export async function loadWorkspaces(client: SupabaseClient): Promise<Workspace[]> {
@@ -43,6 +280,19 @@ export async function loadWorkspaces(client: SupabaseClient): Promise<Workspace[
     const workspace = membership.workspaces as unknown as Workspace | null;
     return workspace ? [{ ...workspace, role: membership.role }] : [];
   });
+}
+
+export async function loadUserQuota(
+  client: SupabaseClient,
+  userId: string,
+): Promise<UserQuota> {
+  const { data, error } = await client
+    .from("user_quotas")
+    .select("user_id, workspace_limit, created_at, updated_at")
+    .eq("user_id", userId)
+    .single();
+  assertNoError(error);
+  return data as UserQuota;
 }
 
 export async function loadDateTimePreferences(
@@ -86,6 +336,9 @@ export async function loadWorkspaceBundle(
     preferencesResult,
     sectionsResult,
     placementsResult,
+    userGroupsResult,
+    userGroupMembersResult,
+    labelPermissionLevelsResult,
   ] = await Promise.all([
     client
       .from("workspace_members")
@@ -94,7 +347,7 @@ export async function loadWorkspaceBundle(
     client.from("labels").select("*").eq("workspace_id", workspaceId).order("position"),
     client
       .from("tasks")
-      .select("*, task_labels(label_id), subtasks(*)")
+      .select("*, task_labels(label_id), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
       .eq("workspace_id", workspaceId)
       .is("deleted_at", null)
       .order("created_at", { ascending: false }),
@@ -117,6 +370,16 @@ export async function loadWorkspaceBundle(
       .select("*")
       .eq("workspace_id", workspaceId)
       .order("position", { ascending: true }),
+    client
+      .from("user_groups")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: true }),
+    client
+      .from("user_group_members")
+      .select("group_id, workspace_id, user_id, added_at")
+      .eq("workspace_id", workspaceId),
+    client.rpc("list_label_permission_levels", { p_workspace_id: workspaceId }),
   ]);
   assertNoError(membersResult.error);
   assertNoError(labelsResult.error);
@@ -125,6 +388,9 @@ export async function loadWorkspaceBundle(
   assertNoError(preferencesResult.error);
   assertNoError(sectionsResult.error);
   assertNoError(placementsResult.error);
+  assertNoError(userGroupsResult.error);
+  assertNoError(userGroupMembersResult.error);
+  assertNoError(labelPermissionLevelsResult.error);
 
   const memberIds = (membersResult.data ?? []).map((member) => member.user_id);
   const profilesResult = memberIds.length
@@ -140,13 +406,23 @@ export async function loadWorkspaceBundle(
 
   const connectors = (connectorsResult.data ?? []) as Connector[];
   const labelIds = (labelsResult.data ?? []).map((label) => label.id);
-  const labelAclsResult = labelIds.length
-    ? await client
-        .from("label_acl")
-        .select("label_id, user_id, permission")
-        .in("label_id", labelIds)
-    : { data: [], error: null };
-  assertNoError(labelAclsResult.error);
+  const [labelUserAclsResult, labelGroupAclsResult] = labelIds.length
+    ? await Promise.all([
+        client
+          .from("label_user_acl")
+          .select("label_id, workspace_id, user_id, permission")
+          .in("label_id", labelIds),
+        client
+          .from("label_group_acl")
+          .select("label_id, workspace_id, group_id, permission")
+          .in("label_id", labelIds),
+      ])
+    : [
+        { data: [], error: null },
+        { data: [], error: null },
+      ];
+  assertNoError(labelUserAclsResult.error);
+  assertNoError(labelGroupAclsResult.error);
   const connectorIds = connectors.map((connector) => connector.id);
   const [runsResult, conflictsResult] =
     connectorIds.length > 0
@@ -177,13 +453,32 @@ export async function loadWorkspaceBundle(
       role: row.role,
       profile: profilesById.get(row.user_id),
     })) as Member[],
+    userGroups: (userGroupsResult.data ?? []) as WorkspaceBundle["userGroups"],
+    userGroupMembers: (userGroupMembersResult.data ?? []) as WorkspaceBundle["userGroupMembers"],
     labels: (labelsResult.data ?? []) as Label[],
-    labelAcls: labelAclsResult.data ?? [],
-    tasks: ((tasksResult.data ?? []) as TaskRow[]).map((row) => ({
-      ...row,
-      label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
-      subtasks: [...(row.subtasks ?? [])].sort((a, b) => a.position - b.position),
-    })),
+    labelUserAcls: labelUserAclsResult.data ?? [],
+    labelGroupAcls: labelGroupAclsResult.data ?? [],
+    labelPermissionLevels: Object.fromEntries(
+      (labelPermissionLevelsResult.data ?? []).map(
+        (row: { label_id: string; permission_level: number }) => [
+          row.label_id,
+          row.permission_level === 2 ? 2 : 1,
+        ],
+      ),
+    ),
+    tasks: ((tasksResult.data ?? []) as TaskRow[]).map((row) => {
+      const settings = Array.isArray(row.task_reminder_settings)
+        ? row.task_reminder_settings[0]
+        : row.task_reminder_settings;
+      return {
+        ...row,
+        kind: row.kind ?? "todo",
+        label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
+        subtasks: [...(row.subtasks ?? [])].sort((a, b) => a.position - b.position),
+        reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
+        reminder_persistent: settings?.persistent ?? false,
+      };
+    }),
     connectors,
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
@@ -191,6 +486,25 @@ export async function loadWorkspaceBundle(
     taskSections: (sectionsResult.data ?? []) as WorkspaceBundle["taskSections"],
     taskPlacements: (placementsResult.data ?? []) as WorkspaceBundle["taskPlacements"],
   };
+}
+
+export async function saveTaskSchedule(
+  client: SupabaseClient,
+  taskId: string,
+  patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+  schedule: ReminderSchedule,
+) {
+  const { data, error } = await client.rpc("save_task_schedule", {
+    p_task_id: taskId,
+    p_due_at: patch.due_at,
+    p_due_start_at: patch.due_start_at,
+    p_due_is_all_day: patch.due_is_all_day,
+    p_due_timezone: patch.due_timezone,
+    p_reminders: schedule.reminders,
+    p_persistent: schedule.persistent,
+  });
+  assertNoError(error);
+  return data;
 }
 
 export async function saveTaskListPreference(
@@ -261,6 +575,9 @@ function mapWorkspaceWriteError(error: {
   message: string;
   code?: string;
 }): Error {
+  if (error.message.includes("workspace_owner_quota_exceeded")) {
+    return new Error("已达到可拥有的团队数量上限。");
+  }
   if (error.code === "23505") {
     return new Error("团队 Slug 已被占用，请换一个。");
   }
@@ -272,13 +589,20 @@ function mapWorkspaceWriteError(error: {
 
 export async function createWorkspace(
   client: SupabaseClient,
-  name: string,
+  input: { name: string; slug?: string },
   userId: string,
 ) {
-  const trimmedName = name.trim();
-  let slug = suggestWorkspaceSlug(trimmedName);
+  const trimmedName = input.name.trim();
+  const requestedSlug = input.slug === undefined
+    ? suggestWorkspaceSlug(trimmedName)
+    : normalizeWorkspaceSlug(input.slug);
+  if (!isValidWorkspaceSlug(requestedSlug)) {
+    throw new Error("团队 Slug 格式不正确。");
+  }
+  let slug = requestedSlug;
+  const explicitSlug = input.slug !== undefined;
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < (explicitSlug ? 1 : 3); attempt += 1) {
     const { data, error } = await client
       .from("workspaces")
       .insert({ name: trimmedName, slug, created_by: userId })
@@ -293,6 +617,23 @@ export async function createWorkspace(
   }
 
   throw new Error("团队 Slug 已被占用，请换一个。");
+}
+
+export async function deleteWorkspace(
+  client: SupabaseClient,
+  workspaceId: string,
+  confirmationName: string,
+) {
+  const { data, error } = await client.functions.invoke("workspace-admin", {
+    body: { action: "delete", workspaceId, confirmationName },
+  });
+  if (error) {
+    throw new Error(
+      typeof data?.error === "string"
+        ? data.error
+        : "团队暂时无法删除，请稍后重试。",
+    );
+  }
 }
 
 export async function updateWorkspace(
@@ -347,6 +688,7 @@ export async function createTask(
     dueAt?: string | null;
     dueTimezone?: string | null;
     priority?: TaskPriority;
+    kind?: TaskKind;
     assigneeId?: string | null;
   },
 ) {
@@ -359,6 +701,7 @@ export async function createTask(
     p_due_timezone: input.dueTimezone ?? null,
     p_priority: input.priority ?? "none",
     p_assignee_id: input.assigneeId ?? null,
+    p_kind: input.kind ?? "todo",
   });
   assertNoError(error);
   return data;

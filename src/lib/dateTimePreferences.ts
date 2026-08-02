@@ -152,7 +152,7 @@ export function formatDueWithPreferences(
   if (isSameDay(start, end)) {
     return `${date(start)} ${time(start)}–${time(end)}`;
   }
-  return `${date(start)} ${time(start)}–${date(end)} ${time(end)}`;
+  return `${date(start)}–${date(end)}`;
 }
 
 export function weekdayLabels(weekStartsOn: DateTimePreferences["weekStartsOn"]) {

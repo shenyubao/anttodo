@@ -74,7 +74,7 @@ export function formatDueExact(fields: DueFields) {
   if (isSameDay(start, end)) {
     return `${format(start, "M月d日 HH:mm", { locale: zhCN })}–${format(end, "HH:mm", { locale: zhCN })}`;
   }
-  return `${format(start, "M月d日 HH:mm", { locale: zhCN })}–${format(end, "M月d日 HH:mm", { locale: zhCN })}`;
+  return `${format(start, "M月d日", { locale: zhCN })}–${format(end, "M月d日", { locale: zhCN })}`;
 }
 
 export function getDueStatus(dueAt: string | null, now = new Date()): DueStatus | null {

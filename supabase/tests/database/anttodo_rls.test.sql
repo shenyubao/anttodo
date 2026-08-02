@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(105);
+select plan(134);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -78,44 +78,42 @@ values
 );
 
 insert into public.labels (
-  id, workspace_id, name, visibility, inherit_permissions, created_by
+  id, workspace_id, parent_id, name, kind, view_scope, manage_scope,
+  inherit_permissions, created_by
 ) values
 (
   '30000000-0000-0000-0000-000000000001',
   '20000000-0000-0000-0000-000000000001',
-  'Team', 'workspace', false,
+  null,
+  'Team', 'team', 'all', 'users', false,
   '10000000-0000-0000-0000-000000000001'
 ),
 (
   '30000000-0000-0000-0000-000000000002',
   '20000000-0000-0000-0000-000000000001',
-  'Restricted', 'restricted', false,
+  null,
+  'Restricted', 'team', 'users', 'users', false,
   '10000000-0000-0000-0000-000000000001'
 ),
 (
   '30000000-0000-0000-0000-000000000004',
   '20000000-0000-0000-0000-000000000001',
-  'Team child', 'workspace', true,
+  '30000000-0000-0000-0000-000000000001',
+  'Team child', 'team', 'all', 'users', true,
   '10000000-0000-0000-0000-000000000001'
 ),
 (
   '30000000-0000-0000-0000-000000000005',
   '20000000-0000-0000-0000-000000000001',
-  'Team grandchild', 'workspace', true,
+  '30000000-0000-0000-0000-000000000004',
+  'Team grandchild', 'team', 'all', 'users', true,
   '10000000-0000-0000-0000-000000000001'
 );
 
-update public.labels
-set parent_id = '30000000-0000-0000-0000-000000000001'
-where id = '30000000-0000-0000-0000-000000000004';
-
-update public.labels
-set parent_id = '30000000-0000-0000-0000-000000000004'
-where id = '30000000-0000-0000-0000-000000000005';
-
-insert into public.label_acl (label_id, user_id, permission)
+insert into public.label_user_acl (label_id, workspace_id, user_id, permission)
 values (
   '30000000-0000-0000-0000-000000000002',
+  '20000000-0000-0000-0000-000000000001',
   '10000000-0000-0000-0000-000000000002',
   'view'
 );
@@ -218,12 +216,14 @@ select is(
   'task attachment objects cannot be overwritten'
 );
 
+
 set local role authenticated;
 select set_config(
   'request.jwt.claims',
   '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
   true
 );
+
 
 select is(
   anttodo_private.label_permission_level('30000000-0000-0000-0000-000000000002'),
@@ -335,6 +335,62 @@ select is(
   ),
   1,
   'task RPC attaches the requested label'
+);
+select is(
+  (
+    select kind
+    from public.tasks
+    where title = 'Created through RPC'
+  ),
+  'todo'::public.task_kind,
+  'task RPC keeps existing callers backward compatible as todos'
+);
+select lives_ok(
+  $$
+    select public.create_task_with_labels(
+      p_workspace_id => '20000000-0000-0000-0000-000000000001',
+      p_title => 'Created note',
+      p_label_ids => array[]::uuid[],
+      p_priority => 'high',
+      p_kind => 'note'
+    )
+  $$,
+  'task RPC creates a note'
+);
+select is(
+  (
+    select kind
+    from public.tasks
+    where title = 'Created note'
+  ),
+  'note'::public.task_kind,
+  'created note stores its item kind'
+);
+select is(
+  (
+    select priority
+    from public.tasks
+    where title = 'Created note'
+  ),
+  'none'::public.task_priority,
+  'created notes cannot receive a quick-add priority'
+);
+select lives_ok(
+  $$
+    update public.tasks
+    set kind = 'note'
+    where id = '40000000-0000-0000-0000-000000000001'
+  $$,
+  'task editors can switch an item to a note'
+);
+select is(
+  (
+    select kind
+    from public.tasks
+    where id = '40000000-0000-0000-0000-000000000001'
+  ),
+  'note'::public.task_kind,
+  'authorized type updates are stored'
 );
 select lives_ok(
   $$
@@ -540,11 +596,28 @@ select isnt(
   'outsider cannot view a task'
 );
 select is((select count(*)::integer from public.tasks), 0, 'RLS hides the task from outsiders');
+select lives_ok(
+  $$
+    update public.tasks
+    set kind = 'todo'
+    where id = '40000000-0000-0000-0000-000000000001'
+  $$,
+  'an unauthorized type update is safely filtered by RLS'
+);
 
 select set_config(
   'request.jwt.claims',
   '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
   true
+);
+select is(
+  (
+    select kind
+    from public.tasks
+    where id = '40000000-0000-0000-0000-000000000001'
+  ),
+  'note'::public.task_kind,
+  'unauthorized users cannot change an item type'
 );
 select is(
   anttodo_private.label_permission_level_for_user(
@@ -877,6 +950,220 @@ select is(
   ),
   null::uuid,
   'deleting a section returns its tasks to the ungrouped section'
+);
+
+select has_table('public', 'task_comments', 'task comments table exists');
+select is(
+  (select relrowsecurity from pg_class where oid = 'public.task_comments'::regclass),
+  true,
+  'task comments have RLS enabled'
+);
+set local role service_role;
+select is(
+  (select public from storage.buckets where id = 'comment-images'),
+  false,
+  'comment image bucket is private'
+);
+select ok(
+  not exists (
+    select 1 from storage.buckets
+    where id = 'comment-images'
+      and 'image/svg+xml' = any(allowed_mime_types)
+  ),
+  'comment image bucket rejects SVG uploads'
+);
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
+);
+select lives_ok(
+  $$
+    select public.create_task_comment(
+      '40000000-0000-0000-0000-000000000001',
+      '@member please review',
+      array[]::text[],
+      array['10000000-0000-0000-0000-000000000002'::uuid]
+    )
+  $$,
+  'a task owner can create a comment and mention a viewer'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true
+);
+select is(
+  (select count(*)::integer from public.task_comments where body = '@member please review'),
+  1,
+  'a view-only task member can read comments'
+);
+select is(
+  (select count(*)::integer from public.notifications where read_at is null),
+  1,
+  'a mentioned member receives one unread notification'
+);
+select lives_ok(
+  $$ update public.notifications set read_at = now() where read_at is null $$,
+  'a notification recipient can mark their notification read'
+);
+select lives_ok(
+  $$
+    select public.create_task_comment(
+      '40000000-0000-0000-0000-000000000001',
+      'viewer comment',
+      array[]::text[],
+      array[]::uuid[]
+    )
+  $$,
+  'a view-only task member can create a comment'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
+);
+delete from public.task_comments where body = 'viewer comment';
+select is(
+  (select count(*)::integer from public.task_comments where body = 'viewer comment'),
+  1,
+  'a different user cannot delete a comment'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000003","role":"authenticated"}',
+  true
+);
+select throws_ok(
+  $$
+    select public.create_task_comment(
+      '40000000-0000-0000-0000-000000000001',
+      'outsider comment',
+      array[]::text[],
+      array[]::uuid[]
+    )
+  $$,
+  '42501',
+  'Insufficient task permission',
+  'an outsider cannot create a task comment'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
+);
+select lives_ok(
+  $$
+    select public.create_task_comment(
+      '40000000-0000-0000-0000-000000000001',
+      '@owner self mention',
+      array[]::text[],
+      array['10000000-0000-0000-0000-000000000001'::uuid]
+    )
+  $$,
+  'self mentions do not prevent comment creation'
+);
+select is(
+  (select count(*)::integer from public.notifications where recipient_id = auth.uid()),
+  0,
+  'self mentions do not create notifications'
+);
+select lives_ok(
+  $$
+    select public.create_task_comment(
+      '40000000-0000-0000-0000-000000000001',
+      '@restricted hidden mention',
+      array[]::text[],
+      array['10000000-0000-0000-0000-000000000008'::uuid]
+    )
+  $$,
+  'invisible mention candidates are ignored without failing the comment'
+);
+set local role service_role;
+select is(
+  (
+    select count(*)::integer from public.notifications
+    where recipient_id = '10000000-0000-0000-0000-000000000008'
+  ),
+  0,
+  'members who cannot view the task receive no mention notification'
+);
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true
+);
+select lives_ok(
+  $$
+    select public.update_task_comment(
+      (select id from public.task_comments where body = 'viewer comment'),
+      '@owner edited comment',
+      array[]::text[],
+      array['10000000-0000-0000-0000-000000000001'::uuid]
+    )
+  $$,
+  'a comment author can edit their own comment and mentions'
+);
+select is(
+  (select body from public.task_comments where body = '@owner edited comment'),
+  '@owner edited comment',
+  'editing a comment persists its new body'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
+);
+select throws_ok(
+  $$
+    select public.update_task_comment(
+      (select id from public.task_comments where body = '@owner edited comment'),
+      'unauthorized edit',
+      array[]::text[],
+      array[]::uuid[]
+    )
+  $$,
+  '42501',
+  'Insufficient comment permission',
+  'a different user cannot edit a comment'
+);
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true
+);
+select lives_ok(
+  $$
+    select public.update_task_comment(
+      (select id from public.task_comments where body = '@owner edited comment'),
+      'viewer comment',
+      array[]::text[],
+      array[]::uuid[]
+    )
+  $$,
+  'editing a comment can remove an existing mention'
+);
+set local role service_role;
+select is(
+  (
+    select count(*)::integer from public.notifications
+    where recipient_id = '10000000-0000-0000-0000-000000000001'
+      and comment_id = (select id from public.task_comments where body = 'viewer comment')
+  ),
+  0,
+  'removing a mention removes its notification'
+);
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true
+);
+select lives_ok(
+  $$ delete from public.task_comments where body = 'viewer comment' $$,
+  'a comment author can delete their own comment'
 );
 
 select has_table(

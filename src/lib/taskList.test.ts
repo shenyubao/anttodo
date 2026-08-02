@@ -4,8 +4,8 @@ import { groupTasks, resolveTaskListPreference, sortTasks } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
 const labels: Label[] = [
-  { id: "a", workspace_id: "w", parent_id: null, name: "甲", color: "#aaa", visibility: "workspace", inherit_permissions: false, position: 0, created_by: "u" },
-  { id: "b", workspace_id: "w", parent_id: null, name: "乙", color: "#bbb", visibility: "workspace", inherit_permissions: false, position: 1, created_by: "u" },
+  { id: "a", workspace_id: "w", parent_id: null, name: "甲", color: "#aaa", kind: "team", view_scope: "all", manage_scope: "users", inherit_permissions: false, position: 0, created_by: "u" },
+  { id: "b", workspace_id: "w", parent_id: null, name: "乙", color: "#bbb", kind: "team", view_scope: "all", manage_scope: "users", inherit_permissions: false, position: 1, created_by: "u" },
 ];
 const members: Member[] = [
   { workspace_id: "w", user_id: "u", role: "owner", profile: { id: "u", display_name: "张三", avatar_url: null } },
@@ -31,6 +31,9 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   label_ids: [],
   subtasks: [],
   ...patch,
+  kind: patch.kind ?? "todo",
+  reminders: patch.reminders ?? [],
+  reminder_persistent: patch.reminder_persistent ?? false,
 });
 
 describe("task list grouping and sorting", () => {
@@ -110,5 +113,48 @@ describe("task list grouping and sorting", () => {
       preferences: { weekStartsOn: 1 },
     });
     expect(groups.flatMap((group) => group.tasks).map((item) => item.id)).toEqual(["open"]);
+  });
+
+  it("keeps notes active regardless of their preserved completion status", () => {
+    const groups = groupTasks({
+      tasks: [task("note", {
+        kind: "note",
+        status: "completed",
+        completed_at: now.toISOString(),
+      })],
+      grouping: "none",
+      sort: "custom",
+      direction: "asc",
+      labels,
+      members,
+      sections: [],
+      placements: [],
+      now,
+      preferences: { weekStartsOn: 1 },
+    });
+    expect(groups.flatMap((group) => group.tasks).map((item) => item.id)).toEqual(["note"]);
+  });
+
+  it("treats notes as having no priority for grouping and sorting", () => {
+    const tasks = [
+      task("note", { kind: "note", priority: "high" }),
+      task("low", { priority: "low" }),
+    ];
+    const groups = groupTasks({
+      tasks,
+      grouping: "priority",
+      sort: "title",
+      direction: "asc",
+      labels,
+      members,
+      sections: [],
+      placements: [],
+      now,
+      preferences: { weekStartsOn: 1 },
+    });
+    expect(groups.map((group) => [group.title, group.tasks.map((item) => item.id)]))
+      .toEqual([["低优先级", ["low"]], ["无优先级", ["note"]]]);
+    expect(sortTasks(tasks, "priority", "asc", labels, members, []).map((item) => item.id))
+      .toEqual(["note", "low"]);
   });
 });

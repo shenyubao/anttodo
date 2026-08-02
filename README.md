@@ -152,10 +152,13 @@ pnpm test
 pnpm build
 pnpm test:e2e
 pnpm package:mac
+pnpm package:mac:all
 ```
 
 `pnpm package:mac` 会在 `release/` 生成未签名的 DMG 和 ZIP。Apple Developer
-签名、公证和自动更新不包含在 v1。
+签名、公证和自动更新不包含在 v1。`pnpm package:mac:all` 会同时生成 Apple
+Silicon 和 Intel 产物；R2 上传、四个 `-latest` 下载地址与 GitHub Actions 发布
+配置见 [macOS 打包与 R2 发布](docs/mac-release-r2.md)。
 
 ## 连接器
 

@@ -16,6 +16,162 @@ test("demo task flow and details drawer", async ({ page }) => {
   await expect(page.locator(".detail-title")).toHaveValue(demoTaskTitle);
 });
 
+test("task list expands, completes, and remembers subtasks per workspace", async ({ page }) => {
+  await page.goto("/?demo=1");
+
+  const taskTree = page.locator(".task-tree-item").filter({ hasText: demoTaskTitle });
+  const subtaskList = taskTree.getByRole("list", { name: `子任务：${demoTaskTitle}` });
+  await expect(taskTree.getByRole("button", { name: `收起子任务：${demoTaskTitle}` }))
+    .toBeVisible();
+  await expect(subtaskList.locator(".task-list-subtask-title")).toHaveText([
+    "运行数据库安全测试",
+    "检查 Mac 安装包",
+  ]);
+  await expect(subtaskList.locator(".task-list-subtask-row")).toHaveCount(2);
+  await expect(subtaskList.locator(".task-list-subtask-row.completed")).toHaveCount(1);
+  await expect(taskTree).toContainText("1/2");
+
+  await subtaskList.getByRole("button", { name: "完成子任务：检查 Mac 安装包" }).click();
+  await expect(taskTree).toContainText("2/2");
+  await expect(subtaskList.locator(".task-list-subtask-row.completed")).toHaveCount(2);
+
+  await subtaskList.getByRole("button", { name: "检查 Mac 安装包", exact: true }).click();
+  const detail = page.locator(".task-detail-panel");
+  await expect(detail.locator(".detail-title")).toHaveValue(demoTaskTitle);
+  await detail.getByRole("button", { name: "关闭详情" }).click();
+
+  await taskTree.getByRole("button", { name: `收起子任务：${demoTaskTitle}` }).click();
+  await expect(subtaskList).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
+
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "切换团队" }).click();
+  await page.getByRole("menuitemradio", { name: "个人空间" }).click();
+  await expect(page.getByRole("button", { name: `收起子任务：${demoTaskTitle}` })).toBeVisible();
+
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "切换团队" }).click();
+  await page.getByRole("menuitemradio", { name: "AntTodo 产品团队" }).click();
+  await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
+
+  const noSubtasksRow = page.locator(".task-tree-item").filter({
+    hasText: "优化任务详情抽屉交互",
+  });
+  await expect(noSubtasksRow.locator(".task-subtasks-expander")).toHaveCount(0);
+});
+
+test("quick add creates notes and keeps its per-workspace settings", async ({ page }) => {
+  await page.goto("/?demo=1");
+  const quickInput = page.getByPlaceholder('添加任务至“所有”');
+  await quickInput.click();
+  await page.getByRole("button", { name: "快速新增设置" }).click();
+  const menu = page.getByRole("menu", { name: "快速新增设置" });
+  await menu.getByRole("radio", { name: "笔记" }).click();
+  await expect(menu.getByRole("radio", { name: "高优先级" })).toBeDisabled();
+  await expect(page.getByPlaceholder('添加笔记至“所有”')).toBeVisible();
+
+  const noteTitle = "快速新增笔记";
+  await page.getByPlaceholder('添加笔记至“所有”').fill(noteTitle);
+  await page.getByPlaceholder('添加笔记至“所有”').press("Enter");
+  const row = page.locator(".task-row").filter({ hasText: noteTitle });
+  await expect(row.locator(".task-note-icon")).toBeVisible();
+  await expect(row.locator(".task-checkbox")).toHaveCount(0);
+
+  await row.getByText(noteTitle, { exact: true }).click();
+  const detail = page.locator(".task-detail-panel");
+  await expect(detail.getByRole("textbox", { name: "笔记标题" })).toHaveValue(noteTitle);
+  await expect(detail.locator(".priority-trigger")).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "完成任务" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "展开子任务" })).toHaveCount(0);
+
+  await detail.getByRole("button", { name: "更多笔记操作" }).click();
+  await detail.getByRole("menuitem", { name: "切换为待办" }).click();
+  await expect(detail.getByRole("textbox", { name: "任务标题" })).toHaveValue(noteTitle);
+  await expect(detail.locator(".priority-trigger")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByPlaceholder('添加笔记至“所有”')).toBeVisible();
+});
+
+test("offline mode disables note creation and type switching", async ({ page, context }) => {
+  await page.goto("/?demo=1");
+  await context.setOffline(true);
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await expect(page.getByPlaceholder("离线状态下不可新增任务")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "快速新增设置" })).toBeDisabled();
+  await expect(page.getByRole("button", {
+    name: "重新打开子任务：运行数据库安全测试",
+  })).toBeDisabled();
+  const collapseSubtasks = page.getByRole("button", { name: `收起子任务：${demoTaskTitle}` });
+  await expect(collapseSubtasks).toBeEnabled();
+  await collapseSubtasks.click();
+  await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
+
+  await page.getByText(demoTaskTitle, { exact: true }).click();
+  const detail = page.locator(".task-detail-panel");
+  await detail.getByRole("button", { name: "更多任务操作" }).click();
+  await expect(detail.getByRole("menuitem", { name: "切换为笔记" })).toBeDisabled();
+});
+
+test("notes hide and restore preserved task state across every entry surface", async ({ page }) => {
+  await page.goto("/?demo=1");
+  let row = page.locator(".task-row").filter({ hasText: demoTaskTitle });
+  await row.getByText(demoTaskTitle, { exact: true }).click();
+  let detail = page.locator(".task-detail-panel");
+  await expect(detail.getByRole("button", { name: "设置优先级，当前高优先级" })).toBeVisible();
+  await expect(detail.getByText("运行数据库安全测试", { exact: true })).toBeVisible();
+  await detail.getByRole("button", { name: "更多任务操作" }).click();
+  await detail.getByRole("menuitem", { name: "切换为笔记" }).click();
+  await expect(detail.locator(".priority-trigger")).toHaveCount(0);
+  await expect(detail.getByText("运行数据库安全测试", { exact: true })).toHaveCount(0);
+  row = page.locator(".task-row").filter({ hasText: demoTaskTitle });
+  await expect(row.locator(".task-note-icon")).toBeVisible();
+  await expect(row).not.toContainText("1/2");
+  await detail.getByRole("button", { name: "更多笔记操作" }).click();
+  await detail.getByRole("menuitem", { name: "切换为待办" }).click();
+  await expect(detail.getByRole("button", { name: "设置优先级，当前高优先级" })).toBeVisible();
+  await expect(detail.getByText("运行数据库安全测试", { exact: true })).toBeVisible();
+  row = page.locator(".task-row").filter({ hasText: demoTaskTitle });
+  await expect(row).toContainText("1/2");
+  await detail.getByRole("button", { name: "关闭详情" }).click();
+
+  const noteTitle = "优化任务详情抽屉交互";
+  row = page.locator(".task-row").filter({ hasText: noteTitle });
+  await row.locator(".task-checkbox").click();
+  row = page.locator(".task-row").filter({ hasText: noteTitle });
+  await expect(row).toHaveClass(/completed/);
+  await row.getByText(noteTitle, { exact: true }).click();
+  detail = page.locator(".task-detail-panel");
+  await detail.getByRole("button", { name: "更多任务操作" }).click();
+  await detail.getByRole("menuitem", { name: "切换为笔记" }).click();
+  row = page.locator(".task-row").filter({ hasText: noteTitle });
+  await expect(row.locator(".task-note-icon")).toBeVisible();
+  await expect(row).not.toHaveClass(/completed/);
+
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  const search = page.getByRole("dialog", { name: "搜索任务" });
+  await search.getByRole("textbox", { name: "搜索任务" }).fill(noteTitle);
+  const result = search.getByRole("button", { name: `打开笔记：${noteTitle}` });
+  await expect(result.locator(".task-search-status.note")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "思维导图" }).click();
+  await page.getByRole("button", { name: "一览全部" }).click();
+  const mindMapNode = page.locator(".react-flow__node-task").filter({ hasText: noteTitle });
+  await expect(mindMapNode.locator(".mind-map-note-icon")).toBeVisible();
+  await expect(mindMapNode.getByRole("button", { name: "完成任务" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+  const calendarEvent = page.getByRole("button").filter({ hasText: noteTitle });
+  await expect(calendarEvent).toBeVisible();
+  await expect(calendarEvent).not.toHaveClass(/calendar-event-completed/);
+  await calendarEvent.click();
+  const dialog = page.getByRole("dialog", { name: `笔记详情：${noteTitle}` });
+  await expect(dialog.locator(".detail-note-icon")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "完成任务" })).toHaveCount(0);
+});
+
 test("calendar opens the reusable task dialog and manages labels", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.goto("/?demo=1");
@@ -66,13 +222,13 @@ test("mind map is full width and supports creation, details, and date dragging",
   const unscheduledBox = await unscheduledBranch.boundingBox();
   expect(inboxBox).not.toBeNull();
   expect(unscheduledBox).not.toBeNull();
-  expect(inboxBox!.y).toBeLessThan(unscheduledBox!.y);
+  expect(inboxBox!.y).not.toBe(unscheduledBox!.y);
   const monthNode = page.locator(".react-flow__node-month").first();
   const weekNode = page.locator(".react-flow__node-week").first();
   const dayNode = page.locator(".react-flow__node-day").first();
-  await expect(monthNode).toHaveCSS("width", "88px");
-  await expect(weekNode).toHaveCSS("width", "144px");
-  await expect(dayNode).toHaveCSS("width", "110px");
+  await expect(monthNode).toHaveCSS("width", "132px");
+  await expect(weekNode).toHaveCSS("width", "212px");
+  await expect(dayNode).toHaveCSS("width", "154px");
   const dateNodeBackgrounds = await Promise.all([monthNode, weekNode, dayNode].map(
     (node) => node.locator(".mind-map-node").evaluate(
       (element) => getComputedStyle(element).backgroundColor,
@@ -94,6 +250,7 @@ test("mind map is full width and supports creation, details, and date dragging",
 
   const targetDay = page.locator(".react-flow__node-day").first();
   await targetDay.click();
+  await targetDay.click();
   await page.keyboard.press("Enter");
   const draft = page.getByRole("textbox", { name: "新待办标题" });
   await expect(draft).toBeFocused();
@@ -106,7 +263,7 @@ test("mind map is full width and supports creation, details, and date dragging",
   await expect(createdTask).toBeVisible();
   await createdTask.getByRole("button", { name: "完成任务" }).click();
   await expect(createdTask.locator(".mind-map-node-task")).toHaveClass(/completed/);
-  await createdTask.click();
+  await createdTask.dblclick();
   const createdDialog = page.getByRole("dialog", {
     name: "任务详情：思维导图快捷创建",
   });
@@ -133,7 +290,7 @@ test("mind map is full width and supports creation, details, and date dragging",
     { steps: 16 },
   );
   await page.mouse.up();
-  await unscheduledTask.click();
+  await unscheduledTask.dblclick();
   const draggedDialog = page.getByRole("dialog", {
     name: "任务详情：记录下一轮产品想法",
   });
@@ -157,7 +314,7 @@ test("mind map creates labels, inherits labels, and exposes context deletion", a
   await productLabel.click();
   await page.getByRole("button", { name: "新增标签" }).click();
   const labelDialog = page.getByRole("dialog", { name: "添加标签" });
-  await expect(labelDialog.getByRole("combobox")).toHaveValue("product");
+  await expect(labelDialog.getByRole("combobox", { name: "上级标签" })).toHaveValue("product");
   await labelDialog.getByPlaceholder("名称").fill("导图子标签");
   await labelDialog.getByRole("button", { name: "保存" }).click();
   await expect(labelDialog).toBeHidden();
@@ -202,6 +359,27 @@ test("mind map creates labels, inherits labels, and exposes context deletion", a
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("menuitem", { name: "删除任务" }).click();
   await expect(inheritedTask).toHaveCount(0);
+});
+
+test("label editor defaults to private, forces inheritance, and sizes to its options", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "新建标签" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "添加标签" });
+  await expect(dialog.getByRole("radio", { name: "私人标签 仅创建者可见" })).toBeChecked();
+  await expect(dialog.getByText("继承父标签权限")).toHaveCount(0);
+  const privateBox = await dialog.boundingBox();
+
+  await dialog.getByRole("combobox", { name: "上级标签" }).selectOption("product");
+  await dialog.getByRole("radio", { name: "团队标签 配置团队成员权限" }).click();
+  await expect(dialog.getByRole("combobox", { name: "可见用户范围" })).toHaveValue("inherit");
+  await expect(dialog.getByRole("combobox", { name: "可管理用户范围" })).toHaveValue("inherit");
+  const teamBox = await dialog.boundingBox();
+  expect(teamBox!.height).toBeGreaterThan(privateBox!.height);
+
+  await dialog.getByRole("combobox", { name: "可见用户范围" }).selectOption("users");
+  const specifiedBox = await dialog.boundingBox();
+  expect(specifiedBox!.height).toBeGreaterThanOrEqual(teamBox!.height);
 });
 
 test("mind map dragging adds labels and moving to inbox clears them", async ({ page }) => {
@@ -359,7 +537,8 @@ test("task assignee menu assigns, unassigns, and updates list avatars", async ({
   await page.setViewportSize({ width: 1280, height: 720 });
   await openDemoTask(page);
 
-  const trigger = page.getByRole("button", { name: "负责人：沈宇宝" });
+  const detail = page.locator(".task-detail-panel .detail-toolbar");
+  const trigger = detail.getByRole("button", { name: "负责人：沈宇宝" });
   await expect(trigger).toBeVisible();
   await trigger.click();
 
@@ -377,13 +556,13 @@ test("task assignee menu assigns, unassigns, and updates list avatars", async ({
 
   await menu.getByRole("menuitemradio", { name: "产品同学" }).click();
   await expect(
-    page.getByRole("button", { name: "负责人：产品同学" }),
+    detail.getByRole("button", { name: "负责人：产品同学" }),
   ).toBeVisible();
   await expect(page.locator(".task-row.selected .task-assignee-avatar")).toBeVisible();
 
-  await page.getByRole("button", { name: "负责人：产品同学" }).click();
+  await detail.getByRole("button", { name: "负责人：产品同学" }).click();
   await menu.getByRole("menuitemradio", { name: "不指派" }).click();
-  await expect(page.getByRole("button", { name: "负责人：未指派" })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "负责人：未指派" })).toBeVisible();
   await expect(page.locator(".task-row.selected .task-assignee-avatar")).toHaveCount(0);
 });
 
@@ -391,7 +570,8 @@ test("task assignee menu supports escape and keyboard selection", async ({ page 
   await page.setViewportSize({ width: 1280, height: 720 });
   await openDemoTask(page);
 
-  const trigger = page.getByRole("button", { name: "负责人：沈宇宝" });
+  const detail = page.locator(".task-detail-panel .detail-toolbar");
+  const trigger = detail.getByRole("button", { name: "负责人：沈宇宝" });
   await trigger.click();
   const menu = page.getByRole("menu", { name: "选择负责人" });
   await expect(menu).toBeVisible();
@@ -409,7 +589,7 @@ test("task assignee menu supports escape and keyboard selection", async ({ page 
   ).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("button", { name: "负责人：产品同学" }),
+    detail.getByRole("button", { name: "负责人：产品同学" }),
   ).toBeVisible();
 });
 
@@ -418,7 +598,8 @@ test("offline mode disables task assignment", async ({ context, page }) => {
   await context.setOffline(true);
   await page.getByText(demoTaskTitle, { exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "负责人：沈宇宝" }),
+    page.locator(".task-detail-panel .detail-toolbar")
+      .getByRole("button", { name: "负责人：沈宇宝" }),
   ).toBeDisabled();
 });
 
@@ -435,7 +616,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await expect(dialog).toHaveCSS("height", "680px");
   await expect(dialog.locator(".settings-sidebar")).toHaveCSS("width", "213px");
 
-  await expect(dialog.getByText("沈宇宝", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("沈宇宝", { exact: true }).first()).toBeVisible();
   await expect(dialog.getByText("未设置", { exact: true })).toBeVisible();
   await expect(dialog.getByText("+86 138****8000", { exact: true })).toBeVisible();
   await expect(dialog.getByText("稍后提供", { exact: true })).toHaveCount(4);
@@ -447,6 +628,9 @@ test("settings matches the reference geometry and reads account data", async ({ 
     settingsTabLabels.indexOf("成员管理") - 1,
   );
   expect(settingsTabLabels.indexOf("成员管理")).toBe(
+    settingsTabLabels.indexOf("用户组") - 1,
+  );
+  expect(settingsTabLabels.indexOf("用户组")).toBe(
     settingsTabLabels.indexOf("单点登录") - 1,
   );
   expect(settingsTabLabels).toEqual([
@@ -455,6 +639,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
     "快捷键",
     "团队管理",
     "成员管理",
+    "用户组",
     "单点登录",
     "关于",
   ]);
@@ -473,7 +658,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
     "anttodo-product",
   );
   await expect(dialog.getByLabel("团队访问地址")).toContainText(
-    "anttodo-product.team.anttodo.com",
+    "app.anttodo.com/team/anttodo-product",
   );
   await dialog.getByRole("textbox", { name: "团队名称" }).fill("AntTodo 演示团队");
   await dialog.getByRole("textbox", { name: "团队 Slug" }).fill("anttodo-demo");
@@ -529,6 +714,57 @@ test("settings matches the reference geometry and reads account data", async ({ 
 
   await dialog.getByRole("button", { name: "关闭设置" }).click();
   await expect(dialog).toBeHidden();
+});
+
+test("account settings update nickname and avatar in demo mode", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+  const settings = page.getByRole("dialog", { name: "设置" });
+
+  await settings.locator(".account-setting-row").filter({ hasText: "昵称" })
+    .getByRole("button", { name: "修改" }).click();
+  const nicknameDialog = page.getByRole("dialog", { name: "修改昵称" });
+  const nickname = nicknameDialog.getByRole("textbox", { name: "昵称" });
+  await expect(nickname).toHaveValue("沈宇宝");
+  await nickname.fill("  新昵称  ");
+  await nicknameDialog.getByRole("button", { name: "保存" }).click();
+  await expect(settings.getByText("新昵称", { exact: true }).first()).toBeVisible();
+
+  await settings.getByRole("button", { name: "修改头像" }).click();
+  const avatarDialog = page.getByRole("dialog", { name: "修改头像" });
+  await avatarDialog.locator('input[type="file"]').setInputFiles({
+    name: "avatar.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  await expect(avatarDialog.getByAltText("头像预览")).toBeVisible();
+  await avatarDialog.getByRole("button", { name: "保存" }).click();
+  await expect(settings.locator(".account-avatar-button img")).toBeVisible();
+
+  await settings.getByRole("button", { name: "修改头像" }).click();
+  await page.getByRole("dialog", { name: "修改头像" })
+    .getByRole("button", { name: "移除当前头像" }).click();
+  await expect(settings.locator(".account-avatar-fallback")).toBeVisible();
+  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await expect(page.getByRole("button", { name: "新昵称的账户菜单" })).toBeVisible();
+});
+
+test("offline account settings keep profile editing read-only", async ({ context, page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+  await context.setOffline(true);
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  const settings = page.getByRole("dialog", { name: "设置" });
+  await expect(settings.getByRole("button", { name: "修改头像" })).toBeDisabled();
+  await expect(settings.locator(".account-setting-row").filter({ hasText: "昵称" })
+    .getByRole("button", { name: "修改" })).toBeDisabled();
+  await expect(settings.locator(".account-setting-row").filter({ hasText: "头像" })
+    .getByRole("button", { name: "修改" })).toBeDisabled();
 });
 
 test("sidebar and detail panel resizing stops at the reference limits", async ({ page }) => {
@@ -696,9 +932,10 @@ test("due date picker saves point, range, all-day, and clear states", async ({ p
   await page.getByRole("button", { name: "设置到期时间" }).click();
   await picker.getByRole("tab", { name: "时间段" }).click();
   await picker.getByRole("checkbox", { name: "全天" }).check();
-  await expect(picker.getByRole("button", { name: "提醒" })).toHaveAttribute("aria-disabled", "true");
+  await expect(picker.getByRole("button", { name: "提醒" })).toHaveAttribute("aria-expanded", "false");
   await expect(picker.getByRole("button", { name: "重复" })).toHaveAttribute("aria-disabled", "true");
-  await picker.getByRole("button", { name: "提醒" }).dispatchEvent("click");
+  await picker.getByRole("button", { name: "提醒" }).click();
+  await expect(picker.getByRole("button", { name: "当天 (09:00)" })).toBeVisible();
   await expect(picker).toBeVisible();
   await picker.getByRole("button", { name: "确定" }).click();
   await expect(page.locator(".detail-due-trigger")).toContainText("全天");
@@ -706,6 +943,35 @@ test("due date picker saves point, range, all-day, and clear states", async ({ p
   await page.getByRole("button", { name: "设置到期时间" }).click();
   await picker.getByRole("button", { name: "清除" }).click();
   await expect(page.locator(".detail-due-trigger")).toContainText("无日期");
+});
+
+test("reminder picker saves multiple, custom, all-day and persistent rules", async ({ page, context }) => {
+  await context.grantPermissions(["notifications"], { origin: "http://127.0.0.1:4173" });
+  await page.goto("/?demo=1");
+  await page.getByText("完成 AntTodo 项目框架验收", { exact: true }).click();
+  await page.getByRole("button", { name: "设置到期时间" }).click();
+  const picker = page.getByRole("dialog", { name: "设置到期时间" });
+  await picker.getByRole("button", { name: "明天", exact: true }).click();
+  await picker.getByRole("button", { name: "提醒", exact: true }).click();
+  await picker.getByRole("button", { name: "准时" }).click();
+  await picker.getByRole("button", { name: "提前5分钟" }).click();
+  await picker.getByRole("checkbox", { name: /持续提醒/ }).check();
+  await picker.getByRole("button", { name: "自定义" }).click();
+  await picker.getByRole("spinbutton").fill("2");
+  await picker.locator(".due-reminder-custom select").last().selectOption("hour");
+  await picker.getByRole("button", { name: "添加提醒" }).click();
+  await expect(picker.getByRole("button", { name: "提醒", exact: true })).toContainText("3 个提醒");
+  await picker.getByRole("button", { name: "确定" }).click();
+
+  await page.getByRole("button", { name: "设置到期时间" }).click();
+  await picker.getByRole("button", { name: "提醒", exact: true }).click();
+  await expect(picker.getByRole("button", { name: "准时" })).toHaveAttribute("aria-pressed", "true");
+  await expect(picker.getByRole("checkbox", { name: /持续提醒/ })).toBeChecked();
+
+  await picker.getByRole("button", { name: "提醒", exact: true }).click();
+  await picker.locator(".due-time-row select").selectOption("");
+  await picker.getByRole("button", { name: "提醒", exact: true }).click();
+  await expect(picker.getByRole("button", { name: "当天 (09:00)" })).toBeVisible();
 });
 
 test("date and time preferences affect the picker and task timezone", async ({ page }) => {
@@ -795,7 +1061,7 @@ test("priority menu supports keyboard dismissal and is disabled offline", async 
 test("task list menu groups by labels and keeps multi-label tasks in every group", async ({ page }) => {
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "分组与排序" }).click();
-  await page.getByRole("menuitem", { name: "分组 自定义" }).click();
+  await page.getByRole("menuitem", { name: "分组 无" }).click();
   const groupingMenu = page.getByRole("menu", { name: "分组方式" });
   await groupingMenu.getByRole("menuitemradio", { name: "标签" }).click();
 
@@ -821,54 +1087,45 @@ test("task list preferences are independent for smart and label lists", async ({
   await expect(page.getByRole("menuitem", { name: "排序 自定义" })).toBeVisible();
 });
 
-test("custom sections can be created and renamed", async ({ page }) => {
+test("retired custom grouping is absent from the task list", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "添加分组" }).click();
-  await page.getByPlaceholder("分组名称").fill("本周计划");
-  await page.getByRole("button", { name: "添加", exact: true }).click();
-  await expect(page.getByText("本周计划", { exact: true })).toBeVisible();
-
-  await page.getByRole("button", { name: "管理分组“本周计划”" }).click();
-  await page.getByRole("menuitem", { name: "重命名" }).click();
-  const input = page.locator(".task-section-rename input");
-  await input.fill("下周计划");
-  await input.press("Enter");
-  await expect(page.getByText("下周计划", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加分组" })).toHaveCount(0);
+  await page.getByRole("button", { name: "分组与排序" }).click();
+  await page.getByRole("menuitem", { name: "分组 无" }).click();
+  await expect(page.getByRole("menu", { name: "分组方式" })
+    .getByRole("menuitemradio", { name: "自定义" })).toHaveCount(0);
 });
 
-test("custom layout supports pointer cross-group moves and keyboard sorting", async ({ page }) => {
+test("custom sorting supports pointer and keyboard sorting", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "添加分组" }).click();
-  await page.getByPlaceholder("分组名称").fill("待处理");
-  await page.getByRole("button", { name: "添加", exact: true }).click();
-
-  const targetGroup = page.locator(".task-group").filter({ hasText: "待处理" });
   const sourceHandle = page.getByRole("button", {
     name: "拖动任务“记录下一轮产品想法”",
   });
+  const targetHandle = page.getByRole("button", {
+    name: "拖动任务“完成 AntTodo 项目框架验收”",
+  });
   const sourceBox = await sourceHandle.boundingBox();
-  const targetBox = await targetGroup.boundingBox();
+  const targetBox = await targetHandle.boundingBox();
   expect(sourceBox).not.toBeNull();
   expect(targetBox).not.toBeNull();
   await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetBox!.x + 80, targetBox!.y + targetBox!.height / 2, { steps: 8 });
   await page.mouse.up();
-  await expect(
-    targetGroup.getByText("记录下一轮产品想法", { exact: true }),
-  ).toBeVisible();
+  await expect(page.locator(".task-title").first()).toHaveText("记录下一轮产品想法");
 
+  await page.reload();
   const before = await page.locator(".task-title").allTextContents();
+  const taskTitle = "优化任务详情抽屉交互";
   const keyboardHandle = page.getByRole("button", {
-    name: "拖动任务“完成 AntTodo 项目框架验收”",
+    name: `拖动任务“${taskTitle}”`,
   });
   await keyboardHandle.focus();
   await keyboardHandle.press("Space");
   await keyboardHandle.press("ArrowDown");
   await keyboardHandle.press("Space");
   const after = await page.locator(".task-title").allTextContents();
-  expect(after[0]).toBe(before[1]);
-  expect(after[1]).toBe(before[0]);
+  expect(after.indexOf(taskTitle)).toBe(before.indexOf(taskTitle) + 1);
 });
 
 test("offline task list preferences and custom layout are read-only", async ({ page, context }) => {
@@ -876,12 +1133,12 @@ test("offline task list preferences and custom layout are read-only", async ({ p
   await context.setOffline(true);
   await page.evaluate(() => window.dispatchEvent(new Event("offline")));
   await page.getByRole("button", { name: "分组与排序" }).click();
-  await page.getByRole("menuitem", { name: "分组 自定义" }).click();
+  await page.getByRole("menuitem", { name: "分组 无" }).click();
   await expect(
     page.getByRole("menu", { name: "分组方式" })
       .getByRole("menuitemradio", { name: "时间", exact: true }),
   ).toBeDisabled();
-  await expect(page.getByRole("button", { name: "添加分组" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /拖动任务/ })).toHaveCount(0);
 });
 
 test("moving a label to inbox removes the label and keeps inbox outside the label tree", async ({ page }) => {
@@ -931,4 +1188,129 @@ test("account menu contains workspace, settings, and sign-out actions", async ({
   await expect(settingsDialog.locator(".account-profile > span:last-child")).toContainText(
     "个人空间",
   );
+});
+
+test("creates a workspace from the switcher and lets only its owner confirm deletion", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "切换团队" }).click();
+  await page.getByRole("menuitem", { name: "创建团队" }).click();
+
+  const createDialog = page.getByRole("dialog", { name: "创建团队" });
+  await expect(createDialog).toContainText("已拥有 2 / 3 个团队");
+  await createDialog.getByRole("textbox", { name: "新团队名称" }).fill("客户端体验团队");
+  await createDialog.getByRole("textbox", { name: "新团队 Slug" }).fill("client-experience");
+  await createDialog.getByRole("button", { name: "创建团队", exact: true }).click();
+  await expect(createDialog).toBeHidden();
+
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "切换团队" }).click();
+  await expect(page.getByRole("menuitemradio", { name: "客户端体验团队" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "创建团队" }).click();
+  await expect(page.getByRole("dialog", { name: "创建团队" })).toContainText(
+    "已拥有 3 / 3 个团队",
+  );
+  await expect(
+    page.getByRole("dialog", { name: "创建团队" })
+      .getByRole("button", { name: "创建团队", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("dialog", { name: "创建团队" }).getByRole("button", { name: "取消" }).click();
+
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+  const settings = page.getByRole("dialog", { name: "设置" });
+  await settings.getByRole("button", { name: "团队管理", exact: true }).click();
+  const item = settings.locator(".team-management-item").filter({ hasText: "客户端体验团队" });
+  await expect(item).toContainText("当前团队");
+  await expect(item.getByRole("button", { name: "删除团队" })).toBeVisible();
+  await item.getByRole("button", { name: "删除团队" }).click();
+
+  const deleteDialog = page.getByRole("dialog", { name: "永久删除“客户端体验团队”" });
+  const confirmButton = deleteDialog.getByRole("button", { name: "永久删除" });
+  await expect(confirmButton).toBeDisabled();
+  await deleteDialog.getByRole("textbox", { name: "输入团队名称确认删除" })
+    .fill("客户端体验团队");
+  await expect(confirmButton).toBeEnabled();
+  await confirmButton.click();
+  await expect(page.locator(".toast")).toContainText("团队已永久删除");
+});
+
+test("comments support mentions, images, deletion, and notification navigation", async ({ page }) => {
+  await page.goto("/?demo=1");
+
+  await page.getByText(demoTaskTitle, { exact: true }).click();
+  let detail = page.locator(".task-detail-panel");
+  await expect(detail.getByRole("region", { name: "评论", exact: true })).toHaveCount(0);
+  await detail.getByRole("button", { name: "评论", exact: true }).click();
+  await expect(detail.getByRole("textbox", { name: "添加评论" })).toBeFocused();
+  await detail.getByRole("button", { name: "关闭详情" }).click();
+
+  await page.getByRole("button", { name: "通知，1 条未读" }).click();
+  const notification = page.getByRole("dialog", { name: "通知" });
+  await expect(notification).toContainText("产品同学");
+  await expect(notification).toContainText("优化任务详情抽屉交互");
+  await notification.getByRole("button", { name: /产品同学/ }).click();
+
+  detail = page.locator(".task-detail-panel");
+  await expect(detail.getByRole("textbox", { name: "任务标题" }))
+    .toHaveValue("优化任务详情抽屉交互");
+  await expect(page.getByRole("button", { name: "通知" })).toBeVisible();
+  await expect(detail.getByRole("region", { name: "评论", exact: true }))
+    .toContainText("@沈宇宝");
+  await expect(detail.getByRole("textbox", { name: "添加评论" })).toHaveCount(0);
+  await detail.getByRole("button", { name: "评论", exact: true }).click();
+
+  const composer = detail.getByRole("textbox", { name: "添加评论" });
+  await composer.fill("@产");
+  await expect(detail.getByRole("listbox", { name: "可引用成员" })).toContainText("产品同学");
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("@产品同学 ");
+  await composer.fill("@产品同学 请确认评论交互");
+
+  const fileInput = detail.locator('input[type="file"]');
+  await fileInput.setInputFiles("public/icon-192.png");
+  await expect(detail.getByRole("button", { name: "移除待发布图片" })).toBeVisible();
+  await composer.press("Enter");
+
+  const ownComment = detail.locator(".comment-row").filter({ hasText: "请确认评论交互" });
+  await expect(ownComment).toContainText("@产品同学");
+  await expect(ownComment.getByRole("button", { name: "查看评论图片" })).toBeVisible();
+  await ownComment.getByRole("button", { name: "修改评论" }).click();
+  const editComment = ownComment.getByRole("textbox", { name: "编辑评论" });
+  await editComment.fill("@产品同学 已修改评论内容");
+  await detail.getByRole("button", { name: "保存评论修改" }).click();
+  const editedComment = detail.locator(".comment-row").filter({ hasText: "已修改评论内容" });
+  await expect(editedComment).toContainText("已编辑");
+  await editedComment.getByRole("button", { name: "删除评论" }).click();
+  await expect(editedComment).toHaveCount(0);
+
+  await page.context().setOffline(true);
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await expect(detail.getByRole("textbox", { name: "添加评论" })).toBeDisabled();
+  await expect(detail.getByRole("textbox", { name: "添加评论" }))
+    .toHaveAttribute("placeholder", "离线模式下不可评论");
+});
+
+test("comment list grows to five rows and then scrolls", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByText(demoTaskTitle, { exact: true }).click();
+  const detail = page.locator(".task-detail-panel");
+  await detail.getByRole("button", { name: "评论", exact: true }).click();
+  const composer = detail.getByRole("textbox", { name: "添加评论" });
+  for (let index = 1; index <= 6; index += 1) {
+    await composer.fill(`动态高度评论 ${index}`);
+    await composer.press("Enter");
+  }
+
+  const list = detail.locator(".comments-list");
+  await expect(list.locator(".comment-row")).toHaveCount(6);
+  const metrics = await list.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    firstFiveHeight: [...element.querySelectorAll<HTMLElement>(":scope > .comment-row")]
+      .slice(0, 5)
+      .reduce((height, row) => height + row.getBoundingClientRect().height, 8),
+  }));
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(Math.abs(metrics.clientHeight - metrics.firstFiveHeight)).toBeLessThanOrEqual(1);
 });

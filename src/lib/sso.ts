@@ -26,6 +26,87 @@ export type DingtalkSsoPublicConfig = {
   state: string;
 };
 
+export type DingtalkSsoLoginProvider = {
+  provider: "dingtalk";
+  displayName: string;
+  flow: "qr_or_redirect";
+  config: {
+    corpId: string;
+    appKey: string;
+    agentId: string | null;
+    redirectUri: string;
+    state: string;
+  };
+};
+
+export type WorkspaceSsoLoginProvider = DingtalkSsoLoginProvider;
+
+export type WorkspaceSsoLoginConfig = {
+  workspace: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+  providers: WorkspaceSsoLoginProvider[];
+};
+
+function nonEmptyString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function parseWorkspaceSsoLoginConfig(
+  value: unknown,
+): WorkspaceSsoLoginConfig | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (!record.workspace || typeof record.workspace !== "object") return null;
+  const workspaceRecord = record.workspace as Record<string, unknown>;
+  const id = nonEmptyString(workspaceRecord.id);
+  const name = nonEmptyString(workspaceRecord.name);
+  const slug = nonEmptyString(workspaceRecord.slug);
+  if (!id || !name || !slug || !Array.isArray(record.providers)) return null;
+
+  const providers = record.providers.flatMap((item): WorkspaceSsoLoginProvider[] => {
+    if (!item || typeof item !== "object") return [];
+    const provider = item as Record<string, unknown>;
+    if (
+      provider.provider !== "dingtalk" ||
+      provider.flow !== "qr_or_redirect" ||
+      !provider.config ||
+      typeof provider.config !== "object"
+    ) {
+      return [];
+    }
+    const config = provider.config as Record<string, unknown>;
+    const displayName = nonEmptyString(provider.displayName);
+    const corpId = nonEmptyString(config.corpId);
+    const appKey = nonEmptyString(config.appKey);
+    const redirectUri = nonEmptyString(config.redirectUri);
+    const state = nonEmptyString(config.state);
+    if (!displayName || !corpId || !appKey || !redirectUri || !state) return [];
+    return [{
+      provider: "dingtalk",
+      displayName,
+      flow: "qr_or_redirect",
+      config: {
+        corpId,
+        appKey,
+        agentId: nonEmptyString(config.agentId),
+        redirectUri,
+        state,
+      },
+    }];
+  });
+
+  return { workspace: { id, name, slug }, providers };
+}
+
+export function initialWorkspaceSsoProvider(
+  providers: WorkspaceSsoLoginProvider[],
+) {
+  return providers.length === 1 ? providers[0] : null;
+}
+
 function validPublicBase(value: string | undefined) {
   if (!value) return null;
   try {
@@ -72,6 +153,13 @@ export function dingtalkOAuthAuthorizeUrl(input: {
   url.searchParams.set("scope", DINGTALK_LOGIN_SCOPE);
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("state", input.state);
+  return url.toString();
+}
+
+export function dingtalkDesktopCallbackUrl(handoffCode: string) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(handoffCode)) return null;
+  const url = new URL("anttodo://auth/callback");
+  url.searchParams.set("code", handoffCode);
   return url.toString();
 }
 
@@ -243,7 +331,8 @@ export async function edgeFunctionErrorMessage(
 }
 
 type DingtalkExchangeResult =
-  | { ok: true; workspaceId: string; tokenHash: string }
+  | { ok: true; mode: "web"; workspaceId: string; tokenHash: string }
+  | { ok: true; mode: "desktop"; workspaceId: string; handoffCode: string }
   | { ok: false; error: string };
 
 const dingtalkExchangePromises = new Map<string, Promise<DingtalkExchangeResult>>();

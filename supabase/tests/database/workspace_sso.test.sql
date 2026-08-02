@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(17);
+select plan(25);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -268,6 +268,93 @@ select is(
   anttodo_private.find_user_id_by_phone('+8613100131000'),
   null,
   'find_user_id_by_phone returns null for unknown phone'
+);
+
+select ok(
+  not has_function_privilege(
+    'anon',
+    'public.create_sso_auth_handoff(text, uuid, text, timestamptz)',
+    'EXECUTE'
+  ),
+  'anonymous callers cannot create desktop SSO handoffs'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.consume_sso_auth_handoff(text)',
+    'EXECUTE'
+  ),
+  'authenticated callers cannot consume desktop SSO handoffs directly'
+);
+
+select lives_ok(
+  $$
+    select public.create_sso_auth_handoff(
+      repeat('a', 64),
+      '21000000-0000-0000-0000-000000000001',
+      'server-only-token-hash',
+      now() + interval '2 minutes'
+    )
+  $$,
+  'service-side RPC creates a desktop SSO handoff'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from anttodo_private.sso_auth_handoffs
+    where code_hash = repeat('a', 64)
+      and token_hash = 'server-only-token-hash'
+  ),
+  1,
+  'handoff stores only the supplied code hash and server token hash'
+);
+
+select results_eq(
+  $$
+    select status, workspace_id, token_hash
+    from public.consume_sso_auth_handoff(repeat('a', 64))
+  $$,
+  $$ values (
+    'ok'::text,
+    '21000000-0000-0000-0000-000000000001'::uuid,
+    'server-only-token-hash'::text
+  ) $$,
+  'desktop SSO handoff can be consumed once'
+);
+
+select is(
+  (
+    select status
+    from public.consume_sso_auth_handoff(repeat('a', 64))
+  ),
+  'consumed',
+  'desktop SSO handoff rejects a second consumption'
+);
+
+select lives_ok(
+  $$
+    select public.create_sso_auth_handoff(
+      repeat('b', 64),
+      '21000000-0000-0000-0000-000000000001',
+      'expired-token-hash',
+      now() + interval '2 minutes'
+    );
+    update anttodo_private.sso_auth_handoffs
+    set expires_at = now() - interval '1 second'
+    where code_hash = repeat('b', 64);
+  $$,
+  'test fixture creates an expired desktop SSO handoff'
+);
+
+select is(
+  (
+    select status
+    from public.consume_sso_auth_handoff(repeat('b', 64))
+  ),
+  'expired',
+  'expired desktop SSO handoff cannot be consumed'
 );
 
 select * from finish();

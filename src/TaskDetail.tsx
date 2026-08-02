@@ -1,10 +1,14 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import clsx from "clsx";
 import {
+  CalendarDays,
   Check,
   Ellipsis,
+  History,
   Inbox,
   ListTodo,
+  MessageCircle,
+  NotebookPen,
   Plus,
   Trash2,
   Type,
@@ -23,29 +27,57 @@ import {
 import { DueDateControl } from "./DueDateControl";
 import { MemberAvatar } from "./MemberAvatar";
 import { PriorityControl } from "./PriorityControl";
+import { TaskComments, type CreateCommentInput } from "./TaskComments";
+import { TaskActivity } from "./TaskActivity";
 import {
   TaskRichTextEditor,
   type TaskRichTextEditorHandle,
 } from "./TaskRichTextEditor";
 import type { AttachmentService } from "./lib/attachments";
 import { getAssignableMembers } from "./lib/taskAssignment";
-import type { DateTimePreferences, Task, WorkspaceBundle } from "./types";
+import type {
+  DateTimePreferences,
+  ReminderSchedule,
+  Subtask,
+  Task,
+  TaskActivityPage,
+  TaskComment,
+  WorkspaceBundle,
+} from "./types";
 
 export type TaskDetailProps = {
   task: Task;
   bundle: WorkspaceBundle;
   currentUserId: string;
   online: boolean;
+  editable: boolean;
   attachmentService: AttachmentService;
   now: Date;
   dateTimePreferences: DateTimePreferences;
   onClose: () => void;
   onUpdate: (patch: Partial<Task>) => Promise<void>;
+  onSaveSchedule: (
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
   onLoadAssignees: () => Promise<string[]>;
   onAssign: (assigneeId: string | null) => Promise<void>;
   onToggleLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
   onCreateSubtask: (title: string) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
+  onUpdateSubtask: (
+    subtaskId: string,
+    patch: Partial<Pick<Subtask, "due_at" | "assignee_id">>,
+  ) => Promise<void>;
+  onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  commentsRevision: number;
+  activityRevision: number;
+  onLoadActivity: (cursor?: TaskActivityPage["nextCursor"]) => Promise<TaskActivityPage>;
+  onLoadComments: () => Promise<TaskComment[]>;
+  onLoadCommentCandidates: () => Promise<string[]>;
+  onCreateComment: (input: CreateCommentInput) => Promise<void>;
+  onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
+  onDeleteComment: (comment: TaskComment) => Promise<void>;
 };
 
 function TaskAssigneeControl({
@@ -55,6 +87,8 @@ function TaskAssigneeControl({
   online,
   onLoad,
   onAssign,
+  assigneeId = task.assignee_id,
+  compact = false,
 }: {
   task: Task;
   bundle: WorkspaceBundle;
@@ -62,6 +96,8 @@ function TaskAssigneeControl({
   online: boolean;
   onLoad: () => Promise<string[]>;
   onAssign: (assigneeId: string | null) => Promise<void>;
+  assigneeId?: string | null;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [candidateIds, setCandidateIds] = useState<string[] | null>(null);
@@ -71,7 +107,7 @@ function TaskAssigneeControl({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const onLoadRef = useRef(onLoad);
-  const assignee = bundle.members.find((member) => member.user_id === task.assignee_id);
+  const assignee = bundle.members.find((member) => member.user_id === assigneeId);
   const candidates = useMemo(
     () => getAssignableMembers(bundle, task, currentUserId, candidateIds ?? []),
     [bundle, candidateIds, currentUserId, task],
@@ -136,9 +172,9 @@ function TaskAssigneeControl({
     };
   }, [open]);
 
-  async function choose(assigneeId: string | null) {
+  async function choose(nextAssigneeId: string | null) {
     if (saving || !online) return;
-    if (task.assignee_id === assigneeId) {
+    if (assigneeId === nextAssigneeId) {
       setOpen(false);
       triggerRef.current?.focus();
       return;
@@ -146,7 +182,7 @@ function TaskAssigneeControl({
     setSaving(true);
     setError("");
     try {
-      await onAssign(assigneeId);
+      await onAssign(nextAssigneeId);
       setOpen(false);
       triggerRef.current?.focus();
     } catch (cause) {
@@ -175,7 +211,7 @@ function TaskAssigneeControl({
 
   const assigneeName = assignee?.profile?.display_name ?? "未指派";
   return (
-    <div className="task-assignee-control" ref={rootRef}>
+    <div className={clsx("task-assignee-control", compact && "subtask-assignee-control")} ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
@@ -202,7 +238,7 @@ function TaskAssigneeControl({
           <button
             type="button"
             role="menuitemradio"
-            aria-checked={task.assignee_id === null}
+            aria-checked={assigneeId === null}
             disabled={saving}
             onClick={() => void choose(null)}
           >
@@ -216,7 +252,7 @@ function TaskAssigneeControl({
               key={member.user_id}
               type="button"
               role="menuitemradio"
-              aria-checked={task.assignee_id === member.user_id}
+              aria-checked={assigneeId === member.user_id}
               disabled={saving}
               onClick={() => void choose(member.user_id)}
             >
@@ -229,6 +265,108 @@ function TaskAssigneeControl({
             <p className="task-assignee-status">暂无可指派成员</p>
           )}
           {error && <p className="task-assignee-error" role="alert">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubtaskDueDateControl({
+  subtask,
+  online,
+  onSave,
+}: {
+  subtask: Subtask;
+  online: boolean;
+  onSave: (dueAt: string | null) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState("");
+  const [saving, setSaving] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const initial = subtask.due_at ? new Date(subtask.due_at) : new Date();
+    const offset = initial.getTimezoneOffset() * 60_000;
+    setDate(new Date(initial.getTime() - offset).toISOString().slice(0, 10));
+    const close = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open, subtask.due_at]);
+
+  const dueDate = subtask.due_at ? new Date(subtask.due_at) : null;
+  const formatted = dueDate
+    ? `${dueDate.getMonth() + 1}月${dueDate.getDate()}日`
+    : "";
+  const overdue = Boolean(
+    subtask.due_at
+    && !subtask.completed
+    && new Date(subtask.due_at).getTime() < Date.now(),
+  );
+
+  async function save(value: string | null) {
+    setSaving(true);
+    try {
+      const dueAt = value
+        ? new Date(`${value}T23:59:59.999`).toISOString()
+        : null;
+      await onSave(dueAt);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="subtask-date-control" ref={rootRef}>
+      <button
+        type="button"
+        className={clsx("subtask-date-trigger", subtask.due_at && "has-date", overdue && "overdue")}
+        aria-label={subtask.due_at ? `截止时间：${formatted}` : "设置子任务截止时间"}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={!online || saving}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <CalendarDays />
+        {formatted && <span>{formatted}</span>}
+      </button>
+      {open && (
+        <div className="subtask-date-popover" role="dialog" aria-label="设置子任务截止时间">
+          <strong>截止时间</strong>
+          <input
+            type="date"
+            aria-label="子任务截止日期"
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+          />
+          <div className="subtask-date-quick-actions">
+            <button type="button" onClick={() => {
+              const today = new Date();
+              const offset = today.getTimezoneOffset() * 60_000;
+              setDate(new Date(today.getTime() - offset).toISOString().slice(0, 10));
+            }}>今天</button>
+            <button type="button" onClick={() => {
+              const tomorrow = new Date();
+              tomorrow.setDate(tomorrow.getDate() + 1);
+              const offset = tomorrow.getTimezoneOffset() * 60_000;
+              setDate(new Date(tomorrow.getTime() - offset).toISOString().slice(0, 10));
+            }}>明天</button>
+          </div>
+          <div className="subtask-date-footer">
+            <button type="button" disabled={saving} onClick={() => void save(null)}>清除</button>
+            <button type="button" disabled={saving || !date} onClick={() => void save(date)}>确定</button>
+          </div>
         </div>
       )}
     </div>
@@ -329,7 +467,7 @@ function TaskLabelControl({
                 type="button"
                 role="menuitemcheckbox"
                 aria-checked={selected}
-                disabled={Boolean(savingLabelId)}
+                disabled={Boolean(savingLabelId) || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
                 onClick={() => void toggle(label.id)}
               >
                 <i style={{ background: label.color }} />
@@ -350,6 +488,106 @@ type TaskDetailContentHandle = {
   close: () => Promise<void>;
 };
 
+function TaskMoreMenu({
+  task,
+  online,
+  onUpdate,
+  onShowActivity,
+}: Pick<TaskDetailProps, "task" | "online" | "onUpdate"> & {
+  onShowActivity: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    setOpen(false);
+    setError("");
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    });
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  async function switchKind() {
+    if (!online || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await onUpdate({ kind: task.kind === "note" ? "todo" : "note" });
+      setOpen(false);
+      triggerRef.current?.focus();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "类型切换失败，请重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="task-more-control" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={task.kind === "note" ? "更多笔记操作" : "更多任务操作"}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => {
+          setOpen((value) => !value);
+          setError("");
+        }}
+      >
+        <Ellipsis />
+      </button>
+      {open && (
+        <div className="task-more-menu" role="menu" aria-label="更多操作">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onShowActivity();
+            }}
+          >
+            <History />
+            <span>任务动态</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!online || saving}
+            onClick={() => void switchKind()}
+          >
+            {task.kind === "note" ? <ListTodo /> : <NotebookPen />}
+            <span>{task.kind === "note" ? "切换为待办" : "切换为笔记"}</span>
+          </button>
+          {error && <p role="alert">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & {
   presentation: "panel" | "dialog";
 }>(function TaskDetailContent({
@@ -358,16 +596,28 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   bundle,
   currentUserId,
   online,
+  editable,
   attachmentService,
   now,
   dateTimePreferences,
   onClose,
   onUpdate,
+  onSaveSchedule,
   onLoadAssignees,
   onAssign,
   onToggleLabel,
   onCreateSubtask,
   onToggleSubtask,
+  onUpdateSubtask,
+  onDeleteSubtask,
+  commentsRevision,
+  activityRevision,
+  onLoadActivity,
+  onLoadComments,
+  onLoadCommentCandidates,
+  onCreateComment,
+  onUpdateComment,
+  onDeleteComment,
 }, forwardedRef) {
   const [draftTitle, setDraftTitle] = useState(task.title);
   const [newSubtask, setNewSubtask] = useState("");
@@ -375,9 +625,13 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [immersive, setImmersive] = useState(false);
+  const [comments, setComments] = useState<TaskComment[]>([]);
+  const [commentComposerOpen, setCommentComposerOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const editorRef = useRef<TaskRichTextEditorHandle>(null);
   const closingRef = useRef(false);
+  const writable = online && editable;
 
   useEffect(() => setDraftTitle(task.title), [task.id, task.title]);
   useEffect(() => {
@@ -385,7 +639,17 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     setSubtasksOpen(task.subtasks.length > 0);
     setNewSubtask("");
     setToolbarOpen(false);
+    setActivityOpen(false);
+    setCommentComposerOpen(false);
   }, [task.id]);
+  useEffect(() => {
+    if (!activityOpen) return;
+    const closeActivity = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActivityOpen(false);
+    };
+    window.addEventListener("keydown", closeActivity);
+    return () => window.removeEventListener("keydown", closeActivity);
+  }, [activityOpen]);
   useEffect(() => {
     if (!immersive) return;
     const exitImmersive = (event: KeyboardEvent) => {
@@ -396,10 +660,19 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   }, [immersive]);
   useEffect(() => () => window.clearTimeout(saveTimer.current), []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void onLoadComments()
+      .then((items) => {
+        if (!cancelled) setComments(items);
+      });
+    return () => { cancelled = true; };
+  }, [commentsRevision, onLoadComments, task.id]);
+
   function scheduleSave(patch: Partial<Task>) {
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
-      if (online) void onUpdate(patch);
+      if (writable) void onUpdate(patch);
     }, 500);
   }
 
@@ -407,7 +680,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     if (closingRef.current) return;
     closingRef.current = true;
     window.clearTimeout(saveTimer.current);
-    if (online && draftTitle !== task.title) {
+    if (writable && draftTitle !== task.title) {
       await onUpdate({ title: draftTitle }).catch(() => undefined);
     }
     await editorRef.current?.flush().catch(() => undefined);
@@ -418,18 +691,22 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
 
   const toolbarLeading: ReactNode = presentation === "dialog" ? (
     <>
-      <button
-        className="detail-complete-trigger"
-        type="button"
-        disabled={!online}
-        aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
-        onClick={() => void onUpdate({
-          status: task.status === "completed" ? "open" : "completed",
-          completed_at: task.status === "completed" ? null : new Date().toISOString(),
-        })}
-      >
-        {task.status === "completed" && <Check />}
-      </button>
+      {task.kind === "note" ? (
+        <span className="detail-note-icon" aria-label="笔记"><NotebookPen /></span>
+      ) : (
+        <button
+          className="detail-complete-trigger"
+          type="button"
+          disabled={!writable}
+          aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
+          onClick={() => void onUpdate({
+            status: task.status === "completed" ? "open" : "completed",
+            completed_at: task.status === "completed" ? null : new Date().toISOString(),
+          })}
+        >
+          {task.status === "completed" && <Check />}
+        </button>
+      )}
       <span className="detail-toolbar-divider" aria-hidden="true" />
     </>
   ) : (
@@ -440,52 +717,67 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     <div className={clsx("task-detail", `task-detail-${presentation}`, immersive && "rich-editor-immersive")}>
       <header className="detail-toolbar">
         {toolbarLeading}
+        {presentation === "panel" && task.kind === "note" && (
+          <span className="detail-note-icon" aria-label="笔记"><NotebookPen /></span>
+        )}
         <DueDateControl
           task={task}
-          online={online}
+          online={writable}
           now={now}
           preferences={dateTimePreferences}
-          onSave={onUpdate}
+          onSave={onSaveSchedule}
         />
         <div className="detail-toolbar-spacer" />
         <TaskAssigneeControl
           task={task}
           bundle={bundle}
           currentUserId={currentUserId}
-          online={online}
+          online={writable}
           onLoad={onLoadAssignees}
           onAssign={onAssign}
         />
-        <PriorityControl
-          priority={task.priority}
-          online={online}
-          onChange={(priority) => onUpdate({ priority })}
+        {task.kind !== "note" && (
+          <PriorityControl
+            priority={task.priority}
+            online={writable}
+            onChange={(priority) => onUpdate({ priority })}
+          />
+        )}
+        <TaskMoreMenu
+          task={task}
+          online={writable}
+          onUpdate={onUpdate}
+          onShowActivity={() => {
+            setCommentComposerOpen(false);
+            setActivityOpen(true);
+          }}
         />
-        <button type="button" aria-label="更多任务操作"><Ellipsis /></button>
       </header>
       <div className="detail-body">
         <div className="detail-caption">
           <textarea
             className="detail-title"
             value={draftTitle}
-            disabled={!online}
-            aria-label="任务标题"
+            disabled={!writable}
+            aria-label={task.kind === "note" ? "笔记标题" : "任务标题"}
             onChange={(event) => {
               setDraftTitle(event.target.value);
               scheduleSave({ title: event.target.value });
             }}
             rows={2}
           />
-          <button
-            className={clsx("switch-mode", subtasksOpen && "active")}
-            type="button"
-            title={subtasksOpen ? "收起子任务" : "展开子任务"}
-            aria-label={subtasksOpen ? "收起子任务" : "展开子任务"}
-            aria-expanded={subtasksOpen}
-            onClick={() => setSubtasksOpen((open) => !open)}
-          >
-            <ListTodo />
-          </button>
+          {task.kind !== "note" && (
+            <button
+              className={clsx("switch-mode", subtasksOpen && "active")}
+              type="button"
+              title={subtasksOpen ? "收起子任务" : "展开子任务"}
+              aria-label={subtasksOpen ? "收起子任务" : "展开子任务"}
+              aria-expanded={subtasksOpen}
+              onClick={() => setSubtasksOpen((open) => !open)}
+            >
+              <ListTodo />
+            </button>
+          )}
         </div>
         <TaskRichTextEditor
           key={task.id}
@@ -494,34 +786,63 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           attachmentService={attachmentService}
           immersive={immersive}
           initialMarkdown={task.description}
-          online={online}
+          online={writable}
           onImmersiveChange={setImmersive}
           onSave={(description) => onUpdate({ description })}
           toolbarHost={toolbarHost}
           toolbarOpen={toolbarOpen}
         />
-        {subtasksOpen && (
+        {task.kind !== "note" && subtasksOpen && (
           <section className="detail-section">
             <div className="detail-section-title">
               <span>子任务</span>
               <em>{task.subtasks.filter((item) => item.completed).length}/{task.subtasks.length}</em>
             </div>
+            <div className="subtask-list">
             {task.subtasks.map((subtask) => (
-              <label className="subtask-row" key={subtask.id}>
+              <div className="subtask-row" key={subtask.id}>
                 <input
                   type="checkbox"
+                  aria-label={`完成子任务：${subtask.title}`}
                   checked={subtask.completed}
-                  disabled={!online}
+                  disabled={!writable}
                   onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked)}
                 />
-                <span className={subtask.completed ? "completed" : ""}>{subtask.title}</span>
-              </label>
+                <span className={clsx("subtask-title", subtask.completed && "completed")}>{subtask.title}</span>
+                <div className="subtask-actions">
+                  <TaskAssigneeControl
+                    task={task}
+                    bundle={bundle}
+                    currentUserId={currentUserId}
+                    online={writable}
+                    onLoad={onLoadAssignees}
+                    onAssign={(assigneeId) => onUpdateSubtask(subtask.id, { assignee_id: assigneeId })}
+                    assigneeId={subtask.assignee_id}
+                    compact
+                  />
+                  <SubtaskDueDateControl
+                    subtask={subtask}
+                    online={writable}
+                    onSave={(dueAt) => onUpdateSubtask(subtask.id, { due_at: dueAt })}
+                  />
+                  <button
+                    type="button"
+                    className="subtask-delete"
+                    aria-label={`删除子任务：${subtask.title}`}
+                    disabled={!writable}
+                    onClick={() => void onDeleteSubtask(subtask.id)}
+                  >
+                    <Trash2 />
+                  </button>
+                </div>
+              </div>
             ))}
+            </div>
             <form
               className="subtask-add"
               onSubmit={async (event) => {
                 event.preventDefault();
-                if (!newSubtask.trim() || !online) return;
+                if (!newSubtask.trim() || !writable) return;
                 await onCreateSubtask(newSubtask.trim());
                 setNewSubtask("");
               }}
@@ -531,18 +852,52 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 value={newSubtask}
                 onChange={(event) => setNewSubtask(event.target.value)}
                 placeholder="添加子任务"
-                disabled={!online}
+                disabled={!writable}
               />
             </form>
           </section>
         )}
+        {activityOpen && (
+          <TaskActivity
+            task={task}
+            members={bundle.members}
+            preferences={dateTimePreferences}
+            revision={activityRevision}
+            onLoad={onLoadActivity}
+            onClose={() => setActivityOpen(false)}
+          />
+        )}
       </div>
+      {!immersive && !activityOpen && (comments.length > 0 || commentComposerOpen) && (
+        <TaskComments
+          task={task}
+          comments={comments}
+          members={bundle.members}
+          currentUserId={currentUserId}
+          online={writable}
+          attachmentService={attachmentService}
+          showComposer={commentComposerOpen}
+          onLoadCandidates={onLoadCommentCandidates}
+          onCreate={async (input) => {
+            await onCreateComment(input);
+            setComments(await onLoadComments());
+          }}
+          onUpdate={async (comment, input) => {
+            await onUpdateComment(comment, input);
+            setComments(await onLoadComments());
+          }}
+          onDelete={async (comment) => {
+            await onDeleteComment(comment);
+            setComments((current) => current.filter((item) => item.id !== comment.id));
+          }}
+        />
+      )}
       <div ref={setToolbarHost} className={clsx("detail-editor-toolbar-dock", toolbarOpen && "open")} />
       <footer className="detail-footer">
         <TaskLabelControl
           task={task}
           bundle={bundle}
-          online={online}
+          online={writable}
           onToggleLabel={onToggleLabel}
         />
         <button
@@ -556,10 +911,24 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           <Type />
         </button>
         <button
+          className={clsx("detail-comment-trigger", commentComposerOpen && "active")}
+          type="button"
+          title="评论"
+          aria-label="评论"
+          aria-expanded={commentComposerOpen}
+          onClick={() => {
+            setToolbarOpen(false);
+            setActivityOpen(false);
+            setCommentComposerOpen((open) => !open);
+          }}
+        >
+          <MessageCircle />
+        </button>
+        <button
           type="button"
           title="移至垃圾桶"
           aria-label="移至垃圾桶"
-          disabled={!online}
+          disabled={!writable}
           onClick={() => void onUpdate({ deleted_at: new Date().toISOString() })}
         >
           <Trash2 />
@@ -585,7 +954,7 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             if (document.querySelector(
-              ".task-detail-dialog .due-popover, .task-detail-dialog .priority-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
+              ".task-detail-dialog .due-popover, .task-detail-dialog .priority-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-more-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
             )) return;
             void contentRef.current?.close();
           }}
@@ -594,7 +963,9 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
             void contentRef.current?.close();
           }}
         >
-          <Dialog.Title className="sr-only">任务详情：{props.task.title}</Dialog.Title>
+          <Dialog.Title className="sr-only">
+            {props.task.kind === "note" ? "笔记详情" : "任务详情"}：{props.task.title}
+          </Dialog.Title>
           <TaskDetailContent ref={contentRef} {...props} presentation="dialog" />
         </Dialog.Content>
       </Dialog.Portal>

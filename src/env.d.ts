@@ -22,5 +22,23 @@ interface Window {
       minimize: () => void;
       toggleFullScreen: () => void;
     };
+    auth: {
+      openDingtalkUrl: (url: string) => Promise<boolean>;
+      takePendingCallback: () => Promise<string | null>;
+      onCallbackAvailable: (listener: () => void) => () => void;
+    };
+    reminders: {
+      sync: (entries: Array<{
+        id: string;
+        reminderId: string;
+        taskId: string;
+        workspaceId: string;
+        title: string;
+        body: string;
+        triggerAt: string;
+      }>) => Promise<boolean>;
+      acknowledge: (reminderId: string) => void;
+      onOpenTask: (listener: (target: { workspaceId: string; taskId: string }) => void) => () => void;
+    };
   };
 }

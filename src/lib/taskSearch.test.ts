@@ -24,6 +24,9 @@ function task(id: string, title: string, patch: Partial<Task> = {}): Task {
     label_ids: [],
     subtasks: [],
     ...patch,
+    kind: patch.kind ?? "todo",
+    reminders: patch.reminders ?? [],
+    reminder_persistent: patch.reminder_persistent ?? false,
   };
 }
 

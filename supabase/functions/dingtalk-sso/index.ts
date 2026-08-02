@@ -11,7 +11,7 @@ import {
   normalizeMainlandMobile,
   parsePublicConfig,
   placeholderDingtalkEmail,
-  verifySsoState,
+  verifySsoStateClaims,
 } from "../_shared/dingtalk-sso.ts";
 
 type DingtalkSsoRequest =
@@ -27,7 +27,29 @@ type DingtalkSsoRequest =
       workspaceId: string;
       authCode: string;
       state: string;
-    };
+    }
+  | { action: "consume-handoff"; code: string };
+
+const HANDOFF_TTL_SECONDS = 120;
+const HANDOFF_CODE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const encoder = new TextEncoder();
+
+function toBase64Url(bytes: Uint8Array) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function createHandoffCode() {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+async function sha256(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 function normalizeWorkspaceSlug(value: string) {
   return value.trim().toLowerCase();
@@ -49,6 +71,35 @@ export default {
 
     const body = (await req.json().catch(() => null)) as DingtalkSsoRequest | null;
     if (!body?.action) return jsonError("Invalid request");
+
+    if (body.action === "consume-handoff") {
+      const code = body.code?.trim();
+      if (!code || !HANDOFF_CODE_PATTERN.test(code)) {
+        return jsonError("登录交接码无效", 404);
+      }
+      const { data, error } = await ctx.supabaseAdmin.rpc(
+        "consume_sso_auth_handoff",
+        { p_code_hash: await sha256(code) },
+      );
+      if (error) return jsonError("无法完成客户端登录交接", 500);
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!result || result.status === "not_found") {
+        return jsonError("登录交接码不存在", 404);
+      }
+      if (result.status === "consumed") {
+        return jsonError("登录交接码已使用", 409);
+      }
+      if (result.status === "expired") {
+        return jsonError("登录交接码已过期", 410);
+      }
+      if (result.status !== "ok" || !result.workspace_id || !result.token_hash) {
+        return jsonError("无法完成客户端登录交接", 500);
+      }
+      return Response.json({
+        workspaceId: result.workspace_id,
+        tokenHash: result.token_hash,
+      });
+    }
 
     if (body.action === "public-config" || body.action === "create-state") {
       let workspaceId =
@@ -165,8 +216,12 @@ export default {
         return jsonError("workspaceId, authCode and state are required");
       }
 
-      const stateOk = await verifySsoState(state, workspaceId, getSsoStateSecret());
-      if (!stateOk) return jsonError("Invalid or expired SSO state", 403);
+      const stateClaims = await verifySsoStateClaims(
+        state,
+        workspaceId,
+        getSsoStateSecret(),
+      );
+      if (!stateClaims) return jsonError("Invalid or expired SSO state", 403);
 
       const { data: provider, error: providerError } = await ctx.supabaseAdmin
         .from("workspace_sso_providers")
@@ -322,13 +377,21 @@ export default {
         }, { onConflict: "provider,subject" });
       if (identityLinkError) return jsonError("无法建立钉钉账号关联", 500);
 
-      const { error: profileError } = await ctx.supabaseAdmin
+      const { data: existingProfile, error: profileLookupError } = await ctx.supabaseAdmin
         .from("profiles")
-        .upsert({
-          id: userId,
-          display_name: displayName,
-        }, { onConflict: "id" });
-      if (profileError) return jsonError("无法更新用户资料", 500);
+        .select("display_name_customized_at")
+        .eq("id", userId)
+        .maybeSingle();
+      if (profileLookupError) return jsonError("无法查询用户资料", 500);
+      if (!existingProfile?.display_name_customized_at) {
+        const { error: profileError } = await ctx.supabaseAdmin
+          .from("profiles")
+          .upsert({
+            id: userId,
+            display_name: displayName,
+          }, { onConflict: "id" });
+        if (profileError) return jsonError("无法更新用户资料", 500);
+      }
 
       const { data: membership, error: membershipError } = await ctx.supabaseAdmin
         .from("workspace_members")
@@ -373,7 +436,31 @@ export default {
         return jsonError(linkError?.message || "无法签发登录凭证", 500);
       }
 
+      if (stateClaims.client === "desktop") {
+        const handoffCode = createHandoffCode();
+        const expiresAt = new Date(
+          Date.now() + HANDOFF_TTL_SECONDS * 1_000,
+        ).toISOString();
+        const { error: handoffError } = await ctx.supabaseAdmin.rpc(
+          "create_sso_auth_handoff",
+          {
+            p_code_hash: await sha256(handoffCode),
+            p_workspace_id: workspaceId,
+            p_token_hash: linkData.properties.hashed_token,
+            p_expires_at: expiresAt,
+          },
+        );
+        if (handoffError) return jsonError("无法创建客户端登录交接", 500);
+        return Response.json({
+          mode: "desktop",
+          workspaceId,
+          handoffCode,
+          expiresInSeconds: HANDOFF_TTL_SECONDS,
+        });
+      }
+
       return Response.json({
+        mode: "web",
         workspaceId,
         tokenHash: linkData.properties.hashed_token,
         email: linkEmail,

@@ -22,8 +22,8 @@ import {
   ArrowDownUp,
   ArrowUp,
   Archive,
-  Bell,
   Building2,
+  Camera,
   CalendarClock,
   CalendarDays,
   Check,
@@ -37,16 +37,19 @@ import {
   Ellipsis,
   FolderClosed,
   FolderOpen,
+  Flag,
   GripVertical,
   Inbox,
   Info,
   KeyRound,
   Keyboard,
   LayoutList,
+  ListTodo,
   Link2,
   LockKeyhole,
   LogOut,
   Menu,
+  NotebookPen,
   Plus,
   RefreshCw,
   Search,
@@ -54,6 +57,7 @@ import {
   ShieldCheck,
   Smartphone,
   Tag,
+  Trash2,
   UserRound,
   Users,
   Workflow,
@@ -74,23 +78,40 @@ import antTodoIconUrl from "./assets/anttodo-icon.png";
 import { CalendarSidebar, CalendarWorkspace } from "./CalendarWorkspace";
 import { initials, MemberAvatar } from "./MemberAvatar";
 import { MindMapWorkspace } from "./MindMapWorkspace";
+import { NotificationBell } from "./NotificationBell";
 import { getPriorityOption } from "./PriorityControl";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
+import type { CreateCommentInput } from "./TaskComments";
 import {
   assignTask as assignTaskApi,
+  createTaskComment as createTaskCommentApi,
+  createLabelWithAccess as createLabelWithAccessApi,
   createTask,
   createTaskSection,
   createWorkspace,
+  deleteWorkspace as deleteWorkspaceApi,
+  isWorkspaceSlugAvailable,
   deleteTaskSection,
+  deleteTaskComment as deleteTaskCommentApi,
   loadDateTimePreferences,
   listTaskAssigneeIds,
+  listTaskCommentCandidateIds,
+  loadNotifications,
+  loadTaskActivity,
+  loadTaskComments,
+  loadUserQuota,
   loadWorkspaceBundle,
   loadWorkspaces,
+  markAllNotificationsRead,
+  markNotificationRead,
   saveDateTimePreferences,
+  saveTaskSchedule as saveTaskScheduleApi,
   saveTaskListPreference,
   setTaskListOrder,
   toggleTaskLabel as toggleTaskLabelApi,
   updateTaskSection,
+  updateTaskComment as updateTaskCommentApi,
+  updateLabelWithAccess as updateLabelWithAccessApi,
   updateWorkspace,
 } from "./lib/api";
 import {
@@ -100,12 +121,22 @@ import {
 } from "./lib/attachments";
 import { createDemoBundle, demoWorkspaces } from "./lib/demo";
 import { getDueStatus } from "./lib/dueTime";
+import { reminderTriggerAt } from "./lib/reminders";
+import {
+  AVATAR_ACCEPT,
+  cropAvatarFile,
+  updateAvatar,
+  updateDisplayName,
+} from "./lib/profile";
+import { ensureWebPushSubscription } from "./lib/webPush";
 import { searchTasks } from "./lib/taskSearch";
 import {
   TASK_GROUPING_OPTIONS,
   TASK_SORT_OPTIONS,
   defaultSortDirection,
   groupTasks,
+  isActiveTask,
+  isCompletedTask,
   resolveTaskListPreference,
   sortTasks,
   taskListKey,
@@ -135,9 +166,14 @@ import {
   DEFAULT_LABEL_COLOR,
   hasExplicitLabelColor,
   LABEL_COLORS,
+  newLabelAccessDefaults,
 } from "./lib/labels";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
+import {
+  currentLabelPermissionLevel,
+  currentTaskPermissionLevel,
+} from "./lib/permissions";
 import {
   buildWorkspaceInviteUrl,
   workspaceInviteIdFromPath,
@@ -146,6 +182,7 @@ import {
 import {
   buildDingtalkCallbackUrl,
   dingtalkExchangeOnce,
+  dingtalkDesktopCallbackUrl,
   dingtalkFrameLoginParams,
   dingtalkLoginErrorAction,
   dingtalkLoginErrorMessage,
@@ -155,21 +192,33 @@ import {
   isDingtalkCallbackPath,
   isDingtalkClientId,
   loadDingtalkLoginSdk,
-  type DingtalkSsoPublicConfig,
+  initialWorkspaceSsoProvider,
+  parseWorkspaceSsoLoginConfig,
+  type WorkspaceSsoLoginConfig,
+  type WorkspaceSsoLoginProvider,
   type WorkspaceSsoProvider,
 } from "./lib/sso";
 import type {
+  AppNotification,
   DateTimePreferences,
   Label,
-  LabelVisibility,
+  LabelAccessDraft,
+  LabelAccessScope,
   Member,
+  ReminderSchedule,
   Subtask,
   Task,
+  TaskActivityEvent,
+  TaskActivityPage,
+  TaskComment,
+  TaskKind,
   TaskListGrouping,
   TaskListPreference,
   TaskListSort,
   TaskSection,
   TaskPriority,
+  UserQuota,
+  UserGroup,
   Workspace,
   WorkspaceBundle,
   WorkspaceInviteLink,
@@ -185,6 +234,7 @@ type SettingsTab =
   | "date"
   | "team-mgmt"
   | "team"
+  | "user-groups"
   | "sso"
   | "shortcuts"
   | "about";
@@ -240,6 +290,13 @@ export default function App() {
     ReturnType<NonNullable<typeof supabase>["auth"]["getSession"]>
   >["data"]["session"]>(null);
   const [authReady, setAuthReady] = useState(demoMode);
+  const [desktopAuthStatus, setDesktopAuthStatus] = useState<
+    | null
+    | { state: "processing" }
+    | { state: "error"; message: string }
+  >(null);
+  const desktopAuthProcessing = useRef(false);
+  const processedDesktopCodes = useRef(new Set<string>());
 
   useEffect(() => {
     if (!supabase || demoMode) return;
@@ -256,9 +313,87 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, [demoMode]);
 
+  useEffect(() => {
+    const desktopAuth = window.anttodoDesktop?.auth;
+    if (!desktopAuth || !supabase || demoMode) return;
+    const desktopAuthBridge = desktopAuth;
+    const authClient = supabase;
+    let cancelled = false;
+
+    async function consumePendingCallback() {
+      if (desktopAuthProcessing.current) return;
+      desktopAuthProcessing.current = true;
+      try {
+        let code = await desktopAuthBridge.takePendingCallback();
+        while (!cancelled && code) {
+          if (processedDesktopCodes.current.has(code)) {
+            code = await desktopAuthBridge.takePendingCallback();
+            continue;
+          }
+          processedDesktopCodes.current.add(code);
+          setDesktopAuthStatus({ state: "processing" });
+          const { data, error } = await authClient.functions.invoke("dingtalk-sso", {
+            body: { action: "consume-handoff", code },
+          });
+          if (cancelled) return;
+          if (error || !data?.workspaceId || !data?.tokenHash) {
+            setDesktopAuthStatus({
+              state: "error",
+              message: await edgeFunctionErrorMessage(
+                error,
+                data,
+                "无法完成钉钉客户端登录，请重新扫码。",
+              ),
+            });
+            return;
+          }
+          const { error: verifyError } = await authClient.auth.verifyOtp(
+            dingtalkTokenHashOtpParams(String(data.tokenHash)),
+          );
+          if (cancelled) return;
+          if (verifyError) {
+            setDesktopAuthStatus({
+              state: "error",
+              message: verifyError.message || "无法建立登录会话。",
+            });
+            return;
+          }
+          window.sessionStorage.setItem(
+            "anttodo:pending-workspace",
+            String(data.workspaceId),
+          );
+          setDesktopAuthStatus(null);
+          code = await desktopAuthBridge.takePendingCallback();
+        }
+      } finally {
+        desktopAuthProcessing.current = false;
+      }
+    }
+
+    const unsubscribe = desktopAuthBridge.onCallbackAvailable(() => {
+      void consumePendingCallback();
+    });
+    void consumePendingCallback();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [demoMode]);
+
   if (demoMode) return <DemoApplication />;
   if (!hasSupabaseConfig || !supabase) return <MissingConfig />;
   if (!authReady) return <Splash label="正在恢复工作区…" />;
+  if (desktopAuthStatus?.state === "processing") {
+    return <Splash label="正在完成钉钉登录…" />;
+  }
+  if (desktopAuthStatus?.state === "error") {
+    return (
+      <DesktopAuthErrorScreen
+        message={desktopAuthStatus.message}
+        onDismiss={() => setDesktopAuthStatus(null)}
+      />
+    );
+  }
   if (dingtalkCallback) return <DingtalkCallbackScreen />;
   if (inviteId) {
     return (
@@ -273,6 +408,7 @@ export default function App() {
       <AuthScreen
         loginSurface={loginSurface}
         teamSlug={teamSlug}
+        showModeTabs={!teamSlug}
       />
     );
   }
@@ -283,6 +419,32 @@ export default function App() {
       phone={session.user.phone ?? ""}
       preferredTeamSlug={teamSlug}
     />
+  );
+}
+
+function DesktopAuthErrorScreen({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <main className="auth-screen">
+      <section className="auth-card">
+        <div className="auth-brand">
+          <BrandMark />
+          <div><h1>蚂蚁清单</h1></div>
+        </div>
+        <div className="dingtalk-login" role="alert">
+          <strong>钉钉登录失败</strong>
+          <p>{message}</p>
+          <button type="button" className="button secondary full" onClick={onDismiss}>
+            返回登录
+          </button>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -430,6 +592,7 @@ function MissingConfig() {
 
 function DingtalkCallbackScreen() {
   const [error, setError] = useState("");
+  const [desktopDeepLink, setDesktopDeepLink] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -456,7 +619,10 @@ function DingtalkCallbackScreen() {
             },
           },
         );
-        if (exchangeError || !data?.tokenHash) {
+        if (
+          exchangeError ||
+          (data?.mode === "desktop" ? !data?.handoffCode : !data?.tokenHash)
+        ) {
           return {
             ok: false as const,
             error: await edgeFunctionErrorMessage(
@@ -466,8 +632,17 @@ function DingtalkCallbackScreen() {
             ),
           };
         }
+        if (data.mode === "desktop") {
+          return {
+            ok: true as const,
+            mode: "desktop" as const,
+            workspaceId: String(data.workspaceId || workspaceId),
+            handoffCode: String(data.handoffCode),
+          };
+        }
         return {
           ok: true as const,
+          mode: "web" as const,
           workspaceId: String(data.workspaceId || workspaceId),
           tokenHash: String(data.tokenHash),
         };
@@ -475,6 +650,16 @@ function DingtalkCallbackScreen() {
       if (cancelled) return;
       if (!exchange.ok) {
         setError(exchange.error);
+        return;
+      }
+      if (exchange.mode === "desktop") {
+        const deepLink = dingtalkDesktopCallbackUrl(exchange.handoffCode);
+        if (!deepLink) {
+          setError("客户端登录交接码无效，请重新扫码登录。");
+          return;
+        }
+        setDesktopDeepLink(deepLink);
+        window.location.assign(deepLink);
         return;
       }
       const { error: verifyError } = await client.auth.verifyOtp(
@@ -514,6 +699,14 @@ function DingtalkCallbackScreen() {
               返回登录
             </a>
           </div>
+        ) : desktopDeepLink ? (
+          <div className="dingtalk-login">
+            <strong>授权已完成</strong>
+            <p>AntTodo 应已自动打开。若没有反应，请点击下方按钮返回客户端。</p>
+            <a className="button primary full" href={desktopDeepLink}>
+              打开 AntTodo
+            </a>
+          </div>
         ) : (
           <div className="dingtalk-login">
             <strong>正在完成钉钉登录…</strong>
@@ -525,25 +718,92 @@ function DingtalkCallbackScreen() {
   );
 }
 
+type SsoProviderRendererProps = {
+  provider: WorkspaceSsoLoginProvider;
+  workspaceName: string;
+  error: string;
+  canChangeProvider: boolean;
+  onRedirect: () => void;
+  onChangeProvider: () => void;
+};
+
+const SSO_PROVIDER_RENDERERS: Record<
+  WorkspaceSsoLoginProvider["provider"],
+  (props: SsoProviderRendererProps) => ReactNode
+> = {
+  dingtalk: ({
+    workspaceName,
+    error,
+    canChangeProvider,
+    onRedirect,
+    onChangeProvider,
+  }) => (
+    <>
+      <div
+        id="dingtalk_login_container"
+        className="dingtalk-qr-frame"
+        aria-label="钉钉登录二维码"
+      />
+      <strong>使用钉钉扫码登录</strong>
+      <p>
+        正在登录「{workspaceName}」。请打开钉钉扫描二维码，或改用跳转授权。
+      </p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <button
+        type="button"
+        className="button secondary full"
+        onClick={onRedirect}
+      >
+        <RefreshCw aria-hidden="true" />
+        跳转到钉钉授权
+      </button>
+      {canChangeProvider && (
+        <button
+          type="button"
+          className="auth-text-button"
+          onClick={onChangeProvider}
+        >
+          更换登录方式
+        </button>
+      )}
+    </>
+  ),
+};
+
 function AuthScreen({
   loginSurface = "phone",
   teamSlug = null,
+  showModeTabs = false,
 }: {
   loginSurface?: "phone" | "team-sso";
   teamSlug?: string | null;
+  showModeTabs?: boolean;
 }) {
-  const phoneOnly = loginSurface === "phone";
-  const mode: "phone" | "dingtalk" = phoneOnly ? "phone" : "dingtalk";
+  const teamEntry = loginSurface === "team-sso";
+  const [desktopTeamEntry, setDesktopTeamEntry] = useState(false);
+  const ssoEntry = teamEntry || desktopTeamEntry;
+  const [activeMode, setActiveMode] = useState<"account" | "enterprise">("account");
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [phone, setPhone] = useState("");
   const [sentPhone, setSentPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [countdown, setCountdown] = useState(0);
-  const [error, setError] = useState("");
+  const [phoneError, setPhoneError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [ssoConfig, setSsoConfig] = useState<DingtalkSsoPublicConfig | null>(null);
-  const [ssoLoading, setSsoLoading] = useState(!phoneOnly);
+  const [enterpriseSlug, setEnterpriseSlug] = useState("");
+  const [enterpriseError, setEnterpriseError] = useState("");
+  const [ssoLogin, setSsoLogin] = useState<WorkspaceSsoLoginConfig | null>(null);
+  const [selectedProvider, setSelectedProvider] =
+    useState<WorkspaceSsoLoginProvider | null>(null);
+  const [ssoError, setSsoError] = useState("");
+  const [ssoLoading, setSsoLoading] = useState(teamEntry);
+  const dingtalkConfig = selectedProvider?.provider === "dingtalk"
+    ? selectedProvider.config
+    : null;
+  const providerRenderer = selectedProvider
+    ? SSO_PROVIDER_RENDERERS[selectedProvider.provider]
+    : null;
 
   useEffect(() => {
     if (countdown <= 0) return;
@@ -557,41 +817,45 @@ function AuthScreen({
   async function loadSsoConfig(slug: string) {
     if (!supabase) return;
     setSsoLoading(true);
-    setError("");
-    setSsoConfig(null);
+    setSsoError("");
+    setSsoLogin(null);
+    setSelectedProvider(null);
     const { data, error: configError } = await supabase.functions.invoke(
-      "dingtalk-sso",
-      { body: { action: "public-config", slug } },
+      "sso-login",
+      {
+        body: {
+          slug,
+          client: window.anttodoDesktop ? "desktop" : "web",
+        },
+      },
     );
     setSsoLoading(false);
-    if (configError || !data?.workspaceId || !data?.appKey) {
-      setError(
+    const loginConfig = parseWorkspaceSsoLoginConfig(data);
+    if (configError || !loginConfig || loginConfig.providers.length === 0) {
+      setSsoError(
         await edgeFunctionErrorMessage(
           configError,
           data,
-          "未找到可用的钉钉 SSO 配置，请确认团队访问地址或联系管理员。",
+          "未找到可用的企业联合登录配置，请确认企业地址或联系管理员。",
         ),
       );
       return;
     }
-    const config = data as DingtalkSsoPublicConfig;
-    setSsoConfig(config);
+    setSsoLogin(loginConfig);
+    setSelectedProvider(initialWorkspaceSsoProvider(loginConfig.providers));
     window.sessionStorage.setItem(
       "anttodo:pending-workspace",
-      config.workspaceId,
+      loginConfig.workspace.id,
     );
   }
 
   useEffect(() => {
-    if (phoneOnly) return;
-    if (teamSlug) {
-      void loadSsoConfig(teamSlug);
-    }
-  }, [phoneOnly, teamSlug]);
+    if (teamEntry && teamSlug) void loadSsoConfig(teamSlug);
+  }, [teamEntry, teamSlug]);
 
   useEffect(() => {
-    if (mode !== "dingtalk" || !ssoConfig?.state || !ssoConfig.redirectUri) return;
-    const activeConfig = ssoConfig;
+    if (!ssoEntry || !dingtalkConfig?.state || !dingtalkConfig.redirectUri) return;
+    const activeConfig = dingtalkConfig;
     let cancelled = false;
     let attempt = 0;
     let retryTimer = 0;
@@ -608,14 +872,14 @@ function AuthScreen({
         if (cancelled) return;
         const container = document.getElementById("dingtalk_login_container");
         if (!container) {
-          if (!cancelled) setError("钉钉二维码容器未就绪，请刷新页面重试。");
+          if (!cancelled) setSsoError("钉钉二维码容器未就绪，请刷新页面重试。");
           return;
         }
         if (!window.DTFrameLogin) {
-          if (!cancelled) setError("钉钉登录组件未就绪，请改用跳转登录。");
+          if (!cancelled) setSsoError("钉钉登录组件未就绪，请改用跳转登录。");
           return;
         }
-        setError("");
+        setSsoError("");
         container.innerHTML = "";
         window.DTFrameLogin(
           {
@@ -632,7 +896,11 @@ function AuthScreen({
           (result) => {
             if (cancelled) return;
             if (result?.redirectUrl) {
-              window.location.assign(result.redirectUrl);
+              if (window.anttodoDesktop) {
+                void openDingtalkUrl(result.redirectUrl);
+              } else {
+                window.location.assign(result.redirectUrl);
+              }
             }
           },
           (errorMsg) => {
@@ -653,7 +921,7 @@ function AuthScreen({
               return;
             }
             container.innerHTML = "";
-            setError(dingtalkLoginErrorMessage(errorMsg));
+            setSsoError(dingtalkLoginErrorMessage(errorMsg));
           },
         );
       } catch {
@@ -664,7 +932,7 @@ function AuthScreen({
           }, 700 * attempt);
           return;
         }
-        setError("钉钉登录组件加载失败，请改用跳转登录。");
+        setSsoError("钉钉登录组件加载失败，请改用跳转登录。");
       }
     }
 
@@ -673,17 +941,17 @@ function AuthScreen({
       cancelled = true;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [mode, ssoConfig]);
+  }, [ssoEntry, dingtalkConfig]);
 
   async function sendCode() {
     if (!supabase) return;
     const normalizedPhone = normalizeMainlandPhone(phone);
     if (!normalizedPhone) {
-      setError("请输入正确的 11 位中国大陆手机号。");
+      setPhoneError("请输入正确的 11 位中国大陆手机号。");
       return;
     }
     setBusy(true);
-    setError("");
+    setPhoneError("");
     setMessage("");
     const { error: sendError } = await supabase.auth.signInWithOtp({
       phone: normalizedPhone,
@@ -693,7 +961,7 @@ function AuthScreen({
       },
     });
     if (sendError) {
-      setError(phoneAuthErrorMessage(sendError.message, "send"));
+      setPhoneError(phoneAuthErrorMessage(sendError.message, "send"));
     } else {
       setSentPhone(normalizedPhone);
       setStep("otp");
@@ -706,11 +974,11 @@ function AuthScreen({
   async function verifyCode() {
     if (!supabase || !sentPhone) return;
     if (!isValidSmsOtp(otp)) {
-      setError("请输入 6 位数字验证码。");
+      setPhoneError("请输入 6 位数字验证码。");
       return;
     }
     setBusy(true);
-    setError("");
+    setPhoneError("");
     setMessage("");
     const { error: verifyError } = await supabase.auth.verifyOtp({
       phone: sentPhone,
@@ -718,7 +986,7 @@ function AuthScreen({
       type: "sms",
     });
     if (verifyError) {
-      setError(phoneAuthErrorMessage(verifyError.message, "verify"));
+      setPhoneError(phoneAuthErrorMessage(verifyError.message, "verify"));
       setBusy(false);
     }
   }
@@ -732,21 +1000,149 @@ function AuthScreen({
   function editPhone() {
     setStep("phone");
     setOtp("");
-    setError("");
+    setPhoneError("");
     setMessage("");
   }
 
+  async function openDingtalkUrl(url: string) {
+    if (!window.anttodoDesktop) {
+      window.location.assign(url);
+      return;
+    }
+    const opened = await window.anttodoDesktop.auth.openDingtalkUrl(url);
+    if (!opened) setSsoError("无法在系统浏览器打开钉钉授权，请稍后重试。");
+  }
+
   function openRedirectLogin() {
-    if (!ssoConfig?.state || !ssoConfig.redirectUri) return;
-    window.location.assign(
+    if (!dingtalkConfig?.state || !dingtalkConfig.redirectUri) return;
+    void openDingtalkUrl(
       dingtalkOAuthAuthorizeUrl({
-        redirectUri: ssoConfig.redirectUri,
-        clientId: ssoConfig.appKey,
-        state: ssoConfig.state,
-        corpId: ssoConfig.corpId,
+        redirectUri: dingtalkConfig.redirectUri,
+        clientId: dingtalkConfig.appKey,
+        state: dingtalkConfig.state,
+        corpId: dingtalkConfig.corpId,
       }),
     );
   }
+
+  function openEnterpriseLogin(event: FormEvent) {
+    event.preventDefault();
+    const normalizedSlug = normalizeWorkspaceSlug(enterpriseSlug);
+    const validationError = workspaceSlugValidationMessage(normalizedSlug);
+    if (validationError) {
+      setEnterpriseError(validationError);
+      return;
+    }
+    const loginUrl = buildWorkspaceTeamLoginUrl(
+      normalizedSlug,
+      window.location.protocol === "file:"
+        ? import.meta.env.VITE_PUBLIC_APP_URL
+        : undefined,
+      window.location.origin,
+    );
+    if (!loginUrl) {
+      setEnterpriseError("暂时无法生成企业登录地址，请稍后重试。");
+      return;
+    }
+    setEnterpriseError("");
+    if (window.anttodoDesktop) {
+      setDesktopTeamEntry(true);
+      void loadSsoConfig(normalizedSlug);
+    } else {
+      window.location.assign(loginUrl);
+    }
+  }
+
+  function selectAuthMode(mode: "account" | "enterprise", focus = false) {
+    setActiveMode(mode);
+    if (focus) {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`auth-tab-${mode}`)?.focus();
+      });
+    }
+  }
+
+  function handleAuthTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "Home" || event.key === "ArrowLeft") {
+      selectAuthMode("account", true);
+    } else {
+      selectAuthMode("enterprise", true);
+    }
+  }
+
+  const accountLoginForm = (
+    <form className="auth-form" onSubmit={submit} aria-label="手机号验证码登录">
+      {step === "phone" ? (
+        <label>
+          <div className="phone-input-group">
+            <button
+              type="button"
+              className="phone-country"
+              disabled
+              aria-label="国家或地区区号"
+              title="中国大陆 +86"
+            >
+              <span className="phone-country-flag" aria-hidden="true">🇨🇳</span>
+              <span>+86</span>
+            </button>
+            <input
+              type="tel"
+              inputMode="numeric"
+              value={phone}
+              onChange={(event) =>
+                setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))
+              }
+              placeholder="请输入手机号"
+              autoComplete="tel-national"
+              maxLength={11}
+              autoFocus={activeMode === "account"}
+              required
+            />
+          </div>
+        </label>
+      ) : (
+        <>
+          <div className="otp-destination">
+            <span>验证码已发送至 +86 {maskPhone(sentPhone)}</span>
+            <button type="button" onClick={editPhone}>修改号码</button>
+          </div>
+          <label>
+            <span>短信验证码</span>
+            <input
+              className="otp-input"
+              inputMode="numeric"
+              value={otp}
+              onChange={(event) =>
+                setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))
+              }
+              placeholder="请输入 6 位验证码"
+              autoComplete="one-time-code"
+              maxLength={6}
+              autoFocus
+              required
+            />
+          </label>
+        </>
+      )}
+      {phoneError && <p className="form-error" role="alert">{phoneError}</p>}
+      {message && <p className="form-success" role="status">{message}</p>}
+      <button className="button primary full" disabled={busy}>
+        {busy ? "请稍候…" : step === "phone" ? "获取验证码" : "登录 AntTodo"}
+      </button>
+      {step === "otp" && (
+        <button
+          type="button"
+          className="auth-resend"
+          disabled={busy || countdown > 0}
+          onClick={() => void sendCode()}
+        >
+          {countdown > 0 ? `${countdown} 秒后可重新发送` : "重新发送验证码"}
+        </button>
+      )}
+    </form>
+  );
 
   return (
     <main className="auth-screen">
@@ -755,135 +1151,135 @@ function AuthScreen({
           <BrandMark />
           <div>
             <h1>蚂蚁清单</h1>
-            {!phoneOnly && ssoConfig?.workspaceName ? (
-              <p>{ssoConfig.workspaceName}</p>
+            {ssoEntry && ssoLogin?.workspace.name ? (
+              <p>{ssoLogin.workspace.name}</p>
             ) : null}
           </div>
         </div>
-        {mode === "phone" ? (
-          <form className="auth-form" onSubmit={submit} aria-label="手机号验证码登录">
-            {step === "phone" ? (
-              <label>
-                <div className="phone-input-group">
-                  <button
-                    type="button"
-                    className="phone-country"
-                    disabled
-                    aria-label="国家或地区区号"
-                    title="中国大陆 +86"
-                  >
-                    <span className="phone-country-flag" aria-hidden="true">
-                      🇨🇳
-                    </span>
-                    <span>+86</span>
-                  </button>
-                  <input
-                    type="tel"
-                    inputMode="numeric"
-                    value={phone}
-                    onChange={(event) =>
-                      setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))
-                    }
-                    placeholder="请输入手机号"
-                    autoComplete="tel-national"
-                    maxLength={11}
-                    autoFocus
-                    required
-                  />
-                </div>
-              </label>
-            ) : (
-              <>
-                <div className="otp-destination">
-                  <span>验证码已发送至 +86 {maskPhone(sentPhone)}</span>
-                  <button type="button" onClick={editPhone}>修改号码</button>
-                </div>
-                <label>
-                  <span>短信验证码</span>
-                  <input
-                    className="otp-input"
-                    inputMode="numeric"
-                    value={otp}
-                    onChange={(event) =>
-                      setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))
-                    }
-                    placeholder="请输入 6 位验证码"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    autoFocus
-                    required
-                  />
-                </label>
-              </>
-            )}
-            {error && <p className="form-error" role="alert">{error}</p>}
-            {message && <p className="form-success" role="status">{message}</p>}
-            <button className="button primary full" disabled={busy}>
-              {busy ? "请稍候…" : step === "phone" ? "获取验证码" : "登录 AntTodo"}
+        {showModeTabs && !ssoEntry && (
+          <div className="auth-tabs" role="tablist" aria-label="登录方式">
+            <button
+              id="auth-tab-account"
+              type="button"
+              role="tab"
+              aria-selected={activeMode === "account"}
+              aria-controls="auth-panel-account"
+              tabIndex={activeMode === "account" ? 0 : -1}
+              className={activeMode === "account" ? "active" : undefined}
+              onClick={() => selectAuthMode("account")}
+              onKeyDown={handleAuthTabKeyDown}
+            >
+              主账户登录
             </button>
-            {step === "otp" && (
-              <button
-                type="button"
-                className="auth-resend"
-                disabled={busy || countdown > 0}
-                onClick={() => void sendCode()}
-              >
-                {countdown > 0 ? `${countdown} 秒后可重新发送` : "重新发送验证码"}
-              </button>
-            )}
-          </form>
+            <button
+              id="auth-tab-enterprise"
+              type="button"
+              role="tab"
+              aria-selected={activeMode === "enterprise"}
+              aria-controls="auth-panel-enterprise"
+              tabIndex={activeMode === "enterprise" ? 0 : -1}
+              className={activeMode === "enterprise" ? "active" : undefined}
+              onClick={() => selectAuthMode("enterprise")}
+              onKeyDown={handleAuthTabKeyDown}
+            >
+              企业联合登录
+            </button>
+          </div>
+        )}
+        {!ssoEntry && activeMode === "account" ? (
+          <div
+            id="auth-panel-account"
+            role={showModeTabs ? "tabpanel" : undefined}
+            aria-labelledby={showModeTabs ? "auth-tab-account" : undefined}
+          >
+            {accountLoginForm}
+            <div className="auth-divider"><span>或</span></div>
+            <a className="button secondary full" href="?demo=1">查看产品演示</a>
+          </div>
+        ) : !ssoEntry ? (
+          <div
+            id="auth-panel-enterprise"
+            role="tabpanel"
+            aria-labelledby="auth-tab-enterprise"
+          >
+            <form
+              className="auth-form enterprise-slug-form"
+              onSubmit={openEnterpriseLogin}
+              aria-label="企业联合登录"
+            >
+              <div className="enterprise-login-intro">
+                <strong>进入企业登录入口</strong>
+                <p>输入企业为你提供的唯一 Slug，确认后将跳转到企业专属登录地址。</p>
+              </div>
+              <label>
+                <span>企业 Slug</span>
+                <input
+                  value={enterpriseSlug}
+                  onChange={(event) => {
+                    setEnterpriseSlug(event.target.value);
+                    if (enterpriseError) setEnterpriseError("");
+                  }}
+                  placeholder="例如 yucekj"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoFocus
+                  required
+                />
+              </label>
+              {enterpriseError && (
+                <p className="form-error" role="alert">{enterpriseError}</p>
+              )}
+              <button className="button primary full">确认并继续</button>
+            </form>
+          </div>
         ) : (
-          <div className="dingtalk-login" role="region" aria-label="钉钉企业登录">
+          <div className="dingtalk-login" role="region" aria-label="企业联合登录">
             {ssoLoading ? (
               <>
-                <strong>正在加载钉钉登录…</strong>
-                <p>正在读取团队空间的 SSO 配置。</p>
+                <strong>正在加载企业登录…</strong>
+                <p>正在读取企业的联合登录配置。</p>
               </>
-            ) : ssoConfig ? (
-              <>
-                <div
-                  id="dingtalk_login_container"
-                  className="dingtalk-qr-frame"
-                  aria-label="钉钉登录二维码"
-                />
-                <strong>使用钉钉扫码登录</strong>
-                <p>
-                  正在登录「{ssoConfig.workspaceName}」。请打开钉钉扫描二维码，或改用跳转授权。
-                </p>
-                {error && <p className="form-error" role="alert">{error}</p>}
-                <button
-                  type="button"
-                  className="button secondary full"
-                  onClick={openRedirectLogin}
-                >
-                  <RefreshCw aria-hidden="true" />
-                  跳转到钉钉授权
-                </button>
-              </>
+            ) : ssoLogin && ssoLogin.providers.length > 1 && !selectedProvider ? (
+              <div className="sso-provider-picker">
+                <strong>选择企业登录方式</strong>
+                <p>「{ssoLogin.workspace.name}」提供以下联合登录方式。</p>
+                <div className="sso-provider-options">
+                  {ssoLogin.providers.map((provider) => (
+                    <button
+                      key={provider.provider}
+                      type="button"
+                      className="sso-provider-option"
+                      onClick={() => setSelectedProvider(provider)}
+                    >
+                      <span className="connector-settings-mark dingtalk">钉</span>
+                      <span>{provider.displayName}</span>
+                      <ChevronRight aria-hidden="true" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : providerRenderer && selectedProvider && ssoLogin ? (
+              providerRenderer({
+                provider: selectedProvider,
+                workspaceName: ssoLogin.workspace.name,
+                error: ssoError,
+                canChangeProvider: ssoLogin.providers.length > 1,
+                onRedirect: openRedirectLogin,
+                onChangeProvider: () => setSelectedProvider(null),
+              })
             ) : (
               <>
                 <strong>暂时无法登录</strong>
-                <p>
-                  {teamSlug
-                    ? "该团队尚未启用钉钉 SSO，或团队访问地址无效。请联系管理员。"
-                    : "未找到可用的钉钉 SSO 配置。请通过团队访问地址进入登录。"}
-                </p>
-                {error && <p className="form-error" role="alert">{error}</p>}
+                <p>该企业尚未启用可用的联合登录，或企业访问地址无效。请联系管理员。</p>
+                {ssoError && <p className="form-error" role="alert">{ssoError}</p>}
                 <a className="button secondary full" href={import.meta.env.VITE_PUBLIC_APP_URL || "/"}>
-                  前往主站手机号登录
+                  返回主站登录
                 </a>
               </>
             )}
           </div>
         )}
-        {phoneOnly ? (
-          <>
-            <div className="auth-divider"><span>或</span></div>
-            <a className="button secondary full" href="?demo=1">
-              查看产品演示
-            </a>
-          </>
-        ) : null}
       </section>
       <aside className="auth-preview">
         <div className="preview-orb orb-one" />
@@ -921,26 +1317,16 @@ function RemoteApplication({
   );
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [commentsRevision, setCommentsRevision] = useState(0);
+  const [activityRevision, setActivityRevision] = useState(0);
 
   const workspacesQuery = useQuery({
     queryKey: ["workspaces", userId],
     queryFn: () => loadWorkspaces(client),
   });
-  const activeWorkspace = workspacesQuery.data?.find(
-    (workspace) => workspace.id === workspaceId,
-  );
-  const canManageInvite =
-    activeWorkspace?.role === "owner" || activeWorkspace?.role === "admin";
-  const inviteLinkQuery = useQuery({
-    queryKey: ["workspace-invite-link", workspaceId],
-    queryFn: async () => {
-      const { data, error } = await client.functions.invoke("workspace-invite", {
-        body: { action: "get", workspaceId },
-      });
-      if (error) throw error;
-      return (data?.link ?? null) as WorkspaceInviteLink | null;
-    },
-    enabled: Boolean(workspaceId && canManageInvite),
+  const quotaQuery = useQuery({
+    queryKey: ["user-quota", userId],
+    queryFn: () => loadUserQuota(client, userId),
   });
 
   useEffect(() => {
@@ -987,6 +1373,11 @@ function RemoteApplication({
     queryKey: ["date-time-preferences", userId],
     queryFn: () => loadDateTimePreferences(client, userId),
   });
+  const notificationsQuery = useQuery({
+    queryKey: ["notifications", workspaceId],
+    queryFn: () => loadNotifications(client, workspaceId!),
+    enabled: Boolean(workspaceId),
+  });
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -995,7 +1386,27 @@ function RemoteApplication({
       .on(
         "postgres_changes",
         { event: "*", schema: "public" },
-        () => void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] }),
+        (payload) => {
+          const table = (payload as { table?: string }).table;
+          if (table === "task_comments") {
+            setCommentsRevision((value) => value + 1);
+            void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
+            return;
+          }
+          if (table === "task_comment_mentions") {
+            setCommentsRevision((value) => value + 1);
+            return;
+          }
+          if (table === "notifications") {
+            void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
+            return;
+          }
+          if (table === "activity_events") {
+            setActivityRevision((value) => value + 1);
+            return;
+          }
+          void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+        },
       )
       .subscribe();
     return () => {
@@ -1006,11 +1417,13 @@ function RemoteApplication({
   const refresh = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: ["workspaces", userId] }),
+      queryClient.invalidateQueries({ queryKey: ["user-quota", userId] }),
       queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] }),
     ]);
 
   const workspaceMutation = useMutation({
-    mutationFn: (name: string) => createWorkspace(client, name, userId),
+    mutationFn: (input: { name: string; slug?: string }) =>
+      createWorkspace(client, input, userId),
     onSuccess: async (workspace) => {
       await refresh();
       setWorkspaceId(workspace.id);
@@ -1026,7 +1439,7 @@ function RemoteApplication({
       <CreateWorkspaceScreen
         identity={maskPhone(phone) || email.split("@")[0] || "AntTodo 用户"}
         busy={workspaceMutation.isPending}
-        onCreate={(name) => workspaceMutation.mutate(name)}
+        onCreate={(name) => workspaceMutation.mutate({ name })}
       />
     );
   }
@@ -1048,8 +1461,26 @@ function RemoteApplication({
     const payload: Record<string, unknown> = { ...patch };
     delete payload.label_ids;
     delete payload.subtasks;
+    delete payload.reminders;
+    delete payload.reminder_persistent;
     const { error } = await client.from("tasks").update(payload).eq("id", taskId);
     if (error) throw error;
+    await refresh();
+  }
+
+  async function saveTaskSchedule(
+    taskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) {
+    await saveTaskScheduleApi(client, taskId, patch, schedule);
+    if (schedule.reminders.length > 0 && !window.anttodoDesktop) {
+      try {
+        await ensureWebPushSubscription(client);
+      } catch (cause) {
+        setNotice(cause instanceof Error ? cause.message : "浏览器通知订阅失败");
+      }
+    }
     await refresh();
   }
 
@@ -1107,54 +1538,14 @@ function RemoteApplication({
     await queryClient.invalidateQueries({ queryKey });
   }
 
-  async function createLabel(name: string, parentId: string | null, color = DEFAULT_LABEL_COLOR) {
-    const temporaryId = `optimistic-${crypto.randomUUID()}`;
-    const optimisticLabel: Label = {
-      id: temporaryId,
-      workspace_id: activeWorkspaceId,
-      parent_id: parentId,
-      name,
-      color,
-      visibility: "workspace",
-      inherit_permissions: Boolean(parentId),
-      position: activeBundle.labels.length,
-      created_by: userId,
-    };
-    queryClient.setQueryData<WorkspaceBundle>(
-      ["workspace-bundle", workspaceId],
-      (current) => current
-        ? { ...current, labels: [...current.labels, optimisticLabel] }
-        : current,
-    );
-    const { data, error } = await client.from("labels").insert({
-      workspace_id: workspaceId,
-      parent_id: parentId,
-      name,
-      color,
-      created_by: userId,
-      inherit_permissions: Boolean(parentId),
-    }).select("*").single();
-    if (error) {
-      queryClient.setQueryData<WorkspaceBundle>(
-        ["workspace-bundle", workspaceId],
-        (current) => current
-          ? { ...current, labels: current.labels.filter((label) => label.id !== temporaryId) }
-          : current,
-      );
-      throw error;
-    }
-    queryClient.setQueryData<WorkspaceBundle>(
-      ["workspace-bundle", workspaceId],
-      (current) => current
-        ? {
-            ...current,
-            labels: current.labels.map((label) =>
-              label.id === temporaryId ? data as Label : label
-            ),
-          }
-        : current,
-    );
-    void refresh();
+  async function createLabel(draft: LabelAccessDraft) {
+    await createLabelWithAccessApi(client, activeWorkspaceId, draft);
+    await refresh();
+  }
+
+  async function saveLabelAccess(labelId: string, draft: LabelAccessDraft) {
+    await updateLabelWithAccessApi(client, labelId, draft);
+    await refresh();
   }
 
   async function updateLabel(labelId: string, patch: Partial<Label>) {
@@ -1186,33 +1577,77 @@ function RemoteApplication({
     await refresh();
   }
 
-  async function setLabelPermission(
-    labelId: string,
-    memberId: string,
-    permission: "none" | "view" | "edit",
-  ) {
-    const query =
-      permission === "none"
-        ? client
-            .from("label_acl")
-            .delete()
-            .eq("label_id", labelId)
-            .eq("user_id", memberId)
-        : client.from("label_acl").upsert(
-            { label_id: labelId, user_id: memberId, permission },
-            { onConflict: "label_id,user_id" },
-          );
-    const { error } = await query;
-    if (error) throw error;
-    await refresh();
-  }
-
   async function updateMemberRole(memberId: string, role: WorkspaceRole) {
     const { error } = await client
       .from("workspace_members")
       .update({ role })
       .eq("workspace_id", workspaceId)
       .eq("user_id", memberId);
+    if (error) throw error;
+    await refresh();
+  }
+
+  async function createUserGroup(name: string, memberIds: string[]) {
+    const { data: group, error } = await client
+      .from("user_groups")
+      .insert({ workspace_id: activeWorkspaceId, name: name.trim(), created_by: userId })
+      .select("*")
+      .single();
+    if (error) throw error;
+    if (memberIds.length) {
+      const { error: membersError } = await client.from("user_group_members").insert(
+        memberIds.map((memberId) => ({
+          group_id: group.id,
+          workspace_id: activeWorkspaceId,
+          user_id: memberId,
+        })),
+      );
+      if (membersError) {
+        await client.from("user_groups").delete().eq("id", group.id);
+        throw membersError;
+      }
+    }
+    await refresh();
+  }
+
+  async function updateUserGroup(groupId: string, name: string, memberIds: string[]) {
+    const { error } = await client
+      .from("user_groups")
+      .update({ name: name.trim() })
+      .eq("id", groupId);
+    if (error) throw error;
+
+    const currentIds = new Set(
+      activeBundle.userGroupMembers
+        .filter((item) => item.group_id === groupId)
+        .map((item) => item.user_id),
+    );
+    const nextIds = new Set(memberIds);
+    const removedIds = [...currentIds].filter((memberId) => !nextIds.has(memberId));
+    const addedIds = memberIds.filter((memberId) => !currentIds.has(memberId));
+    if (removedIds.length) {
+      const { error: removeError } = await client
+        .from("user_group_members")
+        .delete()
+        .eq("group_id", groupId)
+        .in("user_id", removedIds);
+      if (removeError) throw removeError;
+    }
+    if (addedIds.length) {
+      const { error: addError } = await client.from("user_group_members").insert(
+        addedIds.map((memberId) => ({
+          group_id: groupId,
+          workspace_id: activeWorkspaceId,
+          user_id: memberId,
+        })),
+      );
+      if (addError) throw addError;
+    }
+    await refresh();
+  }
+
+  async function deleteUserGroup(groupId: string) {
+    const { error } = await client.from("user_groups").delete().eq("id", groupId);
     if (error) throw error;
     await refresh();
   }
@@ -1238,7 +1673,30 @@ function RemoteApplication({
     await refresh();
   }
 
-  async function enableInviteLink(role: WorkspaceInviteRole) {
+  async function updateSubtask(
+    subtaskId: string,
+    patch: Partial<Pick<Subtask, "due_at" | "assignee_id">>,
+  ) {
+    const { error } = await client.from("subtasks").update(patch).eq("id", subtaskId);
+    if (error) throw error;
+    await refresh();
+  }
+
+  async function deleteSubtask(subtaskId: string) {
+    const { error } = await client.from("subtasks").delete().eq("id", subtaskId);
+    if (error) throw error;
+    await refresh();
+  }
+
+  async function loadInviteLink(workspaceId: string) {
+    const { data, error } = await client.functions.invoke("workspace-invite", {
+      body: { action: "get", workspaceId },
+    });
+    if (error) throw error;
+    return (data?.link ?? null) as WorkspaceInviteLink | null;
+  }
+
+  async function enableInviteLink(workspaceId: string, role: WorkspaceInviteRole) {
     const { data, error } = await client.functions.invoke("workspace-invite", {
       body: { action: "enable", workspaceId, role },
     });
@@ -1247,9 +1705,10 @@ function RemoteApplication({
       ["workspace-invite-link", workspaceId],
       data.link as WorkspaceInviteLink,
     );
+    return data.link as WorkspaceInviteLink;
   }
 
-  async function updateInviteLinkRole(role: WorkspaceInviteRole) {
+  async function updateInviteLinkRole(workspaceId: string, role: WorkspaceInviteRole) {
     const { data, error } = await client.functions.invoke("workspace-invite", {
       body: { action: "update-role", workspaceId, role },
     });
@@ -1258,9 +1717,10 @@ function RemoteApplication({
       ["workspace-invite-link", workspaceId],
       data.link as WorkspaceInviteLink,
     );
+    return data.link as WorkspaceInviteLink;
   }
 
-  async function disableInviteLink() {
+  async function disableInviteLink(workspaceId: string) {
     const { error } = await client.functions.invoke("workspace-invite", {
       body: { action: "disable", workspaceId },
     });
@@ -1268,9 +1728,7 @@ function RemoteApplication({
     queryClient.setQueryData(["workspace-invite-link", workspaceId], null);
   }
 
-  async function copyInviteLink() {
-    const link = inviteLinkQuery.data;
-    if (!link) return;
+  async function copyInviteLink(link: WorkspaceInviteLink) {
     const inviteUrl = buildWorkspaceInviteUrl(
       link.id,
       import.meta.env.VITE_PUBLIC_APP_URL,
@@ -1292,6 +1750,21 @@ function RemoteApplication({
     const { error } = await client.auth.updateUser({ email: nextEmail });
     if (error) throw error;
     setNotice("验证邮件已发送，请在新邮箱中确认修改");
+  }
+
+  async function updateAccountDisplayName(nextDisplayName: string) {
+    await updateDisplayName(client, userId, nextDisplayName);
+    await queryClient.invalidateQueries({ queryKey: ["workspace-bundle"] });
+    setNotice("昵称已更新");
+  }
+
+  async function updateAccountAvatar(avatar: Blob | null) {
+    const currentAvatarUrl = activeBundle.members.find(
+      (member) => member.user_id === userId,
+    )?.profile?.avatar_url ?? null;
+    await updateAvatar(client, userId, currentAvatarUrl, avatar);
+    await queryClient.invalidateQueries({ queryKey: ["workspace-bundle"] });
+    setNotice(avatar ? "头像已更新" : "头像已移除");
   }
 
   async function deleteAccount() {
@@ -1335,6 +1808,25 @@ function RemoteApplication({
       throw error;
     }
     await queryClient.invalidateQueries({ queryKey });
+  }
+
+  async function createComment(taskId: string, input: CreateCommentInput) {
+    try {
+      await createTaskCommentApi(client, { taskId, ...input });
+    } catch (error) {
+      await Promise.allSettled(input.imageUris.map((uri) => attachmentService.remove(uri)));
+      throw error;
+    }
+  }
+
+  async function deleteComment(comment: TaskComment) {
+    await deleteTaskCommentApi(client, comment.id);
+    await Promise.allSettled(comment.image_uris.map((uri) => attachmentService.remove(uri)));
+  }
+
+  async function updateComment(comment: TaskComment, input: CreateCommentInput) {
+    await updateTaskCommentApi(client, { commentId: comment.id, ...input });
+    await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
   }
 
   async function addTaskSection(listKey: string, name: string) {
@@ -1395,15 +1887,41 @@ function RemoteApplication({
         dateTimePreferencesQuery.data ?? DEFAULT_DATE_TIME_PREFERENCES
       }
       attachmentService={attachmentService}
+      commentsRevision={commentsRevision}
+      activityRevision={activityRevision}
+      notifications={notificationsQuery.data ?? []}
+      notificationsLoading={notificationsQuery.isLoading}
       notice={notice}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onWorkspaceChange={setWorkspaceId}
-      onCreateWorkspace={(name) => workspaceMutation.mutateAsync(name)}
-      onUpdateWorkspace={async (patch) => {
-        const updated = await updateWorkspace(client, workspaceId, patch);
+      quota={quotaQuery.data ?? {
+        user_id: userId,
+        workspace_limit: 3,
+        created_at: "",
+        updated_at: "",
+      }}
+      onCreateWorkspace={(input) => workspaceMutation.mutateAsync(input)}
+      onCheckWorkspaceSlug={(slug) => isWorkspaceSlugAvailable(client, slug)}
+      onUpdateWorkspace={async (targetWorkspaceId, patch) => {
+        const updated = await updateWorkspace(client, targetWorkspaceId, patch);
         await refresh();
         return updated;
+      }}
+      onDeleteWorkspace={async (targetWorkspaceId, confirmationName) => {
+        await deleteWorkspaceApi(client, targetWorkspaceId, confirmationName);
+        const remaining = (workspacesQuery.data ?? []).filter(
+          (item) => item.id !== targetWorkspaceId,
+        );
+        if (workspaceId === targetWorkspaceId) {
+          setWorkspaceId(remaining[0]?.id ?? null);
+        }
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["workspaces", userId] }),
+          queryClient.invalidateQueries({ queryKey: ["user-quota", userId] }),
+          queryClient.removeQueries({ queryKey: ["workspace-bundle", targetWorkspaceId] }),
+          queryClient.removeQueries({ queryKey: ["workspace-invite-link", targetWorkspaceId] }),
+        ]);
       }}
       onCreateTask={async (input) => {
         const created = await createTask(client, {
@@ -1414,24 +1932,45 @@ function RemoteApplication({
         return created;
       }}
       onUpdateTask={updateTask}
+      onSaveTaskSchedule={saveTaskSchedule}
       onToggleTaskLabel={toggleTaskLabel}
       onLoadTaskAssignees={(taskId) => listTaskAssigneeIds(client, taskId)}
       onAssignTask={assignTask}
       onCreateSubtask={createSubtask}
       onToggleSubtask={toggleSubtask}
+      onUpdateSubtask={updateSubtask}
+      onDeleteSubtask={deleteSubtask}
+      onLoadTaskComments={(taskId) => loadTaskComments(client, taskId)}
+      onLoadTaskActivity={(taskId, cursor) => loadTaskActivity(client, taskId, cursor)}
+      onLoadCommentCandidates={(taskId) => listTaskCommentCandidateIds(client, taskId)}
+      onCreateComment={createComment}
+      onUpdateComment={updateComment}
+      onDeleteComment={deleteComment}
+      onMarkNotificationRead={async (notificationId) => {
+        await markNotificationRead(client, notificationId);
+        await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
+      }}
+      onMarkAllNotificationsRead={async () => {
+        await markAllNotificationsRead(client, activeWorkspaceId);
+        await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
+      }}
       onCreateLabel={createLabel}
+      onSaveLabelAccess={saveLabelAccess}
       onUpdateLabel={updateLabel}
       onDeleteLabel={deleteLabel}
       onMergeLabel={mergeLabel}
       onMoveLabelToInbox={moveLabelToInbox}
-      onSetLabelPermission={setLabelPermission}
       onUpdateMemberRole={updateMemberRole}
-      inviteLink={inviteLinkQuery.data ?? null}
-      inviteLinkLoading={inviteLinkQuery.isLoading}
+      onCreateUserGroup={createUserGroup}
+      onUpdateUserGroup={updateUserGroup}
+      onDeleteUserGroup={deleteUserGroup}
+      onLoadInviteLink={loadInviteLink}
       onEnableInviteLink={enableInviteLink}
       onUpdateInviteLinkRole={updateInviteLinkRole}
       onDisableInviteLink={disableInviteLink}
       onCopyInviteLink={copyInviteLink}
+      onUpdateDisplayName={updateAccountDisplayName}
+      onUpdateAvatar={updateAccountAvatar}
       onUpdateEmail={updateAccountEmail}
       onDeleteAccount={deleteAccount}
       onUpdateDateTimePreferences={updateDateTimePreferences}
@@ -1445,6 +1984,50 @@ function RemoteApplication({
   );
 }
 
+function applyDemoLabelAccess(
+  bundle: WorkspaceBundle,
+  labelId: string,
+  draft: LabelAccessDraft,
+): WorkspaceBundle {
+  const userPermissions = new Map<string, "view" | "edit">();
+  const groupPermissions = new Map<string, "view" | "edit">();
+  if (draft.kind === "team") {
+    if (draft.viewScope === "users") {
+      draft.viewSubjectIds.forEach((id) => userPermissions.set(id, "view"));
+    }
+    if (draft.manageScope === "users") {
+      draft.manageSubjectIds.forEach((id) => userPermissions.set(id, "edit"));
+    }
+    if (draft.viewScope === "groups") {
+      draft.viewSubjectIds.forEach((id) => groupPermissions.set(id, "view"));
+    }
+    if (draft.manageScope === "groups") {
+      draft.manageSubjectIds.forEach((id) => groupPermissions.set(id, "edit"));
+    }
+  }
+  return {
+    ...bundle,
+    labelUserAcls: [
+      ...bundle.labelUserAcls.filter((acl) => acl.label_id !== labelId),
+      ...[...userPermissions].map(([userId, permission]) => ({
+        label_id: labelId,
+        workspace_id: bundle.labels.find((label) => label.id === labelId)!.workspace_id,
+        user_id: userId,
+        permission,
+      })),
+    ],
+    labelGroupAcls: [
+      ...bundle.labelGroupAcls.filter((acl) => acl.label_id !== labelId),
+      ...[...groupPermissions].map(([groupId, permission]) => ({
+        label_id: labelId,
+        workspace_id: bundle.labels.find((label) => label.id === labelId)!.workspace_id,
+        group_id: groupId,
+        permission,
+      })),
+    ],
+  };
+}
+
 function DemoApplication() {
   const online = useOnline();
   const attachmentService = useMemo(() => createDemoAttachmentService(), []);
@@ -1456,12 +2039,77 @@ function DemoApplication() {
   const [dateTimePreferences, setDateTimePreferences] = useState(
     DEFAULT_DATE_TIME_PREFERENCES,
   );
+  const [demoComments, setDemoComments] = useState<TaskComment[]>(() => {
+    const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    return [{
+      id: "demo-comment-mention",
+      workspace_id: "workspace-team",
+      task_id: "task-2",
+      author_id: "demo-member",
+      body: "@沈宇宝 请确认一下详情面板的评论交互",
+      image_uris: [],
+      created_at: createdAt,
+      updated_at: createdAt,
+      author: { id: "demo-member", display_name: "产品同学", avatar_url: null },
+      mentions: [{ user_id: "demo-user", display_name_snapshot: "沈宇宝" }],
+    }];
+  });
+  const demoCommentsRef = useRef<TaskComment[]>(demoComments);
+  const [demoNotifications, setDemoNotifications] = useState<AppNotification[]>(() => [{
+    id: "demo-notification-mention",
+    workspace_id: "workspace-team",
+    task_id: "task-2",
+    comment_id: "demo-comment-mention",
+    recipient_id: "demo-user",
+    actor_id: "demo-member",
+    notification_type: "comment_mention",
+    read_at: null,
+    created_at: demoComments[0].created_at,
+    actor: { id: "demo-member", display_name: "产品同学", avatar_url: null },
+    task: { id: "task-2", title: "优化任务详情抽屉交互", kind: "todo" },
+    comment: {
+      id: "demo-comment-mention",
+      body: demoComments[0].body,
+      image_uris: [],
+    },
+  }]);
+  const [commentsRevision, setCommentsRevision] = useState(0);
+  const [activityRevision, setActivityRevision] = useState(0);
+  const [demoActivities, setDemoActivities] = useState<TaskActivityEvent[]>([]);
 
   useEffect(() => {
     return () => attachmentService.dispose();
   }, [attachmentService]);
 
+  function appendDemoActivity(
+    taskId: string,
+    eventType: string,
+    payload: Record<string, unknown> = {},
+  ) {
+    const createdAt = new Date().toISOString();
+    setDemoActivities((current) => [{
+      id: crypto.randomUUID(),
+      workspace_id: workspaceId,
+      task_id: taskId,
+      actor_id: "demo-user",
+      event_type: eventType,
+      payload,
+      created_at: createdAt,
+      actor: bundle.members.find((member) => member.user_id === "demo-user")?.profile,
+    }, ...current]);
+    setActivityRevision((value) => value + 1);
+  }
+
   function patchTask(taskId: string, patch: Partial<Task>) {
+    const task = bundle.tasks.find((item) => item.id === taskId);
+    const auditableFields: Array<keyof Task> = [
+      "title", "description", "kind", "status", "priority", "due_at",
+      "due_start_at", "due_is_all_day", "due_timezone", "deleted_at",
+    ];
+    const changes = Object.fromEntries(auditableFields.flatMap((field) =>
+      field in patch && task?.[field] !== patch[field]
+        ? [[field, { before: task?.[field] ?? null, after: patch[field] ?? null }]]
+        : []));
     setBundle((current) => ({
       ...current,
       tasks: current.tasks.map((task) =>
@@ -1470,6 +2118,7 @@ function DemoApplication() {
           : task,
       ),
     }));
+    if (Object.keys(changes).length) appendDemoActivity(taskId, "task.updated", { changes });
     return Promise.resolve();
   }
 
@@ -1479,21 +2128,38 @@ function DemoApplication() {
       workspaceId={workspaceId}
       bundle={bundle}
       currentUserId="demo-user"
-      currentUserName="沈宇宝"
+      currentUserName={
+        bundle.members.find((member) => member.user_id === "demo-user")
+          ?.profile?.display_name ?? "沈宇宝"
+      }
       currentUserEmail=""
       currentUserPhone="+8613800138000"
       online={online}
       dateTimePreferences={dateTimePreferences}
       attachmentService={attachmentService}
+      commentsRevision={commentsRevision}
+      activityRevision={activityRevision}
+      notifications={demoNotifications.filter((item) =>
+        item.workspace_id === workspaceId && item.recipient_id === "demo-user")}
+      notificationsLoading={false}
       notice={notice}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onWorkspaceChange={setWorkspaceId}
-      onCreateWorkspace={async (name) => {
+      quota={{
+        user_id: "demo-user",
+        workspace_limit: 3,
+        created_at: "",
+        updated_at: "",
+      }}
+      onCreateWorkspace={async (input) => {
+        if (workspaces.filter((item) => item.role === "owner").length >= 3) {
+          throw new Error("已达到可拥有的团队数量上限。");
+        }
         const workspace = {
           id: crypto.randomUUID(),
-          name,
-          slug: suggestWorkspaceSlug(name),
+          name: input.name.trim(),
+          slug: normalizeWorkspaceSlug(input.slug),
           created_by: "demo-user",
           role: "owner" as const,
         };
@@ -1501,26 +2167,36 @@ function DemoApplication() {
         setWorkspaceId(workspace.id);
         return workspace;
       }}
-      onUpdateWorkspace={async (patch) => {
+      onCheckWorkspaceSlug={async (slug) =>
+        !workspaces.some((item) => item.slug === normalizeWorkspaceSlug(slug))}
+      onUpdateWorkspace={async (targetWorkspaceId, patch) => {
         const slug = normalizeWorkspaceSlug(patch.slug);
         const slugError = workspaceSlugValidationMessage(slug);
         if (slugError) throw new Error(slugError);
         if (
           workspaces.some(
-            (item) => item.id !== workspaceId && item.slug === slug,
+            (item) => item.id !== targetWorkspaceId && item.slug === slug,
           )
         ) {
           throw new Error("团队 Slug 已被占用，请换一个。");
         }
         const updated = {
-          ...workspaces.find((item) => item.id === workspaceId)!,
+          ...workspaces.find((item) => item.id === targetWorkspaceId)!,
           name: patch.name.trim(),
           slug,
         };
         setWorkspaces((current) =>
-          current.map((item) => (item.id === workspaceId ? updated : item)),
+          current.map((item) => (item.id === targetWorkspaceId ? updated : item)),
         );
         return updated;
+      }}
+      onDeleteWorkspace={async (targetWorkspaceId, confirmationName) => {
+        const selected = workspaces.find((item) => item.id === targetWorkspaceId);
+        if (!selected || selected.role !== "owner") throw new Error("仅所有者可以删除团队。");
+        if (selected.name !== confirmationName) throw new Error("团队名称不匹配。");
+        const remaining = workspaces.filter((item) => item.id !== targetWorkspaceId);
+        setWorkspaces(remaining);
+        if (workspaceId === targetWorkspaceId && remaining[0]) setWorkspaceId(remaining[0].id);
       }}
       onCreateTask={async (input) => {
         const createdAt = new Date().toISOString();
@@ -1533,8 +2209,9 @@ function DemoApplication() {
               workspace_id: workspaceId,
               title: input.title,
               description: input.description ?? "",
+              kind: input.kind ?? "todo",
               status: "open",
-              priority: input.priority ?? "none",
+              priority: input.kind === "note" ? "none" : input.priority ?? "none",
               due_at: input.dueAt ?? null,
               due_start_at: null,
               due_is_all_day: false,
@@ -1548,13 +2225,50 @@ function DemoApplication() {
               updated_at: createdAt,
               label_ids: input.labelIds,
               subtasks: [],
+              reminders: [],
+              reminder_persistent: false,
             },
             ...current.tasks,
           ],
         }));
+        appendDemoActivity(createdId, "task.created", { title: input.title });
         return { id: createdId };
       }}
       onUpdateTask={patchTask}
+      onSaveTaskSchedule={async (taskId, patch, schedule) => {
+        const createdAt = new Date().toISOString();
+        setBundle((current) => ({
+          ...current,
+          tasks: current.tasks.map((task) => task.id !== taskId ? task : {
+            ...task,
+            ...patch,
+            reminders: schedule.reminders.map((rule, position) => ({
+              id: `${taskId}:demo-reminder:${position}`,
+              task_id: taskId,
+              ...rule,
+              trigger_at: reminderTriggerAt({ ...task, ...patch }, rule) ?? createdAt,
+              position,
+              created_by: "demo-user",
+              created_at: createdAt,
+              updated_at: createdAt,
+            })),
+            reminder_persistent: schedule.persistent,
+            updated_at: createdAt,
+            version: task.version + 1,
+          }),
+        }));
+        const task = bundle.tasks.find((item) => item.id === taskId);
+        const changes = Object.fromEntries(([
+          "due_at", "due_start_at", "due_is_all_day", "due_timezone",
+        ] as const).flatMap((field) => task?.[field] !== patch[field]
+          ? [[field, { before: task?.[field] ?? null, after: patch[field] ?? null }]]
+          : []));
+        if (Object.keys(changes).length) appendDemoActivity(taskId, "task.updated", { changes });
+        appendDemoActivity(taskId, "task.reminders_changed", {
+          before: { reminders: task?.reminders ?? [], persistent: task?.reminder_persistent ?? false },
+          after: { reminders: schedule.reminders, persistent: schedule.persistent },
+        });
+      }}
       onToggleTaskLabel={async (taskId, labelId, selected) => {
         setBundle((current) => ({
           ...current,
@@ -1566,6 +2280,12 @@ function DemoApplication() {
             return { ...task, label_ids: [...labelIds] };
           }),
         }));
+        const label = bundle.labels.find((item) => item.id === labelId);
+        appendDemoActivity(taskId, selected ? "task.label_added" : "task.label_removed", {
+          label_id: labelId,
+          label_name: label?.name ?? "标签",
+          label_color: label?.color ?? "#8f959e",
+        });
       }}
       onLoadTaskAssignees={async (taskId) => {
         const task = bundle.tasks.find((item) => item.id === taskId);
@@ -1575,9 +2295,16 @@ function DemoApplication() {
             )
           : [];
       }}
-      onAssignTask={(taskId, assigneeId) =>
-        patchTask(taskId, { assignee_id: assigneeId })}
+      onAssignTask={async (taskId, assigneeId) => {
+        const previous = bundle.tasks.find((item) => item.id === taskId)?.assignee_id ?? null;
+        await patchTask(taskId, { assignee_id: assigneeId });
+        if (previous !== assigneeId) appendDemoActivity(taskId, "task.assignee_changed", {
+          previous_assignee_id: previous,
+          assignee_id: assigneeId,
+        });
+      }}
       onCreateSubtask={async (taskId, title) => {
+        const subtaskId = crypto.randomUUID();
         setBundle((current) => ({
           ...current,
           tasks: current.tasks.map((task) =>
@@ -1587,19 +2314,28 @@ function DemoApplication() {
                   subtasks: [
                     ...task.subtasks,
                     {
-                      id: crypto.randomUUID(),
+                      id: subtaskId,
                       task_id: taskId,
                       title,
                       completed: false,
                       position: task.subtasks.length,
+                      due_at: null,
+                      assignee_id: null,
                     },
                   ],
                 }
               : task,
           ),
         }));
+        appendDemoActivity(taskId, "task.subtask_created", {
+          subtask_id: subtaskId,
+          title,
+          completed: false,
+        });
       }}
       onToggleSubtask={async (subtaskId, completed) => {
+        const ownerTask = bundle.tasks.find((task) => task.subtasks.some((subtask) => subtask.id === subtaskId));
+        const subtask = ownerTask?.subtasks.find((item) => item.id === subtaskId);
         setBundle((current) => ({
           ...current,
           tasks: current.tasks.map((task) => ({
@@ -1609,25 +2345,231 @@ function DemoApplication() {
             ),
           })),
         }));
+        if (ownerTask && subtask && subtask.completed !== completed) {
+          appendDemoActivity(ownerTask.id, "task.subtask_updated", {
+            subtask_id: subtaskId,
+            title: subtask.title,
+            changes: { completed: { before: subtask.completed, after: completed } },
+          });
+        }
       }}
-      onCreateLabel={async (name, parentId, color = DEFAULT_LABEL_COLOR) => {
+      onUpdateSubtask={async (subtaskId, patch) => {
+        const ownerTask = bundle.tasks.find((task) => task.subtasks.some((subtask) => subtask.id === subtaskId));
+        const subtask = ownerTask?.subtasks.find((item) => item.id === subtaskId);
         setBundle((current) => ({
           ...current,
-          labels: [
-            ...current.labels,
-            {
+          tasks: current.tasks.map((task) => ({
+            ...task,
+            subtasks: task.subtasks.map((item) => item.id === subtaskId ? { ...item, ...patch } : item),
+          })),
+        }));
+        if (ownerTask && subtask) {
+          const changes = Object.fromEntries(Object.entries(patch).flatMap(([field, after]) =>
+            subtask[field as "due_at" | "assignee_id"] !== after
+              ? [[field, { before: subtask[field as "due_at" | "assignee_id"], after }]]
+              : []));
+          if (Object.keys(changes).length) appendDemoActivity(ownerTask.id, "task.subtask_updated", {
+            subtask_id: subtaskId,
+            title: subtask.title,
+            changes,
+          });
+        }
+      }}
+      onDeleteSubtask={async (subtaskId) => {
+        const ownerTask = bundle.tasks.find((task) => task.subtasks.some((subtask) => subtask.id === subtaskId));
+        const subtask = ownerTask?.subtasks.find((item) => item.id === subtaskId);
+        setBundle((current) => ({
+          ...current,
+          tasks: current.tasks.map((task) => ({
+            ...task,
+            subtasks: task.subtasks.filter((item) => item.id !== subtaskId),
+          })),
+        }));
+        if (ownerTask && subtask) appendDemoActivity(ownerTask.id, "task.subtask_deleted", {
+          subtask_id: subtaskId,
+          title: subtask.title,
+          completed: subtask.completed,
+        });
+      }}
+      onLoadTaskComments={async (taskId) =>
+        demoCommentsRef.current.filter((comment) => comment.task_id === taskId)}
+      onLoadTaskActivity={async (taskId, cursor) => {
+        const task = bundle.tasks.find((item) => item.id === taskId);
+        const taskEvents = demoActivities.filter((event) => event.task_id === taskId);
+        const createdEvent: TaskActivityEvent[] = task && !taskEvents.some(
+          (event) => event.event_type === "task.created",
+        ) ? [{
+          id: `demo-created:${task.id}`,
+          workspace_id: task.workspace_id,
+          task_id: task.id,
+          actor_id: task.created_by,
+          event_type: "task.created",
+          payload: { title: task.title },
+          created_at: task.created_at,
+          actor: bundle.members.find((member) => member.user_id === task.created_by)?.profile,
+        }] : [];
+        const all = [...taskEvents, ...createdEvent]
+          .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+        const start = cursor
+          ? Math.max(0, all.findIndex((event) => event.id === cursor.id) + 1)
+          : 0;
+        const items = all.slice(start, start + 50);
+        const last = items.at(-1);
+        return {
+          items,
+          nextCursor: items.length === 50 && last ? { createdAt: last.created_at, id: last.id } : null,
+        };
+      }}
+      onLoadCommentCandidates={async () => bundle.members.map((member) => member.user_id)}
+      onCreateComment={async (taskId, input) => {
+        const createdAt = new Date().toISOString();
+        const commentId = crypto.randomUUID();
+        const mentions = bundle.members
+          .filter((member) => input.mentionedUserIds.includes(member.user_id))
+          .map((member) => ({
+            user_id: member.user_id,
+            display_name_snapshot: member.profile?.display_name || "团队成员",
+          }));
+        const author = bundle.members.find((member) => member.user_id === "demo-user")?.profile;
+        const comment: TaskComment = {
+          id: commentId,
+          workspace_id: workspaceId,
+          task_id: taskId,
+          author_id: "demo-user",
+          body: input.body,
+          image_uris: input.imageUris,
+          created_at: createdAt,
+          updated_at: createdAt,
+          author,
+          mentions,
+        };
+        const nextComments = [...demoCommentsRef.current, comment];
+        demoCommentsRef.current = nextComments;
+        setDemoComments(nextComments);
+        const task = bundle.tasks.find((item) => item.id === taskId);
+        const additions = mentions
+          .filter((mention) => mention.user_id !== "demo-user")
+          .map<AppNotification>((mention) => ({
+            id: crypto.randomUUID(),
+            workspace_id: workspaceId,
+            task_id: taskId,
+            comment_id: commentId,
+            recipient_id: mention.user_id,
+            actor_id: "demo-user",
+            notification_type: "comment_mention",
+            read_at: null,
+            created_at: createdAt,
+            actor: author,
+            task: task ? { id: task.id, title: task.title, kind: task.kind } : undefined,
+            comment: { id: comment.id, body: comment.body, image_uris: comment.image_uris },
+          }));
+        setDemoNotifications((current) => [...additions, ...current]);
+        setCommentsRevision((value) => value + 1);
+      }}
+      onUpdateComment={async (comment, input) => {
+        const updatedAt = new Date().toISOString();
+        const mentions = bundle.members
+          .filter((member) => input.mentionedUserIds.includes(member.user_id))
+          .map((member) => ({
+            user_id: member.user_id,
+            display_name_snapshot: member.profile?.display_name || "团队成员",
+          }));
+        const updatedComment = {
+          ...comment,
+          body: input.body,
+          image_uris: input.imageUris,
+          mentions,
+          updated_at: updatedAt,
+        };
+        const nextComments = demoCommentsRef.current.map((item) =>
+          item.id === comment.id ? updatedComment : item);
+        demoCommentsRef.current = nextComments;
+        setDemoComments(nextComments);
+        const task = bundle.tasks.find((item) => item.id === comment.task_id);
+        const author = bundle.members.find((member) => member.user_id === comment.author_id)?.profile;
+        setDemoNotifications((current) => {
+          const retained = current.filter((item) =>
+            item.comment_id !== comment.id || mentions.some((mention) => mention.user_id === item.recipient_id));
+          const recipients = new Set(retained.filter((item) => item.comment_id === comment.id)
+            .map((item) => item.recipient_id));
+          const additions = mentions.filter((mention) =>
+            mention.user_id !== comment.author_id && !recipients.has(mention.user_id))
+            .map<AppNotification>((mention) => ({
               id: crypto.randomUUID(),
+              workspace_id: comment.workspace_id,
+              task_id: comment.task_id,
+              comment_id: comment.id,
+              recipient_id: mention.user_id,
+              actor_id: comment.author_id,
+              notification_type: "comment_mention",
+              read_at: null,
+              created_at: updatedAt,
+              actor: author,
+              task: task ? { id: task.id, title: task.title, kind: task.kind } : undefined,
+              comment: { id: comment.id, body: input.body, image_uris: input.imageUris },
+            }));
+          return [...additions, ...retained.map((item) => item.comment_id === comment.id
+            ? { ...item, comment: { id: comment.id, body: input.body, image_uris: input.imageUris } }
+            : item)];
+        });
+        setCommentsRevision((value) => value + 1);
+      }}
+      onDeleteComment={async (comment) => {
+        const nextComments = demoCommentsRef.current.filter((item) => item.id !== comment.id);
+        demoCommentsRef.current = nextComments;
+        setDemoComments(nextComments);
+        setDemoNotifications((current) => current.filter((item) => item.comment_id !== comment.id));
+        await Promise.allSettled(comment.image_uris.map((uri) => attachmentService.remove(uri)));
+        setCommentsRevision((value) => value + 1);
+      }}
+      onMarkNotificationRead={async (notificationId) => {
+        setDemoNotifications((current) => current.map((item) =>
+          item.id === notificationId ? { ...item, read_at: new Date().toISOString() } : item));
+      }}
+      onMarkAllNotificationsRead={async () => {
+        setDemoNotifications((current) => current.map((item) =>
+          item.workspace_id === workspaceId && !item.read_at
+            ? { ...item, read_at: new Date().toISOString() }
+            : item));
+      }}
+      onCreateLabel={async (draft) => {
+        setBundle((current) => {
+          const labelId = crypto.randomUUID();
+          return applyDemoLabelAccess({
+            ...current,
+            labels: [...current.labels, {
+              id: labelId,
               workspace_id: workspaceId,
-              parent_id: parentId,
-              name,
-              color,
-              visibility: "workspace",
-              inherit_permissions: Boolean(parentId),
+              parent_id: draft.parentId,
+              name: draft.name,
+              color: draft.color,
+              kind: draft.kind,
+              view_scope: draft.viewScope,
+              manage_scope: draft.manageScope,
+              inherit_permissions: Boolean(draft.parentId),
               position: current.labels.length,
               created_by: "demo-user",
+            }],
+            labelPermissionLevels: {
+              ...current.labelPermissionLevels,
+              [labelId]: 2,
             },
-          ],
-        }));
+          }, labelId, draft);
+        });
+      }}
+      onSaveLabelAccess={async (labelId, draft) => {
+        setBundle((current) => applyDemoLabelAccess({
+          ...current,
+          labels: current.labels.map((label) => label.id === labelId ? {
+            ...label,
+            name: draft.name,
+            color: draft.color,
+            kind: draft.kind,
+            view_scope: draft.viewScope,
+            manage_scope: draft.manageScope,
+            inherit_permissions: Boolean(label.parent_id),
+          } : label),
+        }, labelId, draft));
       }}
       onUpdateLabel={async (labelId, patch) => {
         setBundle((current) => ({
@@ -1689,22 +2631,6 @@ function DemoApplication() {
           };
         });
       }}
-      onSetLabelPermission={async (labelId, memberId, permission) => {
-        setBundle((current) => ({
-          ...current,
-          labelAcls:
-            permission === "none"
-              ? current.labelAcls.filter(
-                  (acl) => acl.label_id !== labelId || acl.user_id !== memberId,
-                )
-              : [
-                  ...current.labelAcls.filter(
-                    (acl) => acl.label_id !== labelId || acl.user_id !== memberId,
-                  ),
-                  { label_id: labelId, user_id: memberId, permission },
-                ],
-        }));
-      }}
       onUpdateMemberRole={async (memberId, role) => {
         setBundle((current) => ({
           ...current,
@@ -1713,23 +2639,118 @@ function DemoApplication() {
           ),
         }));
       }}
-      inviteLink={inviteLink}
-      inviteLinkLoading={false}
-      onEnableInviteLink={async (role) => {
-        setInviteLink({
+      onCreateUserGroup={async (name, memberIds) => {
+        const groupId = crypto.randomUUID();
+        const createdAt = new Date().toISOString();
+        setBundle((current) => ({
+          ...current,
+          userGroups: [...current.userGroups, {
+            id: groupId,
+            workspace_id: workspaceId,
+            name: name.trim(),
+            created_by: "demo-user",
+            created_at: createdAt,
+            updated_at: createdAt,
+          }],
+          userGroupMembers: [
+            ...current.userGroupMembers,
+            ...memberIds.map((memberId) => ({
+              group_id: groupId,
+              workspace_id: workspaceId,
+              user_id: memberId,
+              added_at: createdAt,
+            })),
+          ],
+        }));
+      }}
+      onUpdateUserGroup={async (groupId, name, memberIds) => {
+        const selected = new Set(memberIds);
+        const addedAt = new Date().toISOString();
+        setBundle((current) => ({
+          ...current,
+          userGroups: current.userGroups.map((group) =>
+            group.id === groupId
+              ? { ...group, name: name.trim(), updated_at: addedAt }
+              : group,
+          ),
+          userGroupMembers: [
+            ...current.userGroupMembers.filter((item) => item.group_id !== groupId),
+            ...current.members
+              .filter((member) => selected.has(member.user_id))
+              .map((member) => ({
+                group_id: groupId,
+                workspace_id: workspaceId,
+                user_id: member.user_id,
+                added_at: addedAt,
+              })),
+          ],
+        }));
+      }}
+      onDeleteUserGroup={async (groupId) => {
+        setBundle((current) => ({
+          ...current,
+          userGroups: current.userGroups.filter((group) => group.id !== groupId),
+          userGroupMembers: current.userGroupMembers.filter((item) => item.group_id !== groupId),
+        }));
+      }}
+      onLoadInviteLink={async (targetWorkspaceId) =>
+        inviteLink?.workspace_id === targetWorkspaceId ? inviteLink : null}
+      onEnableInviteLink={async (targetWorkspaceId, role) => {
+        const nextLink: WorkspaceInviteLink = {
           id: crypto.randomUUID(),
-          workspace_id: workspaceId,
+          workspace_id: targetWorkspaceId,
           role,
           created_by: "demo-owner",
           created_at: new Date().toISOString(),
           revoked_at: null,
-        });
+        };
+        setInviteLink(nextLink);
+        return nextLink;
       }}
-      onUpdateInviteLinkRole={async (role) => {
-        setInviteLink((current) => current ? { ...current, role } : current);
+      onUpdateInviteLinkRole={async (_targetWorkspaceId, role) => {
+        const nextLink = { ...inviteLink!, role };
+        setInviteLink(nextLink);
+        return nextLink;
       }}
       onDisableInviteLink={async () => setInviteLink(null)}
       onCopyInviteLink={async () => setNotice("演示邀请链接已复制")}
+      onUpdateDisplayName={async (displayName) => {
+        setBundle((current) => ({
+          ...current,
+          members: current.members.map((member) =>
+            member.user_id === "demo-user"
+              ? {
+                  ...member,
+                  profile: {
+                    id: "demo-user",
+                    display_name: displayName.trim(),
+                    avatar_url: member.profile?.avatar_url ?? null,
+                  },
+                }
+              : member,
+          ),
+        }));
+        setNotice("昵称已更新（演示模式）");
+      }}
+      onUpdateAvatar={async (avatar) => {
+        setBundle((current) => ({
+          ...current,
+          members: current.members.map((member) => {
+            if (member.user_id !== "demo-user") return member;
+            const oldUrl = member.profile?.avatar_url;
+            if (oldUrl?.startsWith("blob:")) URL.revokeObjectURL(oldUrl);
+            return {
+              ...member,
+              profile: {
+                id: "demo-user",
+                display_name: member.profile?.display_name ?? "沈宇宝",
+                avatar_url: avatar ? URL.createObjectURL(avatar) : null,
+              },
+            };
+          }),
+        }));
+        setNotice(avatar ? "头像已更新（演示模式）" : "头像已移除（演示模式）");
+      }}
       onUpdateEmail={async () => setNotice("演示模式不会实际修改邮箱")}
       onDeleteAccount={async () => {
         setNotice("演示模式不会实际删除账户");
@@ -1814,6 +2835,7 @@ function DemoApplication() {
 type WorkspaceAppProps = {
   workspaces: Workspace[];
   workspaceId: string;
+  quota: UserQuota;
   bundle: WorkspaceBundle;
   currentUserId: string;
   currentUserName: string;
@@ -1822,15 +2844,21 @@ type WorkspaceAppProps = {
   online: boolean;
   dateTimePreferences: DateTimePreferences;
   attachmentService: AttachmentService;
+  commentsRevision: number;
+  activityRevision: number;
+  notifications: AppNotification[];
+  notificationsLoading: boolean;
   notice: string;
   onDismissNotice: () => void;
   onNotice: (message: string) => void;
   onWorkspaceChange: (id: string) => void;
-  onCreateWorkspace: (name: string) => Promise<Workspace>;
-  onUpdateWorkspace: (patch: {
+  onCreateWorkspace: (input: { name: string; slug: string }) => Promise<Workspace>;
+  onCheckWorkspaceSlug: (slug: string) => Promise<boolean>;
+  onUpdateWorkspace: (workspaceId: string, patch: {
     name: string;
     slug: string;
   }) => Promise<Workspace>;
+  onDeleteWorkspace: (workspaceId: string, confirmationName: string) => Promise<void>;
   onCreateTask: (input: {
     title: string;
     labelIds: string[];
@@ -1838,8 +2866,14 @@ type WorkspaceAppProps = {
     dueAt?: string | null;
     dueTimezone?: string | null;
     priority?: TaskPriority;
+    kind?: TaskKind;
   }) => Promise<unknown>;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
+  onSaveTaskSchedule: (
+    taskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
   onToggleTaskLabel: (
     taskId: string,
     labelId: string,
@@ -1849,23 +2883,45 @@ type WorkspaceAppProps = {
   onAssignTask: (taskId: string, assigneeId: string | null) => Promise<void>;
   onCreateSubtask: (taskId: string, title: string) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
-  onCreateLabel: (name: string, parentId: string | null, color?: string) => Promise<void>;
+  onUpdateSubtask: (
+    subtaskId: string,
+    patch: Partial<Pick<Subtask, "due_at" | "assignee_id">>,
+  ) => Promise<void>;
+  onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onLoadTaskComments: (taskId: string) => Promise<TaskComment[]>;
+  onLoadTaskActivity: (
+    taskId: string,
+    cursor?: TaskActivityPage["nextCursor"],
+  ) => Promise<TaskActivityPage>;
+  onLoadCommentCandidates: (taskId: string) => Promise<string[]>;
+  onCreateComment: (taskId: string, input: CreateCommentInput) => Promise<void>;
+  onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
+  onDeleteComment: (comment: TaskComment) => Promise<void>;
+  onMarkNotificationRead: (notificationId: string) => Promise<void>;
+  onMarkAllNotificationsRead: () => Promise<void>;
+  onCreateLabel: (draft: LabelAccessDraft) => Promise<void>;
+  onSaveLabelAccess: (labelId: string, draft: LabelAccessDraft) => Promise<void>;
   onUpdateLabel: (labelId: string, patch: Partial<Label>) => Promise<void>;
   onDeleteLabel: (labelId: string) => Promise<void>;
   onMergeLabel: (sourceLabelId: string, targetLabelId: string) => Promise<void>;
   onMoveLabelToInbox: (sourceLabelId: string) => Promise<void>;
-  onSetLabelPermission: (
-    labelId: string,
-    memberId: string,
-    permission: "none" | "view" | "edit",
-  ) => Promise<void>;
   onUpdateMemberRole: (memberId: string, role: WorkspaceRole) => Promise<void>;
-  inviteLink: WorkspaceInviteLink | null;
-  inviteLinkLoading: boolean;
-  onEnableInviteLink: (role: WorkspaceInviteRole) => Promise<void>;
-  onUpdateInviteLinkRole: (role: WorkspaceInviteRole) => Promise<void>;
-  onDisableInviteLink: () => Promise<void>;
-  onCopyInviteLink: () => Promise<void>;
+  onCreateUserGroup: (name: string, memberIds: string[]) => Promise<void>;
+  onUpdateUserGroup: (groupId: string, name: string, memberIds: string[]) => Promise<void>;
+  onDeleteUserGroup: (groupId: string) => Promise<void>;
+  onLoadInviteLink: (workspaceId: string) => Promise<WorkspaceInviteLink | null>;
+  onEnableInviteLink: (
+    workspaceId: string,
+    role: WorkspaceInviteRole,
+  ) => Promise<WorkspaceInviteLink>;
+  onUpdateInviteLinkRole: (
+    workspaceId: string,
+    role: WorkspaceInviteRole,
+  ) => Promise<WorkspaceInviteLink>;
+  onDisableInviteLink: (workspaceId: string) => Promise<void>;
+  onCopyInviteLink: (link: WorkspaceInviteLink) => Promise<void>;
+  onUpdateDisplayName: (displayName: string) => Promise<void>;
+  onUpdateAvatar: (avatar: Blob | null) => Promise<void>;
   onUpdateEmail: (email: string) => Promise<void>;
   onDeleteAccount: () => Promise<void>;
   onUpdateDateTimePreferences: (preferences: DateTimePreferences) => Promise<void>;
@@ -1965,6 +3021,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_MIN_WIDTH);
   const [calendarSidebarWidth, setCalendarSidebarWidth] = useState(
     CALENDAR_SIDEBAR_DEFAULT_WIDTH,
@@ -1984,6 +3041,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const now = useMinuteNow();
 
   const selectedTask = props.bundle.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTaskEditable = selectedTask
+    ? currentTaskPermissionLevel(props.bundle, selectedTask, props.currentUserId) >= 2
+    : false;
 
   useEffect(() => {
     if (selectedTaskId && !selectedTask) setSelectedTaskId(null);
@@ -2037,7 +3097,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         userName={props.currentUserName}
         workspaces={props.workspaces}
         workspaceId={props.workspaceId}
+        notifications={props.notifications}
+        notificationsLoading={props.notificationsLoading}
         onWorkspaceChange={props.onWorkspaceChange}
+        onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
         onSearch={() => setSearchDialogOpen(true)}
         onSectionChange={(section) => {
           setAppSection(section);
@@ -2046,11 +3109,20 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setMindMapCreateLabel(null);
         }}
         onSettings={() => setSettingsDialogOpen(true)}
+        onMarkNotificationRead={props.onMarkNotificationRead}
+        onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
+        onOpenNotificationTask={(taskId) => {
+          setAppSection("tasks");
+          setSmartView("all");
+          setSelectedLabelId(null);
+          setSelectedTaskId(taskId);
+        }}
         onSignOut={props.onSignOut}
       />
       {appSection === "tasks" ? <Sidebar
         openMobile={mobileSidebar}
         bundle={props.bundle}
+        currentUserId={props.currentUserId}
         online={props.online}
         smartView={smartView}
         selectedLabelId={selectedLabelId}
@@ -2065,6 +3137,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setSelectedTaskId(null);
         }}
         onCreateLabel={props.onCreateLabel}
+        onSaveLabelAccess={props.onSaveLabelAccess}
         onUpdateLabel={props.onUpdateLabel}
         onDeleteLabel={props.onDeleteLabel}
         onMergeLabel={props.onMergeLabel}
@@ -2113,8 +3186,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onSelectTask={setSelectedTaskId}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
-          onUpdateLabel={props.onUpdateLabel}
-          onSetLabelPermission={props.onSetLabelPermission}
+          onToggleSubtask={props.onToggleSubtask}
+          onSaveLabelAccess={props.onSaveLabelAccess}
           onSaveTaskListPreference={props.onSaveTaskListPreference}
           onCreateTaskSection={props.onCreateTaskSection}
           onUpdateTaskSection={props.onUpdateTaskSection}
@@ -2159,17 +3232,30 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             bundle={props.bundle}
             currentUserId={props.currentUserId}
             online={props.online}
+            editable={selectedTaskEditable}
             attachmentService={props.attachmentService}
             now={now}
             dateTimePreferences={props.dateTimePreferences}
             onClose={() => setSelectedTaskId(null)}
             onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
+            onSaveSchedule={(patch, schedule) =>
+              props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
             onLoadAssignees={() => props.onLoadTaskAssignees(selectedTask.id)}
             onAssign={(assigneeId) =>
               props.onAssignTask(selectedTask.id, assigneeId)}
             onToggleLabel={props.onToggleTaskLabel}
             onCreateSubtask={(title) => props.onCreateSubtask(selectedTask.id, title)}
             onToggleSubtask={props.onToggleSubtask}
+            onUpdateSubtask={props.onUpdateSubtask}
+            onDeleteSubtask={props.onDeleteSubtask}
+            commentsRevision={props.commentsRevision}
+            activityRevision={props.activityRevision}
+            onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
+            onLoadComments={() => props.onLoadTaskComments(selectedTask.id)}
+            onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
+            onCreateComment={(input) => props.onCreateComment(selectedTask.id, input)}
+            onUpdateComment={props.onUpdateComment}
+            onDeleteComment={props.onDeleteComment}
           />
         </>
       )}
@@ -2180,21 +3266,35 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           bundle={props.bundle}
           currentUserId={props.currentUserId}
           online={props.online}
+          editable={selectedTaskEditable}
           attachmentService={props.attachmentService}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
           onClose={() => setSelectedTaskId(null)}
           onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
+          onSaveSchedule={(patch, schedule) =>
+            props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
           onLoadAssignees={() => props.onLoadTaskAssignees(selectedTask.id)}
           onAssign={(assigneeId) => props.onAssignTask(selectedTask.id, assigneeId)}
           onToggleLabel={props.onToggleTaskLabel}
           onCreateSubtask={(title) => props.onCreateSubtask(selectedTask.id, title)}
           onToggleSubtask={props.onToggleSubtask}
+          onUpdateSubtask={props.onUpdateSubtask}
+          onDeleteSubtask={props.onDeleteSubtask}
+          commentsRevision={props.commentsRevision}
+          activityRevision={props.activityRevision}
+          onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
+          onLoadComments={() => props.onLoadTaskComments(selectedTask.id)}
+          onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
+          onCreateComment={(input) => props.onCreateComment(selectedTask.id, input)}
+          onUpdateComment={props.onUpdateComment}
+          onDeleteComment={props.onDeleteComment}
         />
       )}
       {mindMapCreateLabel && (
-        <CreateLabelDialog
-          labels={props.bundle.labels}
+        <LabelEditorDialog
+          bundle={props.bundle}
+          currentUserId={props.currentUserId}
           parentId={mindMapCreateLabel.parentId}
           online={props.online}
           onClose={() => setMindMapCreateLabel(null)}
@@ -2224,22 +3324,38 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             ?.profile?.avatar_url ?? null
         }
         workspace={workspace}
+        workspaces={props.workspaces}
+        currentWorkspaceId={props.workspaceId}
         bundle={props.bundle}
         workspaceName={workspace.name}
         online={props.online}
-        inviteLink={props.inviteLink}
-        inviteLinkLoading={props.inviteLinkLoading}
+        onLoadInviteLink={props.onLoadInviteLink}
         onEnableInviteLink={props.onEnableInviteLink}
         onUpdateInviteLinkRole={props.onUpdateInviteLinkRole}
         onDisableInviteLink={props.onDisableInviteLink}
         onCopyInviteLink={props.onCopyInviteLink}
         onUpdateMemberRole={props.onUpdateMemberRole}
+        onCreateUserGroup={props.onCreateUserGroup}
+        onUpdateUserGroup={props.onUpdateUserGroup}
+        onDeleteUserGroup={props.onDeleteUserGroup}
         onUpdateWorkspace={props.onUpdateWorkspace}
+        onDeleteWorkspace={props.onDeleteWorkspace}
+        onUpdateDisplayName={props.onUpdateDisplayName}
+        onUpdateAvatar={props.onUpdateAvatar}
         onUpdateEmail={props.onUpdateEmail}
         onDeleteAccount={props.onDeleteAccount}
         dateTimePreferences={props.dateTimePreferences}
         onUpdateDateTimePreferences={props.onUpdateDateTimePreferences}
         onNotice={props.onNotice}
+      />
+      <CreateWorkspaceDialog
+        open={createWorkspaceDialogOpen}
+        onOpenChange={setCreateWorkspaceDialogOpen}
+        online={props.online}
+        ownedCount={props.workspaces.filter((item) => item.role === "owner").length}
+        limit={props.quota.workspace_limit}
+        onCreate={props.onCreateWorkspace}
+        onCheckSlug={props.onCheckWorkspaceSlug}
       />
       {props.notice && (
         <div className="toast" role="status">
@@ -2258,10 +3374,16 @@ function NavigationRail({
   userName,
   workspaces,
   workspaceId,
+  notifications,
+  notificationsLoading,
   onWorkspaceChange,
+  onCreateWorkspace,
   onSearch,
   onSectionChange,
   onSettings,
+  onMarkNotificationRead,
+  onMarkAllNotificationsRead,
+  onOpenNotificationTask,
   onSignOut,
 }: {
   activeSection: AppSection;
@@ -2269,10 +3391,16 @@ function NavigationRail({
   userName: string;
   workspaces: Workspace[];
   workspaceId: string;
+  notifications: AppNotification[];
+  notificationsLoading: boolean;
   onWorkspaceChange: (id: string) => void;
+  onCreateWorkspace: () => void;
   onSearch: () => void;
   onSectionChange: (section: AppSection) => void;
   onSettings: () => void;
+  onMarkNotificationRead: (notificationId: string) => Promise<void>;
+  onMarkAllNotificationsRead: () => Promise<void>;
+  onOpenNotificationTask: (taskId: string) => void;
   onSignOut: () => unknown;
 }) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -2352,6 +3480,20 @@ function NavigationRail({
                     {workspace.id === workspaceId && <Check />}
                   </button>
                 ))}
+                <div className="profile-workspace-separator" />
+                <button
+                  className="profile-workspace-create"
+                  type="button"
+                  role="menuitem"
+                  disabled={!online}
+                  onClick={() => {
+                    closeProfileMenu();
+                    onCreateWorkspace();
+                  }}
+                >
+                  <Plus />
+                  <span>创建团队</span>
+                </button>
               </div>
             )}
             <button
@@ -2409,7 +3551,14 @@ function NavigationRail({
       </button>
       <div className="rail-spacer" />
       <div className={clsx("connection-dot", !online && "offline")} title={online ? "在线" : "离线"} />
-      <button className="rail-button" aria-label="通知"><Bell /></button>
+      <NotificationBell
+        notifications={notifications}
+        loading={notificationsLoading}
+        online={online}
+        onRead={onMarkNotificationRead}
+        onReadAll={onMarkAllNotificationsRead}
+        onOpenTask={onOpenNotificationTask}
+      />
     </nav>
   );
 }
@@ -2485,17 +3634,19 @@ function TaskSearchDialog({
                       <button
                         key={task.id}
                         className="task-search-result"
-                        aria-label={`打开任务：${task.title}`}
+                        aria-label={`打开${task.kind === "note" ? "笔记" : "任务"}：${task.title}`}
                         onClick={() => onSelectTask(task.id)}
                       >
                         <span
                           className={clsx(
                             "task-search-status",
-                            task.status,
+                            task.kind === "note" ? "note" : task.status,
                           )}
                           aria-hidden="true"
                         >
-                          {task.status === "completed" ? (
+                          {task.kind === "note" ? (
+                            <NotebookPen />
+                          ) : task.status === "completed" ? (
                             <Check />
                           ) : task.status === "cancelled" ? (
                             <Archive />
@@ -2560,6 +3711,7 @@ function SearchBinoculars() {
 function Sidebar({
   openMobile,
   bundle,
+  currentUserId,
   online,
   smartView,
   selectedLabelId,
@@ -2567,6 +3719,7 @@ function Sidebar({
   onSmartView,
   onLabel,
   onCreateLabel,
+  onSaveLabelAccess,
   onUpdateLabel,
   onDeleteLabel,
   onMergeLabel,
@@ -2574,13 +3727,15 @@ function Sidebar({
 }: {
   openMobile: boolean;
   bundle: WorkspaceBundle;
+  currentUserId: string;
   online: boolean;
   smartView: SmartView;
   selectedLabelId: string | null;
   onCloseMobile: () => void;
   onSmartView: (view: SmartView) => void;
   onLabel: (id: string) => void;
-  onCreateLabel: (name: string, parentId: string | null, color?: string) => Promise<void>;
+  onCreateLabel: WorkspaceAppProps["onCreateLabel"];
+  onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
   onUpdateLabel: WorkspaceAppProps["onUpdateLabel"];
   onDeleteLabel: WorkspaceAppProps["onDeleteLabel"];
   onMergeLabel: WorkspaceAppProps["onMergeLabel"];
@@ -2596,7 +3751,7 @@ function Sidebar({
   const [parentOverrides, setParentOverrides] = useState<Record<string, string | null>>({});
   const [menuError, setMenuError] = useState("");
   const [movingToInbox, setMovingToInbox] = useState(false);
-  const openTasks = bundle.tasks.filter((task) => task.status === "open");
+  const openTasks = bundle.tasks.filter(isActiveTask);
   const labels = bundle.labels
     .map((label) => Object.hasOwn(parentOverrides, label.id)
       ? { ...label, parent_id: parentOverrides[label.id] }
@@ -2716,6 +3871,7 @@ function Sidebar({
           )}
           <LabelTree
             labels={labels}
+            canManageLabel={(labelId) => currentLabelPermissionLevel(bundle, labelId) >= 2}
             selectedId={selectedLabelId}
             countForLabel={countForLabel}
             onSelect={onLabel}
@@ -2821,8 +3977,9 @@ function Sidebar({
         </>
       )}
       {creatingLabel && (
-        <CreateLabelDialog
-          labels={labels}
+        <LabelEditorDialog
+          bundle={{ ...bundle, labels }}
+          currentUserId={currentUserId}
           parentId={creatingLabel.parentId}
           online={online}
           onClose={() => setCreatingLabel(null)}
@@ -2830,17 +3987,21 @@ function Sidebar({
         />
       )}
       {editingLabel && (
-        <EditLabelDialog
+        <LabelEditorDialog
           label={editingLabel}
+          bundle={{ ...bundle, labels }}
+          currentUserId={currentUserId}
+          parentId={editingLabel.parent_id}
           online={online}
           onClose={() => setEditingLabel(null)}
-          onUpdate={onUpdateLabel}
+          onCreate={onCreateLabel}
+          onSave={onSaveLabelAccess}
         />
       )}
       {mergingLabel && (
         <MergeLabelDialog
           source={mergingLabel}
-          labels={labels}
+          labels={labels.filter((label) => currentLabelPermissionLevel(bundle, label.id) >= 2)}
           online={online}
           onClose={() => setMergingLabel(null)}
           onMerge={onMergeLabel}
@@ -2852,6 +4013,7 @@ function Sidebar({
 
 function LabelTree({
   labels,
+  canManageLabel,
   selectedId,
   countForLabel,
   onSelect,
@@ -2868,6 +4030,7 @@ function LabelTree({
   depth = 0,
 }: {
   labels: Label[];
+  canManageLabel: (labelId: string) => boolean;
   selectedId: string | null;
   countForLabel: (id: string) => number;
   onSelect: (id: string) => void;
@@ -2887,6 +4050,7 @@ function LabelTree({
     .filter((label) => label.parent_id === parentId)
     .sort((a, b) => a.position - b.position);
   return children.map((label) => {
+    const manageable = canManageLabel(label.id);
     const hasChildren = labels.some((item) => item.parent_id === label.id);
     const isCollapsed = collapsed[label.id];
     return (
@@ -2907,9 +4071,9 @@ function LabelTree({
           aria-expanded={hasChildren ? !isCollapsed : undefined}
           style={{ paddingLeft: 12 + depth * 16 }}
           onClick={() => onSelect(label.id)}
-          draggable={!label.id.startsWith("optimistic-")}
+          draggable={manageable && !label.id.startsWith("optimistic-")}
           onDragStart={(event) => {
-            if (label.id.startsWith("optimistic-")) {
+            if (!manageable || label.id.startsWith("optimistic-")) {
               event.preventDefault();
               return;
             }
@@ -2919,19 +4083,19 @@ function LabelTree({
           }}
           onDragEnd={onDragEnd}
           onDragOver={(event) => {
-            if (label.id.startsWith("optimistic-")) return;
+            if (!manageable || label.id.startsWith("optimistic-")) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
             onDragOver(label.id);
           }}
           onDrop={(event) => {
-            if (label.id.startsWith("optimistic-")) return;
+            if (!manageable || label.id.startsWith("optimistic-")) return;
             event.preventDefault();
             onDrop(label.id);
           }}
           onContextMenu={(event) => {
             event.preventDefault();
-            if (label.id.startsWith("optimistic-")) return;
+            if (!manageable || label.id.startsWith("optimistic-")) return;
             onContext(label, event.clientX, event.clientY);
           }}
         >
@@ -2949,7 +4113,7 @@ function LabelTree({
               : <Tag />}
           </span>
           <span className="label-name">{label.name}</span>
-          {label.visibility !== "workspace" && <LockKeyhole size={12} />}
+          {label.kind === "private" && <LockKeyhole size={12} />}
           {hasExplicitLabelColor(label.color) && (
             <i
               className="label-color-dot"
@@ -2962,6 +4126,7 @@ function LabelTree({
         {hasChildren && !isCollapsed && (
           <LabelTree
             labels={labels}
+            canManageLabel={canManageLabel}
             selectedId={selectedId}
             countForLabel={countForLabel}
             onSelect={onSelect}
@@ -3086,28 +4251,153 @@ function MergeLabelDialog({
   );
 }
 
-function CreateLabelDialog({
-  labels,
+function LabelAccessScopeEditor({
+  title,
+  scope,
+  selectedIds,
+  bundle,
+  currentUserId,
+  creatorUserId,
+  management,
+  allowInherit,
+  disabled,
+  onScopeChange,
+  onSelectedIdsChange,
+}: {
+  title: string;
+  scope: LabelAccessScope;
+  selectedIds: string[];
+  bundle: WorkspaceBundle;
+  currentUserId: string;
+  creatorUserId: string;
+  management?: boolean;
+  allowInherit: boolean;
+  disabled: boolean;
+  onScopeChange: (scope: LabelAccessScope) => void;
+  onSelectedIdsChange: (ids: string[]) => void;
+}) {
+  const options = scope === "users"
+    ? bundle.members.map((member) => ({
+        id: member.user_id,
+        name: member.profile?.display_name ?? "团队成员",
+        description: member.user_id === creatorUserId && management
+          ? "创建者 · 始终可管理"
+          : member.user_id === currentUserId ? "我"
+          : member.role === "admin" ? "管理员" : member.role === "owner" ? "所有者" : "成员",
+      }))
+    : scope === "groups"
+      ? bundle.userGroups.map((group) => ({
+          id: group.id,
+          name: group.name,
+          description: `${bundle.userGroupMembers.filter((item) => item.group_id === group.id).length} 位成员`,
+        }))
+      : [];
+  return (
+    <fieldset className="label-access-scope">
+      <legend>{title}</legend>
+      <select
+        value={scope}
+        disabled={disabled}
+        aria-label={`${title}范围`}
+        onChange={(event) => {
+          const next = event.target.value as LabelAccessScope;
+          onScopeChange(next);
+          onSelectedIdsChange(
+            next === "users" && management ? [creatorUserId] : [],
+          );
+        }}
+      >
+        {allowInherit && <option value="inherit">继承父级</option>}
+        <option value="all">所有用户</option>
+        <option value="users">指定用户</option>
+        <option value="groups">指定用户组</option>
+      </select>
+      {(scope === "users" || scope === "groups") && (
+        <div className="label-access-options">
+          {options.length === 0 ? <p>暂无可选{scope === "groups" ? "用户组" : "用户"}</p> : options.map((option) => {
+            const checked = selectedIds.includes(option.id);
+            const fixed = Boolean(management && scope === "users" && option.id === creatorUserId);
+            return (
+              <label key={option.id}>
+                <input
+                  type="checkbox"
+                  checked={checked || fixed}
+                  disabled={disabled || fixed}
+                  onChange={(event) => onSelectedIdsChange(
+                    event.target.checked
+                      ? [...new Set([...selectedIds, option.id])]
+                      : selectedIds.filter((id) => id !== option.id),
+                  )}
+                />
+                <span><strong>{option.name}</strong><small>{option.description}</small></span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
+function LabelEditorDialog({
+  label,
+  bundle,
+  currentUserId,
   parentId: initialParentId,
   online,
   onClose,
   onCreate,
+  onSave,
 }: {
-  labels: Label[];
+  label?: Label;
+  bundle: WorkspaceBundle;
+  currentUserId: string;
   parentId: string | null;
   online: boolean;
   onClose: () => void;
-  onCreate: (name: string, parentId: string | null, color?: string) => Promise<void>;
+  onCreate: WorkspaceAppProps["onCreateLabel"];
+  onSave?: WorkspaceAppProps["onSaveLabelAccess"];
 }) {
-  const [name, setName] = useState("");
-  const [color, setColor] = useState(DEFAULT_LABEL_COLOR);
+  const labels = bundle.labels;
+  const initialAccessDefaults = newLabelAccessDefaults(labels, initialParentId);
+  const initialViewIds = label?.view_scope === "users"
+    ? bundle.labelUserAcls.filter((acl) => acl.label_id === label.id).map((acl) => acl.user_id)
+    : label?.view_scope === "groups"
+      ? bundle.labelGroupAcls.filter((acl) => acl.label_id === label.id).map((acl) => acl.group_id)
+      : [];
+  const initialManageIds = label?.manage_scope === "users"
+    ? bundle.labelUserAcls.filter((acl) => acl.label_id === label.id && acl.permission === "edit").map((acl) => acl.user_id)
+    : label?.manage_scope === "groups"
+      ? bundle.labelGroupAcls.filter((acl) => acl.label_id === label.id && acl.permission === "edit").map((acl) => acl.group_id)
+      : [];
+  const [name, setName] = useState(label?.name ?? "");
+  const [color, setColor] = useState(label?.color ?? DEFAULT_LABEL_COLOR);
   const [parentId, setParentId] = useState<string | null>(initialParentId);
+  const [kind, setKind] = useState<Label["kind"]>(
+    label?.kind ?? initialAccessDefaults.kind,
+  );
+  const [viewScope, setViewScope] = useState<LabelAccessScope>(
+    label?.view_scope ?? initialAccessDefaults.viewScope,
+  );
+  const [manageScope, setManageScope] = useState<LabelAccessScope>(
+    label?.manage_scope ?? initialAccessDefaults.manageScope,
+  );
+  const [viewSubjectIds, setViewSubjectIds] = useState<string[]>(initialViewIds);
+  const [manageSubjectIds, setManageSubjectIds] = useState<string[]>(
+    initialManageIds.length > 0
+      ? initialManageIds
+      : label?.manage_scope === "groups" ? [] : [label?.created_by ?? currentUserId],
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const normalizedName = name.trim();
   const customColorSelected = hasExplicitLabelColor(color)
     && !LABEL_COLORS.some((option) => option === color);
   const noneColorSelected = !hasExplicitLabelColor(color);
+  const selectedScopeMissing = kind === "team" && (
+    ((viewScope === "users" || viewScope === "groups") && viewSubjectIds.length === 0)
+    || ((manageScope === "users" || manageScope === "groups") && manageSubjectIds.length === 0)
+  );
 
   const parentOptions = useMemo(() => {
     const result: { id: string; name: string; depth: number }[] = [];
@@ -3133,14 +4423,25 @@ function CreateLabelDialog({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!normalizedName || saving || !online) return;
+    if (!normalizedName || saving || !online || selectedScopeMissing) return;
     setSaving(true);
     setError("");
     try {
-      await onCreate(normalizedName, parentId, color);
+      const draft: LabelAccessDraft = {
+        name: normalizedName,
+        color,
+        parentId,
+        kind,
+        viewScope,
+        manageScope,
+        viewSubjectIds: viewScope === "users" || viewScope === "groups" ? viewSubjectIds : [],
+        manageSubjectIds: manageScope === "users" || manageScope === "groups" ? manageSubjectIds : [],
+      };
+      if (label && onSave) await onSave(label.id, draft);
+      else await onCreate(draft);
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "标签创建失败，请重试");
+      setError(cause instanceof Error ? cause.message : `标签${label ? "保存" : "创建"}失败，请重试`);
       setSaving(false);
     }
   }
@@ -3150,10 +4451,10 @@ function CreateLabelDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay edit-label-overlay" />
         <Dialog.Content className="dialog-content edit-label-dialog create-label-dialog">
-          <Dialog.Close className="edit-label-close" aria-label="关闭添加标签">
+          <Dialog.Close className="edit-label-close" aria-label={label ? "关闭编辑标签" : "关闭添加标签"}>
             <X />
           </Dialog.Close>
-          <Dialog.Title>添加标签</Dialog.Title>
+          <Dialog.Title>{label ? "编辑标签" : "添加标签"}</Dialog.Title>
           <form onSubmit={submit}>
             <label className="edit-label-name">
               <span className="sr-only">标签名称</span>
@@ -3228,33 +4529,90 @@ function CreateLabelDialog({
                 </label>
               </div>
             </fieldset>
-            <label className="edit-label-parent-field">
-              <span>上级标签</span>
-              <span className="edit-label-parent-select">
-                <select
-                  value={parentId ?? ""}
+            {!label && (
+              <label className="edit-label-parent-field">
+                <span>上级标签</span>
+                <span className="edit-label-parent-select">
+                  <select
+                    aria-label="上级标签"
+                    value={parentId ?? ""}
+                    disabled={!online || saving}
+                    onChange={(event) => {
+                      const nextParentId = event.target.value || null;
+                      const nextAccessDefaults = newLabelAccessDefaults(labels, nextParentId);
+                      setParentId(nextParentId);
+                      setKind(nextAccessDefaults.kind);
+                      setViewScope(nextAccessDefaults.viewScope);
+                      setManageScope(nextAccessDefaults.manageScope);
+                      setViewSubjectIds([]);
+                      setManageSubjectIds(nextParentId ? [] : [currentUserId]);
+                    }}
+                  >
+                    <option value="">无</option>
+                    {parentOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown aria-hidden="true" />
+                </span>
+              </label>
+            )}
+            <fieldset className="label-kind-field">
+              <legend>标签属性</legend>
+              <div>
+                <label className={clsx(kind === "private" && "selected")}>
+                  <input type="radio" name="label-kind" value="private" checked={kind === "private"}
+                    disabled={!online || saving} onChange={() => setKind("private")} />
+                  <LockKeyhole /><span><strong>私人标签</strong><small>仅创建者可见</small></span>
+                </label>
+                <label className={clsx(kind === "team" && "selected")}>
+                  <input type="radio" name="label-kind" value="team" checked={kind === "team"}
+                    disabled={!online || saving} onChange={() => setKind("team")} />
+                  <Users /><span><strong>团队标签</strong><small>配置团队成员权限</small></span>
+                </label>
+              </div>
+            </fieldset>
+            {kind === "team" && (
+              <div className="label-access-grid">
+                <LabelAccessScopeEditor
+                  title="可见用户"
+                  scope={viewScope}
+                  selectedIds={viewSubjectIds}
+                  bundle={bundle}
+                  currentUserId={currentUserId}
+                  creatorUserId={label?.created_by ?? currentUserId}
+                  allowInherit={Boolean(parentId)}
                   disabled={!online || saving}
-                  onChange={(event) =>
-                    setParentId(event.target.value || null)}
-                >
-                  <option value="">无</option>
-                  {parentOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown aria-hidden="true" />
-              </span>
-            </label>
+                  onScopeChange={setViewScope}
+                  onSelectedIdsChange={setViewSubjectIds}
+                />
+                <LabelAccessScopeEditor
+                  title="可管理用户"
+                  scope={manageScope}
+                  selectedIds={manageSubjectIds}
+                  bundle={bundle}
+                  currentUserId={currentUserId}
+                  creatorUserId={label?.created_by ?? currentUserId}
+                  management
+                  allowInherit={Boolean(parentId)}
+                  disabled={!online || saving}
+                  onScopeChange={setManageScope}
+                  onSelectedIdsChange={setManageSubjectIds}
+                />
+                <p className="label-access-note">可管理用户自动拥有查看权限；团队空间所有者和管理员始终可管理。</p>
+              </div>
+            )}
+            {selectedScopeMissing && <p className="edit-label-error">请至少选择一个对应的用户或用户组。</p>}
             {error && <p className="edit-label-error" role="alert">{error}</p>}
-            {!online && <p className="edit-label-error">离线状态下不可创建标签。</p>}
+            {!online && <p className="edit-label-error">离线状态下不可编辑标签。</p>}
             <div className="edit-label-actions">
               <button type="button" className="button" onClick={onClose}>关闭</button>
               <button
                 type="submit"
                 className="button primary"
-                disabled={!online || saving || !normalizedName}
+                disabled={!online || saving || !normalizedName || selectedScopeMissing}
               >
                 {saving ? "保存中…" : "保存"}
               </button>
@@ -3406,6 +4764,176 @@ function SidebarItem({
   );
 }
 
+const QUICK_ADD_SETTINGS_KEY = "anttodo:quick-add-settings";
+const TASK_SUBTASKS_COLLAPSED_KEY = "anttodo:task-subtasks-collapsed";
+
+function readCollapsedTaskSubtasks(workspaceId: string) {
+  try {
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(`${TASK_SUBTASKS_COLLAPSED_KEY}:${workspaceId}`) ?? "[]",
+    );
+    return new Set(
+      Array.isArray(value)
+        ? value.filter((taskId): taskId is string => typeof taskId === "string")
+        : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function storeCollapsedTaskSubtasks(
+  workspaceId: string,
+  collapsedTaskIds: ReadonlySet<string>,
+) {
+  try {
+    window.localStorage.setItem(
+      `${TASK_SUBTASKS_COLLAPSED_KEY}:${workspaceId}`,
+      JSON.stringify([...collapsedTaskIds]),
+    );
+  } catch {
+    // A disabled or full local storage should not block task-list interaction.
+  }
+}
+
+function readQuickAddSettings(workspaceId: string): {
+  kind: TaskKind;
+  priority: TaskPriority;
+} {
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(`${QUICK_ADD_SETTINGS_KEY}:${workspaceId}`) ?? "null",
+    ) as { kind?: unknown; priority?: unknown } | null;
+    const kind = value?.kind === "note" ? "note" : "todo";
+    const priority = ["none", "low", "medium", "high"].includes(String(value?.priority))
+      ? value?.priority as TaskPriority
+      : "none";
+    return { kind, priority };
+  } catch {
+    return { kind: "todo", priority: "none" };
+  }
+}
+
+function storeQuickAddSettings(
+  workspaceId: string,
+  settings: { kind: TaskKind; priority: TaskPriority },
+) {
+  try {
+    window.localStorage.setItem(
+      `${QUICK_ADD_SETTINGS_KEY}:${workspaceId}`,
+      JSON.stringify(settings),
+    );
+  } catch {
+    // A disabled or full local storage should not block task creation.
+  }
+}
+
+function QuickAddSettings({
+  online,
+  kind,
+  priority,
+  onKindChange,
+  onPriorityChange,
+}: {
+  online: boolean;
+  kind: TaskKind;
+  priority: TaskPriority;
+  onKindChange: (kind: TaskKind) => void;
+  onPriorityChange: (priority: TaskPriority) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const priorityOptions: TaskPriority[] = ["high", "medium", "low", "none"];
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div className="quick-add-settings" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="quick-add-more"
+        aria-label="快速新增设置"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={!online}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <ChevronDown />
+      </button>
+      {open && (
+        <div className="quick-add-menu" role="menu" aria-label="快速新增设置">
+          <section className={clsx("quick-add-option-row", kind === "note" && "disabled")}>
+            <span>优先级</span>
+            <div role="radiogroup" aria-label="快速新增优先级">
+              {priorityOptions.map((value) => {
+                const option = getPriorityOption(value);
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={priority === value}
+                    aria-label={option.label}
+                    className={priority === value ? "selected" : undefined}
+                    disabled={kind === "note"}
+                    style={{ "--quick-option-color": option.color } as React.CSSProperties}
+                    onClick={() => onPriorityChange(value)}
+                  >
+                    <Flag />
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+          <section className="quick-add-option-row">
+            <span>类型</span>
+            <div role="radiogroup" aria-label="快速新增类型">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={kind === "todo"}
+                aria-label="待办"
+                className={kind === "todo" ? "selected" : undefined}
+                onClick={() => onKindChange("todo")}
+              >
+                <ListTodo />
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={kind === "note"}
+                aria-label="笔记"
+                className={kind === "note" ? "selected" : undefined}
+                onClick={() => onKindChange("note")}
+              >
+                <NotebookPen />
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TaskWorkspace({
   bundle,
   workspaceId,
@@ -3421,8 +4949,8 @@ function TaskWorkspace({
   onSelectTask,
   onCreateTask,
   onUpdateTask,
-  onUpdateLabel,
-  onSetLabelPermission,
+  onToggleSubtask,
+  onSaveLabelAccess,
   onSaveTaskListPreference,
   onCreateTaskSection,
   onUpdateTaskSection,
@@ -3442,8 +4970,8 @@ function TaskWorkspace({
   onSelectTask: (id: string) => void;
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
-  onUpdateLabel: WorkspaceAppProps["onUpdateLabel"];
-  onSetLabelPermission: WorkspaceAppProps["onSetLabelPermission"];
+  onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
+  onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
   dateTimePreferences: DateTimePreferences;
   onSaveTaskListPreference: WorkspaceAppProps["onSaveTaskListPreference"];
   onCreateTaskSection: WorkspaceAppProps["onCreateTaskSection"];
@@ -3453,8 +4981,23 @@ function TaskWorkspace({
 }) {
   const [quickTitle, setQuickTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const initialQuickSettings = useMemo(
+    () => readQuickAddSettings(workspaceId),
+    [workspaceId],
+  );
+  const [quickKind, setQuickKind] = useState<TaskKind>(initialQuickSettings.kind);
+  const [quickPriority, setQuickPriority] = useState<TaskPriority>(
+    initialQuickSettings.priority,
+  );
   const [labelSettingsOpen, setLabelSettingsOpen] = useState(false);
+  const [collapsedTaskSubtasks, setCollapsedTaskSubtasks] = useState(
+    () => readCollapsedTaskSubtasks(workspaceId),
+  );
   const selectedLabel = bundle.labels.find((label) => label.id === selectedLabelId);
+  const canManageSelectedLabel = !selectedLabel
+    || currentLabelPermissionLevel(bundle, selectedLabel.id) >= 2;
+  const canEditTask = (task: Task) =>
+    currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
   const title = selectedLabel?.name ?? {
     all: "所有",
     today: "今天",
@@ -3472,11 +5015,41 @@ function TaskWorkspace({
     [bundle.taskPlacements, listKey],
   );
   const dragEnabled =
-    online && preference.grouping === "none" && preference.sort === "custom";
+    online && canManageSelectedLabel
+    && preference.grouping === "none" && preference.sort === "custom";
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+
+  useEffect(() => {
+    setQuickKind(initialQuickSettings.kind);
+    setQuickPriority(initialQuickSettings.priority);
+  }, [initialQuickSettings]);
+
+  useEffect(() => {
+    setCollapsedTaskSubtasks(readCollapsedTaskSubtasks(workspaceId));
+  }, [workspaceId]);
+
+  function toggleTaskSubtasks(taskId: string) {
+    setCollapsedTaskSubtasks((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      storeCollapsedTaskSubtasks(workspaceId, next);
+      return next;
+    });
+  }
+
+  function changeQuickKind(kind: TaskKind) {
+    setQuickKind(kind);
+    storeQuickAddSettings(workspaceId, { kind, priority: quickPriority });
+  }
+
+  function changeQuickPriority(priority: TaskPriority) {
+    setQuickPriority(priority);
+    storeQuickAddSettings(workspaceId, { kind: quickKind, priority });
+  }
 
   const tasks = useMemo(() => {
     let result = bundle.tasks.filter((task) => !task.deleted_at);
@@ -3519,7 +5092,7 @@ function TaskWorkspace({
   );
   const completedTasks = useMemo(
     () => sortTasks(
-      tasks.filter((task) => task.status === "completed"),
+      tasks.filter(isCompletedTask),
       preference.sort,
       preference.direction,
       bundle.labels,
@@ -3560,6 +5133,8 @@ function TaskWorkspace({
       const created = await onCreateTask({
         title: quickTitle.trim(),
         labelIds: selectedLabelId ? [selectedLabelId] : [],
+        kind: quickKind,
+        priority: quickKind === "note" ? "none" : quickPriority,
       });
       const createdId = typeof created === "object" && created && "id" in created
         ? String(created.id)
@@ -3604,7 +5179,7 @@ function TaskWorkspace({
         <div className="header-title">
           <button className="mobile-menu" onClick={onMenu}><Menu /></button>
           <h1>{title}</h1>
-          <span>{tasks.filter((task) => task.status === "open").length}</span>
+          <span>{tasks.filter(isActiveTask).length}</span>
         </div>
         <div className="header-actions">
           <button
@@ -3621,6 +5196,7 @@ function TaskWorkspace({
           />
           <LabelActionsMenu
             hasSelectedLabel={Boolean(selectedLabel)}
+            canManageSelectedLabel={canManageSelectedLabel}
             showLabels={preference.show_labels}
             online={online}
             onOpenPermissions={() => setLabelSettingsOpen(true)}
@@ -3630,14 +5206,23 @@ function TaskWorkspace({
         </div>
       </header>
       <form className="quick-add" onSubmit={submitQuickTask}>
-        <Plus />
+        {quickKind === "note" ? <NotebookPen /> : <Plus />}
         <input
           value={quickTitle}
           onChange={(event) => setQuickTitle(event.target.value)}
-          placeholder={online ? `添加任务至“${selectedLabel?.name ?? title}”` : "离线状态下不可新增任务"}
-          disabled={!online || busy}
+          placeholder={online
+            ? `添加${quickKind === "note" ? "笔记" : "任务"}至“${selectedLabel?.name ?? title}”`
+            : "离线状态下不可新增任务"}
+          disabled={!online || busy || !canManageSelectedLabel}
         />
         {quickTitle && <kbd>Enter</kbd>}
+        <QuickAddSettings
+          online={online && !busy}
+          kind={quickKind}
+          priority={quickPriority}
+          onKindChange={changeQuickKind}
+          onPriorityChange={changeQuickPriority}
+        />
       </form>
       <div className="task-scroll">
         {!online && (
@@ -3671,13 +5256,17 @@ function TaskWorkspace({
                 now={now}
                 showLabels={preference.show_labels}
                 draggable={dragEnabled}
+                collapsedTaskSubtasks={collapsedTaskSubtasks}
+                canEditTask={canEditTask}
                 onSelect={onSelectTask}
+                onToggleSubtasks={toggleTaskSubtasks}
                 onToggle={async (task) =>
                   onUpdateTask(task.id, {
                     status: task.status === "completed" ? "open" : "completed",
                     completed_at: task.status === "completed" ? null : new Date().toISOString(),
                   })
                 }
+                onToggleSubtask={onToggleSubtask}
               />
             ))}
           </DndContext>
@@ -3693,21 +5282,26 @@ function TaskWorkspace({
             online={online}
             now={now}
             showLabels={preference.show_labels}
+            collapsedTaskSubtasks={collapsedTaskSubtasks}
             onSelect={onSelectTask}
+            onToggleSubtasks={toggleTaskSubtasks}
+            canEditTask={canEditTask}
             onToggle={async (task) =>
               onUpdateTask(task.id, { status: "open", completed_at: null })}
+            onToggleSubtask={onToggleSubtask}
           />
         )}
       </div>
       {selectedLabel && (
-        <LabelSettingsDialog
-          open={labelSettingsOpen}
-          onOpenChange={setLabelSettingsOpen}
+        labelSettingsOpen && <LabelEditorDialog
           label={selectedLabel}
           bundle={bundle}
+          currentUserId={currentUserId}
+          parentId={selectedLabel.parent_id}
           online={online}
-          onUpdate={onUpdateLabel}
-          onSetPermission={onSetLabelPermission}
+          onClose={() => setLabelSettingsOpen(false)}
+          onCreate={async () => undefined}
+          onSave={onSaveLabelAccess}
         />
       )}
     </>
@@ -3716,12 +5310,14 @@ function TaskWorkspace({
 
 function LabelActionsMenu({
   hasSelectedLabel,
+  canManageSelectedLabel,
   showLabels,
   online,
   onOpenPermissions,
   onToggleShowLabels,
 }: {
   hasSelectedLabel: boolean;
+  canManageSelectedLabel: boolean;
   showLabels: boolean;
   online: boolean;
   onOpenPermissions: () => void;
@@ -3754,7 +5350,7 @@ function LabelActionsMenu({
       </button>
       {open && (
         <div className="task-view-menu" role="menu" aria-label="标签设置">
-          {hasSelectedLabel && (
+          {hasSelectedLabel && canManageSelectedLabel && (
             <button
               role="menuitem"
               onClick={() => {
@@ -3908,113 +5504,6 @@ function TaskViewMenu({
   );
 }
 
-function LabelSettingsDialog({
-  open,
-  onOpenChange,
-  label,
-  bundle,
-  online,
-  onUpdate,
-  onSetPermission,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  label: Label;
-  bundle: WorkspaceBundle;
-  online: boolean;
-  onUpdate: WorkspaceAppProps["onUpdateLabel"];
-  onSetPermission: WorkspaceAppProps["onSetLabelPermission"];
-}) {
-  const assignableMembers = bundle.members.filter(
-    (member) => member.user_id !== label.created_by,
-  );
-  return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="dialog-content label-settings">
-          <Dialog.Title>{label.name} · 权限</Dialog.Title>
-          <Dialog.Description>
-            子标签默认继承父级权限；指定成员可获得查看或编辑权限。
-          </Dialog.Description>
-          <label className="settings-field">
-            <span>可见性</span>
-            <select
-              value={label.visibility}
-              disabled={!online}
-              onChange={(event) =>
-                void onUpdate(label.id, {
-                  visibility: event.target.value as LabelVisibility,
-                })
-              }
-            >
-              <option value="workspace">团队可见</option>
-              <option value="private">仅自己</option>
-              <option value="restricted">指定成员</option>
-            </select>
-          </label>
-          {label.parent_id && (
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                checked={label.inherit_permissions}
-                disabled={!online}
-                onChange={(event) =>
-                  void onUpdate(label.id, {
-                    inherit_permissions: event.target.checked,
-                  })
-                }
-              />
-              <span>
-                <strong>继承父标签权限</strong>
-                <em>继承模式只允许在本层进一步收紧</em>
-              </span>
-            </label>
-          )}
-          {label.visibility === "restricted" && (
-            <div className="permission-list">
-              {assignableMembers.length === 0 ? (
-                <p>团队中暂无其他成员。</p>
-              ) : (
-                assignableMembers.map((member) => {
-                  const acl = bundle.labelAcls.find(
-                    (item) =>
-                      item.label_id === label.id && item.user_id === member.user_id,
-                  );
-                  return (
-                    <label key={member.user_id}>
-                      <span className="member-avatar">
-                        {initials(member.profile?.display_name ?? "成员")}
-                      </span>
-                      <strong>{member.profile?.display_name ?? "团队成员"}</strong>
-                      <select
-                        value={acl?.permission ?? "none"}
-                        disabled={!online}
-                        onChange={(event) =>
-                          void onSetPermission(
-                            label.id,
-                            member.user_id,
-                            event.target.value as "none" | "view" | "edit",
-                          )
-                        }
-                      >
-                        <option value="none">不可见</option>
-                        <option value="view">可查看</option>
-                        <option value="edit">可编辑</option>
-                      </select>
-                    </label>
-                  );
-                })
-              )}
-            </div>
-          )}
-          <Dialog.Close className="dialog-close"><X /></Dialog.Close>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
-
 function TaskGroup({
   id,
   title,
@@ -4026,11 +5515,15 @@ function TaskGroup({
   now,
   showLabels = false,
   draggable = false,
+  collapsedTaskSubtasks,
   editableSection,
   onRenameSection,
   onDeleteSection,
   onSelect,
   onToggle,
+  onToggleSubtasks,
+  onToggleSubtask,
+  canEditTask,
 }: {
   id: string;
   title: string;
@@ -4042,11 +5535,15 @@ function TaskGroup({
   now: Date;
   showLabels?: boolean;
   draggable?: boolean;
+  collapsedTaskSubtasks: ReadonlySet<string>;
   editableSection?: TaskSection;
   onRenameSection?: (sectionId: string, name: string) => Promise<void>;
   onDeleteSection?: (sectionId: string) => Promise<void>;
   onSelect: (id: string) => void;
   onToggle: (task: Task) => Promise<void>;
+  onToggleSubtasks: (taskId: string) => void;
+  onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
+  canEditTask: (task: Task) => boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [sectionMenuOpen, setSectionMenuOpen] = useState(false);
@@ -4171,12 +5668,15 @@ function TaskGroup({
               labels={labels}
               members={members}
               selected={selectedTaskId === task.id}
-              online={online}
+              online={online && canEditTask(task)}
               now={now}
               showLabels={showLabels}
-              draggable={draggable}
+              draggable={draggable && canEditTask(task)}
+              subtasksCollapsed={collapsedTaskSubtasks.has(task.id)}
               onSelect={() => onSelect(task.id)}
+              onToggleSubtasks={() => onToggleSubtasks(task.id)}
               onToggle={() => onToggle(task)}
+              onToggleSubtask={onToggleSubtask}
             />
           ))}
         </SortableContext>
@@ -4194,8 +5694,11 @@ function TaskRow({
   now,
   showLabels = false,
   draggable = false,
+  subtasksCollapsed,
   onSelect,
+  onToggleSubtasks,
   onToggle,
+  onToggleSubtask,
 }: {
   task: Task;
   labels: Label[];
@@ -4205,8 +5708,11 @@ function TaskRow({
   now: Date;
   showLabels?: boolean;
   draggable?: boolean;
+  subtasksCollapsed: boolean;
   onSelect: () => void;
+  onToggleSubtasks: () => void;
   onToggle: () => Promise<void>;
+  onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
 }) {
   const {
     attributes,
@@ -4219,22 +5725,49 @@ function TaskRow({
   const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
   const assignee = members.find((member) => member.user_id === task.assignee_id);
   const dueStatus = getDueStatus(task.due_at, now);
+  const hasSubtasks = task.kind !== "note" && task.subtasks.length > 0;
+  const sortedSubtasks = useMemo(
+    () => [...task.subtasks].sort((a, b) => a.position - b.position),
+    [task.subtasks],
+  );
+  const [pendingSubtaskIds, setPendingSubtaskIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  async function toggleSubtask(subtask: Subtask) {
+    if (!online || pendingSubtaskIds.has(subtask.id)) return;
+    setPendingSubtaskIds((current) => new Set(current).add(subtask.id));
+    try {
+      await onToggleSubtask(subtask.id, !subtask.completed);
+    } finally {
+      setPendingSubtaskIds((current) => {
+        const next = new Set(current);
+        next.delete(subtask.id);
+        return next;
+      });
+    }
+  }
+
   return (
-    <article
+    <div
       ref={setNodeRef}
-      className={clsx(
-        "task-row",
-        selected && "selected",
-        task.status === "completed" && "completed",
-        isDragging && "dragging",
-      )}
+      className={clsx("task-tree-item", isDragging && "dragging")}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
         zIndex: isDragging ? 2 : undefined,
       }}
     >
-      {task.priority !== "none" && (
+      <article
+        className={clsx(
+          "task-row",
+          hasSubtasks && "has-subtasks",
+          selected && "selected",
+          task.kind !== "note" && task.status === "completed" && "completed",
+          isDragging && "dragging",
+        )}
+      >
+      {task.kind !== "note" && task.priority !== "none" && (
         <span
           className="priority-bar"
           aria-hidden="true"
@@ -4246,24 +5779,43 @@ function TaskRow({
       {draggable && (
         <button
           className="task-drag-handle"
-          aria-label={`拖动任务“${task.title}”`}
+          aria-label={`拖动${task.kind === "note" ? "笔记" : "任务"}“${task.title}”`}
           {...attributes}
           {...listeners}
         >
           <GripVertical />
         </button>
       )}
-      <button
-        className="task-checkbox"
-        disabled={!online}
-        aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
-        onClick={(event) => {
-          event.stopPropagation();
-          void onToggle();
-        }}
-      >
-        {task.status === "completed" ? <Check /> : <Circle />}
-      </button>
+      {hasSubtasks && (
+        <button
+          type="button"
+          className="task-subtasks-expander"
+          aria-label={`${subtasksCollapsed ? "展开" : "收起"}子任务：${task.title}`}
+          aria-expanded={!subtasksCollapsed}
+          aria-controls={`task-subtasks-${task.id}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSubtasks();
+          }}
+        >
+          {subtasksCollapsed ? <ChevronRight /> : <ChevronDown />}
+        </button>
+      )}
+      {task.kind === "note" ? (
+        <span className="task-note-icon" aria-label="笔记"><NotebookPen /></span>
+      ) : (
+        <button
+          className="task-checkbox"
+          disabled={!online}
+          aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
+          onClick={(event) => {
+            event.stopPropagation();
+            void onToggle();
+          }}
+        >
+          {task.status === "completed" ? <Check /> : <Circle />}
+        </button>
+      )}
       <button className="task-row-content" onClick={onSelect}>
         <span className="task-main-line">
           <span className="task-title">{task.title}</span>
@@ -4283,7 +5835,7 @@ function TaskRow({
             </span>
           )}
           <span className="task-meta">
-            {task.subtasks.length > 0 && (
+            {task.kind !== "note" && task.subtasks.length > 0 && (
               <span>
                 {task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}
               </span>
@@ -4303,40 +5855,165 @@ function TaskRow({
           </span>
         </span>
       </button>
-    </article>
+      </article>
+      {hasSubtasks && !subtasksCollapsed && (
+        <div
+          id={`task-subtasks-${task.id}`}
+          className="task-list-subtasks"
+          role="list"
+          aria-label={`子任务：${task.title}`}
+        >
+          {sortedSubtasks.map((subtask) => {
+            const pending = pendingSubtaskIds.has(subtask.id);
+            return (
+              <article
+                key={subtask.id}
+                className={clsx("task-list-subtask-row", subtask.completed && "completed")}
+                role="listitem"
+              >
+                <button
+                  type="button"
+                  className="task-list-subtask-checkbox"
+                  aria-label={`${subtask.completed ? "重新打开" : "完成"}子任务：${subtask.title}`}
+                  disabled={!online || pending}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void toggleSubtask(subtask);
+                  }}
+                >
+                  <span className={clsx("task-list-subtask-check", subtask.completed && "checked")}>
+                    {subtask.completed && <Check />}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="task-list-subtask-title"
+                  onClick={onSelect}
+                >
+                  {subtask.title}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamManagementList({
+  workspaces,
+  currentWorkspaceId,
+  ...panelProps
+}: {
+  workspaces: Workspace[];
+  currentWorkspaceId: string;
+  online: boolean;
+  onLoadInviteLink: WorkspaceAppProps["onLoadInviteLink"];
+  onEnableInviteLink: WorkspaceAppProps["onEnableInviteLink"];
+  onUpdateInviteLinkRole: WorkspaceAppProps["onUpdateInviteLinkRole"];
+  onDisableInviteLink: WorkspaceAppProps["onDisableInviteLink"];
+  onCopyInviteLink: WorkspaceAppProps["onCopyInviteLink"];
+  onUpdateWorkspace: WorkspaceAppProps["onUpdateWorkspace"];
+  onDeleteWorkspace: WorkspaceAppProps["onDeleteWorkspace"];
+  onNotice: (message: string) => void;
+}) {
+  const [expandedId, setExpandedId] = useState(currentWorkspaceId);
+
+  useEffect(() => {
+    if (!workspaces.some((item) => item.id === expandedId)) {
+      setExpandedId(
+        workspaces.find((item) => item.id === currentWorkspaceId)?.id
+          ?? workspaces[0]?.id
+          ?? "",
+      );
+    }
+  }, [currentWorkspaceId, expandedId, workspaces]);
+
+  return (
+    <div className="team-management-list-panel">
+      <h1>团队管理</h1>
+      <p className="team-mgmt-settings-lead">查看和配置你加入的全部团队空间。</p>
+      <div className="team-management-list">
+        {workspaces.map((workspace) => {
+          const expanded = workspace.id === expandedId;
+          const roleLabel = workspace.role === "owner"
+            ? "所有者"
+            : workspace.role === "admin" ? "管理员" : "成员";
+          return (
+            <article className={clsx("team-management-item", expanded && "expanded")} key={workspace.id}>
+              <button
+                type="button"
+                className="team-management-item-trigger"
+                aria-expanded={expanded}
+                aria-controls={`team-management-detail-${workspace.id}`}
+                onClick={() => setExpandedId(expanded ? "" : workspace.id)}
+              >
+                <span className="workspace-initial">{initials(workspace.name).slice(0, 1)}</span>
+                <span className="team-management-item-copy">
+                  <strong>{workspace.name}</strong>
+                  <small>{workspace.slug}</small>
+                </span>
+                <span className="team-management-item-meta">
+                  {workspace.id === currentWorkspaceId && <em>当前团队</em>}
+                  <span>{roleLabel}</span>
+                </span>
+                <ChevronDown aria-hidden="true" />
+              </button>
+              {expanded && (
+                <div id={`team-management-detail-${workspace.id}`} className="team-management-item-detail">
+                  <TeamManagementPanel workspace={workspace} {...panelProps} />
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
 function TeamManagementPanel({
   workspace,
   online,
-  inviteLink,
-  inviteLinkLoading,
+  onLoadInviteLink,
   onEnableInviteLink,
   onUpdateInviteLinkRole,
   onDisableInviteLink,
   onCopyInviteLink,
   onUpdateWorkspace,
+  onDeleteWorkspace,
   onNotice,
 }: {
   workspace: Workspace;
   online: boolean;
-  inviteLink: WorkspaceInviteLink | null;
-  inviteLinkLoading: boolean;
-  onEnableInviteLink: (role: WorkspaceInviteRole) => Promise<void>;
-  onUpdateInviteLinkRole: (role: WorkspaceInviteRole) => Promise<void>;
-  onDisableInviteLink: () => Promise<void>;
-  onCopyInviteLink: () => Promise<void>;
+  onLoadInviteLink: WorkspaceAppProps["onLoadInviteLink"];
+  onEnableInviteLink: WorkspaceAppProps["onEnableInviteLink"];
+  onUpdateInviteLinkRole: WorkspaceAppProps["onUpdateInviteLinkRole"];
+  onDisableInviteLink: WorkspaceAppProps["onDisableInviteLink"];
+  onCopyInviteLink: WorkspaceAppProps["onCopyInviteLink"];
   onUpdateWorkspace: WorkspaceAppProps["onUpdateWorkspace"];
+  onDeleteWorkspace: WorkspaceAppProps["onDeleteWorkspace"];
   onNotice: (message: string) => void;
 }) {
   const canManage = workspace.role === "owner" || workspace.role === "admin";
+  const queryClient = useQueryClient();
+  const inviteLinkQuery = useQuery({
+    queryKey: ["workspace-invite-link", workspace.id],
+    queryFn: () => onLoadInviteLink(workspace.id),
+    enabled: canManage,
+  });
+  const inviteLink = inviteLinkQuery.data ?? null;
   const [name, setName] = useState(workspace.name);
   const [slug, setSlug] = useState(workspace.slug);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const activeInviteRole = inviteLink?.role ?? "member";
 
   useEffect(() => {
@@ -4372,7 +6049,7 @@ function TeamManagementPanel({
     setBusy(true);
     setError("");
     try {
-      await onUpdateWorkspace({ name: nextName, slug: nextSlug });
+      await onUpdateWorkspace(workspace.id, { name: nextName, slug: nextSlug });
       onNotice("团队信息已更新");
     } catch (submitError) {
       setError(
@@ -4395,8 +6072,13 @@ function TeamManagementPanel({
     setInviteBusy(true);
     setInviteError("");
     try {
-      if (enabled) await onEnableInviteLink(activeInviteRole);
-      else await onDisableInviteLink();
+      if (enabled) {
+        const link = await onEnableInviteLink(workspace.id, activeInviteRole);
+        queryClient.setQueryData(["workspace-invite-link", workspace.id], link);
+      } else {
+        await onDisableInviteLink(workspace.id);
+        queryClient.setQueryData(["workspace-invite-link", workspace.id], null);
+      }
     } catch {
       setInviteError(
         enabled ? "邀请链接暂时无法启用。" : "邀请链接暂时无法关闭。",
@@ -4411,7 +6093,8 @@ function TeamManagementPanel({
     setInviteBusy(true);
     setInviteError("");
     try {
-      await onUpdateInviteLinkRole(role);
+      const link = await onUpdateInviteLinkRole(workspace.id, role);
+      queryClient.setQueryData(["workspace-invite-link", workspace.id], link);
     } catch {
       setInviteError("邀请身份暂时无法更新。");
     } finally {
@@ -4421,7 +6104,6 @@ function TeamManagementPanel({
 
   return (
     <div className="team-mgmt-settings-panel">
-      <h1>团队管理</h1>
       <p className="team-mgmt-settings-lead">
         设置团队空间的显示名称与唯一 Slug。Slug 对应团队专属访问路径，用于企业 SSO 登录入口。
       </p>
@@ -4482,7 +6164,7 @@ function TeamManagementPanel({
                 role="switch"
                 aria-label="启用邀请链接"
                 checked={Boolean(inviteLink)}
-                disabled={!online || inviteBusy || inviteLinkLoading}
+                disabled={!online || inviteBusy || inviteLinkQuery.isLoading}
                 onChange={(event) => void setInviteEnabled(event.target.checked)}
               />
               <i aria-hidden="true" />
@@ -4508,7 +6190,7 @@ function TeamManagementPanel({
             <button
               type="button"
               disabled={!online || inviteBusy || !inviteLink}
-              onClick={() => void onCopyInviteLink()}
+              onClick={() => inviteLink && void onCopyInviteLink(inviteLink)}
             >
               复制链接
             </button>
@@ -4523,6 +6205,76 @@ function TeamManagementPanel({
           )}
         </section>
       )}
+      {workspace.role === "owner" && (
+        <section className="team-danger-zone" aria-label="危险操作">
+          <div>
+            <strong>删除团队</strong>
+            <p>永久删除团队及其任务、标签、成员、评论、附件、连接器和配置。</p>
+          </div>
+          <button
+            type="button"
+            className="button danger"
+            disabled={!online}
+            onClick={() => {
+              setDeleteConfirmation("");
+              setDeleteError("");
+              setDeleteOpen(true);
+            }}
+          >
+            删除团队
+          </button>
+        </section>
+      )}
+      <Dialog.Root open={deleteOpen} onOpenChange={(open) => !deleteBusy && setDeleteOpen(open)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-overlay" />
+          <Dialog.Content className="dialog-content workspace-delete-dialog">
+            <Dialog.Title>永久删除“{workspace.name}”</Dialog.Title>
+            <Dialog.Description>
+              团队中的所有数据都会被清理且无法还原。请输入完整团队名称以确认。
+            </Dialog.Description>
+            <label>
+              <span>团队名称</span>
+              <input
+                autoFocus
+                value={deleteConfirmation}
+                disabled={deleteBusy}
+                onChange={(event) => setDeleteConfirmation(event.target.value)}
+                aria-label="输入团队名称确认删除"
+              />
+            </label>
+            {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
+            <div className="dialog-actions">
+              <Dialog.Close className="button secondary" disabled={deleteBusy}>取消</Dialog.Close>
+              <button
+                type="button"
+                className="button danger"
+                disabled={!online || deleteBusy || deleteConfirmation !== workspace.name}
+                onClick={() => void (async () => {
+                  setDeleteBusy(true);
+                  setDeleteError("");
+                  try {
+                    await onDeleteWorkspace(workspace.id, deleteConfirmation);
+                    setDeleteOpen(false);
+                    onNotice("团队已永久删除");
+                  } catch (deleteCause) {
+                    setDeleteError(
+                      deleteCause instanceof Error
+                        ? deleteCause.message
+                        : "团队暂时无法删除，请稍后重试。",
+                    );
+                  } finally {
+                    setDeleteBusy(false);
+                  }
+                })()}
+              >
+                {deleteBusy ? "正在删除…" : "永久删除"}
+              </button>
+            </div>
+            <Dialog.Close className="dialog-close" aria-label="关闭" disabled={deleteBusy}><X /></Dialog.Close>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -4538,6 +6290,15 @@ function TeamSettingsPanel({
   online: boolean;
   onUpdateMemberRole: WorkspaceAppProps["onUpdateMemberRole"];
 }) {
+  const groupsByMember = new Map<string, UserGroup[]>();
+  for (const membership of bundle.userGroupMembers) {
+    const group = bundle.userGroups.find((item) => item.id === membership.group_id);
+    if (!group) continue;
+    const current = groupsByMember.get(membership.user_id) ?? [];
+    current.push(group);
+    groupsByMember.set(membership.user_id, current);
+  }
+
   return (
     <div className="team-settings-panel">
       <header className="team-settings-header">
@@ -4548,9 +6309,22 @@ function TeamSettingsPanel({
         {bundle.members.map((member) => (
           <div className="member-row" key={member.user_id}>
             <span className="member-avatar">{initials(member.profile?.display_name ?? "成员")}</span>
-            <div>
+            <div className="member-row-copy">
               <strong>{member.profile?.display_name ?? "团队成员"}</strong>
-              <span>{member.role === "owner" ? "所有者" : member.role === "admin" ? "管理员" : "成员"}</span>
+              <div className="member-row-meta">
+                <span>所属用户组</span>
+                <div className="member-group-labels" aria-label="所属用户组">
+                  {(groupsByMember.get(member.user_id) ?? []).slice(0, 3).map((group) => (
+                    <span className="member-group-label" key={group.id}>{group.name}</span>
+                  ))}
+                  {(groupsByMember.get(member.user_id) ?? []).length > 3 && (
+                    <span
+                      className="member-group-label member-group-more"
+                      title={(groupsByMember.get(member.user_id) ?? []).slice(3).map((group) => group.name).join("、")}
+                    >…</span>
+                  )}
+                </div>
+              </div>
             </div>
             {member.role === "owner" ? (
               <span className="role-chip">owner</span>
@@ -4574,6 +6348,174 @@ function TeamSettingsPanel({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function UserGroupsPanel({
+  workspace,
+  bundle,
+  online,
+  onCreateUserGroup,
+  onUpdateUserGroup,
+  onDeleteUserGroup,
+}: {
+  workspace: Workspace;
+  bundle: WorkspaceBundle;
+  online: boolean;
+  onCreateUserGroup: WorkspaceAppProps["onCreateUserGroup"];
+  onUpdateUserGroup: WorkspaceAppProps["onUpdateUserGroup"];
+  onDeleteUserGroup: WorkspaceAppProps["onDeleteUserGroup"];
+}) {
+  const canManage = workspace.role === "owner" || workspace.role === "admin";
+  const [editingGroup, setEditingGroup] = useState<UserGroup | "new" | null>(null);
+  const [name, setName] = useState("");
+  const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function openEditor(group: UserGroup | "new") {
+    setEditingGroup(group);
+    setName(group === "new" ? "" : group.name);
+    setMemberIds(new Set(
+      group === "new"
+        ? []
+        : bundle.userGroupMembers
+            .filter((item) => item.group_id === group.id)
+            .map((item) => item.user_id),
+    ));
+    setError("");
+  }
+
+  async function saveGroup(event: FormEvent) {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setError("请输入用户组名称。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      if (editingGroup === "new") {
+        await onCreateUserGroup(trimmedName, [...memberIds]);
+      } else if (editingGroup) {
+        await onUpdateUserGroup(editingGroup.id, trimmedName, [...memberIds]);
+      }
+      setEditingGroup(null);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "保存用户组失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeGroup(group: UserGroup) {
+    if (!window.confirm(`确定删除用户组“${group.name}”吗？`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onDeleteUserGroup(group.id);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "删除用户组失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="user-groups-panel">
+      <header className="team-settings-header user-groups-header">
+        <div>
+          <h2>用户组</h2>
+          <p>将团队成员整理到用户组中，便于识别和后续权限配置。</p>
+        </div>
+      {canManage && (
+          <button className="button primary" type="button" disabled={!online || busy} onClick={() => openEditor("new")}>
+            <Plus aria-hidden="true" />新建用户组
+          </button>
+        )}
+      </header>
+      {error && !editingGroup && <p className="form-error" role="alert">{error}</p>}
+      <div className="user-group-list">
+        {bundle.userGroups.length === 0 ? (
+          <div className="user-group-empty">暂无用户组{canManage ? "，点击右上角创建" : ""}</div>
+        ) : bundle.userGroups.map((group) => {
+          const groupMemberIds = new Set(
+            bundle.userGroupMembers.filter((item) => item.group_id === group.id).map((item) => item.user_id),
+          );
+          const groupMembers = bundle.members.filter((member) => groupMemberIds.has(member.user_id));
+          return (
+            <div className="user-group-row" key={group.id}>
+              <div className="user-group-icon"><Users aria-hidden="true" /></div>
+              <div className="user-group-copy">
+                <strong>{group.name}</strong>
+                <span>{groupMembers.length} 位成员</span>
+                <div className="user-group-member-preview">
+                  {groupMembers.slice(0, 5).map((member) => (
+                    <span key={member.user_id}>{member.profile?.display_name ?? "团队成员"}</span>
+                  ))}
+                  {groupMembers.length > 5 && <span>等 {groupMembers.length} 人</span>}
+                </div>
+              </div>
+              {canManage && (
+                <div className="user-group-actions">
+                  <button type="button" disabled={!online || busy} onClick={() => openEditor(group)}>编辑</button>
+                  <button className="danger" type="button" disabled={!online || busy} onClick={() => void removeGroup(group)}>删除</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {!canManage && <p className="team-mgmt-settings-readonly-note">仅所有者和管理员可以管理用户组。</p>}
+
+      <Dialog.Root open={editingGroup !== null} onOpenChange={(open) => !open && !busy && setEditingGroup(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-overlay user-group-dialog-overlay" />
+          <Dialog.Content className="dialog-content user-group-dialog">
+            <Dialog.Title>{editingGroup === "new" ? "新建用户组" : "编辑用户组"}</Dialog.Title>
+            <Dialog.Description>设置用户组名称并选择要加入的团队成员。</Dialog.Description>
+            <form onSubmit={(event) => void saveGroup(event)}>
+              <label className="user-group-name-field">
+                <span>名称</span>
+                <input autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：产品组" />
+              </label>
+              <fieldset className="user-group-member-picker">
+                <legend>成员</legend>
+                <div>
+                  {bundle.members.map((member) => {
+                    const checked = memberIds.has(member.user_id);
+                    return (
+                      <label key={member.user_id}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => setMemberIds((current) => {
+                            const next = new Set(current);
+                            if (checked) next.delete(member.user_id);
+                            else next.add(member.user_id);
+                            return next;
+                          })}
+                        />
+                        <span className="member-avatar">{initials(member.profile?.display_name ?? "成员")}</span>
+                        <strong>{member.profile?.display_name ?? "团队成员"}</strong>
+                        <small>{member.role === "owner" ? "所有者" : member.role === "admin" ? "管理员" : "成员"}</small>
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+              {error && <p className="form-error" role="alert">{error}</p>}
+              <div className="user-group-dialog-actions">
+                <button className="button" type="button" disabled={busy} onClick={() => setEditingGroup(null)}>取消</button>
+                <button className="button primary" disabled={!online || busy || !name.trim()}>{busy ? "保存中…" : "保存"}</button>
+              </div>
+            </form>
+            <Dialog.Close className="dialog-close" aria-label="关闭"><X /></Dialog.Close>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -5108,17 +7050,24 @@ function SettingsDialog({
   phone,
   avatarUrl,
   workspace,
+  workspaces,
+  currentWorkspaceId,
   bundle,
   workspaceName,
   online,
-  inviteLink,
-  inviteLinkLoading,
+  onLoadInviteLink,
   onEnableInviteLink,
   onUpdateInviteLinkRole,
   onDisableInviteLink,
   onCopyInviteLink,
   onUpdateMemberRole,
+  onCreateUserGroup,
+  onUpdateUserGroup,
+  onDeleteUserGroup,
   onUpdateWorkspace,
+  onDeleteWorkspace,
+  onUpdateDisplayName,
+  onUpdateAvatar,
   onUpdateEmail,
   onDeleteAccount,
   dateTimePreferences,
@@ -5133,17 +7082,24 @@ function SettingsDialog({
   phone: string;
   avatarUrl: string | null;
   workspace: Workspace;
+  workspaces: Workspace[];
+  currentWorkspaceId: string;
   bundle: WorkspaceBundle;
   workspaceName: string;
   online: boolean;
-  inviteLink: WorkspaceInviteLink | null;
-  inviteLinkLoading: boolean;
+  onLoadInviteLink: WorkspaceAppProps["onLoadInviteLink"];
   onEnableInviteLink: WorkspaceAppProps["onEnableInviteLink"];
   onUpdateInviteLinkRole: WorkspaceAppProps["onUpdateInviteLinkRole"];
   onDisableInviteLink: WorkspaceAppProps["onDisableInviteLink"];
   onCopyInviteLink: WorkspaceAppProps["onCopyInviteLink"];
   onUpdateMemberRole: WorkspaceAppProps["onUpdateMemberRole"];
+  onCreateUserGroup: WorkspaceAppProps["onCreateUserGroup"];
+  onUpdateUserGroup: WorkspaceAppProps["onUpdateUserGroup"];
+  onDeleteUserGroup: WorkspaceAppProps["onDeleteUserGroup"];
   onUpdateWorkspace: WorkspaceAppProps["onUpdateWorkspace"];
+  onDeleteWorkspace: WorkspaceAppProps["onDeleteWorkspace"];
+  onUpdateDisplayName: WorkspaceAppProps["onUpdateDisplayName"];
+  onUpdateAvatar: WorkspaceAppProps["onUpdateAvatar"];
   onUpdateEmail: WorkspaceAppProps["onUpdateEmail"];
   onDeleteAccount: WorkspaceAppProps["onDeleteAccount"];
   dateTimePreferences: DateTimePreferences;
@@ -5151,8 +7107,13 @@ function SettingsDialog({
   onNotice: (message: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
-  const [accountAction, setAccountAction] = useState<"email" | "delete" | null>(null);
+  const [accountAction, setAccountAction] = useState<
+    "nickname" | "avatar" | "email" | "delete" | null
+  >(null);
+  const [nicknameDraft, setNicknameDraft] = useState(userName);
   const [emailDraft, setEmailDraft] = useState(email);
+  const [avatarDraft, setAvatarDraft] = useState<Blob | null>(null);
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState("");
@@ -5177,6 +7138,7 @@ function SettingsDialog({
       tabs: [
         { id: "team-mgmt", label: "团队管理", icon: Building2 },
         { id: "team", label: "成员管理", icon: Users },
+        { id: "user-groups", label: "用户组", icon: Workflow },
         { id: "sso", label: "单点登录", icon: KeyRound },
       ],
     },
@@ -5195,16 +7157,27 @@ function SettingsDialog({
     if (!open) return;
     setActiveTab("account");
     setAccountAction(null);
+    setNicknameDraft(userName);
     setEmailDraft(email);
+    setAvatarDraft(null);
+    setAvatarPreviewUrl(null);
     setDeleteConfirmation("");
     setAccountError("");
   }, [open]);
+
+  useEffect(() => {
+    return () => {
+      if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+    };
+  }, [avatarPreviewUrl]);
 
   function closeAccountAction() {
     if (accountBusy) return;
     setAccountAction(null);
     setAccountError("");
     setDeleteConfirmation("");
+    setAvatarDraft(null);
+    setAvatarPreviewUrl(null);
   }
 
   return (
@@ -5253,13 +7226,29 @@ function SettingsDialog({
             {activeTab === "account" ? (
               <div className="account-settings">
                 <header className="account-profile">
-                  {avatarUrl ? (
-                    <img src={avatarUrl} alt="" className="account-avatar" />
-                  ) : (
-                    <span className="account-avatar account-avatar-fallback">
-                      {initials(userName)}
+                  <button
+                    type="button"
+                    className="account-avatar-button"
+                    aria-label="修改头像"
+                    disabled={!online}
+                    onClick={() => {
+                      setAvatarDraft(null);
+                      setAvatarPreviewUrl(null);
+                      setAccountError("");
+                      setAccountAction("avatar");
+                    }}
+                  >
+                    {avatarUrl ? (
+                      <img src={avatarUrl} alt="" className="account-avatar" />
+                    ) : (
+                      <span className="account-avatar account-avatar-fallback">
+                        {initials(userName)}
+                      </span>
+                    )}
+                    <span className="account-avatar-edit" aria-hidden="true">
+                      <Camera />
                     </span>
-                  )}
+                  </button>
                   <strong>{userName}</strong>
                   <span>
                     {workspaceName}
@@ -5271,9 +7260,41 @@ function SettingsDialog({
                 <div className="account-settings-groups">
                   <div className="account-settings-group">
                     <div className="account-setting-row">
+                      <span>昵称</span>
+                      <div className="account-setting-value">
+                        <strong title={userName}>{userName}</strong>
+                        <button
+                          type="button"
+                          disabled={!online}
+                          onClick={() => {
+                            setNicknameDraft(userName);
+                            setAccountError("");
+                            setAccountAction("nickname");
+                          }}
+                        >
+                          修改
+                        </button>
+                      </div>
+                    </div>
+                    <div className="account-setting-row">
+                      <span>头像</span>
+                      <button
+                        type="button"
+                        disabled={!online}
+                        onClick={() => {
+                          setAvatarDraft(null);
+                          setAvatarPreviewUrl(null);
+                          setAccountError("");
+                          setAccountAction("avatar");
+                        }}
+                      >
+                        修改
+                      </button>
+                    </div>
+                    <div className="account-setting-row">
                       <span>邮箱</span>
                       <div className="account-setting-value">
-                        <strong>{email || "未设置"}</strong>
+                        <strong title={email || undefined}>{email || "未设置"}</strong>
                         <button
                           type="button"
                           disabled={!online}
@@ -5340,16 +7361,17 @@ function SettingsDialog({
                 onChange={onUpdateDateTimePreferences}
               />
             ) : activeTab === "team-mgmt" ? (
-              <TeamManagementPanel
-                workspace={workspace}
+              <TeamManagementList
+                workspaces={workspaces}
+                currentWorkspaceId={currentWorkspaceId}
                 online={online}
-                inviteLink={inviteLink}
-                inviteLinkLoading={inviteLinkLoading}
+                onLoadInviteLink={onLoadInviteLink}
                 onEnableInviteLink={onEnableInviteLink}
                 onUpdateInviteLinkRole={onUpdateInviteLinkRole}
                 onDisableInviteLink={onDisableInviteLink}
                 onCopyInviteLink={onCopyInviteLink}
                 onUpdateWorkspace={onUpdateWorkspace}
+                onDeleteWorkspace={onDeleteWorkspace}
                 onNotice={onNotice}
               />
             ) : activeTab === "team" ? (
@@ -5358,6 +7380,15 @@ function SettingsDialog({
                 bundle={bundle}
                 online={online}
                 onUpdateMemberRole={onUpdateMemberRole}
+              />
+            ) : activeTab === "user-groups" ? (
+              <UserGroupsPanel
+                workspace={workspace}
+                bundle={bundle}
+                online={online}
+                onCreateUserGroup={onCreateUserGroup}
+                onUpdateUserGroup={onUpdateUserGroup}
+                onDeleteUserGroup={onDeleteUserGroup}
               />
             ) : activeTab === "sso" ? (
               <SsoSettingsPanel
@@ -5397,7 +7428,154 @@ function SettingsDialog({
         <Dialog.Portal>
           <Dialog.Overlay className="dialog-overlay account-action-overlay" />
           <Dialog.Content className="dialog-content account-action-dialog">
-            {accountAction === "email" ? (
+            {accountAction === "nickname" ? (
+              <form
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  const nextName = nicknameDraft.trim();
+                  if (!nextName || nextName === userName || nextName.length > 80) return;
+                  setAccountBusy(true);
+                  setAccountError("");
+                  try {
+                    await onUpdateDisplayName(nextName);
+                    setAccountAction(null);
+                  } catch {
+                    setAccountError("昵称暂时无法修改，请稍后重试。");
+                  } finally {
+                    setAccountBusy(false);
+                  }
+                }}
+              >
+                <Dialog.Title>修改昵称</Dialog.Title>
+                <Dialog.Description className="account-action-description">
+                  昵称会展示给与你处于同一团队空间的成员。
+                </Dialog.Description>
+                <label className="account-action-field">
+                  <span>昵称</span>
+                  <input
+                    value={nicknameDraft}
+                    onChange={(event) => setNicknameDraft(event.target.value)}
+                    maxLength={80}
+                    autoComplete="nickname"
+                    autoFocus
+                    required
+                  />
+                </label>
+                <span className="account-field-counter">{nicknameDraft.length}/80</span>
+                {accountError && <p className="form-error" role="alert">{accountError}</p>}
+                <div className="account-action-buttons">
+                  <button type="button" className="button secondary" onClick={closeAccountAction}>
+                    取消
+                  </button>
+                  <button
+                    className="button primary"
+                    disabled={
+                      accountBusy ||
+                      !nicknameDraft.trim() ||
+                      nicknameDraft.trim() === userName ||
+                      nicknameDraft.trim().length > 80
+                    }
+                  >
+                    {accountBusy ? "正在保存…" : "保存"}
+                  </button>
+                </div>
+              </form>
+            ) : accountAction === "avatar" ? (
+              <form
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (!avatarDraft) return;
+                  setAccountBusy(true);
+                  setAccountError("");
+                  try {
+                    await onUpdateAvatar(avatarDraft);
+                    setAccountAction(null);
+                    setAvatarDraft(null);
+                    setAvatarPreviewUrl(null);
+                  } catch {
+                    setAccountError("头像暂时无法保存，请稍后重试。");
+                  } finally {
+                    setAccountBusy(false);
+                  }
+                }}
+              >
+                <Dialog.Title>修改头像</Dialog.Title>
+                <Dialog.Description className="account-action-description">
+                  图片会自动居中裁剪为正方形，支持 JPEG、PNG 和 WebP，最大 5MB。
+                </Dialog.Description>
+                <div className="account-avatar-editor">
+                  {avatarPreviewUrl || avatarUrl ? (
+                    <img
+                      src={avatarPreviewUrl ?? avatarUrl ?? undefined}
+                      alt="头像预览"
+                      className="account-avatar-preview"
+                    />
+                  ) : (
+                    <span className="account-avatar-preview account-avatar-fallback">
+                      {initials(userName)}
+                    </span>
+                  )}
+                  <label className={clsx("button secondary account-avatar-upload", accountBusy && "disabled")}>
+                    选择图片
+                    <input
+                      type="file"
+                      accept={AVATAR_ACCEPT}
+                      disabled={accountBusy}
+                      onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (!file) return;
+                        setAccountBusy(true);
+                        setAccountError("");
+                        try {
+                          const cropped = await cropAvatarFile(file);
+                          setAvatarDraft(cropped);
+                          setAvatarPreviewUrl(URL.createObjectURL(cropped));
+                        } catch (cause) {
+                          setAccountError(
+                            cause instanceof Error ? cause.message : "头像图片处理失败",
+                          );
+                        } finally {
+                          setAccountBusy(false);
+                        }
+                      }}
+                    />
+                  </label>
+                  {avatarUrl ? (
+                    <button
+                      type="button"
+                      className="account-avatar-remove"
+                      disabled={accountBusy}
+                      onClick={async () => {
+                        setAccountBusy(true);
+                        setAccountError("");
+                        try {
+                          await onUpdateAvatar(null);
+                          setAccountAction(null);
+                          setAvatarDraft(null);
+                          setAvatarPreviewUrl(null);
+                        } catch {
+                          setAccountError("头像暂时无法移除，请稍后重试。");
+                        } finally {
+                          setAccountBusy(false);
+                        }
+                      }}
+                    >
+                      移除当前头像
+                    </button>
+                  ) : null}
+                </div>
+                {accountError && <p className="form-error" role="alert">{accountError}</p>}
+                <div className="account-action-buttons">
+                  <button type="button" className="button secondary" onClick={closeAccountAction}>
+                    取消
+                  </button>
+                  <button className="button primary" disabled={accountBusy || !avatarDraft}>
+                    {accountBusy ? "正在处理…" : "保存"}
+                  </button>
+                </div>
+              </form>
+            ) : accountAction === "email" ? (
               <form
                 onSubmit={async (event) => {
                   event.preventDefault();
@@ -5503,6 +7681,162 @@ function SettingsDialog({
         </Dialog.Portal>
       </Dialog.Root>
     </>
+  );
+}
+
+function CreateWorkspaceDialog({
+  open,
+  onOpenChange,
+  online,
+  ownedCount,
+  limit,
+  onCreate,
+  onCheckSlug,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  online: boolean;
+  ownedCount: number;
+  limit: number;
+  onCreate: WorkspaceAppProps["onCreateWorkspace"];
+  onCheckSlug: WorkspaceAppProps["onCheckWorkspaceSlug"];
+}) {
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [slugAvailable, setSlugAvailable] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const quotaExceeded = ownedCount >= limit;
+
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setSlug("");
+    setSlugTouched(false);
+    setSlugAvailable(null);
+    setBusy(false);
+    setError("");
+  }, [open]);
+
+  async function checkSlug() {
+    const normalized = normalizeWorkspaceSlug(slug);
+    if (workspaceSlugValidationMessage(normalized)) {
+      setSlugAvailable(null);
+      return false;
+    }
+    const available = await onCheckSlug(normalized);
+    setSlugAvailable(available);
+    return available;
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!online || busy || quotaExceeded) return;
+    const nextName = name.trim();
+    const nextSlug = normalizeWorkspaceSlug(slug);
+    if (!nextName) {
+      setError("请输入团队名称。");
+      return;
+    }
+    const slugError = workspaceSlugValidationMessage(nextSlug);
+    if (slugError) {
+      setError(slugError);
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await checkSlug())) {
+        setError("团队 Slug 已被占用，请换一个。");
+        return;
+      }
+      await onCreate({ name: nextName, slug: nextSlug });
+      onOpenChange(false);
+    } catch (createError) {
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : "团队暂时无法创建，请稍后重试。",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => !busy && onOpenChange(nextOpen)}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog-content workspace-create-dialog">
+          <Dialog.Title>创建团队</Dialog.Title>
+          <Dialog.Description>
+            填写团队名称和用于专属访问地址的唯一 Slug。
+          </Dialog.Description>
+          <form onSubmit={(event) => void submit(event)}>
+            <label>
+              <span>团队名称</span>
+              <input
+                autoFocus
+                value={name}
+                maxLength={80}
+                disabled={!online || busy}
+                onChange={(event) => {
+                  const nextName = event.target.value;
+                  setName(nextName);
+                  if (!slugTouched) setSlug(suggestWorkspaceSlug(nextName));
+                }}
+                aria-label="新团队名称"
+                required
+              />
+            </label>
+            <label>
+              <span>团队 Slug</span>
+              <input
+                value={slug}
+                maxLength={48}
+                disabled={!online || busy}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                onChange={(event) => {
+                  setSlugTouched(true);
+                  setSlug(normalizeWorkspaceSlug(event.target.value));
+                  setSlugAvailable(null);
+                }}
+                onBlur={() => void checkSlug()}
+                aria-label="新团队 Slug"
+                required
+              />
+              <small className={clsx(slugAvailable === false && "invalid")}>
+                {slugAvailable === true
+                  ? "Slug 可用"
+                  : slugAvailable === false
+                    ? "Slug 已被占用"
+                    : "仅小写字母、数字和连字符，全局唯一。"}
+              </small>
+            </label>
+            <p className={clsx("workspace-quota-summary", quotaExceeded && "limit-reached")}>
+              已拥有 {ownedCount} / {limit} 个团队
+              {quotaExceeded && "，请先删除一个由你拥有的团队。"}
+            </p>
+            {!online && <p className="form-error" role="alert">离线模式下无法创建团队。</p>}
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <div className="dialog-actions">
+              <Dialog.Close className="button secondary" disabled={busy}>取消</Dialog.Close>
+              <button
+                className="button primary"
+                disabled={!online || busy || quotaExceeded || !name.trim() || Boolean(workspaceSlugValidationMessage(slug))}
+              >
+                {busy ? "正在创建…" : "创建团队"}
+              </button>
+            </div>
+          </form>
+          <Dialog.Close className="dialog-close" aria-label="关闭" disabled={busy}><X /></Dialog.Close>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 

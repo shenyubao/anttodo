@@ -14,32 +14,49 @@ function labelPermissionForMember(
   if (member.role === "owner" || member.role === "admin") return 2;
 
   let current: Label | undefined = label;
-  let effectiveLevel: PermissionLevel = 2;
+  let effectiveCanView = true;
+  let effectiveCanManage = true;
 
   while (current) {
-    const acl = bundle.labelAcls.find(
+    const userAcl = bundle.labelUserAcls.find(
       (item) =>
         item.label_id === current!.id && item.user_id === member.user_id,
     );
-    const aclLevel: PermissionLevel =
-      acl?.permission === "edit" ? 2 : acl?.permission === "view" ? 1 : 0;
-    let localLevel: PermissionLevel;
+    const memberGroupIds = new Set(
+      bundle.userGroupMembers
+        .filter((membership) => membership.user_id === member.user_id)
+        .map((membership) => membership.group_id),
+    );
+    const groupAcls = bundle.labelGroupAcls.filter(
+      (item) => item.label_id === current!.id && memberGroupIds.has(item.group_id),
+    );
+    const hasUserEdit = userAcl?.permission === "edit";
+    const hasUserView = hasUserEdit || userAcl?.permission === "view";
+    const hasGroupEdit = groupAcls.some((acl) => acl.permission === "edit");
+    const hasGroupView = hasGroupEdit || groupAcls.some((acl) => acl.permission === "view");
+    let localCanView: boolean;
+    let localCanManage: boolean;
 
-    if (current.visibility === "private") {
-      localLevel = current.created_by === member.user_id ? 2 : 0;
-    } else if (current.visibility === "restricted") {
-      localLevel =
-        current.created_by === member.user_id ? 2 : aclLevel;
+    if (current.kind === "private") {
+      localCanView = current.created_by === member.user_id;
+      localCanManage = localCanView;
     } else {
-      localLevel =
-        current.created_by === member.user_id
-          ? 2
-          : (Math.max(1, aclLevel) as PermissionLevel);
+      localCanManage = current.created_by === member.user_id
+        || current.manage_scope === "inherit"
+        || current.manage_scope === "all"
+        || (current.manage_scope === "users" && hasUserEdit)
+        || (current.manage_scope === "groups" && hasGroupEdit);
+      localCanView = localCanManage
+        || current.view_scope === "inherit"
+        || current.view_scope === "all"
+        || (current.view_scope === "users" && hasUserView)
+        || (current.view_scope === "groups" && hasGroupView);
     }
 
-    effectiveLevel = Math.min(effectiveLevel, localLevel) as PermissionLevel;
+    effectiveCanView = effectiveCanView && localCanView;
+    effectiveCanManage = effectiveCanManage && localCanManage;
     if (
-      effectiveLevel === 0
+      !effectiveCanView
       || !current.inherit_permissions
       || !current.parent_id
     ) {
@@ -48,7 +65,7 @@ function labelPermissionForMember(
     current = bundle.labels.find((item) => item.id === current!.parent_id);
   }
 
-  return effectiveLevel;
+  return effectiveCanManage ? 2 : effectiveCanView ? 1 : 0;
 }
 
 export function canMemberViewTask(

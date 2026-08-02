@@ -163,6 +163,7 @@ site_url = "http://127.0.0.1:5173"
 additional_redirect_urls = [
   "http://127.0.0.1:5173",
   "http://localhost:5173",
+  "https://app.anttodo.com/auth/dingtalk/callback",
   "anttodo://auth/callback"
 ]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
@@ -471,14 +472,44 @@ verify_jwt = true
 import_map = "./functions/account-admin/deno.json"
 entrypoint = "./functions/account-admin/index.ts"
 
+[functions.workspace-admin]
+enabled = true
+verify_jwt = true
+import_map = "./functions/workspace-admin/deno.json"
+entrypoint = "./functions/workspace-admin/index.ts"
+
 [functions.sso-admin]
 enabled = true
 verify_jwt = true
 import_map = "./functions/sso-admin/deno.json"
 entrypoint = "./functions/sso-admin/index.ts"
 
+[functions.sso-login]
+enabled = true
+verify_jwt = false
+import_map = "./functions/sso-login/deno.json"
+entrypoint = "./functions/sso-login/index.ts"
+
 [functions.dingtalk-sso]
 enabled = true
 verify_jwt = false
 import_map = "./functions/dingtalk-sso/deno.json"
 entrypoint = "./functions/dingtalk-sso/index.ts"
+
+[functions.reminder-subscription]
+enabled = true
+verify_jwt = true
+import_map = "./functions/reminder-subscription/deno.json"
+entrypoint = "./functions/reminder-subscription/index.ts"
+
+[functions.reminder-dispatch]
+enabled = true
+verify_jwt = false
+import_map = "./functions/reminder-dispatch/deno.json"
+entrypoint = "./functions/reminder-dispatch/index.ts"
+
+[functions.reminder-ack]
+enabled = true
+verify_jwt = false
+import_map = "./functions/reminder-ack/deno.json"
+entrypoint = "./functions/reminder-ack/index.ts"

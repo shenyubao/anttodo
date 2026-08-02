@@ -37,8 +37,23 @@ describe("task assignment candidates", () => {
     )!;
 
     expect(canMemberViewTask(member, restrictedTask, bundle)).toBe(true);
-    bundle.labelAcls = [];
+    bundle.labelUserAcls = [];
     expect(canMemberViewTask(member, restrictedTask, bundle)).toBe(false);
+  });
+
+  it("uses the parent result when both child scopes inherit", () => {
+    const bundle = createDemoBundle();
+    const member = bundle.members.find((item) => item.user_id === "demo-member")!;
+    const task = bundle.tasks.find((item) => item.id === "task-2")!;
+    const child = bundle.labels.find((item) => item.id === "frontend")!;
+    const parent = bundle.labels.find((item) => item.id === "product")!;
+    child.view_scope = "inherit";
+    child.manage_scope = "inherit";
+
+    expect(canMemberViewTask(member, task, bundle)).toBe(true);
+    parent.view_scope = "users";
+    bundle.labelUserAcls = [];
+    expect(canMemberViewTask(member, task, bundle)).toBe(false);
   });
 
   it("honors server-provided candidate ids", () => {

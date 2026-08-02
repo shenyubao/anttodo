@@ -91,8 +91,12 @@ function taskEvent(task: Task, labels: Label[]): EventInput | null {
     end: task.due_start_at ? task.due_at : undefined,
     allDay: task.due_is_all_day,
     color,
-    contrastColor: task.status === "completed" ? "rgba(25,25,25,.5)" : "#191919",
-    className: task.status === "completed" ? "calendar-event-completed" : "",
+    contrastColor: task.kind !== "note" && task.status === "completed"
+      ? "rgba(25,25,25,.5)"
+      : "#191919",
+    className: task.kind !== "note" && task.status === "completed"
+      ? "calendar-event-completed"
+      : "",
   };
 }
 

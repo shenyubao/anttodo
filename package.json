@@ -20,6 +20,9 @@
     "docs:build": "pnpm --filter docs build",
     "deploy:docs": "pnpm --filter docs run deploy",
     "package:mac": "pnpm build && electron-builder --mac dmg zip",
+    "package:mac:all": "pnpm build && electron-builder --mac dmg zip --arm64 --x64",
+    "upload:mac:r2": "node scripts/publish-mac-r2.mjs",
+    "release:mac:r2": "pnpm package:mac:all && pnpm upload:mac:r2",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
@@ -82,6 +85,12 @@
       "dist/**/*",
       "electron/**/*",
       "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "AntTodo",
+        "schemes": ["anttodo"]
+      }
     ],
     "mac": {
       "icon": "build/icon.icns",
