@@ -69,4 +69,48 @@ describe("task assignment candidates", () => {
       ).map((member) => member.user_id),
     ).toEqual(["demo-member"]);
   });
+
+  it("hides another member private label tasks from workspace admins", () => {
+    const bundle = createDemoBundle();
+    const owner = bundle.members.find((item) => item.user_id === "demo-user")!;
+    const admin: typeof owner = {
+      ...owner,
+      user_id: "demo-admin",
+      role: "admin",
+      profile: { id: "demo-admin", display_name: "管理员", avatar_url: null },
+    };
+    bundle.members.push(admin);
+    bundle.labels.push({
+      id: "member-private",
+      workspace_id: "workspace-team",
+      parent_id: null,
+      name: "个人备忘",
+      color: "#b8bdc8",
+      kind: "private",
+      view_scope: "users",
+      manage_scope: "users",
+      inherit_permissions: false,
+      position: 9,
+      created_by: "demo-member",
+    });
+    const privateTask = {
+      ...bundle.tasks[0]!,
+      id: "task-private",
+      label_ids: ["member-private"],
+      created_by: "demo-member",
+      assignee_id: "demo-member",
+    };
+    bundle.tasks.push(privateTask);
+
+    expect(canMemberViewTask(owner, privateTask, bundle)).toBe(false);
+    expect(canMemberViewTask(admin, privateTask, bundle)).toBe(false);
+    expect(
+      canMemberViewTask(
+        bundle.members.find((item) => item.user_id === "demo-member")!,
+        privateTask,
+        bundle,
+      ),
+    ).toBe(true);
+    expect(canMemberViewTask(owner, bundle.tasks[0]!, bundle)).toBe(true);
+  });
 });

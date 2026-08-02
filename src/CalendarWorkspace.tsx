@@ -1,10 +1,14 @@
 import FullCalendar, {
   type CalendarRef,
   type DatesSetInfo,
+  type EventDragStartInfo,
+  type EventDragStopInfo,
+  type EventDropInfo,
+  type EventReceiveInfo,
   type EventInput,
 } from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/react/daygrid";
-import interactionPlugin from "@fullcalendar/react/interaction";
+import interactionPlugin, { Draggable } from "@fullcalendar/react/interaction";
 import listPlugin from "@fullcalendar/react/list";
 import multiMonthPlugin from "@fullcalendar/react/multimonth";
 import timeGridPlugin from "@fullcalendar/react/timegrid";
@@ -15,12 +19,15 @@ import "@fullcalendar/react/themes/classic/theme.css";
 import "@fullcalendar/react/themes/classic/palette.css";
 import {
   CalendarDays,
+  CalendarPlus,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  GripVertical,
   Inbox,
   PanelLeft,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
@@ -34,8 +41,25 @@ import {
   startOfWeek,
 } from "date-fns";
 import { zhCN } from "date-fns/locale";
-import { chineseCalendarDetail, weekdayLabels } from "./lib/dateTimePreferences";
-import type { DateTimePreferences, Label, Task, WorkspaceBundle } from "./types";
+import {
+  chineseCalendarDetail,
+  systemTimeZone,
+  weekdayLabels,
+} from "./lib/dateTimePreferences";
+import {
+  buildScheduleTaskGroups,
+  canRescheduleTask,
+  clearSchedulePatch,
+  schedulePatchForCalendarMove,
+  schedulePatchFromDrop,
+} from "./lib/calendarScheduling";
+import type {
+  DateTimePreferences,
+  Label,
+  ReminderSchedule,
+  Task,
+  WorkspaceBundle,
+} from "./types";
 
 type CalendarViewId =
   | "day"
@@ -66,6 +90,7 @@ const CALENDAR_VIEWS: CalendarViewDefinition[] = [
 const VIEW_STORAGE_KEY = "anttodo:calendar-view";
 const MULTI_DAY_STORAGE_KEY = "anttodo:calendar-multi-day-count";
 const MULTI_WEEK_STORAGE_KEY = "anttodo:calendar-multi-week-count";
+const SCHEDULE_PANEL_OPEN_KEY = "anttodo:calendar-schedule-panel-open";
 
 function readStoredNumber(key: string, fallback: number, min: number, max: number) {
   const parsed = Number(window.localStorage.getItem(key));
@@ -79,7 +104,11 @@ function readStoredView(): CalendarViewId {
     : "month";
 }
 
-function taskEvent(task: Task, labels: Label[]): EventInput | null {
+function readSchedulePanelOpen() {
+  return window.localStorage.getItem(SCHEDULE_PANEL_OPEN_KEY) !== "0";
+}
+
+function taskEvent(task: Task, labels: Label[], editable = false): EventInput | null {
   if (task.deleted_at || !task.due_at) return null;
   const label = labels.find((candidate) => task.label_ids.includes(candidate.id));
   const color = label?.color || "#4772fa";
@@ -90,6 +119,7 @@ function taskEvent(task: Task, labels: Label[]): EventInput | null {
     start,
     end: task.due_start_at ? task.due_at : undefined,
     allDay: task.due_is_all_day,
+    editable,
     color,
     contrastColor: task.kind !== "note" && task.status === "completed"
       ? "rgba(25,25,25,.5)"
@@ -385,20 +415,137 @@ export function CalendarSidebar({
   );
 }
 
+function ScheduleTaskPanel({
+  bundle,
+  currentUserId,
+  online,
+  pendingTaskIds,
+  optimisticallyUnscheduledTaskIds,
+  calendarTaskDragging,
+  panelRef,
+  onClose,
+  onSelectTask,
+}: {
+  bundle: WorkspaceBundle;
+  currentUserId: string;
+  online: boolean;
+  pendingTaskIds: ReadonlySet<string>;
+  optimisticallyUnscheduledTaskIds: ReadonlySet<string>;
+  calendarTaskDragging: boolean;
+  panelRef: React.RefObject<HTMLDivElement | null>;
+  onClose: () => void;
+  onSelectTask: (taskId: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const panelBundle = useMemo(() => optimisticallyUnscheduledTaskIds.size === 0
+    ? bundle
+    : {
+      ...bundle,
+      tasks: bundle.tasks.map((task) => optimisticallyUnscheduledTaskIds.has(task.id)
+        ? { ...task, ...clearSchedulePatch() }
+        : task),
+    }, [bundle, optimisticallyUnscheduledTaskIds]);
+  const groups = useMemo(
+    () => buildScheduleTaskGroups(panelBundle, currentUserId, pendingTaskIds),
+    [currentUserId, panelBundle, pendingTaskIds],
+  );
+
+  return (
+    <aside
+      className={clsx("calendar-schedule-panel", calendarTaskDragging && "is-calendar-drop-target")}
+      aria-label="安排任务"
+      ref={panelRef}
+    >
+      <header className="calendar-schedule-header">
+        <strong>安排任务</strong>
+        <button aria-label="关闭安排任务" onClick={onClose}><X /></button>
+      </header>
+      {calendarTaskDragging && (
+        <div className="calendar-schedule-drop-hint" role="status">
+          拖到此处取消安排
+        </div>
+      )}
+      {!online && <p className="calendar-schedule-offline">离线模式下只能查看任务</p>}
+      <div className="calendar-schedule-groups">
+        {groups.map((group) => {
+          const isCollapsed = collapsed.has(group.id);
+          const color = group.label?.color ?? "#8e95a3";
+          return (
+            <section
+              className="calendar-schedule-group"
+              key={group.id}
+              style={{ "--schedule-label-color": color } as React.CSSProperties}
+            >
+              <button
+                className="calendar-schedule-group-header"
+                style={{ paddingLeft: 12 + group.depth * 14 }}
+                aria-expanded={!isCollapsed}
+                onClick={() => setCollapsed((current) => {
+                  const next = new Set(current);
+                  if (next.has(group.id)) next.delete(group.id);
+                  else next.add(group.id);
+                  return next;
+                })}
+              >
+                <ChevronDown />
+                {group.label ? <i /> : <Inbox />}
+                <span>{group.label?.name ?? "收集箱"}</span>
+                <em>{group.tasks.length}</em>
+              </button>
+              {!isCollapsed && group.tasks.map((task) => (
+                <div
+                  className={clsx("calendar-schedule-task", online && "is-draggable")}
+                  data-task-id={task.id}
+                  data-event-title={task.title}
+                  data-event-color={group.label?.color ?? "#4772fa"}
+                  key={`${group.id}:${task.id}`}
+                  title={online ? "拖到日历中安排截止时间" : "离线模式下不能安排任务"}
+                >
+                  <GripVertical className="calendar-schedule-drag-handle" aria-hidden="true" />
+                  <button onClick={() => onSelectTask(task.id)}>{task.title}</button>
+                </div>
+              ))}
+            </section>
+          );
+        })}
+        {groups.length === 0 && (
+          <div className="calendar-schedule-empty">
+            <CalendarDays />
+            <strong>没有待安排的任务</strong>
+            <span>未设置截止时间的待办会显示在这里</span>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 export function CalendarWorkspace({
   bundle,
+  currentUserId,
+  online,
   visibleCalendarIds,
   dateTimePreferences,
   onSelectTask,
+  onSaveTaskSchedule,
+  onNotice,
   sidebarVisible,
   onToggleSidebar,
   navigationDate,
   onVisibleDateChange,
 }: {
   bundle: WorkspaceBundle;
+  currentUserId: string;
+  online: boolean;
   visibleCalendarIds: Set<string>;
   dateTimePreferences: DateTimePreferences;
   onSelectTask: (taskId: string) => void;
+  onSaveTaskSchedule: (
+    taskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
+  onNotice: (message: string) => void;
   sidebarVisible: boolean;
   onToggleSidebar: () => void;
   navigationDate: Date | null;
@@ -406,6 +553,8 @@ export function CalendarWorkspace({
 }) {
   const calendarRef = useRef<CalendarRef>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const schedulePanelRef = useRef<HTMLDivElement>(null);
+  const unscheduleDropTaskIdsRef = useRef<Set<string>>(new Set());
   const [view, setView] = useState<CalendarViewId>(readStoredView);
   const [multiDayCount, setMultiDayCount] = useState(() =>
     readStoredNumber(MULTI_DAY_STORAGE_KEY, 3, 2, 14));
@@ -413,21 +562,66 @@ export function CalendarWorkspace({
     readStoredNumber(MULTI_WEEK_STORAGE_KEY, 4, 2, 12));
   const [title, setTitle] = useState("");
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [schedulePanelOpen, setSchedulePanelOpen] = useState(readSchedulePanelOpen);
+  const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(() => new Set());
+  const [calendarMutationTaskIds, setCalendarMutationTaskIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [optimisticallyUnscheduledTaskIds, setOptimisticallyUnscheduledTaskIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const [draggingCalendarTaskId, setDraggingCalendarTaskId] = useState<string | null>(null);
+  const [optimisticEvents, setOptimisticEvents] = useState<Record<string, EventInput>>({});
 
-  const events = useMemo(
-    () => bundle.tasks.flatMap((task) => {
+  const events = useMemo(() => [
+    ...bundle.tasks.flatMap((task) => {
+      if (optimisticallyUnscheduledTaskIds.has(task.id)) return [];
       if (!taskIsVisible(task, visibleCalendarIds)) return [];
-      const event = taskEvent(task, bundle.labels);
+      const event = taskEvent(
+        task,
+        bundle.labels,
+        online
+          && view !== "agenda"
+          && !calendarMutationTaskIds.has(task.id)
+          && canRescheduleTask(bundle, task, currentUserId),
+      );
       return event ? [event] : [];
     }),
-    [bundle.labels, bundle.tasks, visibleCalendarIds],
-  );
+    ...Object.values(optimisticEvents),
+  ], [
+    bundle,
+    calendarMutationTaskIds,
+    currentUserId,
+    online,
+    optimisticEvents,
+    optimisticallyUnscheduledTaskIds,
+    view,
+    visibleCalendarIds,
+  ]);
 
   const activeView = CALENDAR_VIEWS.find((candidate) => candidate.id === view)!;
 
   useEffect(() => {
     if (navigationDate) calendarRef.current?.getApi().gotoDate(navigationDate);
   }, [navigationDate]);
+
+  useEffect(() => {
+    const container = schedulePanelRef.current;
+    if (!container || !schedulePanelOpen || !online) return;
+    const draggable = new Draggable(container, {
+      itemSelector: ".calendar-schedule-task.is-draggable",
+      minDistance: 6,
+      longPressDelay: 350,
+      eventData: (element) => ({
+        id: element.dataset.taskId,
+        title: element.dataset.eventTitle,
+        color: element.dataset.eventColor,
+        contrastColor: "#191919",
+        extendedProps: { taskId: element.dataset.taskId },
+      }),
+    });
+    return () => draggable.destroy();
+  }, [online, schedulePanelOpen]);
 
   useEffect(() => {
     if (!viewMenuOpen) return;
@@ -495,9 +689,154 @@ export function CalendarWorkspace({
     }
   }
 
+  function setSchedulePanelVisibility(open: boolean) {
+    setSchedulePanelOpen(open);
+    window.localStorage.setItem(SCHEDULE_PANEL_OPEN_KEY, open ? "1" : "0");
+  }
+
+  function scheduleForTask(task: Task): ReminderSchedule {
+    return {
+      reminders: task.reminders.map((reminder) => ({
+        anchor: reminder.anchor,
+        offset_value: reminder.offset_value,
+        offset_unit: reminder.offset_unit,
+        local_time: reminder.local_time,
+      })),
+      persistent: task.reminder_persistent,
+      recurrence: task.recurrence ?? null,
+    };
+  }
+
+  function setCalendarTaskMutation(taskId: string, pending: boolean) {
+    setCalendarMutationTaskIds((current) => {
+      const next = new Set(current);
+      if (pending) next.add(taskId);
+      else next.delete(taskId);
+      return next;
+    });
+  }
+
+  async function moveCalendarTask(info: EventDropInfo) {
+    const taskId = info.event.id;
+    if (unscheduleDropTaskIdsRef.current.has(taskId)) {
+      info.revert();
+      return;
+    }
+    const task = bundle.tasks.find((candidate) => candidate.id === taskId);
+    const dropDate = info.event.start;
+    if (
+      !online
+      || view === "agenda"
+      || !task
+      || !dropDate
+      || calendarMutationTaskIds.has(taskId)
+      || !canRescheduleTask(bundle, task, currentUserId)
+    ) {
+      info.revert();
+      return;
+    }
+
+    const timeZone = dateTimePreferences.timeZoneEnabled
+      ? systemTimeZone()
+      : task.due_timezone;
+    const patch = schedulePatchForCalendarMove(task, dropDate, info.event.allDay, timeZone);
+    setCalendarTaskMutation(taskId, true);
+    try {
+      await onSaveTaskSchedule(taskId, patch, scheduleForTask(task));
+    } catch (cause) {
+      info.revert();
+      onNotice(cause instanceof Error ? cause.message : "任务改期失败，请重试");
+    } finally {
+      setCalendarTaskMutation(taskId, false);
+    }
+  }
+
+  async function returnCalendarTaskToCandidates(task: Task) {
+    const taskId = task.id;
+    setCalendarTaskMutation(taskId, true);
+    setOptimisticallyUnscheduledTaskIds((current) => new Set(current).add(taskId));
+    try {
+      await onSaveTaskSchedule(taskId, clearSchedulePatch(), {
+        reminders: [],
+        persistent: false,
+        recurrence: null,
+      });
+    } catch (cause) {
+      onNotice(cause instanceof Error ? cause.message : "取消任务安排失败，请重试");
+    } finally {
+      unscheduleDropTaskIdsRef.current.delete(taskId);
+      setOptimisticallyUnscheduledTaskIds((current) => {
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
+      setCalendarTaskMutation(taskId, false);
+    }
+  }
+
+  function stopCalendarTaskDrag(info: EventDragStopInfo) {
+    setDraggingCalendarTaskId(null);
+    const panel = schedulePanelRef.current;
+    const task = bundle.tasks.find((candidate) => candidate.id === info.event.id);
+    if (!panel || !schedulePanelOpen || !online || view === "agenda" || !task) return;
+    const bounds = panel.getBoundingClientRect();
+    const { clientX, clientY } = info.jsEvent;
+    const droppedOnPanel = clientX >= bounds.left
+      && clientX <= bounds.right
+      && clientY >= bounds.top
+      && clientY <= bounds.bottom;
+    if (!droppedOnPanel || !canRescheduleTask(bundle, task, currentUserId)) return;
+
+    unscheduleDropTaskIdsRef.current.add(task.id);
+    void returnCalendarTaskToCandidates(task);
+  }
+
+  async function receiveScheduledTask(info: EventReceiveInfo) {
+    const taskId = String(info.event.extendedProps.taskId ?? info.event.id);
+    const task = bundle.tasks.find((candidate) => candidate.id === taskId);
+    const dropDate = info.event.start;
+    const allDay = info.event.allDay;
+    info.event.remove();
+    if (
+      !online
+      || view === "agenda"
+      || !task
+      || !dropDate
+      || pendingTaskIds.has(taskId)
+      || !canRescheduleTask(bundle, task, currentUserId)
+    ) return;
+
+    const timeZone = dateTimePreferences.timeZoneEnabled
+      ? systemTimeZone()
+      : task.due_timezone;
+    const patch = schedulePatchFromDrop(dropDate, allDay, timeZone);
+    const optimistic = taskEvent({ ...task, ...patch }, bundle.labels);
+    setPendingTaskIds((current) => new Set(current).add(taskId));
+    if (optimistic) {
+      setOptimisticEvents((current) => ({ ...current, [taskId]: optimistic }));
+    }
+    try {
+      await onSaveTaskSchedule(taskId, patch, scheduleForTask(task));
+    } catch (cause) {
+      onNotice(cause instanceof Error ? cause.message : "任务安排失败，请重试");
+    } finally {
+      setPendingTaskIds((current) => {
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
+      setOptimisticEvents((current) => {
+        const next = { ...current };
+        delete next[taskId];
+        return next;
+      });
+    }
+  }
+
   return (
-    <div className="calendar-workspace">
-      <header className="calendar-toolbar">
+    <div className={clsx("calendar-workspace", schedulePanelOpen && "schedule-panel-open")}>
+      <div className="calendar-stage">
+        <header className="calendar-toolbar">
         <div className="calendar-toolbar-title">
           <button
             className="calendar-sidebar-toggle"
@@ -564,6 +903,15 @@ export function CalendarWorkspace({
             <button onClick={() => calendarRef.current?.getApi().today()}>今天</button>
             <button aria-label="下一个日期范围" onClick={() => calendarRef.current?.getApi().next()}><ChevronRight /></button>
           </div>
+          {!schedulePanelOpen && (
+            <button
+              className="calendar-schedule-toggle"
+              aria-label="显示安排任务"
+              onClick={() => setSchedulePanelVisibility(true)}
+            >
+              <CalendarPlus />
+            </button>
+          )}
         </div>
       </header>
       <div className="calendar-canvas">
@@ -582,13 +930,16 @@ export function CalendarWorkspace({
           navLinks
           dayMaxEvents={3}
           eventDisplay="block"
+          displayEventTime={false}
           allDayText="全天"
           noEventsText="这段时间没有任务"
           slotMinTime="06:00:00"
           slotMaxTime="24:00:00"
           slotDuration="00:30:00"
-          eventTimeFormat={{ hour: "2-digit", minute: "2-digit", hour12: dateTimePreferences.timeFormat === "12h" }}
           events={events}
+          editable={online && view !== "agenda"}
+          eventDurationEditable={false}
+          droppable={online && view !== "agenda"}
           dayCellTopContent={(info) => (
             <div className="calendar-main-day-top">
               <span>{info.date.getDate()}</span>
@@ -615,8 +966,33 @@ export function CalendarWorkspace({
             onVisibleDateChange(info.view.currentStart);
           }}
           eventClick={(info) => onSelectTask(info.event.id)}
+          eventDragStart={(info: EventDragStartInfo) => setDraggingCalendarTaskId(info.event.id)}
+          eventDragStop={stopCalendarTaskDrag}
+          eventDrop={(info) => void moveCalendarTask(info)}
+          eventReceive={(info) => void receiveScheduledTask(info)}
         />
       </div>
+      </div>
+      {schedulePanelOpen && (
+        <>
+          <button
+            className="calendar-schedule-scrim"
+            aria-label="关闭安排任务"
+            onClick={() => setSchedulePanelVisibility(false)}
+          />
+          <ScheduleTaskPanel
+            bundle={bundle}
+            currentUserId={currentUserId}
+            online={online}
+            pendingTaskIds={pendingTaskIds}
+            optimisticallyUnscheduledTaskIds={optimisticallyUnscheduledTaskIds}
+            calendarTaskDragging={draggingCalendarTaskId !== null}
+            panelRef={schedulePanelRef}
+            onClose={() => setSchedulePanelVisibility(false)}
+            onSelectTask={onSelectTask}
+          />
+        </>
+      )}
     </div>
   );
 }

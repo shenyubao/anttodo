@@ -10,6 +10,23 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+type DesktopUpdateCheckResult =
+  | {
+      status: "available";
+      currentVersion: string;
+      latestVersion: string;
+      downloadUrl: string;
+    }
+  | {
+      status: "up-to-date";
+      currentVersion: string;
+      latestVersion: string;
+    }
+  | {
+      status: "error";
+      message: string;
+    };
+
 interface Window {
   anttodoDesktop?: {
     platform: string;
@@ -39,6 +56,11 @@ interface Window {
       }>) => Promise<boolean>;
       acknowledge: (reminderId: string) => void;
       onOpenTask: (listener: (target: { workspaceId: string; taskId: string }) => void) => () => void;
+    };
+    updates: {
+      getAppVersion: () => Promise<string>;
+      check: () => Promise<DesktopUpdateCheckResult>;
+      openDownload: (url: string) => Promise<boolean>;
     };
   };
 }

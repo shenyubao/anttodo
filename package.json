@@ -90,7 +90,8 @@
   },
   "build": {
     "appId": "com.anttodo.desktop",
-    "productName": "AntTodo",
+    "productName": "蚂蚁待办",
+    "executableName": "AntTodo",
     "asar": true,
     "directories": {
       "output": "release"
@@ -102,7 +103,7 @@
     ],
     "protocols": [
       {
-        "name": "AntTodo",
+        "name": "蚂蚁待办",
         "schemes": [
           "anttodo"
         ]
@@ -113,11 +114,15 @@
       "category": "public.app-category.productivity",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "CFBundleDisplayName": "蚂蚁待办",
+        "CFBundleName": "蚂蚁待办"
+      },
       "target": [
         "dmg",
         "zip"
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "artifactName": "AntTodo-${version}-${arch}.${ext}",
       "hardenedRuntime": true
     }
   }

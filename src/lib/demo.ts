@@ -102,6 +102,7 @@ const task = (
   due_start_at: null,
   due_is_all_day: false,
   due_timezone: null,
+  recurrence: null,
   assignee_id: userId,
   created_by: userId,
   completed_at: null,

@@ -11,7 +11,9 @@ export function currentLabelPermissionLevel(
   bundle: WorkspaceBundle,
   labelId: string,
 ): PermissionLevel {
-  return bundle.labelPermissionLevels[labelId] ?? 0;
+  // Persisted query data can outlive additions to WorkspaceBundle. Treat a
+  // missing permission map as no access until the background refresh finishes.
+  return bundle.labelPermissionLevels?.[labelId] ?? 0;
 }
 
 export function currentTaskPermissionLevel(

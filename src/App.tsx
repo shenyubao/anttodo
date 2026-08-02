@@ -76,12 +76,18 @@ import { isSameDay } from "date-fns";
 import clsx from "clsx";
 import antTodoIconUrl from "./assets/anttodo-icon.png";
 import { CalendarSidebar, CalendarWorkspace } from "./CalendarWorkspace";
+import {
+  DesktopUpdateBanner,
+  formatUpdateCheckMessage,
+  useDesktopUpdateCheck,
+} from "./DesktopUpdateBanner";
 import { initials, MemberAvatar } from "./MemberAvatar";
 import { MindMapWorkspace } from "./MindMapWorkspace";
 import { NotificationBell } from "./NotificationBell";
 import { getPriorityOption } from "./PriorityControl";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
 import type { CreateCommentInput } from "./TaskComments";
+import type { DesktopUpdateCheckResult } from "./lib/desktopUpdate";
 import {
   assignTask as assignTaskApi,
   createTaskComment as createTaskCommentApi,
@@ -122,6 +128,7 @@ import {
 import { createDemoBundle, demoWorkspaces } from "./lib/demo";
 import { getDueStatus } from "./lib/dueTime";
 import { reminderTriggerAt } from "./lib/reminders";
+import { nextOccurrenceFields } from "./lib/recurrence";
 import {
   AVATAR_ACCEPT,
   cropAvatarFile,
@@ -1488,11 +1495,45 @@ function RemoteApplication({
   const activeBundle = bundleQuery.data;
 
   async function updateTask(taskId: string, patch: Partial<Task>) {
+    const current = activeBundle?.tasks.find((task) => task.id === taskId);
     const payload: Record<string, unknown> = { ...patch };
     delete payload.label_ids;
     delete payload.subtasks;
     delete payload.reminders;
     delete payload.reminder_persistent;
+    delete payload.recurrence;
+
+    const shouldRoll = Boolean(
+      current
+      && payload.status === "completed"
+      && current.status !== "completed"
+      && current.recurrence
+      && current.due_at
+    );
+    const rolled = shouldRoll ? nextOccurrenceFields(current!) : null;
+    if (rolled && activeWorkspaceId) {
+      const queryKey = ["workspace-bundle", activeWorkspaceId];
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle
+          ? {
+              ...bundle,
+              tasks: bundle.tasks.map((task) =>
+                task.id === taskId
+                  ? {
+                      ...task,
+                      status: "open",
+                      completed_at: null,
+                      due_at: rolled.due_at,
+                      due_start_at: rolled.due_start_at,
+                      updated_at: new Date().toISOString(),
+                      version: task.version + 1,
+                    }
+                  : task
+              ),
+            }
+          : bundle);
+    }
+
     const { error } = await client.from("tasks").update(payload).eq("id", taskId);
     if (error) throw error;
     await refresh();
@@ -2132,20 +2173,51 @@ function DemoApplication() {
 
   function patchTask(taskId: string, patch: Partial<Task>) {
     const task = bundle.tasks.find((item) => item.id === taskId);
+    let nextPatch = { ...patch };
+    if (
+      task
+      && nextPatch.status === "completed"
+      && task.status !== "completed"
+      && task.recurrence
+      && task.due_at
+    ) {
+      const rolled = nextOccurrenceFields(task);
+      if (rolled) {
+        nextPatch = {
+          ...nextPatch,
+          status: "open",
+          completed_at: null,
+          due_at: rolled.due_at,
+          due_start_at: rolled.due_start_at,
+        };
+        appendDemoActivity(taskId, "task.occurrence_completed", {
+          before: {
+            due_at: task.due_at,
+            due_start_at: task.due_start_at,
+            recurrence: task.recurrence,
+          },
+          after: {
+            due_at: rolled.due_at,
+            due_start_at: rolled.due_start_at,
+            recurrence: task.recurrence,
+          },
+        });
+      }
+    }
     const auditableFields: Array<keyof Task> = [
       "title", "description", "kind", "status", "priority", "due_at",
       "due_start_at", "due_is_all_day", "due_timezone", "deleted_at",
     ];
     const changes = Object.fromEntries(auditableFields.flatMap((field) =>
-      field in patch && task?.[field] !== patch[field]
-        ? [[field, { before: task?.[field] ?? null, after: patch[field] ?? null }]]
+      field in nextPatch && task?.[field] !== nextPatch[field]
+        ? [[field, { before: task?.[field] ?? null, after: nextPatch[field] ?? null }]]
         : []));
     setBundle((current) => ({
       ...current,
-      tasks: current.tasks.map((task) =>
-        task.id === taskId
-          ? { ...task, ...patch, updated_at: new Date().toISOString(), version: task.version + 1 }
-          : task,
+      tasks: current.tasks.map((item) =>
+        item.id === taskId
+          ? { ...item, ...nextPatch, updated_at: new Date().toISOString(), version: item.version + 1 }
+          : item,
       ),
     }));
     if (Object.keys(changes).length) appendDemoActivity(taskId, "task.updated", { changes });
@@ -2277,6 +2349,7 @@ function DemoApplication() {
               subtasks: [],
               reminders: [],
               reminder_persistent: false,
+              recurrence: null,
             },
             ...current.tasks,
           ],
@@ -2287,11 +2360,13 @@ function DemoApplication() {
       onUpdateTask={patchTask}
       onSaveTaskSchedule={async (taskId, patch, schedule) => {
         const createdAt = new Date().toISOString();
+        const nextRecurrence = patch.due_at ? schedule.recurrence : null;
         setBundle((current) => ({
           ...current,
           tasks: current.tasks.map((task) => task.id !== taskId ? task : {
             ...task,
             ...patch,
+            recurrence: nextRecurrence,
             reminders: schedule.reminders.map((rule, position) => ({
               id: `${taskId}:demo-reminder:${position}`,
               task_id: taskId,
@@ -2318,6 +2393,12 @@ function DemoApplication() {
           before: { reminders: task?.reminders ?? [], persistent: task?.reminder_persistent ?? false },
           after: { reminders: schedule.reminders, persistent: schedule.persistent },
         });
+        if ((task?.recurrence ?? null) !== (nextRecurrence ?? null)) {
+          appendDemoActivity(taskId, "task.recurrence_changed", {
+            before: task?.recurrence ?? null,
+            after: nextRecurrence,
+          });
+        }
       }}
       onToggleTaskLabel={async (taskId, labelId, selected) => {
         setBundle((current) => ({
@@ -3090,6 +3171,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     () => new Set(["inbox", ...props.bundle.labels.map((label) => label.id)]),
   );
   const now = useMinuteNow();
+  const {
+    availableUpdate,
+    remindLater: remindUpdateLater,
+    downloadUpdate,
+  } = useDesktopUpdateCheck();
 
   const selectedTask = props.bundle.tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskEditable = selectedTask
@@ -3318,9 +3404,13 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onSetTaskListOrder={props.onSetTaskListOrder}
         /> : appSection === "calendar" ? <CalendarWorkspace
           bundle={props.bundle}
+          currentUserId={props.currentUserId}
+          online={props.online}
           visibleCalendarIds={visibleCalendarIds}
           dateTimePreferences={props.dateTimePreferences}
           onSelectTask={setSelectedTaskId}
+          onSaveTaskSchedule={props.onSaveTaskSchedule}
+          onNotice={props.onNotice}
           sidebarVisible={!calendarSidebarCollapsed}
           onToggleSidebar={toggleCalendarSidebar}
           navigationDate={calendarNavigationDate}
@@ -3481,6 +3571,15 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onCreate={props.onCreateWorkspace}
         onCheckSlug={props.onCheckWorkspaceSlug}
       />
+      {availableUpdate && (
+        <DesktopUpdateBanner
+          update={availableUpdate}
+          onDownload={() => {
+            void downloadUpdate();
+          }}
+          onRemindLater={remindUpdateLater}
+        />
+      )}
       {props.notice && (
         <div className="toast" role="status">
           <CheckCircle2 size={18} />
@@ -6375,17 +6474,13 @@ function TeamManagementList({
   onDeleteWorkspace: WorkspaceAppProps["onDeleteWorkspace"];
   onNotice: (message: string) => void;
 }) {
-  const [expandedId, setExpandedId] = useState(currentWorkspaceId);
+  const [expandedId, setExpandedId] = useState("");
 
   useEffect(() => {
-    if (!workspaces.some((item) => item.id === expandedId)) {
-      setExpandedId(
-        workspaces.find((item) => item.id === currentWorkspaceId)?.id
-          ?? workspaces[0]?.id
-          ?? "",
-      );
+    if (expandedId && !workspaces.some((item) => item.id === expandedId)) {
+      setExpandedId("");
     }
-  }, [currentWorkspaceId, expandedId, workspaces]);
+  }, [expandedId, workspaces]);
 
   return (
     <div className="team-management-list-panel">
@@ -7498,6 +7593,126 @@ function DateTimeSettingsPanel({
   );
 }
 
+function AboutSettingsPanel() {
+  const isDesktop = Boolean(window.anttodoDesktop?.updates);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [checkResult, setCheckResult] = useState<DesktopUpdateCheckResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    let cancelled = false;
+    void window.anttodoDesktop!.updates.getAppVersion().then((version) => {
+      if (!cancelled) setAppVersion(version);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDesktop]);
+
+  async function checkForUpdate() {
+    if (!window.anttodoDesktop?.updates) return;
+    setChecking(true);
+    try {
+      const result = await window.anttodoDesktop.updates.check();
+      setCheckResult(result);
+    } catch {
+      setCheckResult({ status: "error", message: "更新检查失败，请稍后重试" });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function downloadUpdate() {
+    if (!checkResult || checkResult.status !== "available") return;
+    setDownloading(true);
+    try {
+      await window.anttodoDesktop?.updates.openDownload(checkResult.downloadUrl);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const statusMessage = checkResult ? formatUpdateCheckMessage(checkResult) : null;
+  const updateAvailable = checkResult?.status === "available" ? checkResult : null;
+
+  return (
+    <section className="about-settings-panel">
+      <header className="team-settings-header">
+        <h2>关于</h2>
+        <p>查看蚂蚁待办版本信息，并检查桌面客户端更新。</p>
+      </header>
+
+      <div className="about-settings-card">
+        <div className="about-settings-row">
+          <span>产品</span>
+          <strong>蚂蚁待办</strong>
+        </div>
+        <div className="about-settings-row">
+          <span>当前版本</span>
+          <strong>
+            {isDesktop
+              ? (appVersion ? `v${appVersion}` : "读取中…")
+              : "Web"}
+          </strong>
+        </div>
+        {isDesktop && window.anttodoDesktop?.versions ? (
+          <div className="about-settings-row">
+            <span>运行时</span>
+            <strong>
+              Electron {window.anttodoDesktop.versions.electron}
+            </strong>
+          </div>
+        ) : null}
+      </div>
+
+      {isDesktop ? (
+        <div className="about-settings-actions">
+          <button
+            type="button"
+            className="button"
+            disabled={checking}
+            onClick={() => {
+              void checkForUpdate();
+            }}
+          >
+            {checking ? "检查中…" : "检查更新"}
+          </button>
+          {updateAvailable ? (
+            <button
+              type="button"
+              className="button primary"
+              disabled={downloading}
+              onClick={() => {
+                void downloadUpdate();
+              }}
+            >
+              {downloading ? "打开中…" : `下载 v${updateAvailable.latestVersion}`}
+            </button>
+          ) : null}
+          {statusMessage ? (
+            <p
+              className={clsx(
+                "about-settings-status",
+                checkResult?.status === "error" && "is-error",
+                checkResult?.status === "available" && "is-available",
+              )}
+              role="status"
+            >
+              {statusMessage}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="about-settings-web-note">
+          版本更新提醒仅适用于 macOS 桌面客户端。可在官网下载页获取最新安装包。
+        </p>
+      )}
+    </section>
+  );
+}
+
 function SettingsDialog({
   open,
   onOpenChange,
@@ -7853,6 +8068,8 @@ function SettingsDialog({
                 online={online}
                 onNotice={onNotice}
               />
+            ) : activeTab === "about" ? (
+              <AboutSettingsPanel />
             ) : (
               <div className="settings-placeholder">
                 {(() => {

@@ -170,6 +170,15 @@ export type TaskReminder = ReminderRule & {
 export type ReminderSchedule = {
   reminders: ReminderRule[];
   persistent: boolean;
+  recurrence: TaskRecurrence | null;
+};
+
+export type RecurrenceFreq = "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
+
+export type TaskRecurrence = {
+  freq: RecurrenceFreq;
+  interval: 1;
+  mode: "due";
 };
 
 export type Task = {
@@ -184,6 +193,7 @@ export type Task = {
   due_start_at: string | null;
   due_is_all_day: boolean;
   due_timezone: string | null;
+  recurrence: TaskRecurrence | null;
   assignee_id: string | null;
   created_by: string;
   completed_at: string | null;

@@ -10,6 +10,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDir = path.join(root, "release");
 const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const version = packageJson.version;
+// Keep download object keys ASCII-stable; UI display name may be localized.
+const artifactProductName = "AntTodo";
 const bucket = process.env.R2_BUCKET?.trim();
 const publicBaseUrl = process.env.R2_PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
 const prefix = (process.env.R2_PREFIX ?? "").trim().replace(/^\/+|\/+$/g, "");
@@ -87,7 +89,7 @@ if (expectedVersion && expectedVersion !== version) {
 }
 
 const artifacts = targets.map(({ arch, format, contentType }) => {
-  const fileName = `${packageJson.build.productName}-${version}-${arch}.${format}`;
+  const fileName = `${artifactProductName}-${version}-${arch}.${format}`;
   const file = path.join(releaseDir, fileName);
   if (!existsSync(file)) fail(`missing artifact ${path.relative(root, file)}`);
   return {
@@ -97,7 +99,7 @@ const artifacts = targets.map(({ arch, format, contentType }) => {
     file,
     fileName,
     versionedKey: objectKey("macos", `v${version}`, fileName),
-    latestKey: objectKey("macos", `${packageJson.build.productName}-${arch}-latest.${format}`),
+    latestKey: objectKey("macos", `${artifactProductName}-${arch}-latest.${format}`),
   };
 });
 

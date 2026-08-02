@@ -81,7 +81,27 @@ describe("date and time preferences", () => {
       due_start_at: start.toJSON(),
       due_is_all_day: false,
       due_timezone: "Asia/Shanghai",
-    }, DEFAULT_DATE_TIME_PREFERENCES)).toBe("2026/08/07–2026/08/27");
+    }, DEFAULT_DATE_TIME_PREFERENCES)).toBe("2026/08/07–/08/27");
+  });
+
+  it("compacts same-year all-day ranges by omitting the end year", () => {
+    const start = fromZonedDateTime("2026-07-27", "00:00", "Asia/Shanghai");
+    const end = fromZonedDateTime("2026-08-02", "00:00", "Asia/Shanghai");
+    expect(formatDueWithPreferences({
+      due_at: end.toJSON(),
+      due_start_at: start.toJSON(),
+      due_is_all_day: true,
+      due_timezone: "Asia/Shanghai",
+    }, DEFAULT_DATE_TIME_PREFERENCES)).toBe("2026/07/27–/08/02 · 全天");
+    expect(formatDueWithPreferences({
+      due_at: end.toJSON(),
+      due_start_at: start.toJSON(),
+      due_is_all_day: true,
+      due_timezone: "Asia/Shanghai",
+    }, {
+      ...DEFAULT_DATE_TIME_PREFERENCES,
+      dateFormat: "mdy",
+    })).toBe("07/27/2026–08/02 · 全天");
   });
 
   it("returns lunar and official adjustment metadata without network access", () => {

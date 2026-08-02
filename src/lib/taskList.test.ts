@@ -34,6 +34,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   kind: patch.kind ?? "todo",
   reminders: patch.reminders ?? [],
   reminder_persistent: patch.reminder_persistent ?? false,
+  recurrence: patch.recurrence ?? null,
 });
 
 describe("task list grouping and sorting", () => {

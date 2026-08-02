@@ -11,11 +11,10 @@ function labelPermissionForMember(
   member: Member,
   bundle: WorkspaceBundle,
 ): PermissionLevel {
-  if (member.role === "owner" || member.role === "admin") return 2;
-
   let current: Label | undefined = label;
   let effectiveCanView = true;
   let effectiveCanManage = true;
+  const isWorkspaceAdmin = member.role === "owner" || member.role === "admin";
 
   while (current) {
     const userAcl = bundle.labelUserAcls.find(
@@ -40,9 +39,11 @@ function labelPermissionForMember(
     if (current.kind === "private") {
       localCanView = current.created_by === member.user_id;
       localCanManage = localCanView;
+    } else if (isWorkspaceAdmin || current.created_by === member.user_id) {
+      localCanView = true;
+      localCanManage = true;
     } else {
-      localCanManage = current.created_by === member.user_id
-        || current.manage_scope === "inherit"
+      localCanManage = current.manage_scope === "inherit"
         || current.manage_scope === "all"
         || (current.manage_scope === "users" && hasUserEdit)
         || (current.manage_scope === "groups" && hasGroupEdit);

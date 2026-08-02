@@ -9,6 +9,10 @@ import {
   parseAuthDeepLink,
 } from "./auth-deep-link.mjs";
 import { createReminderScheduler } from "./reminder-scheduler.mjs";
+import {
+  checkForDesktopUpdate,
+  isAllowedDownloadUrl,
+} from "./update-checker.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -134,6 +138,18 @@ ipcMain.handle("anttodo:reminders-sync", (_event, entries) => {
 
 ipcMain.on("anttodo:reminders-acknowledge", (_event, reminderId) => {
   if (typeof reminderId === "string") reminderScheduler.acknowledge(reminderId);
+});
+
+ipcMain.handle("anttodo:app-version", () => app.getVersion());
+
+ipcMain.handle("anttodo:check-for-update", async () => {
+  return checkForDesktopUpdate({ currentVersion: app.getVersion() });
+});
+
+ipcMain.handle("anttodo:open-download-url", async (_event, url) => {
+  if (typeof url !== "string" || !isAllowedDownloadUrl(url)) return false;
+  await shell.openExternal(url);
+  return true;
 });
 
 function createWindow() {

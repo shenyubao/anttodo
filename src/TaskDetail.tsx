@@ -954,13 +954,26 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             if (document.querySelector(
-              ".task-detail-dialog .due-popover, .task-detail-dialog .priority-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-more-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
+              ".due-popover, .task-detail-dialog .priority-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-more-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
             )) return;
             void contentRef.current?.close();
           }}
           onPointerDownOutside={(event) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest(".due-popover")) {
+              event.preventDefault();
+              return;
+            }
             event.preventDefault();
             void contentRef.current?.close();
+          }}
+          onFocusOutside={(event) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest(".due-popover")) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest(".due-popover")) event.preventDefault();
           }}
         >
           <Dialog.Title className="sr-only">

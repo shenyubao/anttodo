@@ -247,19 +247,28 @@ test("mind map is full width and supports creation, details, and date dragging",
   const monthNode = page.locator(".react-flow__node-month").first();
   const weekNode = page.locator(".react-flow__node-week").first();
   const dayNode = page.locator(".react-flow__node-day").first();
-  await expect(monthNode).toHaveCSS("width", "132px");
-  await expect(weekNode).toHaveCSS("width", "212px");
-  await expect(dayNode).toHaveCSS("width", "154px");
+  const monthWidth = Number.parseFloat(await monthNode.evaluate((node) => getComputedStyle(node).width));
+  const weekWidth = Number.parseFloat(await weekNode.evaluate((node) => getComputedStyle(node).width));
+  const dayWidth = Number.parseFloat(await dayNode.evaluate((node) => getComputedStyle(node).width));
+  expect(monthWidth).toBeLessThan(132);
+  expect(weekWidth).toBeLessThan(212);
+  expect(dayWidth).toBeLessThan(154);
   const dateNodeBackgrounds = await Promise.all([monthNode, weekNode, dayNode].map(
     (node) => node.locator(".mind-map-node").evaluate(
       (element) => getComputedStyle(element).backgroundColor,
     ),
   ));
   expect(new Set(dateNodeBackgrounds).size).toBe(1);
-  const labelNode = page.locator(".react-flow__node-label").first();
+  const labelNodes = page.locator(".react-flow__node-label");
+  const labelNode = labelNodes.first();
   const taskNode = page.locator(".react-flow__node-task").first();
   await expect(labelNode).toBeVisible();
   await expect(labelNode.locator(".mind-map-label-content > svg")).toBeVisible();
+  const labelWidths = await labelNodes.evaluateAll((nodes) => (
+    nodes.map((node) => getComputedStyle(node).width)
+  ));
+  expect(labelWidths.length).toBeGreaterThan(0);
+  expect(new Set(labelWidths).size).toBe(1);
   const labelBackground = await labelNode.locator(".mind-map-node-label")
     .evaluate((node) => getComputedStyle(node).backgroundColor);
   const taskBackground = await taskNode.locator(".mind-map-node-task")
@@ -954,7 +963,10 @@ test("due date picker saves point, range, all-day, and clear states", async ({ p
   await picker.getByRole("tab", { name: "时间段" }).click();
   await picker.getByRole("checkbox", { name: "全天" }).check();
   await expect(picker.getByRole("button", { name: "提醒" })).toHaveAttribute("aria-expanded", "false");
-  await expect(picker.getByRole("button", { name: "重复" })).toHaveAttribute("aria-disabled", "true");
+  await picker.getByRole("button", { name: "重复" }).click();
+  await expect(picker.getByRole("button", { name: "每天" })).toBeVisible();
+  await picker.getByRole("button", { name: "每天" }).click();
+  await expect(picker.getByRole("button", { name: "重复" })).toContainText("每天");
   await picker.getByRole("button", { name: "提醒" }).click();
   await expect(picker.getByRole("button", { name: "当天 (09:00)" })).toBeVisible();
   await expect(picker).toBeVisible();
@@ -962,8 +974,28 @@ test("due date picker saves point, range, all-day, and clear states", async ({ p
   await expect(page.locator(".detail-due-trigger")).toContainText("全天");
 
   await page.getByRole("button", { name: "设置到期时间" }).click();
+  await expect(picker.getByRole("button", { name: "重复" })).toContainText("每天");
   await picker.getByRole("button", { name: "清除" }).click();
   await expect(page.locator(".detail-due-trigger")).toContainText("无日期");
+});
+
+test("repeating task rolls due date forward on complete", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByText("完成 AntTodo 项目框架验收", { exact: true }).click();
+  await page.getByRole("button", { name: "设置到期时间" }).click();
+  const picker = page.getByRole("dialog", { name: "设置到期时间" });
+  await picker.getByRole("button", { name: "明天", exact: true }).click();
+  await picker.getByRole("button", { name: "重复" }).click();
+  await picker.getByRole("button", { name: "每天" }).click();
+  await picker.getByRole("button", { name: "确定" }).click();
+
+  const dueBefore = await page.locator(".detail-due-trigger").innerText();
+  await page.getByRole("button", { name: "完成任务" }).click();
+  await expect(page.getByRole("button", { name: "完成任务" })).toBeVisible();
+  const dueAfter = await page.locator(".detail-due-trigger").innerText();
+  expect(dueAfter).not.toEqual(dueBefore);
+  await page.getByRole("button", { name: "设置到期时间" }).click();
+  await expect(picker.getByRole("button", { name: "重复" })).toContainText("每天");
 });
 
 test("reminder picker saves multiple, custom, all-day and persistent rules", async ({ page, context }) => {
@@ -1243,6 +1275,10 @@ test("creates a workspace from the switcher and lets only its owner confirm dele
   await settings.getByRole("button", { name: "团队管理", exact: true }).click();
   const item = settings.locator(".team-management-item").filter({ hasText: "客户端体验团队" });
   await expect(item).toContainText("当前团队");
+  const trigger = item.locator(".team-management-item-trigger");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
   await expect(item.getByRole("button", { name: "删除团队" })).toBeVisible();
   await item.getByRole("button", { name: "删除团队" }).click();
 

@@ -36,6 +36,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   HALF_HOUR_OPTIONS,
   getDueStatus,
@@ -68,16 +69,24 @@ import {
   reminderTriggerAt,
 } from "./lib/reminders";
 import {
+  RECURRENCE_PRESETS,
+  normalizeRecurrence,
+  recurrenceRule,
+  recurrenceSummary,
+} from "./lib/recurrence";
+import {
   currentNotificationPermission,
   requestWebNotificationPermission,
   type NotificationPermissionState,
 } from "./lib/webPush";
 import type {
   DateTimePreferences,
+  RecurrenceFreq,
   ReminderRule,
   ReminderSchedule,
   ReminderUnit,
   Task,
+  TaskRecurrence,
 } from "./types";
 
 function calendarDays(
@@ -148,8 +157,10 @@ export function DueDateControl({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reminderOpen, setReminderOpen] = useState(false);
+  const [repeatOpen, setRepeatOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [reminders, setReminders] = useState<ReminderRule[]>([]);
+  const [recurrence, setRecurrence] = useState<TaskRecurrence | null>(null);
   const [persistent, setPersistent] = useState(false);
   const [customValue, setCustomValue] = useState(10);
   const [customUnit, setCustomUnit] = useState<ReminderUnit>("minute");
@@ -192,8 +203,10 @@ export function DueDateControl({
       offset_unit: reminder.offset_unit,
       local_time: reminder.local_time ? reminder.local_time.slice(0, 5) : null,
     })));
+    setRecurrence(task.recurrence ?? null);
     setPersistent(Boolean(task.reminder_persistent));
     setReminderOpen(false);
+    setRepeatOpen(false);
     setCustomOpen(false);
     setNotificationPermission(currentNotificationPermission());
     setError("");
@@ -210,15 +223,21 @@ export function DueDateControl({
     task.due_timezone,
     task.reminders,
     task.reminder_persistent,
+    task.recurrence,
   ]);
 
   useEffect(() => {
     if (!open) return;
     const closeOnOutside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || popoverRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.stopPropagation();
         setOpen(false);
         triggerRef.current?.focus();
       }
@@ -253,7 +272,7 @@ export function DueDateControl({
     positionPopover();
     window.addEventListener("resize", positionPopover);
     return () => window.removeEventListener("resize", positionPopover);
-  }, [open, tab, allDay, pointHasTime, reminderOpen, customOpen, error]);
+  }, [open, tab, allDay, pointHasTime, reminderOpen, repeatOpen, customOpen, error]);
 
   const dueFields: DueFields = {
     due_at: task.due_at,
@@ -274,12 +293,24 @@ export function DueDateControl({
       ];
   const status = getDueStatus(task.due_at, now);
   const draftAllDay = tab === "point" ? !pointHasTime : allDay;
+  const draftDueAnchor = tab === "point"
+    ? (pointDate ? fromZonedDateTime(pointDate, pointHasTime ? pointTime || "00:00" : "00:00", timeZone) : null)
+    : (endDate ? fromZonedDateTime(endDate, allDay ? "23:59" : (endTime || "00:00"), timeZone) : null);
   const reminderPresets = draftAllDay
     ? ALL_DAY_REMINDER_PRESETS
     : [
         ...TIMED_REMINDER_PRESETS,
         ...(tab === "range" ? [endReminderRule()] : []),
       ];
+
+  function selectRecurrence(freq: RecurrenceFreq | null) {
+    if (!draftDueAnchor && freq) {
+      setError("请先选择到期日期再设置重复");
+      return;
+    }
+    setRecurrence(freq ? recurrenceRule(freq) : null);
+    setError("");
+  }
 
   function toggleReminder(rule: ReminderRule) {
     const key = reminderRuleKey(rule);
@@ -390,19 +421,25 @@ export function DueDateControl({
         due_timezone: savedZone,
       };
     }
-    let normalized: ReminderRule[];
+    let normalizedReminders: ReminderRule[];
+    let normalizedRecurrence: TaskRecurrence | null;
     try {
-      normalized = normalizeReminderRules(reminders);
+      normalizedReminders = normalizeReminderRules(reminders);
+      normalizedRecurrence = normalizeRecurrence(recurrence);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "提醒设置无效");
+      setError(cause instanceof Error ? cause.message : "日程设置无效");
       return;
     }
-    if (normalized.length > 0) {
+    if (normalizedReminders.length > 0) {
       const permission = await requestWebNotificationPermission();
       setNotificationPermission(permission);
     }
-    const schedule = { reminders: normalized, persistent: persistent && normalized.length > 0 };
-    const hasExpiredReminder = normalized.some((rule) => {
+    const schedule = {
+      reminders: normalizedReminders,
+      persistent: persistent && normalizedReminders.length > 0,
+      recurrence: normalizedRecurrence,
+    };
+    const hasExpiredReminder = normalizedReminders.some((rule) => {
       const trigger = reminderTriggerAt({ ...task, ...patch }, rule);
       return trigger ? new Date(trigger).getTime() <= now.getTime() : false;
     });
@@ -427,7 +464,7 @@ export function DueDateControl({
         due_start_at: null,
         due_is_all_day: false,
         due_timezone: null,
-      }, { reminders: [], persistent: false });
+      }, { reminders: [], persistent: false, recurrence: null });
       setOpen(false);
     } finally {
       setBusy(false);
@@ -438,6 +475,7 @@ export function DueDateControl({
     <div className="detail-due-control" ref={rootRef}>
       <button
         ref={triggerRef}
+        type="button"
         className={status?.overdue ? "detail-due-trigger overdue" : "detail-due-trigger"}
         aria-label="设置到期时间"
         aria-haspopup="dialog"
@@ -449,7 +487,7 @@ export function DueDateControl({
         <span>{formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}</span>
         {status && <em>{status.label}</em>}
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={popoverRef}
           className="due-popover"
@@ -661,17 +699,60 @@ export function DueDateControl({
               type="button"
               aria-label="提醒"
               aria-expanded={reminderOpen}
-              onClick={() => setReminderOpen((value) => !value)}
+              onClick={() => {
+                setReminderOpen((value) => !value);
+                setRepeatOpen(false);
+              }}
             >
               <AlarmClock />
-              <span>{reminderSummary({ reminders, persistent }, draftAllDay)}</span>
+              <span>{reminderSummary({ reminders, persistent, recurrence: null }, draftAllDay)}</span>
               {reminders.length > 0 && <em>{reminders.length}</em>}
               <ChevronDown />
             </button>
-            <button type="button" aria-label="重复" aria-disabled="true" title="重复功能暂未开放">
-              <RotateCcw /><span>重复</span><em>暂未开放</em><ChevronRight />
+            <button
+              type="button"
+              aria-label="重复"
+              aria-expanded={repeatOpen}
+              className={recurrence ? "has-value" : undefined}
+              onClick={() => {
+                setRepeatOpen((value) => !value);
+                setReminderOpen(false);
+                setCustomOpen(false);
+              }}
+            >
+              <RotateCcw />
+              <span>{recurrenceSummary(recurrence, draftDueAnchor, timeZone)}</span>
+              <ChevronDown />
             </button>
           </div>
+          {repeatOpen && (
+            <section className="due-repeat-panel" aria-label="重复设置">
+              <div className="due-reminder-options">
+                {RECURRENCE_PRESETS.map((preset) => {
+                  const selected = (recurrence?.freq ?? null) === preset.freq;
+                  return (
+                    <button
+                      type="button"
+                      key={preset.label}
+                      aria-pressed={selected}
+                      onClick={() => selectRecurrence(preset.freq)}
+                    >
+                      <span>
+                        {preset.freq === "weekly" || preset.freq === "monthly" || preset.freq === "yearly"
+                          ? recurrenceSummary(
+                              preset.freq ? recurrenceRule(preset.freq) : null,
+                              draftDueAnchor,
+                              timeZone,
+                            )
+                          : preset.label}
+                      </span>
+                      {selected && <Check />}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
           {reminderOpen && (
             <section className="due-reminder-panel" aria-label="提醒设置">
               {!customOpen ? (
@@ -770,7 +851,8 @@ export function DueDateControl({
               {busy ? "保存中…" : "确定"}
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

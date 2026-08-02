@@ -8,6 +8,7 @@ import {
   getPublicAppUrl,
   getSsoStateSecret,
   isPhoneAlreadyRegisteredError,
+  normalizeDingtalkAvatarUrl,
   normalizeMainlandMobile,
   parsePublicConfig,
   placeholderDingtalkEmail,
@@ -266,6 +267,7 @@ export default {
       const displayName =
         dingtalkUser.nick?.trim() ||
         (phone ? phone.replace(/^\+86(\d{3})\d{4}(\d{4})$/, "$1****$2") : "钉钉用户");
+      const avatarUrl = normalizeDingtalkAvatarUrl(dingtalkUser.avatarUrl);
 
       let userId: string | null = null;
 
@@ -324,22 +326,21 @@ export default {
       }
 
       if (!userId) {
+        const userMetadata = {
+          display_name: displayName,
+          dingtalk_union_id: subject,
+          ...(avatarUrl ? { avatar_url: avatarUrl } : {}),
+        };
         const createPayload = phone
           ? {
               phone,
               phone_confirm: true,
-              user_metadata: {
-                display_name: displayName,
-                dingtalk_union_id: subject,
-              },
+              user_metadata: userMetadata,
             }
           : {
               email: placeholderDingtalkEmail(subject),
               email_confirm: true,
-              user_metadata: {
-                display_name: displayName,
-                dingtalk_union_id: subject,
-              },
+              user_metadata: userMetadata,
             };
         const { data: created, error: createError } = await ctx.supabaseAdmin.auth.admin
           .createUser(createPayload);
@@ -379,17 +380,27 @@ export default {
 
       const { data: existingProfile, error: profileLookupError } = await ctx.supabaseAdmin
         .from("profiles")
-        .select("display_name_customized_at")
+        .select("display_name_customized_at, avatar_url")
         .eq("id", userId)
         .maybeSingle();
       if (profileLookupError) return jsonError("无法查询用户资料", 500);
+
+      const profileUpdate: {
+        id: string;
+        display_name?: string;
+        avatar_url?: string;
+      } = { id: userId };
       if (!existingProfile?.display_name_customized_at) {
+        profileUpdate.display_name = displayName;
+      }
+      // Seed DingTalk avatar only when the user has not set one yet.
+      if (avatarUrl && !existingProfile?.avatar_url?.trim()) {
+        profileUpdate.avatar_url = avatarUrl;
+      }
+      if (profileUpdate.display_name !== undefined || profileUpdate.avatar_url !== undefined) {
         const { error: profileError } = await ctx.supabaseAdmin
           .from("profiles")
-          .upsert({
-            id: userId,
-            display_name: displayName,
-          }, { onConflict: "id" });
+          .upsert(profileUpdate, { onConflict: "id" });
         if (profileError) return jsonError("无法更新用户资料", 500);
       }
 

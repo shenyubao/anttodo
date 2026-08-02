@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(19);
+select plan(25);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -37,7 +37,8 @@ insert into public.labels(
   ('94000000-0000-0000-0000-000000000002', '92000000-0000-0000-0000-000000000001', null, 'Private label', 'private', 'users', 'users', false, '91000000-0000-0000-0000-000000000001'),
   ('94000000-0000-0000-0000-000000000003', '92000000-0000-0000-0000-000000000001', null, 'All managers', 'team', 'all', 'all', false, '91000000-0000-0000-0000-000000000001'),
   ('94000000-0000-0000-0000-000000000004', '92000000-0000-0000-0000-000000000001', '94000000-0000-0000-0000-000000000003', 'Restricted child', 'team', 'users', 'users', true, '91000000-0000-0000-0000-000000000001'),
-  ('94000000-0000-0000-0000-000000000006', '92000000-0000-0000-0000-000000000001', '94000000-0000-0000-0000-000000000001', 'Inherited child', 'team', 'inherit', 'inherit', true, '91000000-0000-0000-0000-000000000001');
+  ('94000000-0000-0000-0000-000000000006', '92000000-0000-0000-0000-000000000001', '94000000-0000-0000-0000-000000000001', 'Inherited child', 'team', 'inherit', 'inherit', true, '91000000-0000-0000-0000-000000000001'),
+  ('94000000-0000-0000-0000-000000000007', '92000000-0000-0000-0000-000000000001', null, 'Member private', 'private', 'users', 'users', false, '91000000-0000-0000-0000-000000000002');
 
 insert into public.labels(id, workspace_id, name, inherit_permissions, created_by)
 values ('94000000-0000-0000-0000-000000000005', '92000000-0000-0000-0000-000000000001', 'Default private', false, '91000000-0000-0000-0000-000000000001');
@@ -53,10 +54,12 @@ insert into public.label_user_acl(label_id, workspace_id, user_id, permission) v
   ('94000000-0000-0000-0000-000000000004', '92000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000002', 'view');
 
 insert into public.tasks(id, workspace_id, title, created_by) values
-  ('95000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001', 'Strict intersection', '91000000-0000-0000-0000-000000000001');
+  ('95000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001', 'Strict intersection', '91000000-0000-0000-0000-000000000001'),
+  ('95000000-0000-0000-0000-000000000002', '92000000-0000-0000-0000-000000000001', 'Member private task', '91000000-0000-0000-0000-000000000002');
 insert into public.task_labels(task_id, label_id) values
   ('95000000-0000-0000-0000-000000000001', '94000000-0000-0000-0000-000000000001'),
-  ('95000000-0000-0000-0000-000000000001', '94000000-0000-0000-0000-000000000003');
+  ('95000000-0000-0000-0000-000000000001', '94000000-0000-0000-0000-000000000003'),
+  ('95000000-0000-0000-0000-000000000002', '94000000-0000-0000-0000-000000000007');
 
 select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000002'), 1, 'group grants view');
 select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000003'), 2, 'group grants management');
@@ -67,6 +70,8 @@ select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-00
 select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000004', '91000000-0000-0000-0000-000000000003'), 0, 'child can further restrict inherited access');
 select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000006', '91000000-0000-0000-0000-000000000002'), 1, 'inherited visibility follows the parent view grant');
 select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000006', '91000000-0000-0000-0000-000000000003'), 2, 'inherited management follows the parent edit grant');
+select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000007', '91000000-0000-0000-0000-000000000001'), 0, 'workspace owner cannot see another member private label');
+select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000007', '91000000-0000-0000-0000-000000000002'), 2, 'private label creator still manages as a member');
 
 delete from public.user_group_members
 where group_id = '93000000-0000-0000-0000-000000000001'
@@ -76,8 +81,17 @@ select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-00
 select set_config('request.jwt.claims', '{"sub":"91000000-0000-0000-0000-000000000003","role":"authenticated"}', true);
 select ok(anttodo_private.can_edit_task('95000000-0000-0000-0000-000000000001'), 'manager can edit a task when every label allows edit');
 
+update public.workspace_members
+set role = 'admin'
+where workspace_id = '92000000-0000-0000-0000-000000000001'
+  and user_id = '91000000-0000-0000-0000-000000000003';
+select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000003'), 2, 'workspace admin still manages team labels');
+select is(anttodo_private.label_permission_level_for_user('94000000-0000-0000-0000-000000000007', '91000000-0000-0000-0000-000000000003'), 0, 'workspace admin cannot see another member private label');
+select set_config('request.jwt.claims', '{"sub":"91000000-0000-0000-0000-000000000003","role":"authenticated"}', true);
+select ok(not anttodo_private.can_view_task('95000000-0000-0000-0000-000000000002'), 'admin cannot view a task on another member private label');
+
 select set_config('request.jwt.claims', '{"sub":"91000000-0000-0000-0000-000000000001","role":"authenticated"}', true);
-select is(anttodo_private.label_permission_level('94000000-0000-0000-0000-000000000001'), 2, 'workspace owner always manages labels');
+select is(anttodo_private.label_permission_level('94000000-0000-0000-0000-000000000001'), 2, 'workspace owner always manages team labels');
 select lives_ok(
   $$select public.update_label_with_access(
     '94000000-0000-0000-0000-000000000001', 'Updated group label', '#b8bdc8',
@@ -105,6 +119,11 @@ select is((select count(*)::integer from public.label_group_acl where group_id =
 select set_config('request.jwt.claims', '{"sub":"91000000-0000-0000-0000-000000000002","role":"authenticated"}', true);
 set local role authenticated;
 select is((select count(*)::integer from public.labels where workspace_id = '92000000-0000-0000-0000-000000000001' and id = '94000000-0000-0000-0000-000000000002'), 0, 'RLS hides private labels from members');
+
+reset role;
+select set_config('request.jwt.claims', '{"sub":"91000000-0000-0000-0000-000000000003","role":"authenticated"}', true);
+set local role authenticated;
+select is((select count(*)::integer from public.labels where workspace_id = '92000000-0000-0000-0000-000000000001' and id = '94000000-0000-0000-0000-000000000007'), 0, 'RLS hides another member private labels from admins');
 
 select * from finish();
 rollback;

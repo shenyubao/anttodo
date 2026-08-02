@@ -1,4 +1,5 @@
 import dagre from "@dagrejs/dagre";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   Background,
   BackgroundVariant,
@@ -29,13 +30,18 @@ import {
   ChevronRight,
   Circle,
   Crosshair,
+  FolderClosed,
+  FolderOpen,
   LoaderCircle,
+  LockKeyhole,
   Menu,
   Maximize2,
   NotebookPen,
   Plus,
+  Settings2,
   Tag,
   Trash2,
+  ChevronsUpDown,
 } from "lucide-react";
 import {
   useCallback,
@@ -46,13 +52,22 @@ import {
   type CSSProperties,
   type FormEvent,
 } from "react";
+import { hasExplicitLabelColor } from "./lib/labels";
 import {
   buildMindMapTree,
-  moveTaskToDate,
+  classifyTaskSchedule,
+  DEFAULT_MIND_MAP_LABEL_DISPLAY_MODE,
+  MIND_MAP_LABEL_DISPLAY_OPTIONS,
+  moveTaskToSchedule,
+  resolveMindMapDropAssignment,
+  scheduleTargetFromNode,
+  scheduleTargetKey,
+  type MindMapLabelDisplayMode,
   type MindMapNodeKind,
+  type MindMapScheduleLevel,
   type MindMapTreeNode,
 } from "./lib/mindMap";
-import type { DateTimePreferences, Task, WorkspaceBundle } from "./types";
+import type { DateTimePreferences, Label, Task, WorkspaceBundle } from "./types";
 
 type CreateTaskInput = {
   title: string;
@@ -66,16 +81,16 @@ type MindMapNodeData = {
   kind: MindMapNodeKind;
   label: string;
   dateKey?: string;
+  dateEndKey?: string;
+  scheduleLevel?: MindMapScheduleLevel;
   contextKey?: string;
   labelId?: string;
   labelColor?: string;
   task?: Task;
   online: boolean;
   draft?: boolean;
-  draftValue?: string;
   draftBusy?: boolean;
-  onDraftChange?: (value: string) => void;
-  onDraftSubmit?: () => void;
+  onDraftSubmit?: (title: string) => void;
   onDraftCancel?: () => void;
   onToggleTask?: (task: Task) => void;
   collapsible?: boolean;
@@ -88,25 +103,145 @@ type MindMapFlowEdge = Edge<Record<string, never>, "mindmap">;
 
 const NODE_SIZES: Record<MindMapNodeKind, { width: number; height: number }> = {
   root: { width: 150, height: 48 },
-  month: { width: 132, height: 38 },
-  week: { width: 212, height: 38 },
-  day: { width: 154, height: 38 },
-  inbox: { width: 132, height: 38 },
-  unscheduled: { width: 132, height: 38 },
-  label: { width: 178, height: 42 },
+  month: { width: 96, height: 38 },
+  week: { width: 148, height: 38 },
+  day: { width: 112, height: 38 },
+  inbox: { width: 112, height: 38 },
+  unscheduled: { width: 112, height: 38 },
+  label: { width: 120, height: 42 },
   task: { width: 224, height: 42 },
 };
 
 const DATE_NODE_KINDS = new Set<MindMapNodeKind>(["month", "week", "day"]);
+const LABEL_NODE_MAX_WIDTH = 280;
+const MIND_MAP_UI_FONT =
+  '"Color Emoji", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
 /** Horizontal gap between parent/child ranks. Original dagre ranksep was 72. */
-const MIND_MAP_RANK_GAP = Math.round(72 * 0.25);
+const MIND_MAP_RANK_GAP = Math.round(72 * 0.45);
+/** Distance from parent handle to the shared vertical fork stem. */
+const MIND_MAP_EDGE_STEM = Math.round(MIND_MAP_RANK_GAP / 2);
+/** Vertical gap between sibling nodes in the packed tree layout. */
+const MIND_MAP_NODE_GAP = 18;
+
+let textMeasureCanvas: HTMLCanvasElement | null = null;
+
+function measureMindMapTextWidth(text: string, font: string) {
+  if (typeof document === "undefined") {
+    return Math.ceil([...text].reduce((width, char) => (
+      width + (/[\u0020-\u007e]/.test(char) ? 7.2 : 13)
+    ), 0));
+  }
+  textMeasureCanvas ??= document.createElement("canvas");
+  const context = textMeasureCanvas.getContext("2d");
+  if (!context) {
+    return Math.ceil([...text].reduce((width, char) => (
+      width + (/[\u0020-\u007e]/.test(char) ? 7.2 : 13)
+    ), 0));
+  }
+  context.font = font;
+  return Math.ceil(context.measureText(text).width);
+}
+
+function mindMapNodeFont(kind: MindMapNodeKind) {
+  const size = kind === "root" ? 15 : 13;
+  const weight = kind === "root" || kind === "month" || kind === "label"
+    ? 600
+    : kind === "day" || kind === "inbox" || kind === "unscheduled"
+      ? 500
+      : 400;
+  return `${weight} ${size}px ${MIND_MAP_UI_FONT}`;
+}
+
+function mindMapNodeChromeWidth(kind: MindMapNodeKind, collapsible: boolean) {
+  const compactPad = DATE_NODE_KINDS.has(kind) || kind === "task";
+  const padding = compactPad ? 20 : 26;
+  const icon = DATE_NODE_KINDS.has(kind)
+    ? 21
+    : kind === "label"
+      ? 23
+      : kind === "task"
+        ? 30
+        : 0;
+  const collapse = collapsible ? 22 : 0;
+  return padding + icon + collapse;
+}
+
+function contentWidthForNode(
+  kind: MindMapNodeKind,
+  label: string,
+  collapsible: boolean,
+) {
+  const textWidth = measureMindMapTextWidth(label, mindMapNodeFont(kind));
+  // +2px absorbs sub-pixel/font metric differences against canvas measureText.
+  const width = textWidth + mindMapNodeChromeWidth(kind, collapsible) + 2;
+  const minWidth = NODE_SIZES[kind].width;
+  if (kind === "label") {
+    return Math.min(LABEL_NODE_MAX_WIDTH, Math.max(minWidth, width));
+  }
+  if (kind === "task") {
+    return Math.min(LABEL_NODE_MAX_WIDTH, Math.max(minWidth, width));
+  }
+  return Math.max(minWidth, width);
+}
+
+function nodeDepthById(nodes: MindMapFlowNode[], edges: MindMapFlowEdge[]) {
+  const depthById = new Map<string, number>();
+  const childrenByParent = new Map<string, string[]>();
+  const childIds = new Set<string>();
+  edges.forEach((edge) => {
+    childIds.add(edge.target);
+    const children = childrenByParent.get(edge.source) ?? [];
+    children.push(edge.target);
+    childrenByParent.set(edge.source, children);
+  });
+  const roots = nodes.filter((node) => !childIds.has(node.id));
+  const queue = roots.map((node) => node.id);
+  roots.forEach((node) => depthById.set(node.id, 0));
+  while (queue.length) {
+    const id = queue.shift()!;
+    const depth = depthById.get(id) ?? 0;
+    for (const childId of childrenByParent.get(id) ?? []) {
+      if (depthById.has(childId)) continue;
+      depthById.set(childId, depth + 1);
+      queue.push(childId);
+    }
+  }
+  return depthById;
+}
+
+function resolveNodeSizes(nodes: MindMapFlowNode[], edges: MindMapFlowEdge[]) {
+  const sizeById = new Map<string, { width: number; height: number }>();
+  const depthById = nodeDepthById(nodes, edges);
+  const sharedWidthByDepth = new Map<number, number>();
+
+  nodes.forEach((node) => {
+    const kind = node.type ?? "task";
+    const depth = depthById.get(node.id) ?? 0;
+    const width = contentWidthForNode(kind, node.data.label, !!node.data.collapsible);
+    sharedWidthByDepth.set(depth, Math.max(sharedWidthByDepth.get(depth) ?? 0, width));
+  });
+
+  nodes.forEach((node) => {
+    const kind = node.type ?? "task";
+    const depth = depthById.get(node.id) ?? 0;
+    sizeById.set(node.id, {
+      width: sharedWidthByDepth.get(depth) ?? NODE_SIZES[kind].width,
+      height: NODE_SIZES[kind].height,
+    });
+  });
+
+  return sizeById;
+}
 
 function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [draftTitle, setDraftTitle] = useState("");
 
   useEffect(() => {
-    if (data.draft) inputRef.current?.focus();
+    if (!data.draft) return;
+    setDraftTitle("");
+    inputRef.current?.focus();
   }, [data.draft]);
 
   const collapseIndicator = data.collapsible ? (
@@ -158,17 +293,17 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
             className="mind-map-draft-form nodrag nopan"
             onSubmit={(event: FormEvent) => {
               event.preventDefault();
-              data.onDraftSubmit?.();
+              data.onDraftSubmit?.(draftTitle);
             }}
           >
             {data.draftBusy ? <LoaderCircle className="mind-map-node-spinner" /> : <Circle />}
             <input
               ref={inputRef}
-              value={data.draftValue ?? ""}
+              value={draftTitle}
               placeholder="输入待办标题"
               aria-label="新待办标题"
               disabled={data.draftBusy}
-              onChange={(event) => data.onDraftChange?.(event.target.value)}
+              onChange={(event) => setDraftTitle(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   event.preventDefault();
@@ -225,6 +360,9 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
 }
 
 function MindMapEdgeView(props: EdgeProps<MindMapFlowEdge>) {
+  // Bend at a fixed offset from the parent so siblings share one vertical stem.
+  // The default midpoint uses each target's X, which drifts when same-rank nodes
+  // differ in width.
   const [path] = getSmoothStepPath({
     sourceX: props.sourceX,
     sourceY: props.sourceY,
@@ -233,7 +371,8 @@ function MindMapEdgeView(props: EdgeProps<MindMapFlowEdge>) {
     targetY: props.targetY,
     targetPosition: props.targetPosition,
     borderRadius: 4,
-    offset: Math.max(4, Math.round(MIND_MAP_RANK_GAP / 3)),
+    offset: MIND_MAP_EDGE_STEM,
+    centerX: props.sourceX + MIND_MAP_EDGE_STEM,
   });
   return <BaseEdge {...props} path={path} />;
 }
@@ -254,10 +393,16 @@ function layoutTree(
   tree: MindMapTreeNode,
   nodeData: Omit<
     MindMapNodeData,
-    "kind" | "label" | "dateKey" | "contextKey" | "labelId" | "labelColor" | "task"
-      | "collapsible" | "collapsed"
+    "kind" | "label" | "dateKey" | "dateEndKey" | "scheduleLevel" | "contextKey"
+      | "labelId" | "labelColor" | "task" | "collapsible" | "collapsed"
   >,
-  draft: { parentId: string; dateKey: string | null; labelId: string | null } | null,
+  draft: {
+    parentId: string;
+    dateKey: string | null;
+    dateEndKey?: string | null;
+    scheduleLevel?: MindMapScheduleLevel | null;
+    labelId: string | null;
+  } | null,
   collapsedNodeIds: ReadonlySet<string>,
 ) {
   const nodes: MindMapFlowNode[] = [];
@@ -286,6 +431,8 @@ function layoutTree(
         kind: item.kind,
         label: item.label,
         dateKey: item.dateKey,
+        dateEndKey: item.dateEndKey,
+        scheduleLevel: item.scheduleLevel,
         contextKey: item.contextKey,
         labelId: item.labelId,
         labelColor: item.labelColor,
@@ -342,33 +489,56 @@ function layoutTree(
     });
   }
 
+  const sizeById = resolveNodeSizes(nodes, edges);
+  nodes.forEach((node) => {
+    const size = sizeById.get(node.id) ?? NODE_SIZES[node.type ?? "task"];
+    node.width = size.width;
+    node.height = size.height;
+  });
+
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   graph.setGraph({
     rankdir: "LR",
     ranksep: MIND_MAP_RANK_GAP,
-    nodesep: 18,
+    nodesep: MIND_MAP_NODE_GAP,
     edgesep: 8,
     marginx: 32,
     marginy: 32,
   });
   nodes.forEach((node) => {
     // Dagre mutates the node label with its calculated coordinates. Each node
-    // must therefore receive its own dimensions object instead of sharing the
-    // object stored in NODE_SIZES with every node of the same kind.
-    graph.setNode(node.id, { ...NODE_SIZES[node.type ?? "task"] });
+    // must therefore receive its own dimensions object instead of sharing a
+    // cached size object across nodes.
+    const size = sizeById.get(node.id) ?? NODE_SIZES[node.type ?? "task"];
+    graph.setNode(node.id, { ...size });
   });
   edges.forEach((edge) => graph.setEdge(edge.source, edge.target));
   dagre.layout(graph);
 
   // Dagre can insert dummy ranks for edge routing; pack real ranks so the
   // visible parent→child connector length matches MIND_MAP_RANK_GAP.
-  const sizeById = new Map(nodes.map((node) => [node.id, NODE_SIZES[node.type ?? "task"]]));
   const rankGroups = new Map<number, string[]>();
   nodes.forEach((node) => {
     const rank = graph.node(node.id).rank ?? 0;
     const group = rankGroups.get(rank) ?? [];
     group.push(node.id);
     rankGroups.set(rank, group);
+  });
+  // Same visual column (rank) shares one width so day/task/label siblings align.
+  rankGroups.forEach((ids) => {
+    const rankWidth = ids.reduce(
+      (max, id) => Math.max(max, sizeById.get(id)?.width ?? 0),
+      0,
+    );
+    ids.forEach((id) => {
+      const current = sizeById.get(id);
+      if (!current) return;
+      sizeById.set(id, { ...current, width: rankWidth });
+    });
+  });
+  nodes.forEach((node) => {
+    const size = sizeById.get(node.id);
+    if (size) node.width = size.width;
   });
   const packedCenterX = new Map<number, number>();
   let cursorX = 32;
@@ -383,6 +553,54 @@ function layoutTree(
     cursorX += rankWidth;
   });
 
+  // Dagre reorders siblings for edge crossing; re-pack Y from the tree's
+  // insertion order so chronological children (weeks/days/…) stay top→bottom.
+  const childrenByParent = new Map<string, string[]>();
+  edges.forEach((edge) => {
+    const children = childrenByParent.get(edge.source) ?? [];
+    children.push(edge.target);
+    childrenByParent.set(edge.source, children);
+  });
+  const topById = new Map<string, number>();
+  const subtreeHeightById = new Map<string, number>();
+  const measureSubtreeHeight = (id: string): number => {
+    const cached = subtreeHeightById.get(id);
+    if (cached !== undefined) return cached;
+    const size = sizeById.get(id) ?? NODE_SIZES.task;
+    const children = childrenByParent.get(id) ?? [];
+    const height = children.length === 0
+      ? size.height
+      : Math.max(
+        size.height,
+        children.reduce((total, childId, index) => (
+          total + measureSubtreeHeight(childId) + (index > 0 ? MIND_MAP_NODE_GAP : 0)
+        ), 0),
+      );
+    subtreeHeightById.set(id, height);
+    return height;
+  };
+  const placeSubtree = (id: string, top: number) => {
+    const size = sizeById.get(id) ?? NODE_SIZES.task;
+    const children = childrenByParent.get(id) ?? [];
+    if (!children.length) {
+      topById.set(id, top);
+      return;
+    }
+    let childTop = top;
+    children.forEach((childId, index) => {
+      if (index > 0) childTop += MIND_MAP_NODE_GAP;
+      placeSubtree(childId, childTop);
+      childTop += measureSubtreeHeight(childId);
+    });
+    const firstTop = topById.get(children[0]) ?? top;
+    const lastChild = children[children.length - 1];
+    const lastSize = sizeById.get(lastChild) ?? NODE_SIZES.task;
+    const lastTop = topById.get(lastChild) ?? top;
+    const childrenMid = (firstTop + lastTop + lastSize.height) / 2;
+    topById.set(id, childrenMid - size.height / 2);
+  };
+  placeSubtree(tree.id, 32);
+
   return {
     nodes: nodes.map((node) => {
       const position = graph.node(node.id);
@@ -392,7 +610,7 @@ function layoutTree(
         ...node,
         position: {
           x: (packedCenterX.get(rank) ?? position.x) - size.width / 2,
-          y: position.y - size.height / 2,
+          y: topById.get(node.id) ?? position.y - size.height / 2,
         },
       };
     }),
@@ -439,6 +657,287 @@ function storeCollapsedNodes(workspaceId: string, collapsedNodeIds: ReadonlySet<
   }
 }
 
+function hiddenLabelsStorageKey(workspaceId: string) {
+  return `anttodo:mind-map-hidden-labels:${workspaceId}`;
+}
+
+function storedHiddenLabelIds(workspaceId: string) {
+  try {
+    const value: unknown = JSON.parse(
+      window.localStorage.getItem(hiddenLabelsStorageKey(workspaceId)) ?? "[]",
+    );
+    return new Set(
+      Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function storeHiddenLabelIds(workspaceId: string, hiddenLabelIds: ReadonlySet<string>) {
+  try {
+    window.localStorage.setItem(
+      hiddenLabelsStorageKey(workspaceId),
+      JSON.stringify([...hiddenLabelIds]),
+    );
+  } catch {
+    // A disabled or full local storage should not block the mind map interaction.
+  }
+}
+
+function labelDisplayStorageKey(workspaceId: string) {
+  return `anttodo:mind-map-label-display:${workspaceId}`;
+}
+
+function storedLabelDisplayMode(workspaceId: string): MindMapLabelDisplayMode {
+  try {
+    const value = window.localStorage.getItem(labelDisplayStorageKey(workspaceId));
+    if (MIND_MAP_LABEL_DISPLAY_OPTIONS.some((option) => option.value === value)) {
+      return value as MindMapLabelDisplayMode;
+    }
+  } catch {
+    // Ignore unavailable local storage.
+  }
+  return DEFAULT_MIND_MAP_LABEL_DISPLAY_MODE;
+}
+
+function storeLabelDisplayMode(workspaceId: string, mode: MindMapLabelDisplayMode) {
+  try {
+    window.localStorage.setItem(labelDisplayStorageKey(workspaceId), mode);
+  } catch {
+    // A disabled or full local storage should not block the mind map interaction.
+  }
+}
+
+function MindMapDisplayLabelTree({
+  labels,
+  hiddenLabelIds,
+  collapsed,
+  onToggleCollapsed,
+  onToggleVisible,
+  parentId = null,
+  depth = 0,
+}: {
+  labels: Label[];
+  hiddenLabelIds: ReadonlySet<string>;
+  collapsed: Record<string, boolean>;
+  onToggleCollapsed: (labelId: string) => void;
+  onToggleVisible: (labelId: string) => void;
+  parentId?: string | null;
+  depth?: number;
+}) {
+  const labelIds = new Set(labels.map((label) => label.id));
+  const children = labels
+    .filter((label) => label.parent_id === parentId
+      || (parentId === null && label.parent_id !== null && !labelIds.has(label.parent_id)))
+    .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+
+  return children.map((label) => {
+    const hasChildren = labels.some((candidate) => candidate.parent_id === label.id);
+    const isCollapsed = collapsed[label.id] ?? false;
+    const visible = !hiddenLabelIds.has(label.id);
+
+    return (
+      <div
+        key={label.id}
+        className="mind-map-display-label-node"
+        role="treeitem"
+        aria-expanded={hasChildren ? !isCollapsed : undefined}
+      >
+        <div
+          className={clsx("mind-map-display-label-row", visible && "visible")}
+          style={{ paddingLeft: 12 + depth * 16 }}
+        >
+          <button
+            type="button"
+            className="mind-map-display-label-main"
+            aria-pressed={visible}
+            onClick={() => onToggleVisible(label.id)}
+          >
+            <span
+              className={clsx("label-type-icon", hasChildren && "label-group-icon")}
+              onClick={hasChildren
+                ? (event) => {
+                    event.stopPropagation();
+                    onToggleCollapsed(label.id);
+                  }
+                : undefined}
+            >
+              {hasChildren
+                ? (isCollapsed ? <FolderClosed /> : <FolderOpen />)
+                : <Tag />}
+            </span>
+            <span className="label-name">{label.name}</span>
+            {label.kind === "private" && <LockKeyhole size={12} aria-hidden="true" />}
+            {hasExplicitLabelColor(label.color) && (
+              <i
+                className="label-color-dot"
+                style={{ backgroundColor: label.color }}
+                aria-hidden="true"
+              />
+            )}
+          </button>
+          <label className="mind-map-display-label-check">
+            <span className="sr-only">显示{label.name}</span>
+            <input
+              type="checkbox"
+              checked={visible}
+              onChange={() => onToggleVisible(label.id)}
+            />
+          </label>
+        </div>
+        {hasChildren && !isCollapsed && (
+          <div role="group">
+            <MindMapDisplayLabelTree
+              labels={labels}
+              hiddenLabelIds={hiddenLabelIds}
+              collapsed={collapsed}
+              onToggleCollapsed={onToggleCollapsed}
+              onToggleVisible={onToggleVisible}
+              parentId={label.id}
+              depth={depth + 1}
+            />
+          </div>
+        )}
+      </div>
+    );
+  });
+}
+
+function MindMapDisplaySettingsDialog({
+  labels,
+  hiddenLabelIds,
+  labelDisplayMode,
+  onToggleVisible,
+  onShowAll,
+  onHideAll,
+  onLabelDisplayModeChange,
+  onClose,
+}: {
+  labels: Label[];
+  hiddenLabelIds: ReadonlySet<string>;
+  labelDisplayMode: MindMapLabelDisplayMode;
+  onToggleVisible: (labelId: string) => void;
+  onShowAll: () => void;
+  onHideAll: () => void;
+  onLabelDisplayModeChange: (mode: MindMapLabelDisplayMode) => void;
+  onClose: () => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [labelPickerOpen, setLabelPickerOpen] = useState(false);
+  const hiddenCount = labels.reduce(
+    (count, label) => count + (hiddenLabelIds.has(label.id) ? 1 : 0),
+    0,
+  );
+  const selectedCount = labels.length - hiddenCount;
+
+  return (
+    <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog-content mind-map-display-dialog">
+          <Dialog.Title>显示设置</Dialog.Title>
+          <Dialog.Description className="sr-only">
+            调整思维导图标签展示与可见标签。
+          </Dialog.Description>
+          <section
+            className="mind-map-display-section mind-map-display-mode-section"
+            aria-labelledby="mind-map-display-mode"
+          >
+            <label className="mind-map-display-mode-row" htmlFor="mind-map-label-display">
+              <span id="mind-map-display-mode">标签展示</span>
+              <span className="mind-map-display-select-wrap">
+                <select
+                  id="mind-map-label-display"
+                  aria-label="标签展示"
+                  value={labelDisplayMode}
+                  onChange={(event) => {
+                    onLabelDisplayModeChange(event.target.value as MindMapLabelDisplayMode);
+                  }}
+                >
+                  {MIND_MAP_LABEL_DISPLAY_OPTIONS.map((option) => (
+                    <option value={option.value} key={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <ChevronsUpDown aria-hidden="true" />
+              </span>
+            </label>
+          </section>
+          <section
+            className="mind-map-display-section"
+            aria-labelledby="mind-map-display-labels"
+          >
+            <div className="mind-map-display-section-header">
+              <button
+                type="button"
+                id="mind-map-display-labels"
+                className="mind-map-display-section-toggle"
+                aria-expanded={labelPickerOpen}
+                aria-controls="mind-map-display-label-picker"
+                onClick={() => setLabelPickerOpen((open) => !open)}
+              >
+                {labelPickerOpen ? <ChevronDown /> : <ChevronRight />}
+                <span>标签选择</span>
+                <em>
+                  {labels.length === 0
+                    ? "暂无标签"
+                    : `已选 ${selectedCount}/${labels.length}`}
+                </em>
+              </button>
+              {labelPickerOpen && (
+                <div className="mind-map-display-section-actions">
+                  <button
+                    type="button"
+                    className="mind-map-display-link"
+                    disabled={labels.length === 0 || hiddenCount === 0}
+                    onClick={onShowAll}
+                  >
+                    全选
+                  </button>
+                  <button
+                    type="button"
+                    className="mind-map-display-link"
+                    disabled={labels.length === 0 || hiddenCount === labels.length}
+                    onClick={onHideAll}
+                  >
+                    全不选
+                  </button>
+                </div>
+              )}
+            </div>
+            {labelPickerOpen && (
+              <div
+                id="mind-map-display-label-picker"
+                className="mind-map-display-label-tree"
+                role="tree"
+                aria-label="标签树"
+              >
+                {labels.length === 0 ? (
+                  <p className="mind-map-display-empty">暂无标签</p>
+                ) : (
+                  <MindMapDisplayLabelTree
+                    labels={labels}
+                    hiddenLabelIds={hiddenLabelIds}
+                    collapsed={collapsed}
+                    onToggleCollapsed={(labelId) => setCollapsed((current) => ({
+                      ...current,
+                      [labelId]: !current[labelId],
+                    }))}
+                    onToggleVisible={onToggleVisible}
+                  />
+                )}
+              </div>
+            )}
+          </section>
+          <div className="mind-map-display-actions">
+            <button type="button" className="button primary" onClick={onClose}>完成</button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 function createdTaskId(result: unknown) {
   if (typeof result === "string") return result;
   if (typeof result === "object" && result && "id" in result) return String(result.id);
@@ -481,9 +980,10 @@ function MindMapCanvas({
   const [draft, setDraft] = useState<{
     parentId: string;
     dateKey: string | null;
+    dateEndKey?: string | null;
+    scheduleLevel?: MindMapScheduleLevel | null;
     labelId: string | null;
   } | null>(null);
-  const [draftValue, setDraftValue] = useState("");
   const [draftBusy, setDraftBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -493,8 +993,15 @@ function MindMapCanvas({
   const [contextBusy, setContextBusy] = useState(false);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [displaySettingsOpen, setDisplaySettingsOpen] = useState(false);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(
     () => storedCollapsedNodes(workspaceId),
+  );
+  const [hiddenLabelIds, setHiddenLabelIds] = useState<Set<string>>(
+    () => storedHiddenLabelIds(workspaceId),
+  );
+  const [labelDisplayMode, setLabelDisplayMode] = useState<MindMapLabelDisplayMode>(
+    () => storedLabelDisplayMode(workspaceId),
   );
 
   const toggleNodeCollapse = useCallback((nodeId: string) => {
@@ -507,12 +1014,49 @@ function MindMapCanvas({
     });
   }, [workspaceId]);
 
+  const toggleLabelVisible = useCallback((labelId: string) => {
+    setHiddenLabelIds((current) => {
+      const next = new Set(current);
+      if (next.has(labelId)) next.delete(labelId);
+      else next.add(labelId);
+      storeHiddenLabelIds(workspaceId, next);
+      return next;
+    });
+  }, [workspaceId]);
+
+  const showAllLabels = useCallback(() => {
+    setHiddenLabelIds(() => {
+      const next = new Set<string>();
+      storeHiddenLabelIds(workspaceId, next);
+      return next;
+    });
+  }, [workspaceId]);
+
+  const hideAllLabels = useCallback(() => {
+    setHiddenLabelIds(() => {
+      const next = new Set(bundle.labels.map((label) => label.id));
+      storeHiddenLabelIds(workspaceId, next);
+      return next;
+    });
+  }, [bundle.labels, workspaceId]);
+
+  const changeLabelDisplayMode = useCallback((mode: MindMapLabelDisplayMode) => {
+    setLabelDisplayMode(mode);
+    storeLabelDisplayMode(workspaceId, mode);
+  }, [workspaceId]);
+
+  const visibleLabels = useMemo(
+    () => bundle.labels.filter((label) => !hiddenLabelIds.has(label.id)),
+    [bundle.labels, hiddenLabelIds],
+  );
+
   const tree = useMemo(() => buildMindMapTree({
     tasks: bundle.tasks,
-    labels: bundle.labels,
+    labels: visibleLabels,
     preferences: dateTimePreferences,
     focusDateKey,
-  }), [bundle.labels, bundle.tasks, dateTimePreferences, focusDateKey]);
+    labelDisplayMode,
+  }), [bundle.tasks, dateTimePreferences, focusDateKey, labelDisplayMode, visibleLabels]);
 
   const toggleTask = useCallback(async (task: Task) => {
     if (!online || task.kind === "note") return;
@@ -527,55 +1071,56 @@ function MindMapCanvas({
     }
   }, [onUpdateTask, online]);
 
-  const submitDraft = useCallback(async () => {
-    const title = draftValue.trim();
+  const submitDraft = useCallback(async (titleRaw: string) => {
+    const title = titleRaw.trim();
     if (!title || !online || draftBusy || !draft) return;
     setDraftBusy(true);
     setError("");
     try {
-      const duePatch = draft.dateKey
-        ? moveTaskToDate({
-          due_at: null,
-          due_start_at: null,
-          due_is_all_day: false,
-          due_timezone: null,
-        } as Task, draft.dateKey)
-        : null;
+      const duePatch = moveTaskToSchedule({
+        due_at: null,
+        due_start_at: null,
+        due_is_all_day: false,
+        due_timezone: null,
+      } as Task, scheduleTargetFromNode({
+        kind: draft.scheduleLevel ?? "day",
+        dateKey: draft.dateKey ?? undefined,
+        dateEndKey: draft.dateEndKey ?? undefined,
+        scheduleLevel: draft.scheduleLevel ?? undefined,
+      }));
+      const hasDue = duePatch.due_at !== null;
       const result = await onCreateTask({
         title,
         labelIds: draft.labelId ? [draft.labelId] : [],
-        dueAt: duePatch?.due_at ?? null,
-        dueTimezone: duePatch?.due_timezone ?? null,
+        dueAt: duePatch.due_at,
+        dueTimezone: duePatch.due_timezone,
       });
       const taskId = createdTaskId(result);
-      if (taskId && duePatch) await onUpdateTask(taskId, duePatch);
+      if (taskId && hasDue) await onUpdateTask(taskId, duePatch);
       setDraft(null);
-      setDraftValue("");
     } catch {
       setError("待办创建失败，请重试");
     } finally {
       setDraftBusy(false);
     }
-  }, [draft, draftBusy, draftValue, onCreateTask, onUpdateTask, online]);
+  }, [draft, draftBusy, onCreateTask, onUpdateTask, online]);
+
+  const cancelDraft = useCallback(() => {
+    if (draftBusy) return;
+    setDraft(null);
+  }, [draftBusy]);
 
   const graph = useMemo(() => layoutTree(tree, {
     online,
-    draftValue,
-    draftBusy,
-    onDraftChange: setDraftValue,
-    onDraftSubmit: () => void submitDraft(),
-    onDraftCancel: () => {
-      if (draftBusy) return;
-      setDraft(null);
-      setDraftValue("");
-    },
+    draftBusy: false,
+    onDraftSubmit: (title) => void submitDraft(title),
+    onDraftCancel: cancelDraft,
     onToggleTask: (task) => void toggleTask(task),
     onToggleCollapse: toggleNodeCollapse,
   }, draft, collapsedNodeIds), [
+    cancelDraft,
     collapsedNodeIds,
     draft,
-    draftBusy,
-    draftValue,
     online,
     submitDraft,
     toggleNodeCollapse,
@@ -585,41 +1130,84 @@ function MindMapCanvas({
 
   const [nodes, setNodes, onNodesChange] = useNodesState<MindMapFlowNode>(graph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<MindMapFlowEdge>(graph.edges);
+  const draftBusyRef = useRef(draftBusy);
+  draftBusyRef.current = draftBusy;
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  selectedNodeIdRef.current = selectedNodeId;
 
   const startTaskDraft = useCallback(() => {
     if (!online || draftBusy) return;
     const selected = nodes.find((node) => node.id === selectedNodeId);
-    const dateKey = selected?.data.kind === "day"
-      || selected?.data.kind === "label"
-      || selected?.data.kind === "task"
-      ? selected.data.dateKey ?? null
+    const schedule = selected
+      ? scheduleTargetFromNode(selected.data)
+      : { level: "none" as const };
+    const dateKey = schedule.level === "day"
+      ? schedule.dateKey
+      : schedule.level === "week" || schedule.level === "month"
+        ? schedule.startKey
+        : null;
+    const dateEndKey = schedule.level === "week" || schedule.level === "month"
+      ? schedule.endKey
       : null;
+    const scheduleLevel = schedule.level === "none" ? null : schedule.level;
     const labelId = selected?.data.kind === "label" || selected?.data.kind === "task"
       ? selected.data.labelId ?? null
       : null;
-    const contextKey = dateKey ?? (labelId ? "unscheduled" : "inbox");
+    const contextKey = selected?.data.contextKey
+      ?? dateKey
+      ?? (labelId ? "unscheduled" : "inbox");
     const parentId = selected?.data.kind === "label"
       ? selected.id
       : selected?.data.kind === "task"
         ? labelId
           ? `label:${contextKey}:${labelId}`
-          : dateKey
-            ? `day:${dateKey}`
-            : "inbox"
+          : selected.data.contextKey
+            ?? (dateKey ? `day:${dateKey}` : "inbox")
         : selected?.data.kind === "day"
-          ? selected.id
-          : selected?.data.kind === "inbox"
-            ? "inbox"
+          || selected?.data.kind === "week"
+          || selected?.data.kind === "month"
+          || selected?.data.kind === "inbox"
+            ? selected.id
             : "inbox";
     setContextMenu(null);
-    setDraft({ parentId, dateKey, labelId });
-    setDraftValue("");
+    setDraft({ parentId, dateKey, dateEndKey, scheduleLevel, labelId });
   }, [draftBusy, nodes, online, selectedNodeId]);
 
   useEffect(() => {
-    setNodes(graph.nodes.map((node) => ({ ...node, selected: node.id === selectedNodeId })));
+    setNodes(graph.nodes.map((node) => ({
+      ...node,
+      selected: node.id === selectedNodeIdRef.current,
+      data: node.id === "draft-task"
+        ? { ...node.data, draftBusy: draftBusyRef.current }
+        : node.data,
+    })));
     setEdges(graph.edges);
-  }, [graph.edges, graph.nodes, selectedNodeId, setEdges, setNodes]);
+  }, [graph.edges, graph.nodes, setEdges, setNodes]);
+
+  useEffect(() => {
+    setNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        const selected = node.id === selectedNodeId;
+        if (node.selected === selected) return node;
+        changed = true;
+        return { ...node, selected };
+      });
+      return changed ? next : current;
+    });
+  }, [selectedNodeId, setNodes]);
+
+  useEffect(() => {
+    setNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        if (node.id !== "draft-task" || node.data.draftBusy === draftBusy) return node;
+        changed = true;
+        return { ...node, data: { ...node.data, draftBusy } };
+      });
+      return changed ? next : current;
+    });
+  }, [draftBusy, setNodes]);
 
   useEffect(() => {
     setNodes((current) => current.map((node) => {
@@ -646,8 +1234,10 @@ function MindMapCanvas({
     setFocusDateKey(nextKey);
     setSelectedNodeId(null);
     setDraft(null);
-    setDraftValue("");
     setCollapsedNodeIds(storedCollapsedNodes(workspaceId));
+    setHiddenLabelIds(storedHiddenLabelIds(workspaceId));
+    setLabelDisplayMode(storedLabelDisplayMode(workspaceId));
+    setDisplaySettingsOpen(false);
     if (!initializedRef.current) return;
     const saved = storedViewport(workspaceId);
     if (saved) void flow.setViewport(saved, { duration: 0 });
@@ -706,19 +1296,54 @@ function MindMapCanvas({
   const findDropTarget = useCallback((node: MindMapFlowNode) => {
     const targets = flow.getIntersectingNodes(node, true).filter((candidate) =>
       candidate.id !== node.id
-      && (candidate.data.kind === "day"
+      && (candidate.data.kind === "month"
+        || candidate.data.kind === "week"
+        || candidate.data.kind === "day"
         || candidate.data.kind === "inbox"
         || candidate.data.kind === "unscheduled"
         || candidate.data.kind === "label"
         || (candidate.data.kind === "task" && !candidate.data.draft)),
-    );
-    return targets.find((candidate) => candidate.data.kind === "task")
-      ?? targets.find((candidate) => candidate.data.kind === "label")
-      ?? targets.find((candidate) => candidate.data.kind === "day")
-      ?? targets.find((candidate) => candidate.data.kind === "inbox")
-      ?? targets.find((candidate) => candidate.data.kind === "unscheduled")
-      ?? null;
-  }, [flow]);
+    ) as MindMapFlowNode[];
+    if (!targets.length) return null;
+
+    const parentById = new Map<string, string>();
+    graph.edges.forEach((edge) => parentById.set(edge.target, edge.source));
+    const depthOf = (id: string) => {
+      let depth = 0;
+      let current: string | undefined = id;
+      const visiting = new Set<string>();
+      while (current && !visiting.has(current)) {
+        visiting.add(current);
+        const parentId = parentById.get(current);
+        if (!parentId) break;
+        depth += 1;
+        current = parentId;
+      }
+      return depth;
+    };
+    const scheduleScore = (candidate: MindMapFlowNode) => {
+      const schedule = scheduleTargetFromNode(candidate.data);
+      if (schedule.level === "day") return 3;
+      if (schedule.level === "week") return 2;
+      if (schedule.level === "month") return 1;
+      return 0;
+    };
+    const kindScore = (kind: MindMapNodeKind) => {
+      if (kind === "day") return 4;
+      if (kind === "label") return 3;
+      if (kind === "task") return 2;
+      if (kind === "week") return 1;
+      return 0;
+    };
+
+    return [...targets].sort((a, b) => {
+      const depthDiff = depthOf(b.id) - depthOf(a.id);
+      if (depthDiff) return depthDiff;
+      const scheduleDiff = scheduleScore(b) - scheduleScore(a);
+      if (scheduleDiff) return scheduleDiff;
+      return kindScore(b.data.kind) - kindScore(a.data.kind);
+    })[0] ?? null;
+  }, [flow, graph.edges]);
 
   const handleNodeDrag: OnNodeDrag<MindMapFlowNode> = useCallback((_, node) => {
     setDropTargetId(findDropTarget(node)?.id ?? null);
@@ -734,18 +1359,28 @@ function MindMapCanvas({
     const task = node.data.task;
     if (!target || !task || !online) return;
 
-    const targetDateKey = target.data.kind === "inbox" || target.data.kind === "unscheduled"
-      ? null
-      : target.data.dateKey ?? null;
-    const targetLabelId = target.data.kind === "label" || target.data.kind === "task"
-      ? target.data.labelId ?? null
-      : null;
-    const movingToInbox = target.data.kind === "inbox" || target.data.contextKey === "inbox";
-    const currentDateKey = node.data.dateKey ?? null;
-    const dateChanged = targetDateKey !== currentDateKey;
-    const labelsToRemove = movingToInbox ? [...task.label_ids] : [];
-    const labelToAdd = !movingToInbox && targetLabelId && !task.label_ids.includes(targetLabelId)
-      ? targetLabelId
+    const parentById = new Map<string, string>();
+    graph.edges.forEach((edge) => parentById.set(edge.target, edge.source));
+    const nodesById = new Map(graph.nodes.map((item) => [item.id, item]));
+    const path: MindMapFlowNode[] = [];
+    let current: MindMapFlowNode | undefined = target;
+    const visiting = new Set<string>();
+    while (current && !visiting.has(current.id)) {
+      visiting.add(current.id);
+      path.push(current);
+      const parentId = parentById.get(current.id);
+      current = parentId ? nodesById.get(parentId) : undefined;
+    }
+
+    const assignment = resolveMindMapDropAssignment(path.map((item) => item.data));
+    const currentSchedule = classifyTaskSchedule(task, dateTimePreferences);
+    const dateChanged = assignment.applySchedule
+      && scheduleTargetKey(assignment.schedule) !== scheduleTargetKey(currentSchedule);
+    const labelsToRemove = assignment.clearLabels ? [...task.label_ids] : [];
+    const labelToAdd = !assignment.clearLabels
+      && assignment.labelId
+      && !task.label_ids.includes(assignment.labelId)
+      ? assignment.labelId
       : null;
     if (!dateChanged && !labelsToRemove.length && !labelToAdd) return;
 
@@ -754,7 +1389,9 @@ function MindMapCanvas({
       const removedLabels: string[] = [];
       let addedLabel = false;
       try {
-        if (dateChanged) await onUpdateTask(task.id, moveTaskToDate(task, targetDateKey));
+        if (dateChanged) {
+          await onUpdateTask(task.id, moveTaskToSchedule(task, assignment.schedule));
+        }
         for (const labelId of labelsToRemove) {
           await onToggleTaskLabel(task.id, labelId, false);
           removedLabels.push(labelId);
@@ -783,7 +1420,9 @@ function MindMapCanvas({
       }
     })();
   }, [
+    dateTimePreferences,
     findDropTarget,
+    graph.edges,
     graph.nodes,
     onToggleTaskLabel,
     onUpdateTask,
@@ -818,12 +1457,33 @@ function MindMapCanvas({
           {error && <span className="mind-map-error" role="status">{error}</span>}
         </div>
         <div className="mind-map-toolbar-actions">
+          <button
+            type="button"
+            aria-label="显示设置"
+            aria-haspopup="dialog"
+            aria-expanded={displaySettingsOpen}
+            onClick={() => setDisplaySettingsOpen(true)}
+          >
+            <Settings2 /><span>显示设置</span>
+          </button>
           <button onClick={today}><Crosshair /><span>今天</span></button>
           <button onClick={() => void flow.fitView({ padding: 0.16, duration: 260 })}>
             <Maximize2 /><span>一览全部</span>
           </button>
         </div>
       </header>
+      {displaySettingsOpen && (
+        <MindMapDisplaySettingsDialog
+          labels={bundle.labels}
+          hiddenLabelIds={hiddenLabelIds}
+          labelDisplayMode={labelDisplayMode}
+          onToggleVisible={toggleLabelVisible}
+          onShowAll={showAllLabels}
+          onHideAll={hideAllLabels}
+          onLabelDisplayModeChange={changeLabelDisplayMode}
+          onClose={() => setDisplaySettingsOpen(false)}
+        />
+      )}
       <div className="mind-map-canvas" ref={canvasRef} tabIndex={-1}>
         <ReactFlow<MindMapFlowNode, MindMapFlowEdge>
           nodes={nodes}
@@ -837,7 +1497,9 @@ function MindMapCanvas({
           onNodeClick={(event, node) => {
             setContextMenu(null);
             setSelectedNodeId(node.id);
-            (event.target as HTMLElement).closest<HTMLElement>(".react-flow__node")?.focus();
+            const target = event.target as HTMLElement;
+            if (target.closest("input, textarea, select, button, [contenteditable='true']")) return;
+            target.closest<HTMLElement>(".react-flow__node")?.focus();
           }}
           onNodeDoubleClick={(event, node) => {
             if (node.data.task && !(event.target as HTMLElement).closest("button, input")) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createDemoBundle } from "./demo";
 import {
   canAccessAllLabels,
+  currentLabelPermissionLevel,
   currentTaskPermissionLevel,
   intersectPermissionLevels,
 } from "./permissions";
@@ -26,6 +27,16 @@ describe("strict multi-label permission intersection", () => {
     expect(currentTaskPermissionLevel(bundle, task, "demo-user")).toBe(1);
     bundle.labelPermissionLevels.urgent = 2;
     expect(currentTaskPermissionLevel(bundle, task, "demo-user")).toBe(2);
+  });
+
+  it("denies access while restoring a legacy bundle without permission levels", () => {
+    const legacyBundle = createDemoBundle() as Partial<ReturnType<typeof createDemoBundle>>;
+    delete legacyBundle.labelPermissionLevels;
+
+    expect(currentLabelPermissionLevel(
+      legacyBundle as ReturnType<typeof createDemoBundle>,
+      "product",
+    )).toBe(0);
   });
 
   it("lets only the creator or workspace administrators edit inbox tasks", () => {

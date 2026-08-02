@@ -128,6 +128,21 @@ export function formatPreferenceDateTime(
   )}`;
 }
 
+function formatPreferenceDateRangeEnd(
+  start: Date,
+  end: Date,
+  preferences: DateTimePreferences,
+  timeZone?: string | null,
+) {
+  const endText = formatPreferenceDate(end, preferences, timeZone);
+  if (zonedDate(start, timeZone).getFullYear() !== zonedDate(end, timeZone).getFullYear()) {
+    return endText;
+  }
+  // Same calendar year: drop the year so ranges fit the toolbar (e.g. 2026/07/27-/08/02).
+  if (preferences.dateFormat === "ymd") return endText.replace(/^\d{4}/, "");
+  return endText.replace(/\/\d{4}$/, "");
+}
+
 export function formatDueWithPreferences(
   fields: {
     due_at: string | null;
@@ -143,16 +158,18 @@ export function formatDueWithPreferences(
   const start = fields.due_start_at ? zonedDate(fields.due_start_at, zone) : null;
   const date = (value: Date) => formatPreferenceDate(value, preferences, zone);
   const time = (value: Date) => formatPreferenceTime(value, preferences, zone);
+  const range = (from: Date, to: Date) =>
+    `${date(from)}–${formatPreferenceDateRangeEnd(from, to, preferences, zone)}`;
 
   if (!start) return `${date(end)} · ${time(end)}`;
   if (fields.due_is_all_day) {
     if (isSameDay(start, end)) return `${date(end)} · 全天`;
-    return `${date(start)}–${date(end)} · 全天`;
+    return `${range(start, end)} · 全天`;
   }
   if (isSameDay(start, end)) {
     return `${date(start)} ${time(start)}–${time(end)}`;
   }
-  return `${date(start)}–${date(end)}`;
+  return range(start, end);
 }
 
 export function weekdayLabels(weekStartsOn: DateTimePreferences["weekStartsOn"]) {

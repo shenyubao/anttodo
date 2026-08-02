@@ -2,6 +2,7 @@ export {
   isPhoneAlreadyRegisteredError,
   normalizeMainlandMobile,
 } from "./dingtalk-sso-phone.ts";
+export { normalizeDingtalkAvatarUrl } from "./dingtalk-sso-avatar.ts";
 export {
   createSsoState,
   verifySsoState,
@@ -20,6 +21,7 @@ export type DingtalkUserInfo = {
   nick?: string;
   unionId?: string;
   openId?: string;
+  avatarUrl?: string;
   mobile?: string;
   stateCode?: string;
 };

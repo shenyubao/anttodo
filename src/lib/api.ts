@@ -473,6 +473,7 @@ export async function loadWorkspaceBundle(
       return {
         ...row,
         kind: row.kind ?? "todo",
+        recurrence: row.recurrence ?? null,
         label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
         subtasks: [...(row.subtasks ?? [])].sort((a, b) => a.position - b.position),
         reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
@@ -502,6 +503,7 @@ export async function saveTaskSchedule(
     p_due_timezone: patch.due_timezone,
     p_reminders: schedule.reminders,
     p_persistent: schedule.persistent,
+    p_recurrence: schedule.recurrence,
   });
   assertNoError(error);
   return data;
