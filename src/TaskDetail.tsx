@@ -523,7 +523,10 @@ function SubtaskDueDateControl({
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState("");
   const [saving, setSaving] = useState(false);
+  const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -531,10 +534,17 @@ function SubtaskDueDateControl({
     const offset = initial.getTimezoneOffset() * 60_000;
     setDate(new Date(initial.getTime() - offset).toISOString().slice(0, 10));
     const close = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || popoverRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", close);
     document.addEventListener("keydown", closeOnEscape);
@@ -543,6 +553,36 @@ function SubtaskDueDateControl({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [open, dueAt]);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !popoverRef.current) return;
+
+    const positionPopover = () => {
+      const trigger = triggerRef.current!.getBoundingClientRect();
+      const popover = popoverRef.current!;
+      const gap = 8;
+      const inset = 12;
+      const width = Math.min(260, window.innerWidth - inset * 2);
+      const height = popover.offsetHeight;
+      const left = Math.min(
+        Math.max(trigger.left, inset),
+        Math.max(inset, window.innerWidth - width - inset),
+      );
+      const preferredTop = trigger.bottom + gap;
+      const top = preferredTop + height <= window.innerHeight - inset
+        ? preferredTop
+        : Math.max(inset, trigger.top - height - gap);
+      setPosition({ width, left, top });
+    };
+
+    positionPopover();
+    window.addEventListener("resize", positionPopover);
+    window.addEventListener("scroll", positionPopover, true);
+    return () => {
+      window.removeEventListener("resize", positionPopover);
+      window.removeEventListener("scroll", positionPopover, true);
+    };
+  }, [open, date]);
 
   const dueDate = dueAt ? new Date(dueAt) : null;
   const formatted = dueDate
@@ -570,6 +610,7 @@ function SubtaskDueDateControl({
   return (
     <div className="subtask-date-control" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={clsx("subtask-date-trigger", dueAt && "has-date", overdue && "overdue")}
         aria-label={dueAt ? `截止时间：${formatted}` : "设置子任务截止时间"}
@@ -581,8 +622,14 @@ function SubtaskDueDateControl({
         <CalendarDays />
         {formatted && <span>{formatted}</span>}
       </button>
-      {open && (
-        <div className="subtask-date-popover" role="dialog" aria-label="设置子任务截止时间">
+      {open && createPortal(
+        <div
+          ref={popoverRef}
+          className="subtask-date-popover"
+          role="dialog"
+          aria-label="设置子任务截止时间"
+          style={position}
+        >
           <strong>截止时间</strong>
           <input
             type="date"
@@ -607,7 +654,8 @@ function SubtaskDueDateControl({
             <button type="button" disabled={saving} onClick={() => void save(null)}>清除</button>
             <button type="button" disabled={saving || !date} onClick={() => void save(date)}>确定</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

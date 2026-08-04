@@ -8360,16 +8360,16 @@ html.dark .task-detail {
 }
 
 .subtask-date-popover {
-  position: absolute;
+  position: fixed;
   z-index: 1300;
-  top: 44px;
-  right: 0;
   width: 260px;
   padding: 16px;
   border-radius: 14px;
   color: #191919;
   background: #fff;
   box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  /* Portaled outside Dialog.Content; override body scroll-lock pointer-events: none. */
+  pointer-events: auto;
 }
 
 .subtask-date-popover > strong {

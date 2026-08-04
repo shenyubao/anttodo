@@ -2,9 +2,10 @@
 /**
  * Push local Supabase migrations with a Fake-IP / IPv6-safe fallback path.
  *
- * 1) Prefer `supabase db push` (linked project).
- * 2) On TLS / DNS failure, retry via the IPv4 pooler when SUPABASE_DB_PASSWORD is set.
- * 3) Otherwise apply pending migrations over the HTTPS Management API when
+ * 1) Prefer the configured self-hosted database over SSH.
+ * 2) Otherwise use `supabase db push` for the linked platform project.
+ * 3) On TLS / DNS failure, retry via the IPv4 pooler when SUPABASE_DB_PASSWORD is set.
+ * 4) Otherwise apply pending migrations over the HTTPS Management API when
  *    SUPABASE_ACCESS_TOKEN is set.
  */
 import { spawnSync } from "node:child_process";
@@ -17,6 +18,32 @@ const root = path.resolve(__dirname, "..");
 const workdir = root;
 const projectRef = readProjectRef();
 const poolerHost = `aws-1-ap-northeast-2.pooler.supabase.com`;
+const selfHostSsh = readSetting("ANTTODO_SUPABASE_SELFHOST_SSH");
+const selfHostDockerDir = readSetting(
+  "ANTTODO_SUPABASE_SELFHOST_DOCKER_DIR",
+) || "/home/ubuntu/projects/supabase/docker";
+
+function readSetting(name) {
+  const fromProcess = process.env[name]?.trim();
+  if (fromProcess) return fromProcess;
+
+  const file = path.join(root, ".env.local");
+  if (!fs.existsSync(file)) return "";
+  const prefix = `${name}=`;
+  const line = fs.readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .find((candidate) => candidate.startsWith(prefix));
+  if (!line) return "";
+  const value = line.slice(prefix.length).trim();
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
 
 function readProjectRef() {
   const file = path.join(root, "supabase/.temp/project-ref");
@@ -58,6 +85,77 @@ function migrationFiles() {
       };
     })
     .sort((a, b) => a.version.localeCompare(b.version));
+}
+
+function validateSelfHostConfig() {
+  if (!/^[A-Za-z0-9_.@:-]+$/.test(selfHostSsh)) {
+    throw new Error("ANTTODO_SUPABASE_SELFHOST_SSH contains unsafe characters");
+  }
+  if (!/^\/[A-Za-z0-9_./-]+$/.test(selfHostDockerDir)) {
+    throw new Error(
+      "ANTTODO_SUPABASE_SELFHOST_DOCKER_DIR must be an absolute path",
+    );
+  }
+}
+
+function runSelfHostPsql(flags, input) {
+  validateSelfHostConfig();
+  const remoteCommand =
+    `cd ${selfHostDockerDir} && ` +
+    "docker compose exec -T db psql -q -U postgres -d postgres -X " +
+    flags.join(" ");
+  return spawnSync("ssh", [selfHostSsh, remoteCommand], {
+    cwd: root,
+    input,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+function pushToSelfHost() {
+  console.log(`Checking self-hosted migrations via SSH target ${selfHostSsh}…`);
+  const list = runSelfHostPsql(
+    ["--tuples-only", "--no-align", "--variable", "ON_ERROR_STOP=1"],
+    "select version from supabase_migrations.schema_migrations order by version;\n",
+  );
+  if (list.error) throw list.error;
+  if (list.status !== 0) {
+    process.stderr.write(list.stderr ?? "");
+    throw new Error(
+      "Unable to read self-hosted migration history. Run the migration bootstrap first.",
+    );
+  }
+
+  const remote = new Set(
+    (list.stdout ?? "").split(/\r?\n/).map((value) => value.trim())
+      .filter(Boolean),
+  );
+  const pending = migrationFiles().filter((item) => !remote.has(item.version));
+  if (!pending.length) {
+    console.log("Self-hosted database is up to date.");
+    return;
+  }
+
+  for (const item of pending) {
+    const escapedName = item.name.replace(/'/g, "''");
+    const recordMigration = `
+insert into supabase_migrations.schema_migrations
+  (version, statements, name)
+values ('${item.version}', array[]::text[], '${escapedName}');
+`;
+    console.log(`Applying ${item.version}_${item.name} to self-hosted…`);
+    const result = runSelfHostPsql(
+      ["--single-transaction", "--variable", "ON_ERROR_STOP=1"],
+      `${item.sql.trim()}\n${recordMigration}`,
+    );
+    process.stdout.write(result.stdout ?? "");
+    process.stderr.write(result.stderr ?? "");
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(`Failed to apply migration ${item.version}_${item.name}`);
+    }
+  }
+  console.log(`Applied ${pending.length} migration(s) to self-hosted.`);
 }
 
 async function sbQuery(token, query) {
@@ -138,6 +236,16 @@ Fix one of:
   2. Set SUPABASE_DB_PASSWORD and retry (uses the IPv4 pooler).
   3. Set SUPABASE_ACCESS_TOKEN (sbp_...) and retry (applies SQL over HTTPS Management API).
 `);
+}
+
+if (selfHostSsh) {
+  try {
+    pushToSelfHost();
+    process.exit(0);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
 }
 
 const initial = runSupabase(["db", "push", "--yes", "--workdir", workdir]);
