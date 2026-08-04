@@ -45,6 +45,8 @@ import {
 import type { AttachmentService } from "./lib/attachments";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
+import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
+import { useTaskTitleTokens } from "./useTaskTitleTokens";
 import {
   aiCliLabel,
   buildSubtaskCliPrompt,
@@ -93,7 +95,10 @@ export type TaskDetailProps = {
   onAssignSubtask: (subtaskId: string, target: AssigneeTarget) => Promise<void>;
   onToggleLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
   onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
-  onCreateSubtask: (title: string) => Promise<void>;
+  onCreateSubtask: (
+    title: string,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+  ) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
@@ -911,8 +916,20 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [draftTitle, setDraftTitle] = useState(
     focusedSubtask?.title ?? task.title,
   );
-  const [newSubtask, setNewSubtask] = useState("");
   const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
+  const subtaskInputRef = useRef<HTMLInputElement>(null);
+  const assignableMembers = useMemo(
+    () => getAssignableMembers(bundle, task, currentUserId),
+    [bundle, currentUserId, task],
+  );
+  const subtaskTokens = useTaskTitleTokens({
+    members: assignableMembers,
+    labels: [],
+    labelPermissionLevels: {},
+    currentUserId,
+    features: { assignee: true, labels: false },
+    inputRef: subtaskInputRef,
+  });
   const [cliPickerOpen, setCliPickerOpen] = useState(false);
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
@@ -939,7 +956,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     // task still has a remembered terminal session.
     setImmersive(false);
     setCliPickerOpen(false);
-    setNewSubtask("");
+    subtaskTokens.reset();
     setToolbarOpen(false);
     setActivityOpen(false);
     setCommentComposerOpen(false);
@@ -1458,17 +1475,44 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               className="subtask-add"
               onSubmit={async (event) => {
                 event.preventDefault();
-                if (!newSubtask.trim() || !writable) return;
-                await onCreateSubtask(newSubtask.trim());
-                setNewSubtask("");
+                if (subtaskTokens.token || !writable) return;
+                const payload = subtaskTokens.toSubmitPayload();
+                if (!payload.title) return;
+                await onCreateSubtask(payload.title, {
+                  assignee_id: payload.assigneeId,
+                });
+                subtaskTokens.reset();
               }}
             >
               <Plus />
-              <input
-                value={newSubtask}
-                onChange={(event) => setNewSubtask(event.target.value)}
-                placeholder="添加子任务"
+              <div className="subtask-add-field task-title-token-field">
+                <input
+                  ref={subtaskInputRef}
+                  value={subtaskTokens.title}
+                  onChange={subtaskTokens.handleChange}
+                  onKeyDown={(event) => {
+                    if (subtaskTokens.handleKeyDown(event)) return;
+                  }}
+                  placeholder="添加子任务"
+                  disabled={!writable}
+                />
+                {subtaskTokens.token && (
+                  <TaskTitleTokenMenu
+                    kind={subtaskTokens.token.kind}
+                    assigneeCandidates={subtaskTokens.assigneeCandidates}
+                    labelCandidates={subtaskTokens.labelCandidates}
+                    activeIndex={subtaskTokens.activeIndex}
+                    onSelectAssignee={subtaskTokens.selectAssignee}
+                    onSelectLabel={subtaskTokens.selectLabel}
+                  />
+                )}
+              </div>
+              <TaskTitleTokenChips
+                assignee={subtaskTokens.assignee}
+                labels={[]}
                 disabled={!writable}
+                onRemoveAssignee={subtaskTokens.removeAssignee}
+                onRemoveLabel={subtaskTokens.removeLabel}
               />
             </form>
           </section>

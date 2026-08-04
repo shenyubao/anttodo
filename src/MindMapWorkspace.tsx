@@ -67,7 +67,10 @@ import {
   type MindMapScheduleLevel,
   type MindMapTreeNode,
 } from "./lib/mindMap";
-import type { DateTimePreferences, Label, Task, WorkspaceBundle } from "./types";
+import type { DateTimePreferences, Label, LabelPermissionLevel, Member, Task, UserLabelOrder, WorkspaceBundle } from "./types";
+import { mergeLabelIds } from "./lib/taskTitleTokens";
+import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
+import { useTaskTitleTokens, type TaskTitleTokenSubmit } from "./useTaskTitleTokens";
 
 type CreateTaskInput = {
   title: string;
@@ -75,6 +78,7 @@ type CreateTaskInput = {
   description?: string;
   dueAt?: string | null;
   dueTimezone?: string | null;
+  assigneeId?: string | null;
 };
 
 type MindMapNodeData = {
@@ -90,7 +94,12 @@ type MindMapNodeData = {
   online: boolean;
   draft?: boolean;
   draftBusy?: boolean;
-  onDraftSubmit?: (title: string) => void;
+  members?: Member[];
+  labels?: Label[];
+  labelPermissionLevels?: Record<string, LabelPermissionLevel | undefined>;
+  userLabelOrder?: UserLabelOrder[];
+  currentUserId?: string;
+  onDraftSubmit?: (payload: TaskTitleTokenSubmit) => void;
   onDraftCancel?: () => void;
   onToggleTask?: (task: Task) => void;
   collapsible?: boolean;
@@ -236,11 +245,18 @@ function resolveNodeSizes(nodes: MindMapFlowNode[], edges: MindMapFlowEdge[]) {
 
 function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [draftTitle, setDraftTitle] = useState("");
+  const tokens = useTaskTitleTokens({
+    members: data.members ?? [],
+    labels: data.labels ?? [],
+    labelPermissionLevels: data.labelPermissionLevels ?? {},
+    userLabelOrder: data.userLabelOrder,
+    currentUserId: data.currentUserId ?? "",
+    features: { assignee: true, labels: true },
+    inputRef,
+  });
 
   useEffect(() => {
     if (!data.draft) return;
-    setDraftTitle("");
     inputRef.current?.focus();
   }, [data.draft]);
 
@@ -293,24 +309,47 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
             className="mind-map-draft-form nodrag nopan"
             onSubmit={(event: FormEvent) => {
               event.preventDefault();
-              data.onDraftSubmit?.(draftTitle);
+              if (tokens.token) return;
+              data.onDraftSubmit?.(tokens.toSubmitPayload());
             }}
           >
             {data.draftBusy ? <LoaderCircle className="mind-map-node-spinner" /> : <Circle />}
-            <input
-              ref={inputRef}
-              value={draftTitle}
-              placeholder="输入待办标题"
-              aria-label="新待办标题"
-              disabled={data.draftBusy}
-              onChange={(event) => setDraftTitle(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  data.onDraftCancel?.();
-                }
-              }}
-            />
+            <div className="mind-map-draft-fields">
+              <div className="task-title-token-field">
+                <input
+                  ref={inputRef}
+                  value={tokens.title}
+                  placeholder="输入待办标题"
+                  aria-label="新待办标题"
+                  disabled={data.draftBusy}
+                  onChange={tokens.handleChange}
+                  onKeyDown={(event) => {
+                    if (tokens.handleKeyDown(event)) return;
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      data.onDraftCancel?.();
+                    }
+                  }}
+                />
+                {tokens.token && (
+                  <TaskTitleTokenMenu
+                    kind={tokens.token.kind}
+                    assigneeCandidates={tokens.assigneeCandidates}
+                    labelCandidates={tokens.labelCandidates}
+                    activeIndex={tokens.activeIndex}
+                    onSelectAssignee={tokens.selectAssignee}
+                    onSelectLabel={tokens.selectLabel}
+                  />
+                )}
+              </div>
+              <TaskTitleTokenChips
+                assignee={tokens.assignee}
+                labels={tokens.selectedLabels}
+                disabled={data.draftBusy}
+                onRemoveAssignee={tokens.removeAssignee}
+                onRemoveLabel={tokens.removeLabel}
+              />
+            </div>
           </form>
         ) : (
           <div className="mind-map-task-content">
@@ -954,6 +993,7 @@ function createdTaskId(result: unknown) {
 type MindMapCanvasProps = {
   workspaceId: string;
   bundle: WorkspaceBundle;
+  currentUserId: string;
   dateTimePreferences: DateTimePreferences;
   online: boolean;
   onMenu: () => void;
@@ -968,6 +1008,7 @@ type MindMapCanvasProps = {
 function MindMapCanvas({
   workspaceId,
   bundle,
+  currentUserId,
   dateTimePreferences,
   online,
   onMenu,
@@ -1086,8 +1127,8 @@ function MindMapCanvas({
     }
   }, [onUpdateTask, online]);
 
-  const submitDraft = useCallback(async (titleRaw: string) => {
-    const title = titleRaw.trim();
+  const submitDraft = useCallback(async (payload: TaskTitleTokenSubmit) => {
+    const title = payload.title.trim();
     if (!title || !online || draftBusy || !draft) return;
     setDraftBusy(true);
     setError("");
@@ -1106,7 +1147,11 @@ function MindMapCanvas({
       const hasDue = duePatch.due_at !== null;
       const result = await onCreateTask({
         title,
-        labelIds: draft.labelId ? [draft.labelId] : [],
+        labelIds: mergeLabelIds(
+          draft.labelId ? [draft.labelId] : [],
+          payload.labelIds,
+        ),
+        assigneeId: payload.assigneeId,
         dueAt: duePatch.due_at,
         dueTimezone: duePatch.due_timezone,
       });
@@ -1128,13 +1173,23 @@ function MindMapCanvas({
   const graph = useMemo(() => layoutTree(tree, {
     online,
     draftBusy: false,
-    onDraftSubmit: (title) => void submitDraft(title),
+    members: bundle.members,
+    labels: bundle.labels,
+    labelPermissionLevels: bundle.labelPermissionLevels,
+    userLabelOrder: bundle.userLabelOrder,
+    currentUserId,
+    onDraftSubmit: (payload) => void submitDraft(payload),
     onDraftCancel: cancelDraft,
     onToggleTask: (task) => void toggleTask(task),
     onToggleCollapse: toggleNodeCollapse,
   }, draft, collapsedNodeIds), [
+    bundle.labelPermissionLevels,
+    bundle.labels,
+    bundle.members,
+    bundle.userLabelOrder,
     cancelDraft,
     collapsedNodeIds,
+    currentUserId,
     draft,
     online,
     submitDraft,

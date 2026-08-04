@@ -11,8 +11,15 @@ import {
 
 describe("AI work helpers", () => {
   it("builds a top-level prompt from the task title and description", () => {
-    expect(buildTaskCliPrompt({ title: "修复登录", description: "补充回归测试" }))
-      .toContain("标题：修复登录\n描述：\n补充回归测试");
+    const prompt = buildTaskCliPrompt({ title: "修复登录", description: "补充回归测试" });
+    expect(prompt).toContain("请处理如下待办。");
+    expect(prompt).toContain("标题：修复登录\n描述：\n补充回归测试");
+  });
+
+  it("omits the description line when the task has no description", () => {
+    const prompt = buildTaskCliPrompt({ title: "标签可移动顺序", description: "" });
+    expect(prompt).toBe("请处理如下待办。\n\n标题：标签可移动顺序");
+    expect(prompt).not.toContain("描述");
   });
 
   it("limits a subtask prompt to parent context and the selected subtask", () => {
@@ -24,6 +31,16 @@ describe("AI work helpers", () => {
     expect(prompt).toContain("父任务描述：\n准备 1.2.0");
     expect(prompt).toContain("当前子任务：验证 arm64 安装包");
     expect(prompt).toContain("请只处理");
+  });
+
+  it("omits parent description from a subtask prompt when empty", () => {
+    const prompt = buildSubtaskCliPrompt(
+      { title: "发布桌面版", description: "  " },
+      { title: "验证 arm64 安装包" },
+    );
+    expect(prompt).toContain("父任务标题：发布桌面版");
+    expect(prompt).not.toContain("父任务描述");
+    expect(prompt).toContain("当前子任务：验证 arm64 安装包");
   });
 
   it("uses stable independent session keys", () => {

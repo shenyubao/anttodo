@@ -18,11 +18,18 @@ import {
   type ParsedTaskDateMatch,
   type ParsedTaskDue,
 } from "./lib/parseTaskDateText";
+import { mergeLabelIds } from "./lib/taskTitleTokens";
+import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
+import { useTaskTitleTokens } from "./useTaskTitleTokens";
 import type {
   DateTimePreferences,
+  Label,
+  LabelPermissionLevel,
+  Member,
   ReminderSchedule,
   Task,
   TaskKind,
+  UserLabelOrder,
 } from "./types";
 
 function createDraftTask(due: ParsedTaskDue | null): Task {
@@ -59,6 +66,8 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
 export type QuickAddSubmitPayload = {
   title: string;
   due: ParsedTaskDue | null;
+  assigneeId: string | null;
+  labelIds: string[];
 };
 
 export function QuickAddForm({
@@ -71,6 +80,12 @@ export function QuickAddForm({
   dateTimePreferences,
   leadingIcon,
   settings,
+  members,
+  labels,
+  labelPermissionLevels,
+  userLabelOrder,
+  currentUserId,
+  defaultLabelIds = [],
   onSubmit,
 }: {
   online: boolean;
@@ -82,18 +97,33 @@ export function QuickAddForm({
   dateTimePreferences: DateTimePreferences;
   leadingIcon: ReactNode;
   settings: ReactNode;
+  members: Member[];
+  labels: Label[];
+  labelPermissionLevels: Record<string, LabelPermissionLevel | undefined>;
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
+  currentUserId: string;
+  defaultLabelIds?: string[];
   onSubmit: (payload: QuickAddSubmitPayload) => Promise<void>;
 }) {
-  const [title, setTitle] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tokens = useTaskTitleTokens({
+    members,
+    labels,
+    labelPermissionLevels,
+    userLabelOrder,
+    currentUserId,
+    features: { assignee: true, labels: true },
+    inputRef,
+  });
   const [due, setDue] = useState<ParsedTaskDue | null>(null);
   const [dateMatch, setDateMatch] = useState<ParsedTaskDateMatch | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [dueManual, setDueManual] = useState(false);
   const [dueOpen, setDueOpen] = useState(false);
   const [dueAnchor, setDueAnchor] = useState<{ left: number; top: number } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const dueChipRef = useRef<HTMLButtonElement>(null);
   const timeZone = systemTimeZone();
+  const title = tokens.title;
 
   function openDuePicker() {
     const rect = dueChipRef.current?.getBoundingClientRect();
@@ -134,10 +164,6 @@ export function QuickAddForm({
     if (!dueManual) setDue(parsed.due);
   }, [kind, now, timeZone, title, dismissedKey, dueManual]);
 
-  function handleTitleChange(value: string) {
-    setTitle(value);
-  }
-
   function dismissRecognition() {
     if (!dateMatch) return;
     setDismissedKey(matchKey(dateMatch));
@@ -159,7 +185,9 @@ export function QuickAddForm({
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    const raw = title.trim();
+    if (tokens.token) return;
+    const payload = tokens.toSubmitPayload();
+    const raw = payload.title;
     if (!raw || !online || busy || !canManage) return;
 
     let submitTitle = raw;
@@ -175,8 +203,12 @@ export function QuickAddForm({
 
     if (!submitTitle) return;
 
-    const previousTitle = title;
-    setTitle("");
+    const previous = {
+      title: tokens.title,
+      assigneeId: tokens.assigneeId,
+      labelIds: tokens.labelIds,
+    };
+    tokens.reset();
     setDue(null);
     setDateMatch(null);
     setDismissedKey(null);
@@ -187,25 +219,32 @@ export function QuickAddForm({
       await onSubmit({
         title: submitTitle,
         due: kind === "todo" ? submitDue : null,
+        assigneeId: previous.assigneeId,
+        labelIds: mergeLabelIds(defaultLabelIds, previous.labelIds),
       });
     } catch {
-      setTitle((current) => current || previousTitle);
+      tokens.setTitle((current) => current || previous.title);
+      tokens.setAssigneeId((current) => current ?? previous.assigneeId);
+      tokens.setLabelIds((current) => (current.length > 0 ? current : previous.labelIds));
     }
   }
 
   const draftTask = useMemo(() => createDraftTask(due), [due]);
-  const showHighlight = Boolean(dateMatch && kind === "todo");
+  const showHighlight = Boolean(dateMatch && kind === "todo" && !tokens.token);
 
   return (
     <form className="quick-add" onSubmit={(event) => void handleSubmit(event)}>
       {leadingIcon}
-      <div className="quick-add-field">
+      <div className="quick-add-field task-title-token-field">
         <input
           ref={inputRef}
           className={showHighlight ? "quick-add-input has-date-mark" : "quick-add-input"}
           value={title}
-          onChange={(event) => handleTitleChange(event.target.value)}
+          onChange={tokens.handleChange}
           onClick={handleInputClick}
+          onKeyDown={(event) => {
+            if (tokens.handleKeyDown(event)) return;
+          }}
           placeholder={placeholder}
           disabled={!online || !canManage}
         />
@@ -227,8 +266,25 @@ export function QuickAddForm({
             <span>{title.slice(dateMatch.end)}</span>
           </div>
         )}
+        {tokens.token && (
+          <TaskTitleTokenMenu
+            kind={tokens.token.kind}
+            assigneeCandidates={tokens.assigneeCandidates}
+            labelCandidates={tokens.labelCandidates}
+            activeIndex={tokens.activeIndex}
+            onSelectAssignee={tokens.selectAssignee}
+            onSelectLabel={tokens.selectLabel}
+          />
+        )}
       </div>
-      {title && <kbd>Enter</kbd>}
+      {title && !tokens.token && <kbd>Enter</kbd>}
+      <TaskTitleTokenChips
+        assignee={tokens.assignee}
+        labels={tokens.selectedLabels}
+        disabled={!online || busy}
+        onRemoveAssignee={tokens.removeAssignee}
+        onRemoveLabel={tokens.removeLabel}
+      />
       {due && kind === "todo" && (
         <div className="quick-add-due">
           <button

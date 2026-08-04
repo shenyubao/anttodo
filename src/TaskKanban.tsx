@@ -36,13 +36,17 @@ import type { KanbanColumn } from "./lib/taskKanban";
 import type {
   DateTimePreferences,
   Label,
+  LabelPermissionLevel,
   Member,
   ReminderSchedule,
   Subtask,
   Task,
   TaskKind,
   TaskPriority,
+  UserLabelOrder,
 } from "./types";
+import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
+import { useTaskTitleTokens, type TaskTitleTokenSubmit } from "./useTaskTitleTokens";
 
 type CreateTaskInput = {
   title: string;
@@ -54,6 +58,8 @@ type CreateTaskInput = {
   kind?: TaskKind;
   assigneeId?: string | null;
 };
+
+export type KanbanCreatePayload = TaskTitleTokenSubmit;
 
 const kanbanCollisionDetection: CollisionDetection = (args) => {
   const pointerCollisions = pointerWithin(args);
@@ -73,7 +79,10 @@ export function TaskKanban({
   columns,
   labels,
   members,
+  labelPermissionLevels,
+  userLabelOrder,
   workspaceId,
+  currentUserId,
   selectedTaskId,
   online,
   now,
@@ -105,12 +114,16 @@ export function TaskKanban({
   onCreateSubtask,
   onUpdateSubtask,
   onDeleteSubtask,
+  onPurgeTask,
   onNotice,
 }: {
   columns: KanbanColumn[];
   labels: Label[];
   members: Member[];
+  labelPermissionLevels: Record<string, LabelPermissionLevel | undefined>;
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
   workspaceId: string;
+  currentUserId: string;
   selectedTaskId: string | null;
   online: boolean;
   now: Date;
@@ -125,7 +138,7 @@ export function TaskKanban({
   canEditTask: (task: Task) => boolean;
   canCreateInColumn: (column: KanbanColumn) => boolean;
   canReceiveInColumn: (column: KanbanColumn) => boolean;
-  onCreateInColumn: (column: KanbanColumn, title: string) => Promise<void>;
+  onCreateInColumn: (column: KanbanColumn, payload: KanbanCreatePayload) => Promise<void>;
   onMoveTask: (task: Task, source: KanbanColumn, target: KanbanColumn) => Promise<void>;
   onSetColumnOrder: (column: KanbanColumn, taskIds: string[]) => Promise<void>;
   onStartAddSection: (index: number) => void;
@@ -153,6 +166,7 @@ export function TaskKanban({
     patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onPurgeTask: (taskId: string) => Promise<void>;
   onNotice: (message: string) => void;
 }) {
   const sensors = useSensors(
@@ -250,6 +264,9 @@ export function TaskKanban({
       column={column}
       labels={labels}
       members={members}
+      labelPermissionLevels={labelPermissionLevels}
+      userLabelOrder={userLabelOrder}
+      currentUserId={currentUserId}
       selectedTaskId={selectedTaskId}
       online={online}
       now={now}
@@ -367,6 +384,7 @@ export function TaskKanban({
           onCreateSubtask={onCreateSubtask}
           onUpdateSubtask={onUpdateSubtask}
           onDeleteSubtask={onDeleteSubtask}
+          onPurgeTask={onPurgeTask}
           onExpandSubtasks={() => undefined}
           onNotice={onNotice}
         />
@@ -379,6 +397,9 @@ function KanbanColumnView({
   column,
   labels,
   members,
+  labelPermissionLevels,
+  userLabelOrder,
+  currentUserId,
   selectedTaskId,
   online,
   now,
@@ -402,6 +423,9 @@ function KanbanColumnView({
   column: KanbanColumn;
   labels: Label[];
   members: Member[];
+  labelPermissionLevels: Record<string, LabelPermissionLevel | undefined>;
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
+  currentUserId: string;
   selectedTaskId: string | null;
   online: boolean;
   now: Date;
@@ -413,7 +437,7 @@ function KanbanColumnView({
   canReceive: boolean;
   canManageSection: boolean;
   sectionIndex: number;
-  onCreate: (column: KanbanColumn, title: string) => Promise<void>;
+  onCreate: (column: KanbanColumn, payload: KanbanCreatePayload) => Promise<void>;
   onStartAddSection: (index: number) => void;
   onRenameSection: (sectionId: string, name: string) => Promise<void>;
   onDeleteSection: (sectionId: string) => Promise<void>;
@@ -434,23 +458,33 @@ function KanbanColumnView({
     disabled: !canManageSection,
   });
   const [adding, setAdding] = useState(false);
-  const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [sectionMenuOpen, setSectionMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [sectionName, setSectionName] = useState(column.title);
   const renameSubmittingRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tokens = useTaskTitleTokens({
+    members,
+    labels,
+    labelPermissionLevels,
+    userLabelOrder,
+    currentUserId,
+    features: { assignee: true, labels: true },
+    inputRef,
+  });
   const taskIsOverColumn = active?.data.current?.type !== "section"
     && over?.data.current?.columnId === column.id;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const value = title.trim();
-    if (!value || !canCreate || busy) return;
+    if (tokens.token) return;
+    const payload = tokens.toSubmitPayload();
+    if (!payload.title || !canCreate || busy) return;
     setBusy(true);
     try {
-      await onCreate(column, value);
-      setTitle("");
+      await onCreate(column, payload);
+      tokens.reset();
       setAdding(false);
     } catch (error) {
       onError(error instanceof Error ? error.message : "新建失败，请重试");
@@ -612,22 +646,45 @@ function KanbanColumnView({
       </header>
       {adding && (
         <form className="kanban-quick-add" onSubmit={(event) => void submit(event)}>
-          <input
-            autoFocus
-            value={title}
+          <div className="task-title-token-field">
+            <input
+              ref={inputRef}
+              autoFocus
+              value={tokens.title}
+              disabled={busy}
+              aria-label={`添加任务至“${column.title}”`}
+              placeholder="添加任务"
+              onChange={tokens.handleChange}
+              onKeyDown={(event) => {
+                if (tokens.handleKeyDown(event)) return;
+                if (event.key === "Escape") {
+                  tokens.reset();
+                  setAdding(false);
+                }
+              }}
+              onBlur={() => {
+                if (!tokens.title.trim() && !tokens.assigneeId && tokens.labelIds.length === 0 && !busy) {
+                  setAdding(false);
+                }
+              }}
+            />
+            {tokens.token && (
+              <TaskTitleTokenMenu
+                kind={tokens.token.kind}
+                assigneeCandidates={tokens.assigneeCandidates}
+                labelCandidates={tokens.labelCandidates}
+                activeIndex={tokens.activeIndex}
+                onSelectAssignee={tokens.selectAssignee}
+                onSelectLabel={tokens.selectLabel}
+              />
+            )}
+          </div>
+          <TaskTitleTokenChips
+            assignee={tokens.assignee}
+            labels={tokens.selectedLabels}
             disabled={busy}
-            aria-label={`添加任务至“${column.title}”`}
-            placeholder="添加任务"
-            onChange={(event) => setTitle(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setTitle("");
-                setAdding(false);
-              }
-            }}
-            onBlur={() => {
-              if (!title.trim() && !busy) setAdding(false);
-            }}
+            onRemoveAssignee={tokens.removeAssignee}
+            onRemoveLabel={tokens.removeLabel}
           />
         </form>
       )}

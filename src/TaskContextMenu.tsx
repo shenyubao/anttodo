@@ -97,6 +97,7 @@ export function TaskContextMenu({
   onCreateSubtask,
   onUpdateSubtask,
   onDeleteSubtask,
+  onPurgeTask,
   onExpandSubtasks,
   onNotice,
 }: {
@@ -134,6 +135,7 @@ export function TaskContextMenu({
     patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onPurgeTask: (taskId: string) => Promise<void>;
   onExpandSubtasks: () => void;
   onNotice: (message: string) => void;
 }) {
@@ -146,7 +148,7 @@ export function TaskContextMenu({
   const currentDueAt = subtask ? subtask.due_at : task.due_at;
   const menuWidth = 220;
   const estimatedHeight = variant === "trash"
-    ? 72
+    ? 110
     : isNote || isSubtask ? 300 : 360;
   const menuLeft = Math.min(Math.max(12, x), window.innerWidth - menuWidth - 12);
   const menuTop = Math.min(Math.max(12, y), window.innerHeight - estimatedHeight - 12);
@@ -307,6 +309,16 @@ export function TaskContextMenu({
     });
   }
 
+  async function purgeTarget() {
+    const itemName = task.kind === "note" ? "笔记" : "任务";
+    if (!window.confirm(
+      `彻底删除${itemName}“${task.title}”？此操作不可撤销。`,
+    )) return;
+    await run(async () => {
+      await onPurgeTask(task.id);
+    });
+  }
+
   if (variant === "trash") {
     return (
       <>
@@ -333,6 +345,16 @@ export function TaskContextMenu({
           >
             <RotateCcw />
             <span>还原</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="danger"
+            disabled={!writable}
+            onClick={() => void purgeTarget()}
+          >
+            <Trash2 />
+            <span>彻底删除</span>
           </button>
         </div>
       </>

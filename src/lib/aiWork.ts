@@ -74,26 +74,31 @@ export function stopCliTerminalsForTask(
 }
 
 export function buildTaskCliPrompt(task: Pick<Task, "title" | "description">) {
-  return [
-    "请处理下面的 AntTodo 待办。",
+  const lines = [
+    "请处理如下待办。",
     "",
     `标题：${task.title.trim() || "（无标题）"}`,
-    "描述：",
-    task.description.trim() || "（无描述）",
-  ].join("\n");
+  ];
+  const description = task.description.trim();
+  if (description) {
+    lines.push("描述：", description);
+  }
+  return lines.join("\n");
 }
 
 export function buildSubtaskCliPrompt(
   task: Pick<Task, "title" | "description">,
   subtask: Pick<Subtask, "title">,
 ) {
-  return [
+  const lines = [
     "请只处理下面指定的 AntTodo 子任务，并使用父任务信息作为上下文。",
     "",
     `父任务标题：${task.title.trim() || "（无标题）"}`,
-    "父任务描述：",
-    task.description.trim() || "（无描述）",
-    "",
-    `当前子任务：${subtask.title.trim() || "（无标题）"}`,
-  ].join("\n");
+  ];
+  const description = task.description.trim();
+  if (description) {
+    lines.push("父任务描述：", description);
+  }
+  lines.push("", `当前子任务：${subtask.title.trim() || "（无标题）"}`);
+  return lines.join("\n");
 }

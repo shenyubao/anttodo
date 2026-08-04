@@ -119,6 +119,7 @@ import {
   isWorkspaceSlugAvailable,
   deleteTaskSection,
   deleteTaskComment as deleteTaskCommentApi,
+  purgeTrashedTask as purgeTrashedTaskApi,
   loadDateTimePreferences,
   loadAiWorkSettings,
   listTaskAssigneeIds,
@@ -2226,6 +2227,25 @@ function RemoteApplication({
     }
   }
 
+  async function purgeTrashedTask(taskId: string) {
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const task = previous?.tasks.find((item) => item.id === taskId);
+    if (!task?.deleted_at) {
+      throw new Error("只能彻底删除回收站中的任务");
+    }
+    rememberLocalRealtimeChanges("tasks", [taskId]);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+      bundle ? removeTaskFromBundle(bundle, taskId) : bundle,
+    );
+    try {
+      await purgeTrashedTaskApi(client, taskId);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
   async function loadInviteLink(workspaceId: string) {
     const { data, error } = await client.functions.invoke("workspace-invite", {
       body: { action: "get", workspaceId },
@@ -2596,6 +2616,7 @@ function RemoteApplication({
       onToggleSubtask={toggleSubtask}
       onUpdateSubtask={updateSubtask}
       onDeleteSubtask={deleteSubtask}
+      onPurgeTask={purgeTrashedTask}
       onLoadTaskComments={(taskId) => loadTaskComments(client, taskId)}
       onLoadTaskActivity={(taskId, cursor) => loadTaskActivity(client, taskId, cursor)}
       onLoadCommentCandidates={(taskId) => listTaskCommentCandidateIds(client, taskId)}
@@ -3149,6 +3170,13 @@ function DemoApplication() {
           completed: subtask.completed,
         });
       }}
+      onPurgeTask={async (taskId) => {
+        const task = bundle.tasks.find((item) => item.id === taskId);
+        if (!task?.deleted_at) {
+          throw new Error("只能彻底删除回收站中的任务");
+        }
+        setBundle((current) => removeTaskFromBundle(current, taskId));
+      }}
       onLoadTaskComments={async (taskId) =>
         demoCommentsRef.current.filter((comment) => comment.task_id === taskId)}
       onLoadTaskActivity={async (taskId, cursor) => {
@@ -3674,6 +3702,7 @@ type WorkspaceAppProps = {
     patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onPurgeTask: (taskId: string) => Promise<void>;
   onLoadTaskComments: (taskId: string) => Promise<TaskComment[]>;
   onLoadTaskActivity: (
     taskId: string,
@@ -4308,6 +4337,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onToggleSubtask={props.onToggleSubtask}
           onUpdateSubtask={props.onUpdateSubtask}
           onDeleteSubtask={props.onDeleteSubtask}
+          onPurgeTask={props.onPurgeTask}
           onSaveLabelAccess={props.onSaveLabelAccess}
           onSaveTaskListPreference={props.onSaveTaskListPreference}
           onSaveAiWorkSettings={props.onSaveAiWorkSettings}
@@ -4340,6 +4370,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : <MindMapWorkspace
           workspaceId={props.workspaceId}
           bundle={props.bundle}
+          currentUserId={props.currentUserId}
           dateTimePreferences={props.dateTimePreferences}
           online={props.online}
           onMenu={openMobileNavigation}
@@ -4387,7 +4418,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             onAssignSubtask={props.onAssignSubtask}
             onToggleLabel={props.onToggleTaskLabel}
             onToggleParticipant={props.onToggleTaskParticipant}
-            onCreateSubtask={(title) => props.onCreateSubtask(selectedTask.id, title)}
+            onCreateSubtask={(title, extras) =>
+              props.onCreateSubtask(selectedTask.id, title, extras)}
             onToggleSubtask={props.onToggleSubtask}
             onUpdateSubtask={props.onUpdateSubtask}
             onDeleteSubtask={props.onDeleteSubtask}
@@ -4426,7 +4458,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onAssignSubtask={props.onAssignSubtask}
           onToggleLabel={props.onToggleTaskLabel}
           onToggleParticipant={props.onToggleTaskParticipant}
-          onCreateSubtask={(title) => props.onCreateSubtask(selectedTask.id, title)}
+          onCreateSubtask={(title, extras) =>
+            props.onCreateSubtask(selectedTask.id, title, extras)}
           onToggleSubtask={props.onToggleSubtask}
           onUpdateSubtask={props.onUpdateSubtask}
           onDeleteSubtask={props.onDeleteSubtask}
@@ -6876,6 +6909,7 @@ function TaskWorkspace({
   onToggleSubtask,
   onUpdateSubtask,
   onDeleteSubtask,
+  onPurgeTask,
   onSaveLabelAccess,
   onSaveTaskListPreference,
   onSaveAiWorkSettings,
@@ -6911,6 +6945,7 @@ function TaskWorkspace({
   onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
   onUpdateSubtask: WorkspaceAppProps["onUpdateSubtask"];
   onDeleteSubtask: WorkspaceAppProps["onDeleteSubtask"];
+  onPurgeTask: WorkspaceAppProps["onPurgeTask"];
   onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
   dateTimePreferences: DateTimePreferences;
   onSaveTaskListPreference: WorkspaceAppProps["onSaveTaskListPreference"];
@@ -7223,12 +7258,21 @@ function TaskWorkspace({
       || currentLabelPermissionLevel(bundle, column.target.labelId) >= 2;
   }
 
-  async function createInKanbanColumn(column: KanbanColumn, taskTitle: string) {
+  async function createInKanbanColumn(column: KanbanColumn, payload: {
+    title: string;
+    assigneeId: string | null;
+    labelIds: string[];
+  }) {
     if (!canCreateInKanbanColumn(column)) return;
-    const labelIds = new Set(selectedLabelId ? [selectedLabelId] : []);
+    const taskTitle = payload.title.trim();
+    if (!taskTitle) return;
+    const labelIds = new Set([
+      ...(selectedLabelId ? [selectedLabelId] : []),
+      ...payload.labelIds,
+    ]);
     const kind: TaskKind = "todo";
     let priority = quickPriority;
-    let assigneeId: string | null = null;
+    let assigneeId: string | null = payload.assigneeId;
     let cliAssignee: AiCliTool | null = null;
     let dueAt: string | null = null;
     if (column.target.kind === "label" && column.target.labelId) {
@@ -7236,8 +7280,13 @@ function TaskWorkspace({
     }
     if (column.target.kind === "priority") priority = column.target.priority;
     if (column.target.kind === "assignee") {
-      assigneeId = column.target.assigneeId;
-      cliAssignee = column.target.cliAssignee;
+      if (payload.assigneeId) {
+        assigneeId = payload.assigneeId;
+        cliAssignee = null;
+      } else {
+        assigneeId = column.target.assigneeId;
+        cliAssignee = column.target.cliAssignee;
+      }
     }
     if (column.target.kind === "due") {
       dueAt = kanbanDueDate(column.target.bucket, now, dateTimePreferences.weekStartsOn);
@@ -7388,6 +7437,8 @@ function TaskWorkspace({
       due_is_all_day: boolean;
       due_timezone: string;
     } | null;
+    assigneeId: string | null;
+    labelIds: string[];
   }) {
     const title = payload.title.trim();
     if (!title || !online || busy) return;
@@ -7395,11 +7446,12 @@ function TaskWorkspace({
     try {
       const created = await onCreateTask({
         title,
-        labelIds: selectedLabelId ? [selectedLabelId] : [],
+        labelIds: payload.labelIds,
         kind: quickKind,
         priority: quickKind === "note" ? "none" : quickPriority,
         dueAt: payload.due?.due_at ?? null,
         dueTimezone: payload.due?.due_timezone ?? null,
+        assigneeId: payload.assigneeId,
         optimisticOrder: manualTaskOrderEnabled
           ? {
               listKey,
@@ -7561,6 +7613,12 @@ function TaskWorkspace({
         now={now}
         dateTimePreferences={dateTimePreferences}
         leadingIcon={quickKind === "note" ? <NotebookPen /> : <Plus />}
+        members={bundle.members}
+        labels={bundle.labels}
+        labelPermissionLevels={bundle.labelPermissionLevels}
+        userLabelOrder={bundle.userLabelOrder}
+        currentUserId={currentUserId}
+        defaultLabelIds={selectedLabelId ? [selectedLabelId] : []}
         settings={(
           <QuickAddSettings
             online={online && !busy}
@@ -7585,7 +7643,10 @@ function TaskWorkspace({
             columns={kanbanColumns}
             labels={bundle.labels}
             members={bundle.members}
+            labelPermissionLevels={bundle.labelPermissionLevels}
+            userLabelOrder={bundle.userLabelOrder}
             workspaceId={workspaceId}
+            currentUserId={currentUserId}
             selectedTaskId={selectedTaskId}
             online={online}
             now={now}
@@ -7622,6 +7683,7 @@ function TaskWorkspace({
             onCreateSubtask={onCreateSubtask}
             onUpdateSubtask={onUpdateSubtask}
             onDeleteSubtask={onDeleteSubtask}
+            onPurgeTask={onPurgeTask}
             onNotice={onNotice}
           />
         </div>
@@ -7716,6 +7778,7 @@ function TaskWorkspace({
                       onCreateSubtask={onCreateSubtask}
                       onUpdateSubtask={onUpdateSubtask}
                       onDeleteSubtask={onDeleteSubtask}
+                      onPurgeTask={onPurgeTask}
                       onNotice={onNotice}
                     />
                   </Fragment>
@@ -7775,6 +7838,7 @@ function TaskWorkspace({
             onCreateSubtask={onCreateSubtask}
             onUpdateSubtask={onUpdateSubtask}
             onDeleteSubtask={onDeleteSubtask}
+            onPurgeTask={onPurgeTask}
             onNotice={onNotice}
           />
         )}
@@ -8128,6 +8192,7 @@ function TaskGroup({
   onCreateSubtask,
   onUpdateSubtask,
   onDeleteSubtask,
+  onPurgeTask,
   onNotice,
   canEditTask,
 }: {
@@ -8162,6 +8227,7 @@ function TaskGroup({
   onCreateSubtask: WorkspaceAppProps["onCreateSubtask"];
   onUpdateSubtask: WorkspaceAppProps["onUpdateSubtask"];
   onDeleteSubtask: WorkspaceAppProps["onDeleteSubtask"];
+  onPurgeTask: WorkspaceAppProps["onPurgeTask"];
   onNotice: WorkspaceAppProps["onNotice"];
   canEditTask: (task: Task) => boolean;
 }) {
@@ -8399,6 +8465,7 @@ function TaskGroup({
           onCreateSubtask={onCreateSubtask}
           onUpdateSubtask={onUpdateSubtask}
           onDeleteSubtask={onDeleteSubtask}
+          onPurgeTask={onPurgeTask}
           onExpandSubtasks={() => {
             if (collapsedTaskSubtasks.has(menuTask.id)) {
               onToggleSubtasks(menuTask.id);
@@ -8497,7 +8564,6 @@ function TaskRow({
         aria-busy={optimistic || undefined}
         className={clsx(
           "task-row",
-          hasSubtasks && "has-subtasks",
           selected && "selected",
           task.kind !== "note" && task.status === "completed" && "completed",
           optimistic && "pending",
@@ -8529,21 +8595,23 @@ function TaskRow({
           <GripVertical />
         </button>
       )}
-      {hasSubtasks && (
-        <button
-          type="button"
-          className="task-subtasks-expander"
-          aria-label={`${subtasksCollapsed ? "展开" : "收起"}子任务：${task.title}`}
-          aria-expanded={!subtasksCollapsed}
-          aria-controls={`task-subtasks-${task.id}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleSubtasks();
-          }}
-        >
-          {subtasksCollapsed ? <ChevronRight /> : <ChevronDown />}
-        </button>
-      )}
+      <span className="task-subtasks-expander-slot">
+        {hasSubtasks && (
+          <button
+            type="button"
+            className="task-subtasks-expander"
+            aria-label={`${subtasksCollapsed ? "展开" : "收起"}子任务：${task.title}`}
+            aria-expanded={!subtasksCollapsed}
+            aria-controls={`task-subtasks-${task.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleSubtasks();
+            }}
+          >
+            {subtasksCollapsed ? <ChevronRight /> : <ChevronDown />}
+          </button>
+        )}
+      </span>
       {task.kind === "note" ? (
         <span className="task-note-icon" aria-label="笔记"><NotebookPen /></span>
       ) : (

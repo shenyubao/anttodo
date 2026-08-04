@@ -200,6 +200,22 @@ export async function deleteTaskComment(
   assertNoError(error);
 }
 
+export async function purgeTrashedTask(
+  client: SupabaseClient,
+  taskId: string,
+) {
+  const { data, error } = await client
+    .from("tasks")
+    .delete()
+    .eq("id", taskId)
+    .not("deleted_at", "is", null)
+    .select("id");
+  assertNoError(error);
+  if (!data?.length) {
+    throw new Error("只能彻底删除回收站中的任务");
+  }
+}
+
 export async function updateTaskComment(
   client: SupabaseClient,
   input: {

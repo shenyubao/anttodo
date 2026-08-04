@@ -3404,14 +3404,26 @@ html.dark .mind-map-date-content > svg {
   min-width: 0;
   width: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+}
+
+.mind-map-draft-fields {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mind-map-draft-form .task-title-token-field {
+  height: auto;
 }
 
 .mind-map-draft-form input {
   min-width: 0;
   height: 30px;
-  flex: 1;
+  width: 100%;
   padding: 0 3px;
   border: 0;
   outline: none;
@@ -3422,6 +3434,14 @@ html.dark .mind-map-date-content > svg {
 
 .mind-map-draft-form input::placeholder {
   color: var(--muted);
+}
+
+.mind-map-draft-form .task-title-token-chips {
+  max-width: 100%;
+}
+
+.mind-map-draft-form .task-title-token-menu {
+  min-width: 180px;
 }
 
 .mind-map-node-spinner {
@@ -4167,6 +4187,141 @@ html.dark .mind-map-date-content > svg {
   pointer-events: auto;
 }
 
+.task-title-token-field {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.task-title-token-menu {
+  position: absolute;
+  z-index: 1750;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+}
+
+.task-title-token-menu > button {
+  width: 100%;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  border: 0;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.task-title-token-menu > button:hover,
+.task-title-token-menu > button[aria-selected="true"] {
+  background: rgb(25 25 25 / 5%);
+}
+
+.task-title-token-menu > p {
+  margin: 0;
+  padding: 12px;
+  color: rgb(25 25 25 / 38%);
+  font-size: 12px;
+}
+
+.task-title-token-avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 8px;
+}
+
+.task-title-token-label-swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+}
+
+.task-title-token-chips {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 42%;
+  overflow-x: auto;
+}
+
+.task-title-token-chip {
+  max-width: 120px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: 7px;
+  color: #191919;
+  background: rgb(25 25 25 / 6%);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.task-title-token-chip.assignee {
+  color: #4772fa;
+  background: rgb(71 114 250 / 10%);
+}
+
+.task-title-token-chip.label {
+  color: #191919;
+  background: rgb(25 25 25 / 6%);
+}
+
+.task-title-token-chip > span:not(.task-title-token-label-swatch) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-title-token-chip > svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.55;
+}
+
+.task-title-token-chip:hover,
+.task-title-token-chip:focus-visible {
+  outline: 0;
+  background: rgb(25 25 25 / 10%);
+}
+
+.task-title-token-chip.assignee:hover,
+.task-title-token-chip.assignee:focus-visible {
+  background: rgb(71 114 250 / 16%);
+}
+
+.task-title-token-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.task-title-token-chip-avatar {
+  width: 16px;
+  height: 16px;
+  font-size: 7px;
+}
+
 .quick-add-due {
   position: relative;
   flex: 0 0 auto;
@@ -4617,6 +4772,13 @@ html.dark .mind-map-date-content > svg {
 
 .kanban-quick-add {
   margin: 2px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kanban-quick-add .task-title-token-field {
+  height: auto;
 }
 
 .kanban-quick-add input {
@@ -4631,6 +4793,15 @@ html.dark .mind-map-date-content > svg {
   font: inherit;
   font-size: 14px;
   box-shadow: 0 2px 3px rgb(25 25 25 / 3%);
+}
+
+.kanban-quick-add .task-title-token-chips {
+  max-width: 100%;
+  padding: 0 2px;
+}
+
+.kanban-quick-add .task-title-token-menu {
+  right: 0;
 }
 
 .kanban-card {
@@ -4798,23 +4969,26 @@ html.dark .kanban-card {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
+  aspect-ratio: 1;
   overflow: hidden;
-  border-radius: 50%;
-  color: #fff;
+  border-radius: 0;
+  background: transparent;
   line-height: 1;
 }
 
 .ai-cli-avatar svg {
-  width: 62%;
-  height: 62%;
+  width: 100%;
+  height: 100%;
 }
 
 .ai-cli-avatar-codex {
-  background: #111111;
+  color: #111111;
+  background: transparent;
 }
 
 .ai-cli-avatar-claude {
-  background: #d97757;
+  color: #d97757;
+  background: transparent;
 }
 
 .task-cli-running {
@@ -5278,10 +5452,15 @@ html.dark .kanban-card {
   width: 14px;
 }
 
+.task-subtasks-expander-slot {
+  width: 16px;
+  height: 40px;
+  flex: 0 0 16px;
+  display: grid;
+  place-items: center;
+}
+
 .task-subtasks-expander {
-  position: absolute;
-  z-index: 1;
-  left: 18px;
   width: 16px;
   height: 40px;
   display: grid;
@@ -5422,10 +5601,6 @@ html.dark .kanban-card {
   stroke-width: 1.8;
 }
 
-.task-row.has-subtasks .task-checkbox svg {
-  transform: translateX(6px);
-}
-
 .task-row-content {
   min-width: 0;
   min-height: 40px;
@@ -5528,7 +5703,7 @@ html.dark .kanban-card {
   min-height: 40px;
   display: flex;
   align-items: center;
-  padding: 0 20px 0 42px;
+  padding: 0 20px 0 58px;
   color: var(--text);
   box-shadow: inset 0 -1px var(--line);
 }
@@ -6172,7 +6347,7 @@ html.dark .task-detail {
   opacity: 0.58;
 }
 
-.task-assignee-menu > button > span:not(.member-avatar-image) {
+.task-assignee-menu > button > span:not(.member-avatar-image):not(.ai-cli-avatar) {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -8262,24 +8437,45 @@ html.dark .task-detail {
 }
 
 .subtask-add {
-  height: 34px;
+  min-height: 34px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   color: #a2a7b0;
 }
 
-.subtask-add svg {
+.subtask-add > svg {
   width: 15px;
+  flex: 0 0 auto;
+}
+
+.subtask-add-field {
+  min-width: 0;
+  flex: 1;
+  height: 34px;
+  display: flex;
+  align-items: center;
 }
 
 .subtask-add input {
   min-width: 0;
+  width: 100%;
   flex: 1;
   border: 0;
   outline: 0;
   background: transparent;
   font-size: 12px;
+}
+
+.subtask-add .task-title-token-chips {
+  flex-basis: 100%;
+  max-width: 100%;
+  padding-left: 23px;
+}
+
+.subtask-add .task-title-token-menu {
+  top: calc(100% + 2px);
 }
 
 .detail-footer {
