@@ -5797,7 +5797,7 @@ function Sidebar({
                     setMenu(null);
                   }}
                 >
-                  设置 AI 助理
+                  设置 AI CLI
                 </button>
                 <button
                   role="menuitem"
@@ -6969,7 +6969,7 @@ function TaskWorkspace({
   );
   const [labelSettingsOpen, setLabelSettingsOpen] = useState(false);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
-  const [aiSettingsTitle, setAiSettingsTitle] = useState("设置 AI 助理");
+  const [aiSettingsTitle, setAiSettingsTitle] = useState("设置 AI CLI");
   const [sectionDraftIndex, setSectionDraftIndex] = useState<number | null>(null);
   const [sectionDraftName, setSectionDraftName] = useState("");
   const [sectionDraftBusy, setSectionDraftBusy] = useState(false);
@@ -7048,7 +7048,7 @@ function TaskWorkspace({
     const openAiSettings = (event: Event) => {
       setAiSettingsTitle(aiWorkSettingsTitleFromEvent(
         event,
-        selectedLabel?.name ?? "设置 AI 助理",
+        selectedLabel?.name ?? "设置 AI CLI",
       ));
       setAiSettingsOpen(true);
     };
@@ -7056,9 +7056,9 @@ function TaskWorkspace({
     return () => window.removeEventListener(OPEN_AI_WORK_SETTINGS_EVENT, openAiSettings);
   }, [selectedLabel?.name]);
 
-  function openAiWorkSettings(title = selectedLabel?.name ?? "设置 AI 助理") {
+  function openAiWorkSettings(title = selectedLabel?.name ?? "设置 AI CLI") {
     if (!desktopAiAvailable) return;
-    setAiSettingsTitle(title.trim() || "设置 AI 助理");
+    setAiSettingsTitle(title.trim() || "设置 AI CLI");
     setAiSettingsOpen(true);
   }
 
@@ -7978,7 +7978,7 @@ function LabelActionsMenu({
             }}
           >
             <SquareTerminal />
-            <span>设置 AI 助理</span>
+            <span>设置 AI CLI</span>
           </button>
           {hasSelectedLabel && canManageSelectedLabel && (
             <button

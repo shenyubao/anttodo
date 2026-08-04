@@ -56,7 +56,7 @@ describe("AI work helpers", () => {
   });
 
   it("reads an optional title from the settings open event", () => {
-    expect(aiWorkSettingsTitleFromEvent(new Event("x"))).toBe("设置 AI 助理");
+    expect(aiWorkSettingsTitleFromEvent(new Event("x"))).toBe("设置 AI CLI");
     expect(aiWorkSettingsTitleFromEvent(
       new CustomEvent("x", { detail: { title: "产品" } }),
     )).toBe("产品");

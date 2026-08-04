@@ -14,7 +14,7 @@ export function requestAiWorkSettings(options?: { title?: string }) {
   }));
 }
 
-export function aiWorkSettingsTitleFromEvent(event: Event, fallback = "设置 AI 助理") {
+export function aiWorkSettingsTitleFromEvent(event: Event, fallback = "设置 AI CLI") {
   const title = event instanceof CustomEvent
     ? event.detail?.title
     : undefined;

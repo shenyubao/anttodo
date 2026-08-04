@@ -1257,11 +1257,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const cliTools = aiWorkSettings.cli_tools;
   const settingsTitle = settingsLabelName?.trim()
     || bundle.labels.find((label) => task.label_ids.includes(label.id))?.name
-    || "设置 AI 助理";
+    || "设置 AI CLI";
   const cliTerminalLabel = activeTerminal
     ? "显示待办内容"
     : !aiWorkConfigured
-      ? "设置 AI 助理"
+      ? "设置 AI CLI"
       : !task.cli_assignee
         ? "选择 CLI 并打开终端"
         : `打开 ${aiCliLabel(task.cli_assignee)} 终端`;

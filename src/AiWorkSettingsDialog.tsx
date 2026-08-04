@@ -6,7 +6,7 @@ import type { AiCliTool, AiWorkSettings } from "./types";
 
 export function AiWorkSettingsDialog({
   open,
-  title = "设置 AI 助理",
+  title = "设置 AI CLI",
   settings,
   online,
   onOpenChange,
@@ -77,7 +77,7 @@ export function AiWorkSettingsDialog({
           aria-describedby={undefined}
         >
           <header>
-            <Dialog.Title>{title.trim() || "设置 AI 助理"}</Dialog.Title>
+            <Dialog.Title>{title.trim() || "设置 AI CLI"}</Dialog.Title>
             <Dialog.Close aria-label="关闭"><X /></Dialog.Close>
           </header>
           <div className="ai-work-settings-body">

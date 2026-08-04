@@ -33,7 +33,7 @@ async function installDesktopAiBridge(page: Page) {
 test("web shows disabled AI settings entry and notes hide assignment/terminal", async ({ page }) => {
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "更多操作" }).click();
-  const aiSettings = page.getByRole("menuitem", { name: "设置 AI 助理" });
+  const aiSettings = page.getByRole("menuitem", { name: "设置 AI CLI" });
   await expect(aiSettings).toBeVisible();
   await expect(aiSettings).toBeDisabled();
   await expect(aiSettings).toHaveAttribute("title", "仅桌面端");
@@ -56,12 +56,12 @@ test("desktop configures Codex and opens independent task/subtask terminals", as
   await expect(terminalTrigger).toBeVisible();
   await expect(terminalTrigger).toBeEnabled();
   await terminalTrigger.click();
-  await expect(page.getByRole("dialog", { name: "设置 AI 助理" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "设置 AI CLI" })).toBeVisible();
   await page.getByRole("button", { name: "取消" }).click();
 
   await page.getByRole("button", { name: "更多操作" }).click();
-  await page.getByRole("menuitem", { name: "设置 AI 助理" }).click();
-  const settings = page.getByRole("dialog", { name: "设置 AI 助理" });
+  await page.getByRole("menuitem", { name: "设置 AI CLI" }).click();
+  const settings = page.getByRole("dialog", { name: "设置 AI CLI" });
   await settings.getByRole("checkbox", { name: "Codex" }).click();
   await settings.getByRole("button", { name: "选择" }).click();
   await expect(settings.getByRole("textbox", { name: "默认工作路径" }))
