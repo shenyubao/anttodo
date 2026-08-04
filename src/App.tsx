@@ -5,10 +5,13 @@ import {
   KeyboardSensor,
   PointerSensor,
   closestCenter,
+  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragMoveEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -48,7 +51,6 @@ import {
   Keyboard,
   LayoutList,
   Bell,
-  Bot,
   ListTodo,
   Link2,
   LockKeyhole,
@@ -72,6 +74,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  Fragment,
   useMemo,
   useRef,
   useState,
@@ -99,6 +102,7 @@ import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
 import { getPriorityOption } from "./PriorityControl";
 import { TaskContextMenu } from "./TaskContextMenu";
 import { TaskKanban } from "./TaskKanban";
+import { TaskSectionComposer } from "./TaskSectionComposer";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
 import type { CreateCommentInput } from "./TaskComments";
 import type { DesktopUpdateCheckResult } from "./lib/desktopUpdate";
@@ -140,6 +144,8 @@ import {
   updateTaskComment as updateTaskCommentApi,
   updateLabelWithAccess as updateLabelWithAccessApi,
   updateWorkspace,
+  reorderChildLabels as reorderChildLabelsApi,
+  setUserTopLevelLabelOrder as setUserTopLevelLabelOrderApi,
 } from "./lib/api";
 import {
   createDemoAttachmentService,
@@ -173,6 +179,7 @@ import {
 } from "./lib/mobileSidebarGesture";
 import {
   applyTaskListOrderToBundle,
+  applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
   appendSubtaskInBundle,
   appendTaskToBundle,
@@ -190,13 +197,18 @@ import {
   DEFAULT_TASK_LIST_PREFERENCE,
   TASK_GROUPING_OPTIONS,
   TASK_SORT_OPTIONS,
+  countTasksForLabelSubtree,
   defaultSortDirection,
   filterTasksForView,
   groupTasks,
   isActiveTask,
   isCompletedTask,
+  orderedTaskSections,
   resolveTaskListPreference,
   sortTasks,
+  taskOrdersAfterCrossSectionMove,
+  taskSectionOrderAfterInsert,
+  taskSectionOrderAfterMove,
   taskListKey,
 } from "./lib/taskList";
 import {
@@ -250,12 +262,17 @@ import {
   appendCreatedLabelToBundle,
   hasExplicitLabelColor,
   LABEL_COLORS,
+  labelDropPlacementFromY,
   labelIdFromRealtimeChange,
+  moveIdInOrder,
   newLabelAccessDefaults,
+  sortSiblingLabels,
+  userLabelOrderRows,
+  type LabelDropIntent,
 } from "./lib/labels";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
-import { aiCliLabel, aiWorkSettingsTitleFromEvent, isAiWorkConfigured, OPEN_AI_WORK_SETTINGS_EVENT, requestAiWorkSettings, stopCliTerminalsForTask } from "./lib/aiWork";
+import { aiCliLabel, aiWorkSettingsTitleFromEvent, OPEN_AI_WORK_SETTINGS_EVENT, requestAiWorkSettings, stopCliTerminalsForTask } from "./lib/aiWork";
 import { useAiTerminalRunningTaskIds } from "./lib/aiTerminalSessions";
 import {
   currentLabelPermissionLevel,
@@ -2009,17 +2026,18 @@ function RemoteApplication({
     await refresh();
   }
 
-  async function deleteLabel(labelId: string) {
-    const { error } = await client.from("labels").delete().eq("id", labelId);
-    if (error) throw error;
+  async function reorderChildLabels(parentId: string, orderedIds: string[]) {
+    await reorderChildLabelsApi(client, parentId, orderedIds);
     await refresh();
   }
 
-  async function mergeLabel(sourceLabelId: string, targetLabelId: string) {
-    const { error } = await client.rpc("merge_label_into", {
-      source_label: sourceLabelId,
-      target_label: targetLabelId,
-    });
+  async function setUserTopLevelLabelOrder(orderedIds: string[]) {
+    await setUserTopLevelLabelOrderApi(client, activeWorkspaceId, orderedIds);
+    await refresh();
+  }
+
+  async function deleteLabel(labelId: string) {
+    const { error } = await client.from("labels").delete().eq("id", labelId);
     if (error) throw error;
     await refresh();
   }
@@ -2151,7 +2169,7 @@ function RemoteApplication({
 
   async function updateSubtask(
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -2379,17 +2397,42 @@ function RemoteApplication({
     await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
   }
 
-  async function addTaskSection(listKey: string, name: string) {
-    const position = activeBundle.taskSections
-      .filter((section) => section.list_key === listKey)
-      .reduce((maximum, section) => Math.max(maximum, section.position + 1), 0);
-    await createTaskSection(client, {
-      workspace_id: activeWorkspaceId,
-      list_key: listKey,
-      name,
-      position,
-      created_by: userId,
-    });
+  async function addTaskSection(listKey: string, name: string, index?: number) {
+    const ordered = orderedTaskSections(
+      activeBundle.taskSections.filter((section) => section.list_key === listKey),
+    );
+    const position = Math.max(0, Math.min(index ?? ordered.length, ordered.length));
+    const nextIds = taskSectionOrderAfterInsert(ordered, "__new-section__", position);
+    const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
+    await Promise.all([
+      ...ordered.map((section) =>
+        updateTaskSection(client, section.id, {
+          position: positionById.get(section.id) ?? section.position,
+        })),
+      createTaskSection(client, {
+        workspace_id: activeWorkspaceId,
+        list_key: listKey,
+        name,
+        position,
+        created_by: userId,
+      }),
+    ]);
+    await refresh();
+  }
+
+  async function reorderTaskSections(listKey: string, sectionIds: string[]) {
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
+      ? applyTaskSectionOrderToBundle(current, { listKey, sectionIds })
+      : current);
+    try {
+      await Promise.all(sectionIds.map((sectionId, position) =>
+        updateTaskSection(client, sectionId, { position })));
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
     await refresh();
   }
 
@@ -2570,8 +2613,9 @@ function RemoteApplication({
       onCreateLabel={createLabel}
       onSaveLabelAccess={saveLabelAccess}
       onUpdateLabel={updateLabel}
+      onReorderChildLabels={reorderChildLabels}
+      onSetUserTopLevelLabelOrder={setUserTopLevelLabelOrder}
       onDeleteLabel={deleteLabel}
-      onMergeLabel={mergeLabel}
       onMoveLabelToInbox={moveLabelToInbox}
       onUpdateMemberRole={updateMemberRole}
       onCreateUserGroup={createUserGroup}
@@ -2591,6 +2635,7 @@ function RemoteApplication({
       onSaveAiWorkSettings={updateAiWorkSettings}
       onSaveTaskListPreference={updateTaskListPreference}
       onCreateTaskSection={addTaskSection}
+      onReorderTaskSections={reorderTaskSections}
       onUpdateTaskSection={editTaskSection}
       onDeleteTaskSection={removeTaskSection}
       onSetTaskListOrder={reorderTasks}
@@ -3075,13 +3120,15 @@ function DemoApplication() {
           })),
         }));
         if (ownerTask && subtask) {
-          const changes = Object.fromEntries(Object.entries(patch).flatMap(([field, after]) =>
-            subtask[field as "due_at"] !== after
-              ? [[field, { before: subtask[field as "due_at"], after }]]
-              : []));
+          const changes = Object.fromEntries(Object.entries(patch).flatMap(([field, after]) => {
+            const key = field as "due_at" | "title";
+            return subtask[key] !== after
+              ? [[field, { before: subtask[key], after }]]
+              : [];
+          }));
           if (Object.keys(changes).length) appendDemoActivity(ownerTask.id, "task.subtask_updated", {
             subtask_id: subtaskId,
-            title: subtask.title,
+            title: patch.title ?? subtask.title,
             changes,
           });
         }
@@ -3281,6 +3328,25 @@ function DemoApplication() {
           labels: current.labels.map((label) =>
             label.id === labelId ? { ...label, ...patch } : label,
           ),
+          userLabelOrder: patch.parent_id !== undefined && patch.parent_id !== null
+            ? current.userLabelOrder.filter((row) => row.label_id !== labelId)
+            : current.userLabelOrder,
+        }));
+      }}
+      onReorderChildLabels={async (parentId, orderedIds) => {
+        setBundle((current) => ({
+          ...current,
+          labels: current.labels.map((label) => {
+            if (label.parent_id !== parentId) return label;
+            const position = orderedIds.indexOf(label.id);
+            return position < 0 ? label : { ...label, position };
+          }),
+        }));
+      }}
+      onSetUserTopLevelLabelOrder={async (orderedIds) => {
+        setBundle((current) => ({
+          ...current,
+          userLabelOrder: userLabelOrderRows("demo-user", workspaceId, orderedIds),
         }));
       }}
       onDeleteLabel={async (labelId) => {
@@ -3290,26 +3356,6 @@ function DemoApplication() {
           tasks: current.tasks.map((task) => ({
             ...task,
             label_ids: task.label_ids.filter((id) => id !== labelId),
-          })),
-        }));
-      }}
-      onMergeLabel={async (sourceLabelId, targetLabelId) => {
-        setBundle((current) => ({
-          ...current,
-          labels: current.labels
-            .filter((label) => label.id !== sourceLabelId)
-            .map((label) =>
-              label.parent_id === sourceLabelId
-                ? { ...label, parent_id: targetLabelId }
-                : label
-            ),
-          tasks: current.tasks.map((task) => ({
-            ...task,
-            label_ids: task.label_ids.includes(sourceLabelId)
-              ? [...new Set(task.label_ids.map((id) =>
-                  id === sourceLabelId ? targetLabelId : id
-                ))]
-              : task.label_ids,
           })),
         }));
       }}
@@ -3477,23 +3523,37 @@ function DemoApplication() {
           ],
         }));
       }}
-      onCreateTaskSection={async (listKey, name) => {
-        setBundle((current) => ({
-          ...current,
-          taskSections: [
-            ...current.taskSections,
-            {
-              id: crypto.randomUUID(),
-              workspace_id: workspaceId,
-              list_key: listKey,
-              name,
-              position: current.taskSections.filter(
-                (section) => section.list_key === listKey,
-              ).length,
-              created_by: "demo-user",
-            },
-          ],
-        }));
+      onCreateTaskSection={async (listKey, name, index) => {
+        setBundle((current) => {
+          const ordered = orderedTaskSections(
+            current.taskSections.filter((section) => section.list_key === listKey),
+          );
+          const position = Math.max(0, Math.min(index ?? ordered.length, ordered.length));
+          const sectionId = crypto.randomUUID();
+          const nextIds = taskSectionOrderAfterInsert(ordered, sectionId, position);
+          const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
+          return {
+            ...current,
+            taskSections: [
+              ...current.taskSections.map((section) =>
+                section.list_key === listKey
+                  ? { ...section, position: positionById.get(section.id) ?? section.position }
+                  : section),
+              {
+                id: sectionId,
+                workspace_id: workspaceId,
+                list_key: listKey,
+                name,
+                position,
+                created_by: "demo-user",
+              },
+            ],
+          };
+        });
+      }}
+      onReorderTaskSections={async (listKey, sectionIds) => {
+        setBundle((current) =>
+          applyTaskSectionOrderToBundle(current, { listKey, sectionIds }));
       }}
       onUpdateTaskSection={async (sectionId, patch) => {
         setBundle((current) => ({
@@ -3611,7 +3671,7 @@ type WorkspaceAppProps = {
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onLoadTaskComments: (taskId: string) => Promise<TaskComment[]>;
@@ -3628,8 +3688,9 @@ type WorkspaceAppProps = {
   onCreateLabel: (draft: LabelAccessDraft) => Promise<void>;
   onSaveLabelAccess: (labelId: string, draft: LabelAccessDraft) => Promise<void>;
   onUpdateLabel: (labelId: string, patch: Partial<Label>) => Promise<void>;
+  onReorderChildLabels: (parentId: string, orderedIds: string[]) => Promise<void>;
+  onSetUserTopLevelLabelOrder: (orderedIds: string[]) => Promise<void>;
   onDeleteLabel: (labelId: string) => Promise<void>;
-  onMergeLabel: (sourceLabelId: string, targetLabelId: string) => Promise<void>;
   onMoveLabelToInbox: (sourceLabelId: string) => Promise<void>;
   onUpdateMemberRole: (memberId: string, role: WorkspaceRole) => Promise<void>;
   onCreateUserGroup: (name: string, memberIds: string[]) => Promise<void>;
@@ -3657,7 +3718,8 @@ type WorkspaceAppProps = {
   ) => Promise<void>;
   onSaveAiWorkSettings: (settings: AiWorkSettings) => Promise<void>;
   onSaveTaskListPreference: (preference: TaskListPreference) => Promise<void>;
-  onCreateTaskSection: (listKey: string, name: string) => Promise<void>;
+  onCreateTaskSection: (listKey: string, name: string, index?: number) => Promise<void>;
+  onReorderTaskSections: (listKey: string, sectionIds: string[]) => Promise<void>;
   onUpdateTaskSection: (
     sectionId: string,
     patch: Partial<Pick<TaskSection, "name" | "position">>,
@@ -3766,6 +3828,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
     workspaceInitialRoute?.kind === "task" ? workspaceInitialRoute.taskId : null,
   );
+  const [selectedSubtaskId, setSelectedSubtaskId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<TaskViewMode>(
     initialListRoute?.kind === "view" || initialListRoute?.kind === "tag"
       ? initialListRoute.mode ?? "list"
@@ -3827,6 +3890,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     return resolveTaskListPreference(
       props.bundle.taskListPreferences,
       taskListKey(view, labelId),
+      props.bundle.labels,
     ).view_mode;
   }
 
@@ -3840,11 +3904,26 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       itemKind: task.kind === "note" ? "note" : "task",
     }, false, { taskReturnRoute: sectionRoute() });
     setSelectedTaskId(taskId);
+    setSelectedSubtaskId(null);
+  }
+
+  function selectSubtask(taskId: string, subtaskId: string) {
+    const task = props.bundle.tasks.find((item) => item.id === taskId);
+    if (!task || !task.subtasks.some((subtask) => subtask.id === subtaskId)) return;
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: "task",
+      taskId,
+      itemKind: task.kind === "note" ? "note" : "task",
+    }, false, { taskReturnRoute: sectionRoute() });
+    setSelectedTaskId(taskId);
+    setSelectedSubtaskId(subtaskId);
   }
 
   function closeTask() {
     writeRoute(currentTaskReturnRoute(props.workspaceId) ?? sectionRoute(), true);
     setSelectedTaskId(null);
+    setSelectedSubtaskId(null);
   }
 
   function selectSmartView(view: SmartView) {
@@ -3854,6 +3933,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setViewMode(mode);
     setSelectedLabelId(null);
     setSelectedTaskId(null);
+    setSelectedSubtaskId(null);
   }
 
   function selectLabel(labelId: string) {
@@ -3862,6 +3942,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setSelectedLabelId(labelId);
     setViewMode(mode);
     setSelectedTaskId(null);
+    setSelectedSubtaskId(null);
   }
 
   function changeWorkspace(workspaceId: string) {
@@ -3872,9 +3953,17 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     if (selectedTaskId && !selectedTask) {
       setSelectedTaskId(null);
+      setSelectedSubtaskId(null);
       writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
     }
   }, [selectedTask, selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedSubtaskId || !selectedTask) return;
+    if (!selectedTask.subtasks.some((subtask) => subtask.id === selectedSubtaskId)) {
+      setSelectedSubtaskId(null);
+    }
+  }, [selectedSubtaskId, selectedTask]);
 
   useEffect(() => {
     const route = currentApplicationRoute();
@@ -3910,6 +3999,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setViewMode("list");
           setSelectedLabelId(null);
           setSelectedTaskId(null);
+          setSelectedSubtaskId(null);
         }
         return;
       }
@@ -3919,6 +4009,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       if (route.kind === "calendar" || route.kind === "mindmap") {
         setAppSection(route.kind);
         setSelectedTaskId(null);
+        setSelectedSubtaskId(null);
         return;
       }
       setAppSection("tasks");
@@ -3931,6 +4022,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         setViewMode(listRoute.mode ?? "list");
       }
       setSelectedTaskId(route.kind === "task" ? route.taskId : null);
+      setSelectedSubtaskId(null);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -3945,11 +4037,13 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setViewMode("list");
       setSelectedLabelId(null);
       setSelectedTaskId(null);
+      setSelectedSubtaskId(null);
       return;
     }
     if (route.kind === "calendar" || route.kind === "mindmap") {
       setAppSection(route.kind);
       setSelectedTaskId(null);
+      setSelectedSubtaskId(null);
       return;
     }
     setAppSection("tasks");
@@ -3965,6 +4059,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       const task = props.bundle.tasks.find((item) => item.id === route.taskId);
       if (task) {
         setSelectedTaskId(task.id);
+        setSelectedSubtaskId(null);
         writeRoute({
           ...route,
           itemKind: task.kind === "note" ? "note" : "task",
@@ -3972,6 +4067,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       }
     } else {
       setSelectedTaskId(null);
+      setSelectedSubtaskId(null);
     }
   }, [props.workspaceId]);
 
@@ -4018,6 +4114,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSelectedLabelId(null);
     }
     setSelectedTaskId(null);
+    setSelectedSubtaskId(null);
     setMobileSidebar(false);
     setMobileAppSidebar(false);
     setMindMapCreateLabel(null);
@@ -4087,7 +4184,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         bundle={props.bundle}
         smartView={smartView}
         selectedLabelId={selectedLabelId}
-        aiAssistantConfigured={isAiWorkConfigured(props.aiWorkSettings)}
         visibleCalendarIds={visibleCalendarIds}
         notifications={props.notifications}
         notificationsLoading={props.notificationsLoading}
@@ -4140,7 +4236,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         online={props.online}
         smartView={smartView}
         selectedLabelId={selectedLabelId}
-        aiAssistantConfigured={isAiWorkConfigured(props.aiWorkSettings)}
         onCloseMobile={() => setMobileSidebar(false)}
         onSmartView={(view) => {
           selectSmartView(view);
@@ -4154,8 +4249,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onCreateLabel={props.onCreateLabel}
         onSaveLabelAccess={props.onSaveLabelAccess}
         onUpdateLabel={props.onUpdateLabel}
+        onReorderChildLabels={props.onReorderChildLabels}
+        onSetUserTopLevelLabelOrder={props.onSetUserTopLevelLabelOrder}
         onDeleteLabel={props.onDeleteLabel}
-        onMergeLabel={props.onMergeLabel}
         onMoveLabelToInbox={props.onMoveLabelToInbox}
       /> : appSection === "calendar" && !calendarSidebarCollapsed && <CalendarSidebar
         openMobile={mobileSidebar}
@@ -4194,6 +4290,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           viewMode={viewMode}
           selectedLabelId={selectedLabelId}
           selectedTaskId={selectedTaskId}
+          selectedSubtaskId={selectedSubtaskId}
           online={props.online}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
@@ -4201,6 +4298,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onMenu={openMobileNavigation}
           onSearch={() => setSearchDialogOpen(true)}
           onSelectTask={selectTask}
+          onSelectSubtask={selectSubtask}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
@@ -4214,6 +4312,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onSaveTaskListPreference={props.onSaveTaskListPreference}
           onSaveAiWorkSettings={props.onSaveAiWorkSettings}
           onCreateTaskSection={props.onCreateTaskSection}
+          onReorderTaskSections={props.onReorderTaskSections}
           onUpdateTaskSection={props.onUpdateTaskSection}
           onDeleteTaskSection={props.onDeleteTaskSection}
           onSetTaskListOrder={props.onSetTaskListOrder}
@@ -4276,6 +4375,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             settingsLabelName={selectedLabelId
               ? props.bundle.labels.find((label) => label.id === selectedLabelId)?.name
               : null}
+            focusedSubtaskId={selectedSubtaskId}
+            onClearFocusedSubtask={() => setSelectedSubtaskId(null)}
             onClose={closeTask}
             onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
             onSaveSchedule={(patch, schedule) =>
@@ -4640,7 +4741,6 @@ function MobileAppSidebar({
   bundle,
   smartView,
   selectedLabelId,
-  aiAssistantConfigured = false,
   visibleCalendarIds,
   notifications,
   notificationsLoading,
@@ -4670,7 +4770,6 @@ function MobileAppSidebar({
   bundle: WorkspaceBundle;
   smartView: SmartView;
   selectedLabelId: string | null;
-  aiAssistantConfigured?: boolean;
   visibleCalendarIds: Set<string>;
   notifications: AppNotification[];
   notificationsLoading: boolean;
@@ -5026,10 +5125,11 @@ function MobileAppSidebar({
               <div className="label-tree mobile-label-tree">
                 <LabelTree
                   labels={bundle.labels}
+                  userLabelOrder={bundle.userLabelOrder}
                   canManageLabel={() => false}
+                  canDragLabel={() => false}
                   selectedId={selectedLabelId}
-                  countForLabel={(labelId) => openTasks.filter((task) => task.label_ids.includes(labelId)).length}
-                  aiAssistantConfigured={aiAssistantConfigured}
+                  countForLabel={(labelId) => countTasksForLabelSubtree(openTasks, bundle.labels, labelId)}
                   onSelect={onLabel}
                   onContext={() => undefined}
                   collapsed={collapsedLabels}
@@ -5038,11 +5138,7 @@ function MobileAppSidebar({
                     [labelId]: !current[labelId],
                   }))}
                   draggingId={null}
-                  dropTargetId={null}
-                  onDragStart={() => undefined}
-                  onDragEnd={() => undefined}
-                  onDragOver={() => undefined}
-                  onDrop={() => undefined}
+                  dropIntent={null}
                 />
               </div>
             </>
@@ -5255,7 +5351,6 @@ function Sidebar({
   online,
   smartView,
   selectedLabelId,
-  aiAssistantConfigured,
   onCloseMobile,
   onSmartView,
   onLabel,
@@ -5263,8 +5358,9 @@ function Sidebar({
   onCreateLabel,
   onSaveLabelAccess,
   onUpdateLabel,
+  onReorderChildLabels,
+  onSetUserTopLevelLabelOrder,
   onDeleteLabel,
-  onMergeLabel,
   onMoveLabelToInbox,
 }: {
   openMobile: boolean;
@@ -5273,7 +5369,6 @@ function Sidebar({
   online: boolean;
   smartView: SmartView;
   selectedLabelId: string | null;
-  aiAssistantConfigured: boolean;
   onCloseMobile: () => void;
   onSmartView: (view: SmartView) => void;
   onLabel: (id: string) => void;
@@ -5281,29 +5376,43 @@ function Sidebar({
   onCreateLabel: WorkspaceAppProps["onCreateLabel"];
   onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
   onUpdateLabel: WorkspaceAppProps["onUpdateLabel"];
+  onReorderChildLabels: WorkspaceAppProps["onReorderChildLabels"];
+  onSetUserTopLevelLabelOrder: WorkspaceAppProps["onSetUserTopLevelLabelOrder"];
   onDeleteLabel: WorkspaceAppProps["onDeleteLabel"];
-  onMergeLabel: WorkspaceAppProps["onMergeLabel"];
   onMoveLabelToInbox: WorkspaceAppProps["onMoveLabelToInbox"];
 }) {
   const [creatingLabel, setCreatingLabel] = useState<{ parentId: string | null } | null>(null);
   const [editingLabel, setEditingLabel] = useState<Label | null>(null);
-  const [mergingLabel, setMergingLabel] = useState<Label | null>(null);
+  const [movingLabel, setMovingLabel] = useState<Label | null>(null);
   const [menu, setMenu] = useState<{ label: Label; x: number; y: number } | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [dropIntent, setDropIntent] = useState<LabelDropIntent | typeof ROOT_LABEL_DROP_TARGET | null>(null);
   const [parentOverrides, setParentOverrides] = useState<Record<string, string | null>>({});
+  const [positionOverrides, setPositionOverrides] = useState<Record<string, number>>({});
+  const [userOrderOverride, setUserOrderOverride] = useState<WorkspaceBundle["userLabelOrder"] | null>(null);
   const [menuError, setMenuError] = useState("");
   const [movingToInbox, setMovingToInbox] = useState(false);
+  const labelSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
   const trashedTasks = bundle.tasks.filter((task) => Boolean(task.deleted_at));
+  const userLabelOrder = userOrderOverride ?? bundle.userLabelOrder;
   const labels = bundle.labels
-    .map((label) => Object.hasOwn(parentOverrides, label.id)
-      ? { ...label, parent_id: parentOverrides[label.id] }
-      : label
-    );
+    .map((label) => {
+      let next = label;
+      if (Object.hasOwn(parentOverrides, label.id)) {
+        next = { ...next, parent_id: parentOverrides[label.id] };
+      }
+      if (Object.hasOwn(positionOverrides, label.id)) {
+        next = { ...next, position: positionOverrides[label.id] };
+      }
+      return next;
+    });
   const countForLabel = (labelId: string) =>
-    openTasks.filter((task) => task.label_ids.includes(labelId)).length;
+    countTasksForLabelSubtree(openTasks, labels, labelId);
 
   function descendantsOf(labelId: string) {
     const result = new Set<string>();
@@ -5317,6 +5426,21 @@ function Sidebar({
     return result;
   }
 
+  function canManageLabel(labelId: string) {
+    return currentLabelPermissionLevel(bundle, labelId) >= 2;
+  }
+
+  function canDragLabel(label: Label) {
+    if (label.id.startsWith("optimistic-")) return false;
+    if (label.parent_id === null) return true;
+    return canManageLabel(label.parent_id);
+  }
+
+  function clearDragState() {
+    setDraggingId(null);
+    setDropIntent(null);
+  }
+
   function moveLabel(sourceId: string, targetId: string | null) {
     const source = labels.find((label) => label.id === sourceId);
     if (
@@ -5324,12 +5448,14 @@ function Sidebar({
       || source.parent_id === targetId
       || sourceId === targetId
       || (targetId !== null && descendantsOf(sourceId).has(targetId))
-    ) return;
+    ) {
+      return Promise.resolve();
+    }
     setParentOverrides((current) => ({ ...current, [sourceId]: targetId }));
     if (targetId) {
       setCollapsed((current) => ({ ...current, [targetId]: false }));
     }
-    void onUpdateLabel(sourceId, {
+    return onUpdateLabel(sourceId, {
       parent_id: targetId,
       inherit_permissions: targetId !== null,
     }).then(() => {
@@ -5338,13 +5464,166 @@ function Sidebar({
         delete next[sourceId];
         return next;
       });
-    }).catch(() => {
+      if (targetId !== null) {
+        setPositionOverrides((current) => {
+          const next = { ...current };
+          delete next[sourceId];
+          return next;
+        });
+      }
+    }).catch((error) => {
       setParentOverrides((current) => {
         const next = { ...current };
         delete next[sourceId];
         return next;
       });
+      throw error;
     });
+  }
+
+  function reorderSiblings(
+    parentId: string | null,
+    sourceId: string,
+    targetId: string,
+    placement: "before" | "after",
+  ) {
+    const source = labels.find((label) => label.id === sourceId);
+    const target = labels.find((label) => label.id === targetId);
+    if (!source || !target || source.parent_id !== parentId || target.parent_id !== parentId) {
+      return;
+    }
+    if (parentId !== null && !canManageLabel(parentId)) return;
+
+    const orderedIds = sortSiblingLabels(labels, parentId, userLabelOrder).map((label) => label.id);
+    const nextIds = moveIdInOrder(orderedIds, sourceId, targetId, placement);
+    if (!nextIds) return;
+
+    if (parentId === null) {
+      const previous = userLabelOrder;
+      setUserOrderOverride(userLabelOrderRows(currentUserId, source.workspace_id, nextIds));
+      void onSetUserTopLevelLabelOrder(nextIds).then(() => {
+        setUserOrderOverride(null);
+      }).catch(() => {
+        setUserOrderOverride(previous.length ? previous : null);
+      });
+      return;
+    }
+
+    const previousPositions = Object.fromEntries(
+      nextIds.map((id) => {
+        const label = labels.find((item) => item.id === id);
+        return [id, label?.position ?? 0];
+      }),
+    );
+    setPositionOverrides((current) => ({
+      ...current,
+      ...Object.fromEntries(nextIds.map((id, position) => [id, position])),
+    }));
+    void onReorderChildLabels(parentId, nextIds).then(() => {
+      setPositionOverrides((current) => {
+        const next = { ...current };
+        for (const id of nextIds) delete next[id];
+        return next;
+      });
+    }).catch(() => {
+      setPositionOverrides((current) => ({ ...current, ...previousPositions }));
+    });
+  }
+
+  function pinLabel(label: Label) {
+    const siblings = sortSiblingLabels(labels, label.parent_id, userLabelOrder);
+    const orderedIds = [label.id, ...siblings.filter((item) => item.id !== label.id).map((item) => item.id)];
+    if (label.parent_id === null) {
+      const previous = userLabelOrder;
+      setUserOrderOverride(userLabelOrderRows(currentUserId, label.workspace_id, orderedIds));
+      void onSetUserTopLevelLabelOrder(orderedIds).then(() => {
+        setUserOrderOverride(null);
+      }).catch(() => {
+        setUserOrderOverride(previous.length ? previous : null);
+      });
+      return;
+    }
+    if (!canManageLabel(label.parent_id)) return;
+    setPositionOverrides((current) => ({
+      ...current,
+      ...Object.fromEntries(orderedIds.map((id, position) => [id, position])),
+    }));
+    void onReorderChildLabels(label.parent_id, orderedIds).then(() => {
+      setPositionOverrides((current) => {
+        const next = { ...current };
+        for (const id of orderedIds) delete next[id];
+        return next;
+      });
+    });
+  }
+
+  function handleLabelDrop(
+    sourceId: string,
+    targetId: string,
+    placement: LabelDropIntent["placement"],
+  ) {
+    if (sourceId === targetId) {
+      clearDragState();
+      return;
+    }
+    const source = labels.find((label) => label.id === sourceId);
+    const target = labels.find((label) => label.id === targetId);
+    clearDragState();
+    if (!source || !target) return;
+
+    if (placement === "onto") {
+      if (!canManageLabel(targetId)) return;
+      void moveLabel(sourceId, targetId);
+      return;
+    }
+
+    if (source.parent_id === target.parent_id) {
+      reorderSiblings(source.parent_id, sourceId, targetId, placement);
+    }
+  }
+
+  function dropIntentFromDrag(event: DragMoveEvent) {
+    if (!event.over || event.active.id === event.over.id) return null;
+    const targetId = String(event.over.id);
+    if (targetId === ROOT_LABEL_DROP_TARGET) return ROOT_LABEL_DROP_TARGET;
+    const translated = event.active.rect.current.translated;
+    const clientY = event.activatorEvent instanceof MouseEvent
+      ? event.activatorEvent.clientY + event.delta.y
+      : translated
+        ? translated.top + translated.height / 2
+        : event.over.rect.top + event.over.rect.height / 2;
+    return {
+      targetId,
+      placement: labelDropPlacementFromY(
+        clientY,
+        event.over.rect.top,
+        event.over.rect.height,
+      ),
+    } satisfies LabelDropIntent;
+  }
+
+  function handleLabelDragStart(event: DragStartEvent) {
+    setDraggingId(String(event.active.id));
+    setDropIntent(null);
+  }
+
+  function handleLabelDragMove(event: DragMoveEvent) {
+    setDropIntent(dropIntentFromDrag(event));
+  }
+
+  function handleLabelDragEnd(event: DragEndEvent) {
+    const sourceId = String(event.active.id);
+    const intent = dropIntentFromDrag(event);
+    if (!intent) {
+      clearDragState();
+      return;
+    }
+    if (intent === ROOT_LABEL_DROP_TARGET) {
+      void moveLabel(sourceId, null);
+      clearDragState();
+      return;
+    }
+    handleLabelDrop(sourceId, intent.targetId, intent.placement);
   }
 
   return (
@@ -5396,64 +5675,40 @@ function Sidebar({
           ><Plus /></button>
         </div>
         <div className="label-tree">
-          {draggingId && (
-            <div
-              className={clsx(
-                "label-root-drop-zone",
-                dropTargetId === ROOT_LABEL_DROP_TARGET && "active",
-              )}
-              onDragOver={(event) => {
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                setDropTargetId(ROOT_LABEL_DROP_TARGET);
+          <DndContext
+            sensors={labelSensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleLabelDragStart}
+            onDragMove={handleLabelDragMove}
+            onDragOver={handleLabelDragMove}
+            onDragCancel={clearDragState}
+            onDragEnd={handleLabelDragEnd}
+          >
+            {draggingId && <LabelRootDropZone />}
+            <LabelTree
+              labels={labels}
+              userLabelOrder={userLabelOrder}
+              canManageLabel={canManageLabel}
+              canDragLabel={canDragLabel}
+              selectedId={selectedLabelId}
+              countForLabel={countForLabel}
+              onSelect={onLabel}
+              onContext={(label, x, y) => {
+                setMenuError("");
+                setMenu({
+                  label,
+                  x: Math.min(x, window.innerWidth - 294),
+                  y: Math.min(y, window.innerHeight - 360),
+                });
               }}
-              onDragLeave={() => {
-                if (dropTargetId === ROOT_LABEL_DROP_TARGET) setDropTargetId(null);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const sourceId = draggingId || event.dataTransfer.getData("text/plain");
-                if (sourceId) moveLabel(sourceId, null);
-                setDraggingId(null);
-                setDropTargetId(null);
-              }}
-            >
-              移至顶层
-            </div>
-          )}
-          <LabelTree
-            labels={labels}
-            canManageLabel={(labelId) => currentLabelPermissionLevel(bundle, labelId) >= 2}
-            selectedId={selectedLabelId}
-            countForLabel={countForLabel}
-            aiAssistantConfigured={aiAssistantConfigured}
-            onSelect={onLabel}
-            onContext={(label, x, y) => {
-              setMenuError("");
-              setMenu({
-                label,
-                x: Math.min(x, window.innerWidth - 294),
-                y: Math.min(y, window.innerHeight - 360),
-              });
-            }}
-            collapsed={collapsed}
-            onToggle={(labelId) =>
-              setCollapsed((current) => ({ ...current, [labelId]: !current[labelId] }))
-            }
-            draggingId={draggingId}
-            dropTargetId={dropTargetId}
-            onDragStart={setDraggingId}
-            onDragEnd={() => {
-              setDraggingId(null);
-              setDropTargetId(null);
-            }}
-            onDragOver={setDropTargetId}
-            onDrop={(targetId) => {
-              if (draggingId) moveLabel(draggingId, targetId);
-              setDraggingId(null);
-              setDropTargetId(null);
-            }}
-          />
+              collapsed={collapsed}
+              onToggle={(labelId) =>
+                setCollapsed((current) => ({ ...current, [labelId]: !current[labelId] }))
+              }
+              draggingId={draggingId}
+              dropIntent={typeof dropIntent === "string" ? null : dropIntent}
+            />
+          </DndContext>
         </div>
       </aside>
       {menu && (
@@ -5472,73 +5727,77 @@ function Sidebar({
             role="menu"
             style={{ left: menu.x, top: menu.y }}
           >
-            <button role="menuitem" onClick={() => {
-              setEditingLabel(menu.label);
-              setMenu(null);
-            }}>编辑</button>
-            <button role="menuitem" onClick={() => {
-              const siblings = labels.filter((label) => label.parent_id === menu.label.parent_id);
-              const firstPosition = Math.min(...siblings.map((label) => label.position), 0);
-              void onUpdateLabel(menu.label.id, { position: firstPosition - 1 });
-              setMenu(null);
-            }}>置顶</button>
-            <button
-              role="menuitem"
-              disabled={!online}
-              onClick={() => {
-                setCreatingLabel({ parentId: menu.label.id });
-                setCollapsed((current) => ({ ...current, [menu.label.id]: false }));
+            {canManageLabel(menu.label.id) && (
+              <button role="menuitem" onClick={() => {
+                setEditingLabel(menu.label);
                 setMenu(null);
-              }}
-            >添加子标签</button>
-            <button role="menuitem" onClick={() => {
-              setMergingLabel(menu.label);
-              setMenu(null);
-            }}>合并标签到…</button>
-            <button
-              role="menuitem"
-              disabled={!window.anttodoDesktop?.aiWork}
-              title={window.anttodoDesktop?.aiWork ? undefined : "仅桌面端"}
-              onClick={() => {
-                if (!window.anttodoDesktop?.aiWork) return;
-                onOpenAiWorkSettings(menu.label.name);
+              }}>编辑</button>
+            )}
+            {(menu.label.parent_id === null || canManageLabel(menu.label.parent_id)) && (
+              <button role="menuitem" onClick={() => {
+                pinLabel(menu.label);
                 setMenu(null);
-              }}
-            >
-              {window.anttodoDesktop?.aiWork
-                ? "设置 AI 助理"
-                : "设置 AI 助理 (仅桌面端)"}
-            </button>
-            <button
-              role="menuitem"
-              disabled={!online || movingToInbox}
-              onClick={() => {
-                const label = menu.label;
-                if (!window.confirm(
-                  `确定将标签“${label.name}”移至收集箱吗？此标签会从关联任务中移除，其子标签会移至标签顶层。`,
-                )) return;
-                setMovingToInbox(true);
-                setMenuError("");
-                void onMoveLabelToInbox(label.id)
-                  .then(() => {
+              }}>置顶</button>
+            )}
+            {canManageLabel(menu.label.id) && (
+              <>
+                <button
+                  role="menuitem"
+                  disabled={!online}
+                  onClick={() => {
+                    setCreatingLabel({ parentId: menu.label.id });
+                    setCollapsed((current) => ({ ...current, [menu.label.id]: false }));
                     setMenu(null);
-                    onSmartView("inbox");
-                  })
-                  .catch((cause) => {
-                    setMenuError(cause instanceof Error ? cause.message : "移至收集箱失败，请重试");
-                  })
-                  .finally(() => setMovingToInbox(false));
-              }}
-            >
-              {movingToInbox ? "移动中…" : "移至收集箱"}
-            </button>
-            <button className="danger" role="menuitem" onClick={() => {
-              const label = menu.label;
-              setMenu(null);
-              if (window.confirm(`确定删除标签“${label.name}”吗？其子标签也会被删除。`)) {
-                void onDeleteLabel(label.id);
-              }
-            }}>删除</button>
+                  }}
+                >添加子标签</button>
+                <button role="menuitem" onClick={() => {
+                  setMovingLabel(menu.label);
+                  setMenu(null);
+                }}>移动标签到…</button>
+                <button
+                  role="menuitem"
+                  disabled={!window.anttodoDesktop?.aiWork}
+                  title={window.anttodoDesktop?.aiWork ? undefined : "仅桌面端"}
+                  onClick={() => {
+                    if (!window.anttodoDesktop?.aiWork) return;
+                    onOpenAiWorkSettings(menu.label.name);
+                    setMenu(null);
+                  }}
+                >
+                  设置 AI 助理
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={!online || movingToInbox}
+                  onClick={() => {
+                    const label = menu.label;
+                    if (!window.confirm(
+                      `确定将标签“${label.name}”移至收集箱吗？此标签会从关联任务中移除，其子标签会移至标签顶层。`,
+                    )) return;
+                    setMovingToInbox(true);
+                    setMenuError("");
+                    void onMoveLabelToInbox(label.id)
+                      .then(() => {
+                        setMenu(null);
+                        onSmartView("inbox");
+                      })
+                      .catch((cause) => {
+                        setMenuError(cause instanceof Error ? cause.message : "移至收集箱失败，请重试");
+                      })
+                      .finally(() => setMovingToInbox(false));
+                  }}
+                >
+                  {movingToInbox ? "移动中…" : "移至收集箱"}
+                </button>
+                <button className="danger" role="menuitem" onClick={() => {
+                  const label = menu.label;
+                  setMenu(null);
+                  if (window.confirm(`确定删除标签“${label.name}”吗？其子标签也会被删除。`)) {
+                    void onDeleteLabel(label.id);
+                  }
+                }}>删除</button>
+              </>
+            )}
             {menuError && <p className="label-menu-error" role="alert">{menuError}</p>}
           </div>
         </>
@@ -5565,111 +5824,170 @@ function Sidebar({
           onSave={onSaveLabelAccess}
         />
       )}
-      {mergingLabel && (
-        <MergeLabelDialog
-          source={mergingLabel}
+      {movingLabel && (
+        <MoveLabelDialog
+          source={movingLabel}
           labels={labels.filter((label) => currentLabelPermissionLevel(bundle, label.id) >= 2)}
           online={online}
-          onClose={() => setMergingLabel(null)}
-          onMerge={onMergeLabel}
+          onClose={() => setMovingLabel(null)}
+          onMove={(targetLabelId) => moveLabel(movingLabel.id, targetLabelId)}
         />
       )}
     </>
   );
 }
 
-function LabelTree({
-  labels,
-  canManageLabel,
-  selectedId,
-  countForLabel,
-  aiAssistantConfigured = false,
-  onSelect,
-  onContext,
-  collapsed,
-  onToggle,
-  draggingId,
-  dropTargetId,
-  onDragStart,
-  onDragEnd,
-  onDragOver,
-  onDrop,
-  parentId = null,
-  depth = 0,
-}: {
+function LabelRootDropZone() {
+  const { setNodeRef } = useDroppable({ id: ROOT_LABEL_DROP_TARGET });
+  return (
+    <div
+      ref={setNodeRef}
+      className="label-root-drop-zone"
+      aria-hidden="true"
+    />
+  );
+}
+
+type LabelTreeProps = {
   labels: Label[];
+  userLabelOrder: WorkspaceBundle["userLabelOrder"];
   canManageLabel: (labelId: string) => boolean;
+  canDragLabel: (label: Label) => boolean;
   selectedId: string | null;
   countForLabel: (id: string) => number;
-  aiAssistantConfigured?: boolean;
   onSelect: (id: string) => void;
   onContext: (label: Label, x: number, y: number) => void;
   collapsed: Record<string, boolean>;
   onToggle: (labelId: string) => void;
   draggingId: string | null;
-  dropTargetId: string | null;
-  onDragStart: (labelId: string) => void;
-  onDragEnd: () => void;
-  onDragOver: (labelId: string) => void;
-  onDrop: (labelId: string) => void;
+  dropIntent: LabelDropIntent | null;
   parentId?: string | null;
   depth?: number;
-}) {
-  const children = labels
-    .filter((label) => label.parent_id === parentId)
-    .sort((a, b) => a.position - b.position);
-  return children.map((label) => {
-    const manageable = canManageLabel(label.id);
-    const hasChildren = labels.some((item) => item.parent_id === label.id);
-    const isCollapsed = collapsed[label.id];
-    const labelIcon = aiAssistantConfigured
-      ? <Bot />
-      : hasChildren
-        ? (isCollapsed ? <FolderClosed /> : <FolderOpen />)
-        : <Tag />;
-    return (
+};
+
+function LabelTree({
+  labels,
+  userLabelOrder,
+  canManageLabel,
+  canDragLabel,
+  selectedId,
+  countForLabel,
+  onSelect,
+  onContext,
+  collapsed,
+  onToggle,
+  draggingId,
+  dropIntent,
+  parentId = null,
+  depth = 0,
+}: LabelTreeProps) {
+  const children = sortSiblingLabels(labels, parentId, userLabelOrder);
+  return children.map((label) => (
+    <LabelTreeNode
+      key={label.id}
+      {...{
+        label,
+        labels,
+        userLabelOrder,
+        canManageLabel,
+        canDragLabel,
+        selectedId,
+        countForLabel,
+        onSelect,
+        onContext,
+        collapsed,
+        onToggle,
+        draggingId,
+        dropIntent,
+        depth,
+      }}
+    />
+  ));
+}
+
+function LabelTreeNode({
+  label,
+  labels,
+  userLabelOrder,
+  canManageLabel,
+  canDragLabel,
+  selectedId,
+  countForLabel,
+  onSelect,
+  onContext,
+  collapsed,
+  onToggle,
+  draggingId,
+  dropIntent,
+  depth,
+}: Omit<LabelTreeProps, "parentId"> & { label: Label; depth: number }) {
+  const manageable = canManageLabel(label.id);
+  const draggable = canDragLabel(label);
+  const canAcceptDrop = manageable || (
+    draggingId !== null
+    && labels.find((item) => item.id === draggingId)?.parent_id === label.parent_id
+    && (label.parent_id === null || canManageLabel(label.parent_id))
+  );
+  const draggableState = useDraggable({
+    id: label.id,
+    disabled: !draggable,
+    attributes: { role: "button", roleDescription: "可拖动标签", tabIndex: 0 },
+  });
+  const droppableState = useDroppable({
+    id: label.id,
+    disabled: !canAcceptDrop || draggingId === label.id,
+  });
+  const hasChildren = labels.some((item) => item.parent_id === label.id);
+  const isCollapsed = collapsed[label.id];
+  const labelIcon = hasChildren
+    ? (isCollapsed ? <FolderClosed /> : <FolderOpen />)
+    : <Tag />;
+  const intentMatches = dropIntent?.targetId === label.id && draggingId !== label.id;
+  return (
       <div
-        key={label.id}
         className="label-tree-node"
         data-label-id={label.id}
       >
-        <button
+        <div
+          ref={(node) => {
+            draggableState.setNodeRef(node);
+            droppableState.setNodeRef(node);
+          }}
+          role="button"
+          tabIndex={0}
+          {...(draggable ? draggableState.attributes : {})}
+          {...(draggable ? draggableState.listeners : {})}
           className={clsx(
             "label-row",
             selectedId === label.id && "active",
-            draggingId === label.id && "dragging",
-            dropTargetId === label.id && draggingId !== label.id && "drop-target",
+            draggableState.isDragging && "dragging",
+            draggable && "is-draggable",
+            intentMatches && dropIntent.placement === "onto" && "drop-target",
+            intentMatches && dropIntent.placement === "before" && "drop-before",
+            intentMatches && dropIntent.placement === "after" && "drop-after",
             label.id.startsWith("optimistic-") && "pending",
           )}
           data-label-id={label.id}
           aria-expanded={hasChildren ? !isCollapsed : undefined}
-          style={{ paddingLeft: 12 + depth * 16 }}
+          style={{
+            paddingLeft: 12 + depth * 16,
+            transform: draggableState.transform
+              ? `translate3d(${draggableState.transform.x}px, ${draggableState.transform.y}px, 0)`
+              : undefined,
+          }}
           onClick={() => onSelect(label.id)}
-          draggable={manageable && !label.id.startsWith("optimistic-")}
-          onDragStart={(event) => {
-            if (!manageable || label.id.startsWith("optimistic-")) {
+          onKeyDown={(event) => {
+            draggableState.listeners?.onKeyDown?.(event);
+            if (event.defaultPrevented) return;
+            if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
-              return;
+              onSelect(label.id);
             }
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", label.id);
-            onDragStart(label.id);
-          }}
-          onDragEnd={onDragEnd}
-          onDragOver={(event) => {
-            if (!manageable || label.id.startsWith("optimistic-")) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            onDragOver(label.id);
-          }}
-          onDrop={(event) => {
-            if (!manageable || label.id.startsWith("optimistic-")) return;
-            event.preventDefault();
-            onDrop(label.id);
           }}
           onContextMenu={(event) => {
             event.preventDefault();
-            if (!manageable || label.id.startsWith("optimistic-")) return;
+            if (label.id.startsWith("optimistic-")) return;
+            if (!manageable && label.parent_id !== null) return;
             onContext(label, event.clientX, event.clientY);
           }}
         >
@@ -5677,7 +5995,6 @@ function LabelTree({
             className={clsx(
               "label-type-icon",
               hasChildren && "label-group-icon",
-              aiAssistantConfigured && "label-ai-icon",
             )}
             onClick={hasChildren
               ? (event) => {
@@ -5698,51 +6015,51 @@ function LabelTree({
             />
           )}
           <span className="item-count">{countForLabel(label.id) || ""}</span>
-        </button>
+        </div>
         {hasChildren && !isCollapsed && (
           <LabelTree
             labels={labels}
+            userLabelOrder={userLabelOrder}
             canManageLabel={canManageLabel}
+            canDragLabel={canDragLabel}
             selectedId={selectedId}
             countForLabel={countForLabel}
-            aiAssistantConfigured={aiAssistantConfigured}
             onSelect={onSelect}
             onContext={onContext}
             collapsed={collapsed}
             onToggle={onToggle}
             draggingId={draggingId}
-            dropTargetId={dropTargetId}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
+            dropIntent={dropIntent}
             parentId={label.id}
             depth={depth + 1}
           />
         )}
       </div>
-    );
-  });
+  );
 }
 
-function MergeLabelDialog({
+function MoveLabelDialog({
   source,
   labels,
   online,
   onClose,
-  onMerge,
+  onMove,
 }: {
   source: Label;
   labels: Label[];
   online: boolean;
   onClose: () => void;
-  onMerge: WorkspaceAppProps["onMergeLabel"];
+  onMove: (targetLabelId: string | null) => Promise<void>;
 }) {
   const [targetId, setTargetId] = useState("");
   const [saving, setSaving] = useState(false);
+  const [removingParent, setRemovingParent] = useState(false);
   const [error, setError] = useState("");
+  const canRemoveParent = source.parent_id !== null;
+  const busy = saving || removingParent;
   const excludedIds = useMemo(() => {
     const result = new Set([source.id]);
+    if (source.parent_id) result.add(source.parent_id);
     const visit = (parentId: string) => {
       labels.filter((label) => label.parent_id === parentId).forEach((label) => {
         result.add(label.id);
@@ -5751,30 +6068,41 @@ function MergeLabelDialog({
     };
     visit(source.id);
     return result;
-  }, [labels, source.id]);
+  }, [labels, source.id, source.parent_id]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!targetId || saving || !online) return;
+    if (!targetId || busy || !online) return;
     setSaving(true);
     setError("");
     try {
-      await onMerge(source.id, targetId);
+      await onMove(targetId);
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "标签合并失败，请重试");
+      setError(cause instanceof Error ? cause.message : "标签移动失败，请重试");
       setSaving(false);
     }
   }
 
+  async function removeParent() {
+    if (!canRemoveParent || busy || !online) return;
+    setRemovingParent(true);
+    setError("");
+    try {
+      await onMove(null);
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "移除父标签失败，请重试");
+      setRemovingParent(false);
+    }
+  }
+
   function options(parentId: string | null = null, depth = 0): ReactNode {
-    return labels
+    return sortSiblingLabels(labels, parentId)
       .filter((label) =>
-        label.parent_id === parentId
-        && !excludedIds.has(label.id)
+        !excludedIds.has(label.id)
         && !label.id.startsWith("optimistic-")
       )
-      .sort((a, b) => a.position - b.position)
       .map((label) => (
         <div key={label.id}>
           <label
@@ -5783,7 +6111,7 @@ function MergeLabelDialog({
           >
             <input
               type="radio"
-              name="merge-target"
+              name="move-target"
               value={label.id}
               checked={targetId === label.id}
               onChange={() => setTargetId(label.id)}
@@ -5802,9 +6130,10 @@ function MergeLabelDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="dialog-content merge-label-dialog">
-          <Dialog.Title>合并“{source.name}”到</Dialog.Title>
+          <Dialog.Title>移动“{source.name}”到</Dialog.Title>
           <Dialog.Description>
-            选择目标标签。任务将改用目标标签，当前标签的子标签也会移到目标标签下。
+            选择目标标签。当前标签将成为目标标签的子级，其子标签会一并移动。
+            {canRemoveParent ? "也可移除父标签，使其回到标签顶层。" : ""}
           </Dialog.Description>
           <form onSubmit={submit}>
             <div className="merge-label-tree" role="radiogroup" aria-label="目标标签">
@@ -5812,13 +6141,23 @@ function MergeLabelDialog({
             </div>
             {error && <p className="merge-label-error" role="alert">{error}</p>}
             <div className="merge-label-actions">
-              <button type="button" className="button" onClick={onClose}>取消</button>
+              <button type="button" className="button" onClick={onClose} disabled={busy}>取消</button>
+              {canRemoveParent && (
+                <button
+                  type="button"
+                  className="button"
+                  disabled={!online || busy}
+                  onClick={() => void removeParent()}
+                >
+                  {removingParent ? "移除中…" : "移除父标签"}
+                </button>
+              )}
               <button
                 type="submit"
                 className="button primary"
-                disabled={!online || saving || !targetId}
+                disabled={!online || busy || !targetId}
               >
-                {saving ? "合并中…" : "合并标签"}
+                {saving ? "移动中…" : "移动标签"}
               </button>
             </div>
           </form>
@@ -6519,6 +6858,7 @@ function TaskWorkspace({
   viewMode,
   selectedLabelId,
   selectedTaskId,
+  selectedSubtaskId,
   online,
   now,
   dateTimePreferences,
@@ -6526,6 +6866,7 @@ function TaskWorkspace({
   onMenu,
   onSearch,
   onSelectTask,
+  onSelectSubtask,
   onCreateTask,
   onUpdateTask,
   onSaveTaskSchedule,
@@ -6539,6 +6880,7 @@ function TaskWorkspace({
   onSaveTaskListPreference,
   onSaveAiWorkSettings,
   onCreateTaskSection,
+  onReorderTaskSections,
   onUpdateTaskSection,
   onDeleteTaskSection,
   onSetTaskListOrder,
@@ -6552,12 +6894,14 @@ function TaskWorkspace({
   viewMode: TaskViewMode;
   selectedLabelId: string | null;
   selectedTaskId: string | null;
+  selectedSubtaskId: string | null;
   online: boolean;
   now: Date;
   aiWorkSettings: AiWorkSettings;
   onMenu: () => void;
   onSearch: () => void;
   onSelectTask: (id: string) => void;
+  onSelectSubtask: (taskId: string, subtaskId: string) => void;
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
@@ -6572,6 +6916,7 @@ function TaskWorkspace({
   onSaveTaskListPreference: WorkspaceAppProps["onSaveTaskListPreference"];
   onSaveAiWorkSettings: WorkspaceAppProps["onSaveAiWorkSettings"];
   onCreateTaskSection: WorkspaceAppProps["onCreateTaskSection"];
+  onReorderTaskSections: WorkspaceAppProps["onReorderTaskSections"];
   onUpdateTaskSection: WorkspaceAppProps["onUpdateTaskSection"];
   onDeleteTaskSection: WorkspaceAppProps["onDeleteTaskSection"];
   onSetTaskListOrder: WorkspaceAppProps["onSetTaskListOrder"];
@@ -6590,6 +6935,9 @@ function TaskWorkspace({
   const [labelSettingsOpen, setLabelSettingsOpen] = useState(false);
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [aiSettingsTitle, setAiSettingsTitle] = useState("设置 AI 助理");
+  const [sectionDraftIndex, setSectionDraftIndex] = useState<number | null>(null);
+  const [sectionDraftName, setSectionDraftName] = useState("");
+  const [sectionDraftBusy, setSectionDraftBusy] = useState(false);
   const [collapsedTaskSubtasks, setCollapsedTaskSubtasks] = useState(
     () => readCollapsedTaskSubtasks(workspaceId),
   );
@@ -6615,21 +6963,33 @@ function TaskWorkspace({
         show_completed: false,
         view_mode: "list" as const,
       }
-    : resolveTaskListPreference(bundle.taskListPreferences, listKey);
+    : resolveTaskListPreference(
+        bundle.taskListPreferences,
+        listKey,
+        bundle.labels,
+        viewMode,
+      );
   const sections = useMemo(
     () => bundle.taskSections.filter((section) => section.list_key === listKey),
     [bundle.taskSections, listKey],
   );
+  const sortedSections = useMemo(() => orderedTaskSections(sections), [sections]);
   const placements = useMemo(
     () => bundle.taskPlacements.filter((placement) => placement.list_key === listKey),
     [bundle.taskPlacements, listKey],
   );
-  const dragEnabled =
+  const canManageSections =
     !isTrashView
     && online
     && canManageSelectedLabel
-    && preference.grouping === "none"
-    && preference.sort === "custom";
+    && preference.grouping === "custom";
+  const manualTaskOrderEnabled =
+    !isTrashView
+    && online
+    && canManageSelectedLabel
+    && preference.sort === "custom"
+    && (preference.grouping === "none" || preference.grouping === "custom");
+  const taskDragEnabled = canManageSections || manualTaskOrderEnabled;
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -6643,6 +7003,11 @@ function TaskWorkspace({
   useEffect(() => {
     setCollapsedTaskSubtasks(readCollapsedTaskSubtasks(workspaceId));
   }, [workspaceId]);
+
+  useEffect(() => {
+    setSectionDraftIndex(null);
+    setSectionDraftName("");
+  }, [listKey]);
 
   useEffect(() => {
     const openAiSettings = (event: Event) => {
@@ -6685,11 +7050,12 @@ function TaskWorkspace({
   const tasks = useMemo(
     () => filterTasksForView({
       tasks: bundle.tasks,
+      labels: bundle.labels,
       smartView,
       selectedLabelId,
       currentUserId,
     }),
-    [bundle.tasks, currentUserId, selectedLabelId, smartView],
+    [bundle.labels, bundle.tasks, currentUserId, selectedLabelId, smartView],
   );
 
   const groups = useMemo(() => {
@@ -6707,10 +7073,13 @@ function TaskWorkspace({
       placements,
       now,
       preferences: dateTimePreferences,
+      selectedLabelId,
+      userLabelOrder: bundle.userLabelOrder,
     });
   }, [
     bundle.labels,
     bundle.members,
+    bundle.userLabelOrder,
     dateTimePreferences,
     isTrashView,
     now,
@@ -6719,6 +7088,7 @@ function TaskWorkspace({
     preference.grouping,
     preference.sort,
     sections,
+    selectedLabelId,
     tasks,
   ]);
   const completedTasks = useMemo(
@@ -6731,6 +7101,7 @@ function TaskWorkspace({
         bundle.labels,
         bundle.members,
         placements,
+        bundle.userLabelOrder,
       );
     },
     [
@@ -6755,10 +7126,12 @@ function TaskWorkspace({
       dateTimePreferences,
       listTitle: title,
       selectedLabelId,
+      userLabelOrder: bundle.userLabelOrder,
     }),
     [
       bundle.labels,
       bundle.members,
+      bundle.userLabelOrder,
       dateTimePreferences,
       now,
       placements,
@@ -6796,8 +7169,42 @@ function TaskWorkspace({
 
   async function changeViewMode(mode: TaskViewMode) {
     if (!online || mode === viewMode) return;
-    await savePreference({ view_mode: mode });
+    if (mode === "kanban" && preference.grouping === "none") {
+      await savePreference({ view_mode: mode, grouping: "custom" });
+    } else {
+      await savePreference({ view_mode: mode });
+    }
     onViewModeChange(mode);
+  }
+
+  async function beginAddSection(index = sortedSections.length) {
+    if (!online || !canManageSelectedLabel || isTrashView) return;
+    if (preference.grouping !== "custom") {
+      await savePreference({ grouping: "custom" });
+    }
+    setSectionDraftIndex(Math.max(0, Math.min(index, sortedSections.length)));
+    setSectionDraftName("");
+  }
+
+  function cancelSectionDraft() {
+    if (sectionDraftBusy) return;
+    setSectionDraftIndex(null);
+    setSectionDraftName("");
+  }
+
+  async function submitSectionDraft() {
+    const name = sectionDraftName.trim();
+    if (!name || sectionDraftIndex === null || !online || sectionDraftBusy) return;
+    setSectionDraftBusy(true);
+    try {
+      await onCreateTaskSection(listKey, name, sectionDraftIndex);
+      setSectionDraftIndex(null);
+      setSectionDraftName("");
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "添加分组失败，请重试");
+    } finally {
+      setSectionDraftBusy(false);
+    }
   }
 
   function canCreateInKanbanColumn(column: KanbanColumn) {
@@ -6810,7 +7217,7 @@ function TaskWorkspace({
   }
 
   function canReceiveInKanbanColumn(column: KanbanColumn) {
-    if (!online || ["created", "note", "completed"].includes(column.target.kind)) return false;
+    if (!online || ["created", "completed"].includes(column.target.kind)) return false;
     return column.target.kind !== "label"
       || !column.target.labelId
       || currentLabelPermissionLevel(bundle, column.target.labelId) >= 2;
@@ -6819,7 +7226,7 @@ function TaskWorkspace({
   async function createInKanbanColumn(column: KanbanColumn, taskTitle: string) {
     if (!canCreateInKanbanColumn(column)) return;
     const labelIds = new Set(selectedLabelId ? [selectedLabelId] : []);
-    let kind: TaskKind = column.target.kind === "note" ? "note" : "todo";
+    const kind: TaskKind = "todo";
     let priority = quickPriority;
     let assigneeId: string | null = null;
     let cliAssignee: AiCliTool | null = null;
@@ -6835,7 +7242,6 @@ function TaskWorkspace({
     if (column.target.kind === "due") {
       dueAt = kanbanDueDate(column.target.bucket, now, dateTimePreferences.weekStartsOn);
     }
-    if (kind === "note") priority = "none";
     const created = await onCreateTask({
       title: taskTitle,
       labelIds: [...labelIds],
@@ -6859,6 +7265,13 @@ function TaskWorkspace({
     if (createdId && cliAssignee) {
       await onAssignTask(createdId, { kind: "cli", tool: cliAssignee });
     }
+    if (createdId && column.target.kind === "section") {
+      await onSetTaskListOrder(
+        listKey,
+        column.target.sectionId,
+        [createdId, ...column.tasks.map((task) => task.id)],
+      );
+    }
   }
 
   async function moveKanbanTask(task: Task, source: KanbanColumn, target: KanbanColumn) {
@@ -6869,6 +7282,26 @@ function TaskWorkspace({
       weekStartsOn: dateTimePreferences.weekStartsOn,
     });
     if (!action) return;
+    if (action.kind === "section") {
+      const nextOrders = taskOrdersAfterCrossSectionMove({
+        sourceTaskIds: source.tasks.map((item) => item.id),
+        targetTaskIds: target.tasks.map((item) => item.id),
+        taskId: task.id,
+      });
+      await Promise.all([
+        onSetTaskListOrder(
+          listKey,
+          action.sourceSectionId,
+          nextOrders.sourceTaskIds,
+        ),
+        onSetTaskListOrder(
+          listKey,
+          action.targetSectionId,
+          nextOrders.targetTaskIds,
+        ),
+      ]);
+      return;
+    }
     if (action.kind === "priority") {
       await onUpdateTask(task.id, { priority: action.priority });
       return;
@@ -6967,7 +7400,7 @@ function TaskWorkspace({
         priority: quickKind === "note" ? "none" : quickPriority,
         dueAt: payload.due?.due_at ?? null,
         dueTimezone: payload.due?.due_timezone ?? null,
-        optimisticOrder: dragEnabled
+        optimisticOrder: manualTaskOrderEnabled
           ? {
               listKey,
               sectionId: null,
@@ -6994,7 +7427,7 @@ function TaskWorkspace({
           { reminders: [], recurrence: null, persistent: false },
         );
       }
-      if (createdId && dragEnabled) {
+      if (createdId && manualTaskOrderEnabled) {
         await onSetTaskListOrder(
           listKey,
           null,
@@ -7007,24 +7440,66 @@ function TaskWorkspace({
   }
 
   async function handleDragEnd(event: DragEndEvent) {
-    if (!dragEnabled || !event.over || event.active.id === event.over.id) return;
-    const activeId = String(event.active.id);
-    const overId = String(event.over.id);
-    const source = groups.find((group) => group.tasks.some((task) => task.id === activeId));
-    const target = overId.startsWith("group:")
-      ? groups.find((group) => `group:${group.id}` === overId)
-      : groups.find((group) => group.tasks.some((task) => task.id === overId));
-    if (!source || !target) return;
+    if (!event.over || event.active.id === event.over.id) return;
+    try {
+      const activeId = String(event.active.id);
+      const overId = String(event.over.id);
+      if (activeId.startsWith("section:")) {
+        if (!canManageSections) return;
+        const activeSectionId = activeId.slice("section:".length);
+        const overSectionId = overId.startsWith("section:")
+          ? overId.slice("section:".length)
+          : groups.find((group) =>
+              group.tasks.some((task) => task.id === overId)
+              || `group:${group.id}` === overId)?.sectionId;
+        if (!overSectionId) return;
+        const nextOrder = taskSectionOrderAfterMove(
+          sortedSections,
+          activeSectionId,
+          overSectionId,
+        );
+        await onReorderTaskSections(listKey, nextOrder);
+        return;
+      }
+      if (!taskDragEnabled) return;
+      const source = groups.find((group) => group.tasks.some((task) => task.id === activeId));
+      const target = overId.startsWith("group:")
+        ? groups.find((group) => `group:${group.id}` === overId)
+        : groups.find((group) => group.tasks.some((task) => task.id === overId));
+      if (!source || !target) return;
 
-    if (source.id !== target.id) return;
-    const from = source.tasks.findIndex((task) => task.id === activeId);
-    const to = target.tasks.findIndex((task) => task.id === overId);
-    if (from < 0 || to < 0) return;
-    await onSetTaskListOrder(
-      listKey,
-      null,
-      arrayMove(source.tasks, from, to).map((task) => task.id),
-    );
+      if (source.id === target.id) {
+        if (!manualTaskOrderEnabled) return;
+        const from = source.tasks.findIndex((task) => task.id === activeId);
+        const to = target.tasks.findIndex((task) => task.id === overId);
+        if (from < 0 || to < 0) return;
+        await onSetTaskListOrder(
+          listKey,
+          target.sectionId ?? null,
+          arrayMove(source.tasks, from, to).map((task) => task.id),
+        );
+        return;
+      }
+
+      const nextOrders = taskOrdersAfterCrossSectionMove({
+        sourceTaskIds: source.tasks.map((task) => task.id),
+        targetTaskIds: target.tasks.map((task) => task.id),
+        taskId: activeId,
+        targetIndex: overId.startsWith("group:")
+          ? target.tasks.length
+          : Math.max(0, target.tasks.findIndex((task) => task.id === overId)),
+      });
+      await Promise.all([
+        onSetTaskListOrder(
+          listKey,
+          source.sectionId ?? null,
+          nextOrders.sourceTaskIds,
+        ),
+        onSetTaskListOrder(listKey, target.sectionId ?? null, nextOrders.targetTaskIds),
+      ]);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "移动失败，请重试");
+    }
   }
 
   return (
@@ -7062,6 +7537,8 @@ function TaskWorkspace({
                   void changeViewMode(mode).catch(() => onNotice("视图切换失败，请重试"));
                 }}
                 onOpenPermissions={() => setLabelSettingsOpen(true)}
+                onAddGroup={() => void beginAddSection().catch((error) =>
+                  onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
                 onToggleShowLabels={() =>
                   void savePreference({ show_labels: !preference.show_labels })}
                 onToggleShowCompleted={() =>
@@ -7115,6 +7592,11 @@ function TaskWorkspace({
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
             customSort={preference.sort === "custom"}
+            customGrouping={preference.grouping === "custom"}
+            canManageSections={canManageSections}
+            sectionDraftIndex={sectionDraftIndex}
+            sectionDraftName={sectionDraftName}
+            sectionDraftBusy={sectionDraftBusy}
             canEditTask={canEditTask}
             canCreateInColumn={canCreateInKanbanColumn}
             canReceiveInColumn={canReceiveInKanbanColumn}
@@ -7122,9 +7604,17 @@ function TaskWorkspace({
             onMoveTask={moveKanbanTask}
             onSetColumnOrder={(column, taskIds) => onSetTaskListOrder(
               listKey,
-              null,
-              taskIds.length > 0 ? taskIds : column.tasks.map((task) => task.id),
+              column.target.kind === "section" ? column.target.sectionId : null,
+              taskIds,
             )}
+            onStartAddSection={(index) => void beginAddSection(index).catch((error) =>
+              onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
+            onSectionDraftNameChange={setSectionDraftName}
+            onSubmitSectionDraft={submitSectionDraft}
+            onCancelSectionDraft={cancelSectionDraft}
+            onRenameSection={(sectionId, name) => onUpdateTaskSection(sectionId, { name })}
+            onDeleteSection={onDeleteTaskSection}
+            onReorderSections={(sectionIds) => onReorderTaskSections(listKey, sectionIds)}
             onSelectTask={onSelectTask}
             onUpdateTask={onUpdateTask}
             onSaveTaskSchedule={onSaveTaskSchedule}
@@ -7156,43 +7646,105 @@ function TaskWorkspace({
             collisionDetection={closestCenter}
             onDragEnd={(event) => void handleDragEnd(event)}
           >
-            {groups.map((group) => (
-              <TaskGroup
-                key={group.id}
-                id={group.id}
-                title={group.title}
-                tasks={group.tasks}
-                labels={bundle.labels}
-                members={bundle.members}
-                selectedTaskId={selectedTaskId}
-                workspaceId={workspaceId}
-                online={online}
-                now={now}
-                dateTimePreferences={dateTimePreferences}
-                showLabels={preference.show_labels}
-                draggable={dragEnabled}
-                collapsedTaskSubtasks={collapsedTaskSubtasks}
-                canEditTask={canEditTask}
-                contextMenuVariant={isTrashView ? "trash" : "default"}
-                onSelect={onSelectTask}
-                onToggleSubtasks={toggleTaskSubtasks}
-                onToggle={async (task) =>
-                  onUpdateTask(task.id, {
-                    status: task.status === "completed" ? "open" : "completed",
-                    completed_at: task.status === "completed" ? null : new Date().toISOString(),
-                  })
-                }
-                onToggleSubtask={onToggleSubtask}
-                onUpdateTask={onUpdateTask}
-                onSaveTaskSchedule={onSaveTaskSchedule}
-                onCreateTask={onCreateTask}
-                onCreateSubtask={onCreateSubtask}
-                onUpdateSubtask={onUpdateSubtask}
-                onDeleteSubtask={onDeleteSubtask}
-                onNotice={onNotice}
-              />
-            ))}
+            <SortableContext
+              items={sortedSections.map((section) => `section:${section.id}`)}
+              strategy={verticalListSortingStrategy}
+            >
+              {groups.map((group) => {
+                const sectionIndex = group.sectionId
+                  ? sortedSections.findIndex((section) => section.id === group.sectionId)
+                  : -1;
+                const editableSection = group.sectionId
+                  ? sortedSections.find((section) => section.id === group.sectionId)
+                  : undefined;
+                return (
+                  <Fragment key={group.id}>
+                    {preference.grouping === "custom"
+                      && sectionIndex >= 0
+                      && sectionDraftIndex === sectionIndex && (
+                      <TaskSectionComposer
+                        variant="list"
+                        name={sectionDraftName}
+                        busy={sectionDraftBusy}
+                        onNameChange={setSectionDraftName}
+                        onSubmit={submitSectionDraft}
+                        onCancel={cancelSectionDraft}
+                      />
+                    )}
+                    <TaskGroup
+                      id={group.id}
+                      title={group.title}
+                      tasks={group.tasks}
+                      labels={bundle.labels}
+                      members={bundle.members}
+                      selectedTaskId={selectedTaskId}
+                      selectedSubtaskId={selectedSubtaskId}
+                      workspaceId={workspaceId}
+                      online={online}
+                      now={now}
+                      dateTimePreferences={dateTimePreferences}
+                      showLabels={preference.show_labels}
+                      draggable={taskDragEnabled}
+                      sectionDraggable={canManageSections}
+                      collapsedTaskSubtasks={collapsedTaskSubtasks}
+                      editableSection={editableSection}
+                      canEditTask={canEditTask}
+                      contextMenuVariant={isTrashView ? "trash" : "default"}
+                      onRenameSection={(sectionId, name) =>
+                        onUpdateTaskSection(sectionId, { name })}
+                      onInsertSection={(sectionId, placement) => {
+                        const index = sortedSections.findIndex((section) => section.id === sectionId);
+                        if (index >= 0) {
+                          void beginAddSection(index + (placement === "after" ? 1 : 0)).catch((error) =>
+                            onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"));
+                        }
+                      }}
+                      onDeleteSection={onDeleteTaskSection}
+                      onSelect={onSelectTask}
+                      onSelectSubtask={onSelectSubtask}
+                      onToggleSubtasks={toggleTaskSubtasks}
+                      onToggle={async (task) =>
+                        onUpdateTask(task.id, {
+                          status: task.status === "completed" ? "open" : "completed",
+                          completed_at: task.status === "completed" ? null : new Date().toISOString(),
+                        })
+                      }
+                      onToggleSubtask={onToggleSubtask}
+                      onUpdateTask={onUpdateTask}
+                      onSaveTaskSchedule={onSaveTaskSchedule}
+                      onCreateTask={onCreateTask}
+                      onCreateSubtask={onCreateSubtask}
+                      onUpdateSubtask={onUpdateSubtask}
+                      onDeleteSubtask={onDeleteSubtask}
+                      onNotice={onNotice}
+                    />
+                  </Fragment>
+                );
+              })}
+            </SortableContext>
           </DndContext>
+        )}
+        {preference.grouping === "custom" && sectionDraftIndex === sortedSections.length && (
+          <TaskSectionComposer
+            variant="list"
+            name={sectionDraftName}
+            busy={sectionDraftBusy}
+            onNameChange={setSectionDraftName}
+            onSubmit={submitSectionDraft}
+            onCancel={cancelSectionDraft}
+          />
+        )}
+        {preference.grouping === "custom" && sectionDraftIndex === null && (
+          <button
+            type="button"
+            className="add-task-section"
+            disabled={!canManageSections}
+            onClick={() => void beginAddSection().catch((error) =>
+              onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
+          >
+            <Plus />
+            添加分组
+          </button>
         )}
         {!isTrashView && preference.show_completed && completedTasks.length > 0 && (
           <TaskGroup
@@ -7202,6 +7754,7 @@ function TaskWorkspace({
             labels={bundle.labels}
             members={bundle.members}
             selectedTaskId={selectedTaskId}
+            selectedSubtaskId={selectedSubtaskId}
             workspaceId={workspaceId}
             online={online}
             now={now}
@@ -7209,6 +7762,7 @@ function TaskWorkspace({
             showLabels={preference.show_labels}
             collapsedTaskSubtasks={collapsedTaskSubtasks}
             onSelect={onSelectTask}
+            onSelectSubtask={onSelectSubtask}
             onToggleSubtasks={toggleTaskSubtasks}
             canEditTask={canEditTask}
             contextMenuVariant="default"
@@ -7262,6 +7816,7 @@ function LabelActionsMenu({
   aiWorkAvailable,
   onChangeViewMode,
   onOpenPermissions,
+  onAddGroup,
   onToggleShowLabels,
   onToggleShowCompleted,
   onOpenAiWorkSettings,
@@ -7275,6 +7830,7 @@ function LabelActionsMenu({
   aiWorkAvailable: boolean;
   onChangeViewMode: (mode: TaskViewMode) => void;
   onOpenPermissions: () => void;
+  onAddGroup: () => void;
   onToggleShowLabels: () => void;
   onToggleShowCompleted: () => void;
   onOpenAiWorkSettings: () => void;
@@ -7358,7 +7914,7 @@ function LabelActionsMenu({
             }}
           >
             <SquareTerminal />
-            <span>{aiWorkAvailable ? "设置 AI 助理" : "设置 AI 助理 (仅桌面端)"}</span>
+            <span>设置 AI 助理</span>
           </button>
           {hasSelectedLabel && canManageSelectedLabel && (
             <button
@@ -7368,9 +7924,21 @@ function LabelActionsMenu({
                 onOpenPermissions();
               }}
             >
+              <ShieldCheck />
               <span>设置权限</span>
             </button>
           )}
+          <button
+            role="menuitem"
+            disabled={!online || !canManageSelectedLabel}
+            onClick={() => {
+              setOpen(false);
+              onAddGroup();
+            }}
+          >
+            <Plus />
+            <span>添加分组</span>
+          </button>
           <button
             role="menuitem"
             disabled={!online}
@@ -7379,6 +7947,7 @@ function LabelActionsMenu({
               setOpen(false);
             }}
           >
+            <Tag />
             <span>{showLabels ? "隐藏标签" : "显示标签"}</span>
           </button>
           <button
@@ -7390,6 +7959,7 @@ function LabelActionsMenu({
               setOpen(false);
             }}
           >
+            <CheckCircle2 />
             <span>显示已完成</span>
             {showCompleted && <Check />}
           </button>
@@ -7533,18 +8103,22 @@ function TaskGroup({
   labels,
   members,
   selectedTaskId,
+  selectedSubtaskId,
   workspaceId,
   online,
   now,
   dateTimePreferences,
   showLabels = false,
   draggable = false,
+  sectionDraggable = false,
   collapsedTaskSubtasks,
   editableSection,
   contextMenuVariant = "default",
   onRenameSection,
+  onInsertSection,
   onDeleteSection,
   onSelect,
+  onSelectSubtask,
   onToggle,
   onToggleSubtasks,
   onToggleSubtask,
@@ -7563,18 +8137,22 @@ function TaskGroup({
   labels: Label[];
   members: Member[];
   selectedTaskId: string | null;
+  selectedSubtaskId: string | null;
   workspaceId: string;
   online: boolean;
   now: Date;
   dateTimePreferences: DateTimePreferences;
   showLabels?: boolean;
   draggable?: boolean;
+  sectionDraggable?: boolean;
   collapsedTaskSubtasks: ReadonlySet<string>;
   editableSection?: TaskSection;
   contextMenuVariant?: "default" | "trash";
   onRenameSection?: (sectionId: string, name: string) => Promise<void>;
+  onInsertSection?: (sectionId: string, placement: "before" | "after") => void;
   onDeleteSection?: (sectionId: string) => Promise<void>;
   onSelect: (id: string) => void;
+  onSelectSubtask: (taskId: string, subtaskId: string) => void;
   onToggle: (task: Task) => Promise<void>;
   onToggleSubtasks: (taskId: string) => void;
   onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
@@ -7597,13 +8175,14 @@ function TaskGroup({
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(title);
+  const renameSubmittingRef = useRef(false);
   const { setNodeRef, isOver } = useDroppable({
     id: `group:${id}`,
     disabled: !draggable,
   });
   const sectionSortable = useSortable({
     id: `section:${editableSection?.id ?? id}`,
-    disabled: !draggable || !editableSection,
+    disabled: !sectionDraggable || !editableSection,
   });
   const menuTask = taskMenu
     ? tasks.find((task) => task.id === taskMenu.taskId) ?? null
@@ -7617,12 +8196,32 @@ function TaskGroup({
     if (!menuTask || (taskMenu.subtaskId && !menuSubtask)) setTaskMenu(null);
   }, [menuSubtask, menuTask, taskMenu]);
 
-  async function submitRename(event: FormEvent) {
-    event.preventDefault();
+  async function saveRename() {
+    if (renameSubmittingRef.current) return;
     const normalized = name.trim();
-    if (!editableSection || !onRenameSection || !normalized) return;
-    await onRenameSection(editableSection.id, normalized);
-    setRenaming(false);
+    if (!editableSection || !onRenameSection || !normalized) {
+      setName(title);
+      setRenaming(false);
+      return;
+    }
+    if (normalized === title) {
+      setRenaming(false);
+      return;
+    }
+    renameSubmittingRef.current = true;
+    try {
+      await onRenameSection(editableSection.id, normalized);
+      setRenaming(false);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "重命名失败，请重试");
+    } finally {
+      renameSubmittingRef.current = false;
+    }
+  }
+
+  function submitRename(event: FormEvent) {
+    event.preventDefault();
+    void saveRename();
   }
 
   return (
@@ -7645,7 +8244,7 @@ function TaskGroup({
     >
       {title && (
         <div className="task-group-header">
-          {editableSection && draggable && (
+          {editableSection && sectionDraggable && (
             <button
               className="task-section-drag-handle"
               aria-label={`拖动分组“${title}”`}
@@ -7662,7 +8261,13 @@ function TaskGroup({
                 onChange={(event) => setName(event.target.value)}
                 maxLength={100}
                 autoFocus
-                onBlur={() => setRenaming(false)}
+                onBlur={() => void saveRename()}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  setName(title);
+                  setRenaming(false);
+                }}
               />
             </form>
           ) : (
@@ -7675,7 +8280,7 @@ function TaskGroup({
               <em>{tasks.length}</em>
             </button>
           )}
-          {editableSection && (
+          {editableSection && sectionDraggable && (
             <div className="task-section-actions">
               <button
                 aria-label={`管理分组“${title}”`}
@@ -7699,11 +8304,30 @@ function TaskGroup({
                   </button>
                   <button
                     role="menuitem"
+                    onClick={() => {
+                      setSectionMenuOpen(false);
+                      onInsertSection?.(editableSection.id, "before");
+                    }}
+                  >
+                    在上方添加分组
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setSectionMenuOpen(false);
+                      onInsertSection?.(editableSection.id, "after");
+                    }}
+                  >
+                    在下方添加分组
+                  </button>
+                  <button
+                    role="menuitem"
                     className="danger"
                     onClick={() => {
                       setSectionMenuOpen(false);
-                      if (window.confirm(`删除分组“${title}”？任务会移至未分组。`)) {
-                        void onDeleteSection?.(editableSection.id);
+                      if (window.confirm(`删除分组“${title}”？任务和笔记会移至未分组。`)) {
+                        void onDeleteSection?.(editableSection.id).catch((error) =>
+                          onNotice(error instanceof Error ? error.message : "删除分组失败，请重试"));
                       }
                     }}
                   >
@@ -7726,7 +8350,8 @@ function TaskGroup({
               task={task}
               labels={labels}
               members={members}
-              selected={selectedTaskId === task.id}
+              selected={selectedTaskId === task.id && !selectedSubtaskId}
+              selectedSubtaskId={selectedTaskId === task.id ? selectedSubtaskId : null}
               online={online && !isOptimisticTaskId(task.id) && canEditTask(task)}
               now={now}
               showLabels={showLabels}
@@ -7734,6 +8359,9 @@ function TaskGroup({
               subtasksCollapsed={collapsedTaskSubtasks.has(task.id)}
               onSelect={() => {
                 if (!isOptimisticTaskId(task.id)) onSelect(task.id);
+              }}
+              onSelectSubtask={(subtaskId) => {
+                if (!isOptimisticTaskId(task.id)) onSelectSubtask(task.id, subtaskId);
               }}
               onToggleSubtasks={() => onToggleSubtasks(task.id)}
               onToggle={() => onToggle(task)}
@@ -7788,12 +8416,14 @@ function TaskRow({
   labels,
   members,
   selected,
+  selectedSubtaskId,
   online,
   now,
   showLabels = false,
   draggable = false,
   subtasksCollapsed,
   onSelect,
+  onSelectSubtask,
   onToggleSubtasks,
   onToggle,
   onToggleSubtask,
@@ -7803,12 +8433,14 @@ function TaskRow({
   labels: Label[];
   members: Member[];
   selected: boolean;
+  selectedSubtaskId: string | null;
   online: boolean;
   now: Date;
   showLabels?: boolean;
   draggable?: boolean;
   subtasksCollapsed: boolean;
   onSelect: () => void;
+  onSelectSubtask: (subtaskId: string) => void;
   onToggleSubtasks: () => void;
   onToggle: () => Promise<void>;
   onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
@@ -8003,7 +8635,11 @@ function TaskRow({
             return (
               <article
                 key={subtask.id}
-                className={clsx("task-list-subtask-row", subtask.completed && "completed")}
+                className={clsx(
+                  "task-list-subtask-row",
+                  subtask.completed && "completed",
+                  selectedSubtaskId === subtask.id && "selected",
+                )}
                 role="listitem"
                 onContextMenu={(event) => {
                   event.preventDefault();
@@ -8029,7 +8665,7 @@ function TaskRow({
                 <button
                   type="button"
                   className="task-list-subtask-content"
-                  onClick={onSelect}
+                  onClick={() => onSelectSubtask(subtask.id)}
                 >
                   <span className="task-main-line">
                     <span className="task-list-subtask-title">{subtask.title}</span>

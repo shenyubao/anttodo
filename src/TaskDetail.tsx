@@ -3,6 +3,7 @@ import clsx from "clsx";
 import {
   CalendarDays,
   Check,
+  ChevronLeft,
   Ellipsis,
   History,
   Inbox,
@@ -43,6 +44,7 @@ import {
 } from "./TaskRichTextEditor";
 import type { AttachmentService } from "./lib/attachments";
 import { getAssignableMembers } from "./lib/taskAssignment";
+import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
 import {
   aiCliLabel,
   buildSubtaskCliPrompt,
@@ -95,8 +97,10 @@ export type TaskDetailProps = {
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) => Promise<void>;
+  focusedSubtaskId?: string | null;
+  onClearFocusedSubtask?: () => void;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   commentsRevision: number;
   activityRevision: number;
@@ -640,9 +644,7 @@ function TaskLabelControl({
   }, [open]);
 
   const selectedLabels = bundle.labels.filter((label) => draftLabelIds.has(label.id));
-  const orderedLabels = [...bundle.labels].sort(
-    (left, right) => left.position - right.position || left.name.localeCompare(right.name, "zh-CN"),
-  );
+  const orderedLabels = orderedLabelsTree(bundle.labels, bundle.userLabelOrder);
 
   async function toggle(labelId: string) {
     if (!online || savingLabelId) return;
@@ -880,6 +882,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   dateTimePreferences,
   aiWorkSettings,
   settingsLabelName = null,
+  focusedSubtaskId = null,
+  onClearFocusedSubtask,
   onClose,
   onUpdate,
   onSaveSchedule,
@@ -901,7 +905,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onUpdateComment,
   onDeleteComment,
 }, forwardedRef) {
-  const [draftTitle, setDraftTitle] = useState(task.title);
+  const focusedSubtask = focusedSubtaskId
+    ? task.subtasks.find((subtask) => subtask.id === focusedSubtaskId) ?? null
+    : null;
+  const [draftTitle, setDraftTitle] = useState(
+    focusedSubtask?.title ?? task.title,
+  );
   const [newSubtask, setNewSubtask] = useState("");
   const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
   const [cliPickerOpen, setCliPickerOpen] = useState(false);
@@ -922,7 +931,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
   activeTerminalRef.current = activeTerminal;
 
-  useEffect(() => setDraftTitle(task.title), [task.id, task.title]);
+  useEffect(() => {
+    setDraftTitle(focusedSubtask?.title ?? task.title);
+  }, [focusedSubtask?.id, focusedSubtask?.title, task.id, task.title]);
   useEffect(() => {
     // Keep CLI processes running across todo switches; restore the view if this
     // task still has a remembered terminal session.
@@ -938,7 +949,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         ? preferred
         : null,
     );
-  }, [task.id]);
+  }, [task.id, focusedSubtask?.id]);
   useEffect(() => {
     if (!cliPickerOpen) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -1022,6 +1033,13 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     }, 500);
   }
 
+  function scheduleSubtaskSave(subtaskId: string, patch: Partial<Pick<Subtask, "due_at" | "title">>) {
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      if (writable) void onUpdateSubtask(subtaskId, patch);
+    }, 500);
+  }
+
   function stopTerminalSession(sessionId: string) {
     const bridge = window.anttodoDesktop?.aiWork?.terminal;
     if (bridge) void bridge.stop(sessionId);
@@ -1099,7 +1117,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     if (closingRef.current) return;
     closingRef.current = true;
     window.clearTimeout(saveTimer.current);
-    if (writable && draftTitle !== task.title) {
+    if (writable && focusedSubtask && draftTitle !== focusedSubtask.title) {
+      await onUpdateSubtask(focusedSubtask.id, { title: draftTitle }).catch(() => undefined);
+    } else if (writable && !focusedSubtask && draftTitle !== task.title) {
       await onUpdate({ title: draftTitle }).catch(() => undefined);
     }
     await editorRef.current?.flush().catch(() => undefined);
@@ -1109,6 +1129,85 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   }
 
   useImperativeHandle(forwardedRef, () => ({ close: closeDetail }));
+
+  if (focusedSubtask) {
+    const subtaskToolbarLeading: ReactNode = (
+      <>
+        {presentation === "panel" && (
+          <button type="button" onClick={() => void closeDetail()} aria-label="关闭详情">
+            <X />
+          </button>
+        )}
+        <button
+          type="button"
+          className="detail-back-to-parent"
+          aria-label="返回父任务"
+          onClick={() => onClearFocusedSubtask?.()}
+        >
+          <ChevronLeft />
+          <span>返回父任务</span>
+        </button>
+        <button
+          className="detail-complete-trigger"
+          type="button"
+          disabled={!writable}
+          aria-label={focusedSubtask.completed ? "重新打开子任务" : "完成子任务"}
+          onClick={() => void onToggleSubtask(focusedSubtask.id, !focusedSubtask.completed)}
+        >
+          {focusedSubtask.completed && <Check />}
+        </button>
+        {presentation === "dialog" && (
+          <span className="detail-toolbar-divider" aria-hidden="true" />
+        )}
+      </>
+    );
+
+    return (
+      <div className={clsx("task-detail", `task-detail-${presentation}`, "task-detail-subtask")}>
+        <header className="detail-toolbar">
+          {subtaskToolbarLeading}
+          <SubtaskDueDateControl
+            subtask={focusedSubtask}
+            online={writable}
+            onSave={(dueAt) => onUpdateSubtask(focusedSubtask.id, { due_at: dueAt })}
+          />
+          <div className="detail-toolbar-spacer" />
+          <TaskAssigneeControl
+            task={task}
+            bundle={bundle}
+            currentUserId={currentUserId}
+            aiWorkSettings={aiWorkSettings}
+            online={writable}
+            onLoad={onLoadAssignees}
+            onAssign={(target) => onAssignSubtask(focusedSubtask.id, target)}
+            target={subtaskAssigneeTarget(focusedSubtask)}
+          />
+        </header>
+        <div className="detail-body">
+          <div className="detail-caption">
+            <textarea
+              className="detail-title"
+              value={draftTitle}
+              disabled={!writable}
+              aria-label="子任务标题"
+              onChange={(event) => {
+                setDraftTitle(event.target.value);
+                scheduleSubtaskSave(focusedSubtask.id, { title: event.target.value });
+              }}
+              rows={2}
+            />
+            <button
+              type="button"
+              className="detail-parent-task"
+              onClick={() => onClearFocusedSubtask?.()}
+            >
+              所属任务：{task.title}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const toolbarLeading: ReactNode = presentation === "dialog" ? (
     <>

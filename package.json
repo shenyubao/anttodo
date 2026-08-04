@@ -30,7 +30,7 @@
     "deploy:web": "pnpm supabase:push && VITE_PUBLIC_APP_URL=https://app.anttodo.com pnpm build && wrangler deploy",
     "deploy:docs": "pnpm --filter docs run deploy",
     "deploy:landing": "pnpm --filter anttodo-landing run deploy",
-    "deploy:mac": "pnpm bump:app-version && pnpm package:mac:all && pnpm upload:mac:oss",
+    "deploy:mac": "pnpm supabase:push && pnpm bump:app-version && pnpm package:mac:all && pnpm upload:mac:oss",
     "mac:signing:check": "node scripts/check-macos-signing.mjs",
     "package:mac": "APPLE_KEYCHAIN_PROFILE=${APPLE_KEYCHAIN_PROFILE:-anttodo-notarization} sh -c 'pnpm mac:signing:check && pnpm build && electron-builder --mac dmg zip && node scripts/verify-macos-package.mjs arm64'",
     "package:mac:all": "APPLE_KEYCHAIN_PROFILE=${APPLE_KEYCHAIN_PROFILE:-anttodo-notarization} sh -c 'pnpm mac:signing:check && pnpm build && electron-builder --mac dmg zip --arm64 --x64 && node scripts/verify-macos-package.mjs arm64 x64'",

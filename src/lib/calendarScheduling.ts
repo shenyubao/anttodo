@@ -1,6 +1,7 @@
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns";
 import type { Label, Task, WorkspaceBundle } from "../types";
 import { fromZonedDateTime, toDateInput } from "./dateTimePreferences";
+import { compareSiblingLabels, userLabelOrderMap } from "./labels";
 import { currentTaskPermissionLevel } from "./permissions";
 
 export type ScheduleTaskGroup = {
@@ -30,11 +31,15 @@ export function canRescheduleTask(
     && currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
 }
 
-function orderedLabels(labels: Label[]) {
+function orderedLabels(
+  labels: Label[],
+  userLabelOrder: WorkspaceBundle["userLabelOrder"],
+) {
   const result: Array<{ label: Label; depth: number }> = [];
   const visited = new Set<string>();
   const labelIds = new Set(labels.map((label) => label.id));
   const byParent = new Map<string | null, Label[]>();
+  const orderMap = userLabelOrderMap(userLabelOrder);
 
   for (const label of labels) {
     const parentId = label.parent_id && labelIds.has(label.parent_id)
@@ -44,8 +49,8 @@ function orderedLabels(labels: Label[]) {
     siblings.push(label);
     byParent.set(parentId, siblings);
   }
-  for (const siblings of byParent.values()) {
-    siblings.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name, "zh-CN"));
+  for (const [parentId, siblings] of byParent.entries()) {
+    siblings.sort((a, b) => compareSiblingLabels(a, b, parentId, orderMap));
   }
 
   const visit = (parentId: string | null, depth: number) => {
@@ -75,7 +80,7 @@ export function buildScheduleTaskGroups(
   if (inboxTasks.length > 0) {
     groups.push({ id: "inbox", label: null, depth: 0, tasks: inboxTasks });
   }
-  for (const { label, depth } of orderedLabels(bundle.labels)) {
+  for (const { label, depth } of orderedLabels(bundle.labels, bundle.userLabelOrder)) {
     const labelTasks = tasks.filter((task) => task.label_ids.includes(label.id));
     if (labelTasks.length > 0) groups.push({ id: label.id, label, depth, tasks: labelTasks });
   }

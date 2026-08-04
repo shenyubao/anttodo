@@ -15,7 +15,8 @@ import {
   toTimeInput,
   zonedDate,
 } from "./dateTimePreferences";
-import type { DateTimePreferences, Label, Task } from "../types";
+import type { DateTimePreferences, Label, Task, UserLabelOrder } from "../types";
+import { compareSiblingLabels, userLabelOrderMap } from "./labels";
 
 export type MindMapNodeKind =
   | "root"
@@ -244,10 +245,6 @@ function labelsById(labels: Label[]) {
   return new Map(labels.map((label) => [label.id, label]));
 }
 
-function sortSiblingLabels(a: Label, b: Label) {
-  return a.position - b.position || a.id.localeCompare(b.id);
-}
-
 function labelPath(label: Label, byId: Map<string, Label>) {
   const names: string[] = [];
   let current: Label | undefined = label;
@@ -260,7 +257,10 @@ function labelPath(label: Label, byId: Map<string, Label>) {
   return names.join(" / ");
 }
 
-function orderedLabelsFlat(labels: Label[]) {
+function orderedLabelsFlat(
+  labels: Label[],
+  userOrder?: Map<string, number>,
+) {
   const labelIds = new Set(labels.map((label) => label.id));
   const byParent = new Map<string | null, Label[]>();
   for (const label of labels) {
@@ -271,8 +271,8 @@ function orderedLabelsFlat(labels: Label[]) {
     siblings.push(label);
     byParent.set(parentId, siblings);
   }
-  for (const siblings of byParent.values()) {
-    siblings.sort(sortSiblingLabels);
+  for (const [parentId, siblings] of byParent.entries()) {
+    siblings.sort((a, b) => compareSiblingLabels(a, b, parentId, userOrder));
   }
   const result: Label[] = [];
   const visit = (parentId: string | null, visiting: Set<string>) => {
@@ -310,6 +310,7 @@ function labelTreeNodes({
   dateEndKey,
   scheduleLevel,
   labelDisplayMode,
+  userOrder,
 }: {
   tasks: Task[];
   labels: Label[];
@@ -319,6 +320,7 @@ function labelTreeNodes({
   dateEndKey?: string;
   scheduleLevel?: MindMapScheduleLevel;
   labelDisplayMode: MindMapLabelDisplayMode;
+  userOrder?: Map<string, number>;
 }): MindMapTreeNode[] {
   if (labelDisplayMode === "hidden") return [];
 
@@ -354,7 +356,7 @@ function labelTreeNodes({
       .map((task) => taskNode(task, contextKey, preferences, label.id));
 
   if (labelDisplayMode === "merged") {
-    return orderedLabelsFlat(labels).flatMap((label) => {
+    return orderedLabelsFlat(labels, userOrder).flatMap((label) => {
       const children = directTaskNodes(label);
       if (!children.length) return [];
       return [makeLabelNode(label, labelPath(label, byId), children)];
@@ -362,7 +364,7 @@ function labelTreeNodes({
   }
 
   if (labelDisplayMode === "leaf") {
-    return orderedLabelsFlat(labels).flatMap((label) => {
+    return orderedLabelsFlat(labels, userOrder).flatMap((label) => {
       if (hasChildLabel.has(label.id)) return [];
       const children = directTaskNodes(label);
       if (!children.length) return [];
@@ -375,7 +377,7 @@ function labelTreeNodes({
     const nextVisiting = new Set(visiting).add(label.id);
     const childLabels = labels
       .filter((candidate) => candidate.parent_id === label.id)
-      .sort(sortSiblingLabels)
+      .sort((a, b) => compareSiblingLabels(a, b, label.id, userOrder))
       .flatMap((candidate) => {
         const child = build(candidate, nextVisiting);
         return child ? [child] : [];
@@ -387,7 +389,7 @@ function labelTreeNodes({
 
   return labels
     .filter((label) => label.parent_id === null || !labelIds.has(label.parent_id))
-    .sort(sortSiblingLabels)
+    .sort((a, b) => compareSiblingLabels(a, b, null, userOrder))
     .flatMap((label) => {
       const node = build(label, new Set());
       return node ? [node] : [];
@@ -435,6 +437,7 @@ function taskBranchChildren({
   dateEndKey,
   scheduleLevel,
   labelDisplayMode,
+  userOrder,
 }: {
   tasks: Task[];
   labels: Label[];
@@ -444,6 +447,7 @@ function taskBranchChildren({
   dateEndKey?: string;
   scheduleLevel?: MindMapScheduleLevel;
   labelDisplayMode: MindMapLabelDisplayMode;
+  userOrder?: Map<string, number>;
 }) {
   return [
     ...labelTreeNodes({
@@ -455,6 +459,7 @@ function taskBranchChildren({
       dateEndKey,
       scheduleLevel,
       labelDisplayMode,
+      userOrder,
     }),
     ...unlabeledTasksForBranch({ tasks, labels, labelDisplayMode })
       .sort(compareTasks)
@@ -488,13 +493,16 @@ export function buildMindMapTree({
   preferences,
   focusDateKey,
   labelDisplayMode = DEFAULT_MIND_MAP_LABEL_DISPLAY_MODE,
+  userLabelOrder,
 }: {
   tasks: Task[];
   labels: Label[];
   preferences: DateTimePreferences;
   focusDateKey?: string | null;
   labelDisplayMode?: MindMapLabelDisplayMode;
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }): MindMapTreeNode {
+  const userOrder = userLabelOrderMap(userLabelOrder);
   const visibleTasks = tasks.filter((task) => !task.deleted_at);
   const dayTasks = new Map<string, Task[]>();
   const weekTasks = new Map<string, Task[]>();
@@ -565,6 +573,7 @@ export function buildMindMapTree({
             dateEndKey: month.endKey,
             scheduleLevel: "month",
             labelDisplayMode,
+            userOrder,
           }),
           ...[...weeks.entries()]
             .sort(([a], [b]) => a.localeCompare(b))
@@ -588,6 +597,7 @@ export function buildMindMapTree({
                     dateEndKey: week.endKey,
                     scheduleLevel: "week",
                     labelDisplayMode,
+                    userOrder,
                   }),
                   ...week.days.sort().map((dateKey) => {
                     const day = dateFromKey(dateKey);
@@ -606,6 +616,7 @@ export function buildMindMapTree({
                         dateKey,
                         scheduleLevel: "day",
                         labelDisplayMode,
+                        userOrder,
                       }),
                     };
                   }),
@@ -642,6 +653,7 @@ export function buildMindMapTree({
           contextKey: "unscheduled",
           preferences,
           labelDisplayMode,
+          userOrder,
         }),
       },
     ],

@@ -9,9 +9,12 @@ import type {
   TaskListSort,
   TaskPlacement,
   TaskSection,
+  TaskViewMode,
+  UserLabelOrder,
 } from "../types";
 import { isSameDay } from "date-fns";
 import { aiCliLabel } from "./aiWork";
+import { compareSiblingLabels, userLabelOrderMap } from "./labels";
 
 export type TaskListGroup = {
   id: string;
@@ -42,6 +45,7 @@ export function isCompletedTask(task: Task) {
 }
 
 export const TASK_GROUPING_OPTIONS: Array<{ value: TaskListGrouping; label: string }> = [
+  { value: "custom", label: "自定义" },
   { value: "due", label: "时间" },
   { value: "created", label: "创建时间" },
   { value: "label", label: "标签" },
@@ -65,14 +69,84 @@ export function taskListKey(smartView: string, selectedLabelId: string | null) {
   return selectedLabelId ? `label:${selectedLabelId}` : smartView;
 }
 
+export function orderedLabels(
+  labels: Label[],
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>,
+) {
+  const byParent = new Map<string | null, Label[]>();
+  const orderMap = userLabelOrderMap(userLabelOrder);
+  for (const label of labels) {
+    const siblings = byParent.get(label.parent_id) ?? [];
+    siblings.push(label);
+    byParent.set(label.parent_id, siblings);
+  }
+  for (const [parentId, siblings] of byParent.entries()) {
+    siblings.sort((a, b) => compareSiblingLabels(a, b, parentId, orderMap));
+  }
+  const result: Label[] = [];
+  const visit = (parentId: string | null) => {
+    for (const label of byParent.get(parentId) ?? []) {
+      result.push(label);
+      visit(label.id);
+    }
+  };
+  visit(null);
+  return result;
+}
+
+export function descendantLabelIds(labels: Label[], rootId: string) {
+  const result = new Set<string>();
+  const visit = (parentId: string) => {
+    for (const label of labels) {
+      if (label.parent_id !== parentId) continue;
+      result.add(label.id);
+      visit(label.id);
+    }
+  };
+  visit(rootId);
+  return result;
+}
+
+export function labelSubtreeIds(labels: Label[], rootId: string) {
+  const result = descendantLabelIds(labels, rootId);
+  result.add(rootId);
+  return result;
+}
+
+export function labelHasChildren(labels: Label[], labelId: string) {
+  return labels.some((label) => label.parent_id === labelId);
+}
+
+export function leafLabelsInScope(
+  labels: Label[],
+  scopeIds?: Set<string>,
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>,
+) {
+  const inScope = (id: string) => !scopeIds || scopeIds.has(id);
+  return orderedLabels(labels, userLabelOrder).filter((label) => {
+    if (!inScope(label.id)) return false;
+    return !labels.some((child) => child.parent_id === label.id && inScope(child.id));
+  });
+}
+
+export function countTasksForLabelSubtree(
+  tasks: Task[],
+  labels: Label[],
+  labelId: string,
+) {
+  const scope = labelSubtreeIds(labels, labelId);
+  return tasks.filter((task) => task.label_ids.some((id) => scope.has(id))).length;
+}
+
 export function filterTasksForView(input: {
   tasks: Task[];
+  labels: Label[];
   smartView: string;
   selectedLabelId: string | null;
   currentUserId: string;
   now?: Date;
 }) {
-  const { tasks, smartView, selectedLabelId, currentUserId } = input;
+  const { tasks, labels, smartView, selectedLabelId, currentUserId } = input;
   const now = input.now ?? new Date();
   if (!selectedLabelId && smartView === "trash") {
     return tasks
@@ -81,7 +155,8 @@ export function filterTasksForView(input: {
   }
   let result = tasks.filter((task) => !task.deleted_at);
   if (selectedLabelId) {
-    return result.filter((task) => task.label_ids.includes(selectedLabelId));
+    const scope = labelSubtreeIds(labels, selectedLabelId);
+    return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
   }
   if (smartView === "today") {
     return result.filter((task) => task.due_at && isSameDay(new Date(task.due_at), now));
@@ -102,42 +177,79 @@ export function defaultSortDirection(sort: TaskListSort): SortDirection {
 export function resolveTaskListPreference(
   preferences: TaskListPreference[],
   listKey: string,
+  labels: Label[] = [],
+  viewMode?: TaskViewMode,
 ) {
   const found = preferences.find((item) => item.list_key === listKey);
-  if (!found) return { ...DEFAULT_TASK_LIST_PREFERENCE, list_key: listKey };
-  const resolved = {
+  if (!found) {
+    const labelId = listKey.startsWith("label:") ? listKey.slice("label:".length) : null;
+    const mode = viewMode ?? DEFAULT_TASK_LIST_PREFERENCE.view_mode;
+    const grouping: TaskListGrouping = mode === "kanban"
+      ? "custom"
+      : labelId && labelHasChildren(labels, labelId)
+        ? "label"
+        : DEFAULT_TASK_LIST_PREFERENCE.grouping;
+    return {
+      ...DEFAULT_TASK_LIST_PREFERENCE,
+      list_key: listKey,
+      grouping,
+      view_mode: mode,
+    };
+  }
+  return {
     ...DEFAULT_TASK_LIST_PREFERENCE,
     ...found,
     show_labels: found.show_labels ?? false,
     show_completed: found.show_completed ?? false,
     view_mode: found.view_mode ?? "list",
   };
-  return {
-    ...resolved,
-    // “自定义分组”已下线；兼容历史偏好，统一展示为无分组。
-    grouping: resolved.grouping === "custom" ? "none" : resolved.grouping,
-  };
 }
 
-function orderedLabels(labels: Label[]) {
-  const byParent = new Map<string | null, Label[]>();
-  for (const label of labels) {
-    const siblings = byParent.get(label.parent_id) ?? [];
-    siblings.push(label);
-    byParent.set(label.parent_id, siblings);
-  }
-  for (const siblings of byParent.values()) {
-    siblings.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name, "zh-Hans-CN"));
-  }
-  const result: Label[] = [];
-  const visit = (parentId: string | null) => {
-    for (const label of byParent.get(parentId) ?? []) {
-      result.push(label);
-      visit(label.id);
-    }
-  };
-  visit(null);
-  return result;
+export function orderedTaskSections(sections: TaskSection[]) {
+  return [...sections].sort((left, right) =>
+    left.position - right.position || left.id.localeCompare(right.id));
+}
+
+export function taskSectionOrderAfterMove(
+  sections: TaskSection[],
+  activeSectionId: string,
+  overSectionId: string,
+) {
+  const orderedIds = orderedTaskSections(sections).map((section) => section.id);
+  const from = orderedIds.indexOf(activeSectionId);
+  const to = orderedIds.indexOf(overSectionId);
+  if (from < 0 || to < 0 || from === to) return orderedIds;
+  const [activeId] = orderedIds.splice(from, 1);
+  orderedIds.splice(to, 0, activeId);
+  return orderedIds;
+}
+
+export function taskSectionOrderAfterInsert(
+  sections: TaskSection[],
+  sectionId: string,
+  index = sections.length,
+) {
+  const orderedIds = orderedTaskSections(sections)
+    .map((section) => section.id)
+    .filter((id) => id !== sectionId);
+  orderedIds.splice(Math.max(0, Math.min(index, orderedIds.length)), 0, sectionId);
+  return orderedIds;
+}
+
+export function taskOrdersAfterCrossSectionMove(input: {
+  sourceTaskIds: string[];
+  targetTaskIds: string[];
+  taskId: string;
+  targetIndex?: number;
+}) {
+  const sourceTaskIds = input.sourceTaskIds.filter((id) => id !== input.taskId);
+  const targetTaskIds = input.targetTaskIds.filter((id) => id !== input.taskId);
+  const targetIndex = Math.max(
+    0,
+    Math.min(input.targetIndex ?? 0, targetTaskIds.length),
+  );
+  targetTaskIds.splice(targetIndex, 0, input.taskId);
+  return { sourceTaskIds, targetTaskIds };
 }
 
 function startOfLocalDay(value: Date) {
@@ -175,9 +287,10 @@ export function sortTasks(
   labels: Label[],
   members: Member[],
   placements: TaskPlacement[],
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>,
 ) {
   const directionFactor = direction === "asc" ? 1 : -1;
-  const labelOrder = orderedLabels(labels);
+  const labelOrder = orderedLabels(labels, userLabelOrder);
   const labelRank = new Map(labelOrder.map((label, index) => [label.id, index]));
   const labelName = new Map(labels.map((label) => [label.id, label.name]));
   const memberName = new Map(
@@ -252,13 +365,17 @@ export function groupTasks(input: {
   placements: TaskPlacement[];
   now: Date;
   preferences: Pick<DateTimePreferences, "weekStartsOn">;
+  selectedLabelId?: string | null;
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }) {
   const {
     grouping, labels, members, sections, placements, now, preferences,
+    userLabelOrder,
   } = input;
+  const selectedLabelId = input.selectedLabelId ?? null;
   const tasks = input.tasks.filter(isActiveTask);
   const sortGroup = (items: Task[]) =>
-    sortTasks(items, input.sort, input.direction, labels, members, placements);
+    sortTasks(items, input.sort, input.direction, labels, members, placements, userLabelOrder);
   const groups: TaskListGroup[] = [];
   const add = (id: string, title: string, items: Task[], sectionId?: string | null) => {
     if (items.length > 0 || grouping === "custom") {
@@ -271,15 +388,13 @@ export function groupTasks(input: {
     const ungroupedTasks = tasks.filter(
       (task) => !placementByTask.get(task.id)?.section_id,
     );
-    if (ungroupedTasks.length > 0 || sections.length > 0) {
-      groups.push({
-        id: "section:ungrouped",
-        title: "未分组",
-        tasks: sortGroup(ungroupedTasks),
-        sectionId: null,
-      });
-    }
-    for (const section of [...sections].sort((a, b) => a.position - b.position)) {
+    groups.push({
+      id: "section:ungrouped",
+      title: "未分组",
+      tasks: sortGroup(ungroupedTasks),
+      sectionId: null,
+    });
+    for (const section of orderedTaskSections(sections)) {
       add(
         `section:${section.id}`,
         section.name,
@@ -332,10 +447,30 @@ export function groupTasks(input: {
       (task) => created(task) < Math.min(week.getTime(), yesterday.getTime()),
     ));
   } else if (grouping === "label") {
-    for (const label of orderedLabels(labels)) {
-      add(`label:${label.id}`, label.name, tasks.filter((task) => task.label_ids.includes(label.id)));
+    const scopeIds = selectedLabelId ? labelSubtreeIds(labels, selectedLabelId) : undefined;
+    const leafLabels = leafLabelsInScope(labels, scopeIds, userLabelOrder);
+    const leafIds = new Set(leafLabels.map((label) => label.id));
+    for (const label of leafLabels) {
+      add(
+        `label:${label.id}`,
+        label.name,
+        tasks.filter((task) => task.label_ids.includes(label.id)),
+      );
     }
-    add("label:none", "无标签", tasks.filter((task) => task.label_ids.length === 0));
+    const intermediateTasks = tasks.filter((task) => {
+      const scopedIds = scopeIds
+        ? task.label_ids.filter((id) => scopeIds.has(id))
+        : task.label_ids;
+      if (scopedIds.length === 0) return false;
+      return scopedIds.every((id) => !leafIds.has(id));
+    });
+    const intermediateTitle = selectedLabelId
+      ? labels.find((label) => label.id === selectedLabelId)?.name ?? "其他标签"
+      : "其他标签";
+    add("label:intermediate", intermediateTitle, intermediateTasks);
+    if (!selectedLabelId) {
+      add("label:none", "无标签", tasks.filter((task) => task.label_ids.length === 0));
+    }
   } else if (grouping === "priority") {
     add("priority:high", "高优先级", tasks.filter((task) => effectiveTaskPriority(task) === "high"));
     add("priority:medium", "中优先级", tasks.filter((task) => effectiveTaskPriority(task) === "medium"));

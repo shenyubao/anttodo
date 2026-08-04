@@ -53,6 +53,7 @@ import {
   schedulePatchForCalendarMove,
   schedulePatchFromDrop,
 } from "./lib/calendarScheduling";
+import { compareSiblingLabels, userLabelOrderMap } from "./lib/labels";
 import type {
   DateTimePreferences,
   Label,
@@ -260,6 +261,7 @@ function MiniCalendar({
 
 function CalendarLabelTree({
   labels,
+  userLabelOrder,
   visibleCalendarIds,
   collapsed,
   onToggleCollapsed,
@@ -268,6 +270,7 @@ function CalendarLabelTree({
   depth = 0,
 }: {
   labels: Label[];
+  userLabelOrder: WorkspaceBundle["userLabelOrder"];
   visibleCalendarIds: Set<string>;
   collapsed: Record<string, boolean>;
   onToggleCollapsed: (labelId: string) => void;
@@ -276,10 +279,11 @@ function CalendarLabelTree({
   depth?: number;
 }) {
   const labelIds = new Set(labels.map((label) => label.id));
+  const orderMap = userLabelOrderMap(userLabelOrder);
   const children = labels
     .filter((label) => label.parent_id === parentId
       || (parentId === null && label.parent_id !== null && !labelIds.has(label.parent_id)))
-    .sort((a, b) => a.position - b.position);
+    .sort((a, b) => compareSiblingLabels(a, b, parentId, orderMap));
 
   return children.map((label) => {
     const hasChildren = labels.some((candidate) => candidate.parent_id === label.id);
@@ -325,6 +329,7 @@ function CalendarLabelTree({
           <div role="group">
             <CalendarLabelTree
               labels={labels}
+              userLabelOrder={userLabelOrder}
               visibleCalendarIds={visibleCalendarIds}
               collapsed={collapsed}
               onToggleCollapsed={onToggleCollapsed}
@@ -400,6 +405,7 @@ export function CalendarSidebar({
           <div className="calendar-label-tree" role="tree" aria-label="标签树">
             <CalendarLabelTree
               labels={bundle.labels}
+              userLabelOrder={bundle.userLabelOrder}
               visibleCalendarIds={visibleCalendarIds}
               collapsed={collapsedLabels}
               onToggleCollapsed={(labelId) => setCollapsedLabels((current) => ({

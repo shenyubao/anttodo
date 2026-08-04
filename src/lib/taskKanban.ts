@@ -9,17 +9,18 @@ import type {
   TaskPlacement,
   TaskPriority,
   TaskSection,
+  UserLabelOrder,
 } from "../types";
-import { groupTasks, isActiveTask, isCompletedTask, sortTasks } from "./taskList";
+import { groupTasks, isActiveTask, isCompletedTask, labelSubtreeIds, leafLabelsInScope, sortTasks } from "./taskList";
 
 export type KanbanColumnTarget =
   | { kind: "none" }
+  | { kind: "section"; sectionId: string | null }
   | { kind: "due"; bucket: "overdue" | "today" | "tomorrow" | "week" | "later" | "none" }
   | { kind: "label"; labelId: string | null }
   | { kind: "priority"; priority: TaskPriority }
   | { kind: "assignee"; assigneeId: string | null; cliAssignee: AiCliTool | null }
   | { kind: "created" }
-  | { kind: "note" }
   | { kind: "completed" };
 
 export type KanbanColumn = {
@@ -30,6 +31,7 @@ export type KanbanColumn = {
 };
 
 export type KanbanDropAction =
+  | { kind: "section"; sourceSectionId: string | null; targetSectionId: string | null }
   | { kind: "schedule"; dueAt: string | null }
   | { kind: "labels"; sourceLabelId: string | null; targetLabelId: string | null }
   | { kind: "priority"; priority: TaskPriority }
@@ -95,13 +97,28 @@ function templateColumns(
     ].map(([id, title]) => ({ id, title, target: { kind: "created" } }));
   }
   if (grouping === "label") {
-    const columns = [...labels]
-      .sort((left, right) => left.position - right.position || left.name.localeCompare(right.name, "zh-Hans-CN"))
-      .map((label) => ({
-        id: `label:${label.id}`,
-        title: label.name,
-        target: { kind: "label", labelId: label.id } as KanbanColumnTarget,
-      }));
+    const scopeIds = selectedLabelId ? labelSubtreeIds(labels, selectedLabelId) : undefined;
+    const leafLabels = leafLabelsInScope(labels, scopeIds);
+    const columns: Array<Omit<KanbanColumn, "tasks">> = leafLabels.map((label) => ({
+      id: `label:${label.id}`,
+      title: label.name,
+      target: { kind: "label", labelId: label.id },
+    }));
+    const hasNonLeaf = labels.some((label) => {
+      if (scopeIds && !scopeIds.has(label.id)) return false;
+      return labels.some((child) => child.parent_id === label.id && (!scopeIds || scopeIds.has(child.id)));
+    });
+    if (hasNonLeaf) {
+      columns.push({
+        id: "label:intermediate",
+        title: selectedLabelId
+          ? labels.find((label) => label.id === selectedLabelId)?.name ?? "其他标签"
+          : "其他标签",
+        target: selectedLabelId
+          ? { kind: "label", labelId: selectedLabelId }
+          : { kind: "none" },
+      });
+    }
     if (!selectedLabelId) {
       columns.push({
         id: "label:none",
@@ -165,11 +182,51 @@ export function buildKanbanColumns(input: {
   dateTimePreferences: Pick<DateTimePreferences, "weekStartsOn">;
   listTitle: string;
   selectedLabelId: string | null;
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }) {
-  const todos = input.tasks.filter((task) => task.kind !== "note" && isActiveTask(task));
-  const notes = input.tasks.filter((task) => task.kind === "note" && isActiveTask(task));
+  if (input.preference.grouping === "custom") {
+    const groups = groupTasks({
+      tasks: input.tasks,
+      grouping: "custom",
+      sort: input.preference.sort,
+      direction: input.preference.direction,
+      labels: input.labels,
+      members: input.members,
+      sections: input.sections,
+      placements: input.placements,
+      now: input.now,
+      preferences: input.dateTimePreferences,
+      selectedLabelId: input.selectedLabelId,
+      userLabelOrder: input.userLabelOrder,
+    });
+    const columns: KanbanColumn[] = groups.map((group) => ({
+      id: group.id,
+      title: group.title,
+      target: { kind: "section", sectionId: group.sectionId ?? null },
+      tasks: group.tasks,
+    }));
+    if (input.preference.show_completed) {
+      columns.push({
+        id: "completed",
+        title: "已完成",
+        target: { kind: "completed" },
+        tasks: sortTasks(
+          input.tasks.filter(isCompletedTask),
+          input.preference.sort,
+          input.preference.direction,
+          input.labels,
+          input.members,
+          input.placements,
+          input.userLabelOrder,
+        ),
+      });
+    }
+    return columns;
+  }
+
+  const activeTasks = input.tasks.filter(isActiveTask);
   const groups = groupTasks({
-    tasks: todos,
+    tasks: activeTasks,
     grouping: input.preference.grouping,
     sort: input.preference.sort,
     direction: input.preference.direction,
@@ -179,10 +236,12 @@ export function buildKanbanColumns(input: {
     placements: input.placements,
     now: input.now,
     preferences: input.dateTimePreferences,
+    selectedLabelId: input.selectedLabelId,
+    userLabelOrder: input.userLabelOrder,
   });
   const tasksByGroup = new Map(groups.map((group) => [group.id, group.tasks]));
   const columns: KanbanColumn[] = templateColumns(
-    input.preference.grouping === "custom" ? "none" : input.preference.grouping,
+    input.preference.grouping,
     input.labels,
     input.members,
     input.listTitle,
@@ -190,19 +249,6 @@ export function buildKanbanColumns(input: {
     (["codex", "claude"] as const).filter((tool) =>
       input.tasks.some((task) => task.cli_assignee === tool)),
   ).map((column) => ({ ...column, tasks: tasksByGroup.get(column.id) ?? [] }));
-  columns.push({
-    id: "notes",
-    title: "笔记",
-    target: { kind: "note" },
-    tasks: sortTasks(
-      notes,
-      input.preference.sort,
-      input.preference.direction,
-      input.labels,
-      input.members,
-      input.placements,
-    ),
-  });
   if (input.preference.show_completed) {
     columns.push({
       id: "completed",
@@ -215,6 +261,7 @@ export function buildKanbanColumns(input: {
         input.labels,
         input.members,
         input.placements,
+        input.userLabelOrder,
       ),
     });
   }
@@ -228,10 +275,15 @@ export function kanbanDropAction(input: {
   weekStartsOn: number;
 }): KanbanDropAction | null {
   const { source, target } = input;
-  if (source.id === target.id || source.target.kind === "note" || target.target.kind === "note") {
-    return null;
-  }
+  if (source.id === target.id) return null;
   if (source.target.kind === "completed" || target.target.kind === "completed") return null;
+  if (target.target.kind === "section") {
+    return {
+      kind: "section",
+      sourceSectionId: source.target.kind === "section" ? source.target.sectionId : null,
+      targetSectionId: target.target.sectionId,
+    };
+  }
   if (target.target.kind === "due") {
     return {
       kind: "schedule",

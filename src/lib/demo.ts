@@ -280,6 +280,7 @@ export function createDemoBundle(): WorkspaceBundle {
     ],
     labelGroupAcls: [],
     labelPermissionLevels: Object.fromEntries(labels.map((label) => [label.id, 2])),
+    userLabelOrder: [],
     tasks: structuredClone(tasks),
     connectors: structuredClone(connectors),
     syncRuns: structuredClone(syncRuns),

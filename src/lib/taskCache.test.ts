@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { WorkspaceBundle } from "../types";
 import {
   applyTaskListOrderToBundle,
+  applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
   appendSubtaskInBundle,
   appendTaskToBundle,
@@ -22,6 +23,7 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelUserAcls: [],
   labelGroupAcls: [],
   labelPermissionLevels: {},
+  userLabelOrder: [],
   tasks: [],
   connectors: [],
   syncRuns: [],
@@ -32,6 +34,26 @@ const emptyBundle = (): WorkspaceBundle => ({
 });
 
 describe("task cache updates", () => {
+  it("applies a custom section order without touching other lists", () => {
+    const bundle = emptyBundle();
+    bundle.taskSections = [
+      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 0, created_by: "user" },
+      { id: "two", workspace_id: "workspace", list_key: "all", name: "二", position: 1, created_by: "user" },
+      { id: "other", workspace_id: "workspace", list_key: "today", name: "其他", position: 0, created_by: "user" },
+    ];
+
+    const reordered = applyTaskSectionOrderToBundle(bundle, {
+      listKey: "all",
+      sectionIds: ["two", "one"],
+    });
+
+    expect(reordered.taskSections.map((section) => [section.id, section.position])).toEqual([
+      ["one", 1],
+      ["two", 0],
+      ["other", 0],
+    ]);
+  });
+
   it("replaces an optimistic task in place and keeps its custom placement", () => {
     const existing = createOptimisticTask({
       workspaceId: "workspace",

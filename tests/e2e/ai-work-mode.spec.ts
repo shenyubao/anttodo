@@ -33,10 +33,10 @@ async function installDesktopAiBridge(page: Page) {
 test("web shows disabled AI settings entry and notes hide assignment/terminal", async ({ page }) => {
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "更多操作" }).click();
-  const aiSettings = page.getByRole("menuitem", { name: /设置 AI 助理/ });
+  const aiSettings = page.getByRole("menuitem", { name: "设置 AI 助理" });
   await expect(aiSettings).toBeVisible();
   await expect(aiSettings).toBeDisabled();
-  await expect(aiSettings).toContainText("(仅桌面端)");
+  await expect(aiSettings).toHaveAttribute("title", "仅桌面端");
 
   await page.getByText("记录下一轮产品想法", { exact: true }).click();
   const detail = page.locator(".task-detail-panel");

@@ -5,8 +5,11 @@ import {
   appendCreatedLabelToBundle,
   hasExplicitLabelColor,
   LABEL_COLORS,
+  labelDropPlacementFromY,
   labelIdFromRealtimeChange,
+  moveIdInOrder,
   newLabelAccessDefaults,
+  sortSiblingLabels,
 } from "./labels";
 import type { Label, LabelAccessDraft, WorkspaceBundle } from "../types";
 
@@ -47,6 +50,7 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelUserAcls: [],
   labelGroupAcls: [],
   labelPermissionLevels: {},
+  userLabelOrder: [],
   tasks: [],
   connectors: [],
   syncRuns: [],
@@ -217,5 +221,41 @@ describe("labelIdFromRealtimeChange", () => {
       table: "label_group_acl",
       new: { label_id: "label-3" },
     })).toBe("label-3");
+  });
+});
+
+describe("label sibling ordering helpers", () => {
+  const siblings: Label[] = [
+    { ...labels[0], id: "a", parent_id: null, position: 0, name: "A" },
+    { ...labels[0], id: "b", parent_id: null, position: 1, name: "B" },
+    { ...labels[0], id: "c", parent_id: null, position: 2, name: "C" },
+    { ...labels[0], id: "child-1", parent_id: "a", position: 5, name: "Child 1" },
+    { ...labels[0], id: "child-2", parent_id: "a", position: 1, name: "Child 2" },
+  ];
+
+  it("sorts top-level labels by personal order when present", () => {
+    expect(sortSiblingLabels(siblings, null, [
+      { label_id: "c", position: 0 },
+      { label_id: "a", position: 1 },
+    ]).map((label) => label.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("sorts nested labels by shared position", () => {
+    expect(sortSiblingLabels(siblings, "a").map((label) => label.id)).toEqual([
+      "child-2",
+      "child-1",
+    ]);
+  });
+
+  it("moves an id before or after a sibling", () => {
+    expect(moveIdInOrder(["a", "b", "c"], "c", "a", "before")).toEqual(["c", "a", "b"]);
+    expect(moveIdInOrder(["a", "b", "c"], "a", "c", "after")).toEqual(["b", "c", "a"]);
+    expect(moveIdInOrder(["a", "b", "c"], "a", "a", "before")).toBeNull();
+  });
+
+  it("maps pointer Y into before/onto/after thirds", () => {
+    expect(labelDropPlacementFromY(5, 0, 30)).toBe("before");
+    expect(labelDropPlacementFromY(15, 0, 30)).toBe("onto");
+    expect(labelDropPlacementFromY(28, 0, 30)).toBe("after");
   });
 });

@@ -175,6 +175,25 @@ export function applyTaskListOrderToBundle(
   };
 }
 
+export function applyTaskSectionOrderToBundle(
+  bundle: WorkspaceBundle,
+  input: {
+    listKey: string;
+    sectionIds: string[];
+  },
+): WorkspaceBundle {
+  const positionById = new Map(
+    input.sectionIds.map((sectionId, position) => [sectionId, position]),
+  );
+  return {
+    ...bundle,
+    taskSections: bundle.taskSections.map((section) =>
+      section.list_key === input.listKey && positionById.has(section.id)
+        ? { ...section, position: positionById.get(section.id)! }
+        : section),
+  };
+}
+
 export function taskIdFromRealtimeChange(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const change = payload as {

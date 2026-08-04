@@ -378,6 +378,13 @@ export type SyncConflict = {
   created_at: string;
 };
 
+export type UserLabelOrder = {
+  user_id: string;
+  workspace_id: string;
+  label_id: string;
+  position: number;
+};
+
 export type WorkspaceBundle = {
   members: Member[];
   userGroups: UserGroup[];
@@ -386,6 +393,7 @@ export type WorkspaceBundle = {
   labelUserAcls: LabelUserAcl[];
   labelGroupAcls: LabelGroupAcl[];
   labelPermissionLevels: Record<string, LabelPermissionLevel>;
+  userLabelOrder: UserLabelOrder[];
   tasks: Task[];
   connectors: Connector[];
   syncRuns: SyncRun[];

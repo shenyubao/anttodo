@@ -52,7 +52,7 @@ import {
   type CSSProperties,
   type FormEvent,
 } from "react";
-import { hasExplicitLabelColor } from "./lib/labels";
+import { compareSiblingLabels, hasExplicitLabelColor, userLabelOrderMap } from "./lib/labels";
 import {
   buildMindMapTree,
   classifyTaskSchedule,
@@ -711,6 +711,7 @@ function storeLabelDisplayMode(workspaceId: string, mode: MindMapLabelDisplayMod
 
 function MindMapDisplayLabelTree({
   labels,
+  userLabelOrder,
   hiddenLabelIds,
   collapsed,
   onToggleCollapsed,
@@ -719,6 +720,7 @@ function MindMapDisplayLabelTree({
   depth = 0,
 }: {
   labels: Label[];
+  userLabelOrder: WorkspaceBundle["userLabelOrder"];
   hiddenLabelIds: ReadonlySet<string>;
   collapsed: Record<string, boolean>;
   onToggleCollapsed: (labelId: string) => void;
@@ -727,10 +729,11 @@ function MindMapDisplayLabelTree({
   depth?: number;
 }) {
   const labelIds = new Set(labels.map((label) => label.id));
+  const orderMap = userLabelOrderMap(userLabelOrder);
   const children = labels
     .filter((label) => label.parent_id === parentId
       || (parentId === null && label.parent_id !== null && !labelIds.has(label.parent_id)))
-    .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+    .sort((a, b) => compareSiblingLabels(a, b, parentId, orderMap));
 
   return children.map((label) => {
     const hasChildren = labels.some((candidate) => candidate.parent_id === label.id);
@@ -790,6 +793,7 @@ function MindMapDisplayLabelTree({
           <div role="group">
             <MindMapDisplayLabelTree
               labels={labels}
+              userLabelOrder={userLabelOrder}
               hiddenLabelIds={hiddenLabelIds}
               collapsed={collapsed}
               onToggleCollapsed={onToggleCollapsed}
@@ -806,6 +810,7 @@ function MindMapDisplayLabelTree({
 
 function MindMapDisplaySettingsDialog({
   labels,
+  userLabelOrder,
   hiddenLabelIds,
   labelDisplayMode,
   onToggleVisible,
@@ -815,6 +820,7 @@ function MindMapDisplaySettingsDialog({
   onClose,
 }: {
   labels: Label[];
+  userLabelOrder: WorkspaceBundle["userLabelOrder"];
   hiddenLabelIds: ReadonlySet<string>;
   labelDisplayMode: MindMapLabelDisplayMode;
   onToggleVisible: (labelId: string) => void;
@@ -917,6 +923,7 @@ function MindMapDisplaySettingsDialog({
                 ) : (
                   <MindMapDisplayLabelTree
                     labels={labels}
+                    userLabelOrder={userLabelOrder}
                     hiddenLabelIds={hiddenLabelIds}
                     collapsed={collapsed}
                     onToggleCollapsed={(labelId) => setCollapsed((current) => ({
@@ -1056,7 +1063,15 @@ function MindMapCanvas({
     preferences: dateTimePreferences,
     focusDateKey,
     labelDisplayMode,
-  }), [bundle.tasks, dateTimePreferences, focusDateKey, labelDisplayMode, visibleLabels]);
+    userLabelOrder: bundle.userLabelOrder,
+  }), [
+    bundle.tasks,
+    bundle.userLabelOrder,
+    dateTimePreferences,
+    focusDateKey,
+    labelDisplayMode,
+    visibleLabels,
+  ]);
 
   const toggleTask = useCallback(async (task: Task) => {
     if (!online || task.kind === "note") return;
@@ -1475,6 +1490,7 @@ function MindMapCanvas({
       {displaySettingsOpen && (
         <MindMapDisplaySettingsDialog
           labels={bundle.labels}
+          userLabelOrder={bundle.userLabelOrder}
           hiddenLabelIds={hiddenLabelIds}
           labelDisplayMode={labelDisplayMode}
           onToggleVisible={toggleLabelVisible}

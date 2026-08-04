@@ -131,7 +131,7 @@ export function TaskContextMenu({
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onExpandSubtasks: () => void;

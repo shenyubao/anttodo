@@ -42,7 +42,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   cli_assignee: patch.cli_assignee ?? null,
 });
 
-function columns(grouping: "due" | "label" | "priority" | "assignee" | "created" | "none", tasks: Task[], selectedLabelId: string | null = null) {
+function columns(grouping: "custom" | "due" | "label" | "priority" | "assignee" | "created" | "none", tasks: Task[], selectedLabelId: string | null = null) {
   return buildKanbanColumns({
     tasks,
     preference: {
@@ -63,26 +63,67 @@ function columns(grouping: "due" | "label" | "priority" | "assignee" | "created"
 }
 
 describe("task kanban", () => {
-  it("keeps empty due columns and separates notes and completed tasks", () => {
+  it("keeps empty due columns and groups notes with todos", () => {
     const result = columns("due", [
       task("today", { due_at: "2026-08-03T04:00:00.000Z" }),
       task("note", { kind: "note" }),
       task("done", { status: "completed", completed_at: now.toISOString() }),
     ]);
     expect(result.map((column) => column.title)).toEqual([
-      "已过期", "今天", "明天", "本周", "以后", "无日期", "笔记", "已完成",
+      "已过期", "今天", "明天", "本周", "以后", "无日期", "已完成",
     ]);
     expect(result.find((column) => column.title === "今天")?.tasks.map((item) => item.id))
       .toEqual(["today"]);
-    expect(result.find((column) => column.title === "笔记")?.tasks.map((item) => item.id))
+    expect(result.find((column) => column.title === "无日期")?.tasks.map((item) => item.id))
       .toEqual(["note"]);
+    expect(result.some((column) => column.id === "notes")).toBe(false);
   });
 
   it("duplicates multi-label tasks and omits unreachable no-label column in a label view", () => {
     const result = columns("label", [task("both", { label_ids: ["a", "b"] })], "a");
     expect(result.find((column) => column.id === "label:a")?.tasks).toHaveLength(1);
-    expect(result.find((column) => column.id === "label:b")?.tasks).toHaveLength(1);
+    expect(result.some((column) => column.id === "label:b")).toBe(false);
     expect(result.some((column) => column.id === "label:none")).toBe(false);
+  });
+
+  it("uses leaf label columns and an intermediate bucket for nested trees", () => {
+    const nested: Label[] = [
+      { id: "work", workspace_id: "w", parent_id: null, name: "工作", color: "#111", kind: "team", view_scope: "all", manage_scope: "all", inherit_permissions: false, position: 0, created_by: "u" },
+      { id: "front", workspace_id: "w", parent_id: "work", name: "前端", color: "#222", kind: "team", view_scope: "all", manage_scope: "all", inherit_permissions: true, position: 0, created_by: "u" },
+      { id: "react", workspace_id: "w", parent_id: "front", name: "React", color: "#333", kind: "team", view_scope: "all", manage_scope: "all", inherit_permissions: true, position: 0, created_by: "u" },
+      { id: "back", workspace_id: "w", parent_id: "work", name: "后端", color: "#555", kind: "team", view_scope: "all", manage_scope: "all", inherit_permissions: true, position: 1, created_by: "u" },
+    ];
+    const result = buildKanbanColumns({
+      tasks: [
+        task("react", { label_ids: ["react"] }),
+        task("front", { label_ids: ["front"] }),
+      ],
+      preference: {
+        grouping: "label",
+        sort: "custom",
+        direction: "asc",
+        show_completed: false,
+      },
+      labels: nested,
+      members,
+      sections: [],
+      placements: [],
+      now,
+      dateTimePreferences: { weekStartsOn: 1 },
+      listTitle: "工作",
+      selectedLabelId: "work",
+    });
+    expect(result.map((column) => column.id)).toEqual([
+      "label:react",
+      "label:back",
+      "label:intermediate",
+    ]);
+    expect(result.find((column) => column.id === "label:react")?.tasks.map((item) => item.id))
+      .toEqual(["react"]);
+    expect(result.find((column) => column.id === "label:intermediate")?.tasks.map((item) => item.id))
+      .toEqual(["front"]);
+    expect(result.find((column) => column.id === "label:intermediate")?.target)
+      .toEqual({ kind: "label", labelId: "work" });
   });
 
   it("maps writable cross-column drops and rejects immutable columns", () => {
@@ -134,6 +175,96 @@ describe("task kanban", () => {
     expect(instances).toContain("label:a:both");
     expect(instances).toContain("label:b:both");
     expect(new Set(instances).size).toBe(instances.length);
+  });
+
+  it("builds custom columns shared by todos and notes with fixed edge columns", () => {
+    const result = buildKanbanColumns({
+      tasks: [
+        task("todo", { status: "open" }),
+        task("note", { kind: "note" }),
+        task("loose"),
+        task("done", { status: "completed", completed_at: now.toISOString() }),
+      ],
+      preference: {
+        grouping: "custom",
+        sort: "custom",
+        direction: "asc",
+        show_completed: true,
+      },
+      labels,
+      members,
+      sections: [
+        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 1, created_by: "u" },
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+      ],
+      placements: [
+        { workspace_id: "w", list_key: "all", task_id: "todo", section_id: "first", position: 0 },
+        { workspace_id: "w", list_key: "all", task_id: "done", section_id: "first", position: 1 },
+        { workspace_id: "w", list_key: "all", task_id: "note", section_id: "later", position: 0 },
+      ],
+      now,
+      dateTimePreferences: { weekStartsOn: 1 },
+      listTitle: "所有",
+      selectedLabelId: null,
+    });
+
+    expect(result.map((column) => column.id)).toEqual([
+      "section:ungrouped",
+      "section:first",
+      "section:later",
+      "completed",
+    ]);
+    expect(result.find((column) => column.id === "section:ungrouped")?.tasks.map((item) => item.id))
+      .toEqual(["loose"]);
+    expect(result.find((column) => column.id === "section:later")?.tasks.map((item) => item.id))
+      .toEqual(["note"]);
+    expect(result.find((column) => column.id === "section:first")?.target)
+      .toEqual({ kind: "section", sectionId: "first" });
+    expect(result.find((column) => column.id === "completed")?.tasks.map((item) => item.id))
+      .toEqual(["done"]);
+    expect(result.some((column) => column.id === "notes")).toBe(false);
+
+    const reopened = buildKanbanColumns({
+      tasks: [
+        task("todo"),
+        task("done"),
+      ],
+      preference: { grouping: "custom", sort: "custom", direction: "asc", show_completed: true },
+      labels,
+      members,
+      sections: [{ id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" }],
+      placements: [
+        { workspace_id: "w", list_key: "all", task_id: "todo", section_id: "first", position: 0 },
+        { workspace_id: "w", list_key: "all", task_id: "done", section_id: "first", position: 1 },
+      ],
+      now,
+      dateTimePreferences: { weekStartsOn: 1 },
+      listTitle: "所有",
+      selectedLabelId: null,
+    });
+    expect(reopened.find((column) => column.id === "section:first")?.tasks.map((item) => item.id))
+      .toEqual(["todo", "done"]);
+  });
+
+  it("maps custom-column drops to section reassignment", () => {
+    const customColumns = buildKanbanColumns({
+      tasks: [],
+      preference: { grouping: "custom", sort: "custom", direction: "asc", show_completed: false },
+      labels,
+      members,
+      sections: [{ id: "next", workspace_id: "w", list_key: "all", name: "下一步", position: 0, created_by: "u" }],
+      placements: [],
+      now,
+      dateTimePreferences: { weekStartsOn: 1 },
+      listTitle: "所有",
+      selectedLabelId: null,
+    });
+    expect(kanbanDropAction({
+      source: customColumns[0],
+      target: customColumns[1],
+      now,
+      weekStartsOn: 1,
+    })).toEqual({ kind: "section", sourceSectionId: null, targetSectionId: "next" });
   });
 
   it("adds CLI assignee columns without treating CLI tasks as unassigned", () => {

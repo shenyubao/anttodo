@@ -23,6 +23,7 @@ import type {
   TaskListPreference,
   TaskSection,
   TaskPriority,
+  UserLabelOrder,
   UserQuota,
   Workspace,
   WorkspaceBundle,
@@ -434,6 +435,7 @@ export async function loadWorkspaceBundle(
     userGroupsResult,
     userGroupMembersResult,
     labelPermissionLevelsResult,
+    userLabelOrderResult,
   ] = await Promise.all([
     client
       .from("workspace_members")
@@ -475,6 +477,11 @@ export async function loadWorkspaceBundle(
       .select("group_id, workspace_id, user_id, added_at")
       .eq("workspace_id", workspaceId),
     client.rpc("list_label_permission_levels", { p_workspace_id: workspaceId }),
+    client
+      .from("user_label_order")
+      .select("user_id, workspace_id, label_id, position")
+      .eq("workspace_id", workspaceId)
+      .order("position", { ascending: true }),
   ]);
   assertNoError(membersResult.error);
   assertNoError(labelsResult.error);
@@ -486,6 +493,7 @@ export async function loadWorkspaceBundle(
   assertNoError(userGroupsResult.error);
   assertNoError(userGroupMembersResult.error);
   assertNoError(labelPermissionLevelsResult.error);
+  assertNoError(userLabelOrderResult.error);
 
   const memberIds = (membersResult.data ?? []).map((member) => member.user_id);
   const profilesResult = memberIds.length
@@ -579,10 +587,35 @@ export async function loadWorkspaceBundle(
     connectors,
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
+    userLabelOrder: (userLabelOrderResult.data ?? []) as UserLabelOrder[],
     taskListPreferences: (preferencesResult.data ?? []) as WorkspaceBundle["taskListPreferences"],
     taskSections: (sectionsResult.data ?? []) as WorkspaceBundle["taskSections"],
     taskPlacements: (placementsResult.data ?? []) as WorkspaceBundle["taskPlacements"],
   };
+}
+
+export async function reorderChildLabels(
+  client: SupabaseClient,
+  parentId: string,
+  orderedIds: string[],
+) {
+  const { error } = await client.rpc("reorder_child_labels", {
+    p_parent_id: parentId,
+    p_ordered_ids: orderedIds,
+  });
+  assertNoError(error);
+}
+
+export async function setUserTopLevelLabelOrder(
+  client: SupabaseClient,
+  workspaceId: string,
+  orderedIds: string[],
+) {
+  const { error } = await client.rpc("set_user_top_level_label_order", {
+    p_workspace_id: workspaceId,
+    p_ordered_ids: orderedIds,
+  });
+  assertNoError(error);
 }
 
 export async function saveTaskSchedule(

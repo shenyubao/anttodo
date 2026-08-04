@@ -27,8 +27,8 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await expect(page).toHaveURL(/\/tasks\/kanban$/);
   const board = page.getByLabel("任务看板");
   await expect(board).toBeVisible();
-  await expect(board.getByRole("heading", { name: "所有", exact: true })).toBeVisible();
-  await expect(board.getByRole("heading", { name: "笔记", exact: true })).toBeVisible();
+  await expect(board.getByRole("heading", { name: "未分组", exact: true })).toBeVisible();
+  await expect(board.getByRole("heading", { name: "笔记", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "今天" }).click();
   await expect(page).toHaveURL(/\/views\/today$/);
@@ -41,20 +41,26 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await page.getByRole("button", { name: "关闭详情" }).click();
   await expect(page).toHaveURL(/\/tasks\/kanban$/);
 
-  await page.getByRole("button", { name: "在“笔记”中新建" }).click();
-  const noteInput = page.getByRole("textbox", { name: "添加任务至“笔记”" });
-  await noteInput.fill("看板快速笔记");
+  await page.getByRole("button", { name: "在“未分组”中新建" }).click();
+  const noteInput = page.getByRole("textbox", { name: "添加任务至“未分组”" });
+  await noteInput.fill("看板属性笔记");
   await noteInput.press("Enter");
-  const noteCard = page.locator(".kanban-card").filter({ hasText: "看板快速笔记" });
+  const noteCard = page.locator(".kanban-card").filter({ hasText: "看板属性笔记" });
+  await noteCard.getByText("看板属性笔记", { exact: true }).click();
+  const detail = page.locator(".task-detail-panel");
+  await detail.getByRole("button", { name: "更多任务操作" }).click();
+  await page.getByRole("menuitem", { name: "切换为笔记" }).click();
+  await page.getByRole("button", { name: "关闭详情" }).click();
   await expect(noteCard).toHaveCount(1);
   await expect(noteCard.locator(".kanban-note-icon")).toBeVisible();
-  await noteCard.getByText("看板快速笔记", { exact: true }).click();
+  await expect(board.getByRole("heading", { name: "笔记", exact: true })).toHaveCount(0);
+  await noteCard.getByText("看板属性笔记", { exact: true }).click();
   await expect(page.locator(".task-detail-panel").getByRole("textbox", { name: "笔记标题" }))
-    .toHaveValue("看板快速笔记");
+    .toHaveValue("看板属性笔记");
   await page.getByRole("button", { name: "关闭详情" }).click();
 
   await page.getByRole("button", { name: "分组与排序" }).click();
-  await page.getByRole("menuitem", { name: "分组 无" }).click();
+  await page.getByRole("menuitem", { name: "分组 自定义" }).click();
   await page.getByRole("menu", { name: "分组方式" })
     .getByRole("menuitemradio", { name: "优先级" })
     .click();
@@ -66,9 +72,49 @@ test("task views switch per list and kanban supports column creation", async ({ 
   expect(targetBox).not.toBeNull();
   await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + 80, { steps: 8 });
+  await page.mouse.move(targetBox!.x + targetBox!.width - 4, targetBox!.y + 80, { steps: 8 });
+  await expect(highPriorityColumn).toHaveClass(/drop-target/, { timeout: 500 });
+  const dragOverlay = page.locator(".kanban-card-overlay");
+  await expect(dragOverlay).toBeVisible();
+  await expect(dragOverlay).toHaveCSS("width", "258px");
+  expect(await dragOverlay.evaluate((element) =>
+    element.parentElement?.parentElement === document.body)).toBe(true);
+  await expect(page.locator(".kanban-card.dragging")).toHaveCSS("opacity", "0");
   await page.mouse.up();
+  await expect(dragOverlay).toHaveCount(0);
   await expect(highPriorityColumn.getByText("补齐树形标签 RLS 测试", { exact: true })).toBeVisible();
+});
+
+test("kanban cards can be reordered by dragging the card body", async ({ page }) => {
+  await page.goto("/?demo=1#/workspaces/workspace-team/tags/urgent/kanban");
+  const column = page.getByRole("region", { name: "未分组" });
+  const source = column.locator(".kanban-card").filter({
+    hasText: "完成 AntTodo 项目框架验收",
+  });
+  const target = column.locator(".kanban-card").filter({
+    hasText: "补齐树形标签 RLS 测试",
+  });
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    targetBox!.x + targetBox!.width / 2,
+    targetBox!.y + targetBox!.height / 2,
+    { steps: 10 },
+  );
+  await page.mouse.up();
+
+  await expect(column.locator(".kanban-card-title")).toHaveText([
+    "补齐树形标签 RLS 测试",
+    "完成 AntTodo 项目框架验收",
+  ]);
 });
 
 test("task list expands, completes, and remembers subtasks per workspace", async ({ page }) => {
@@ -92,6 +138,8 @@ test("task list expands, completes, and remembers subtasks per workspace", async
 
   await subtaskList.getByRole("button", { name: "检查 Mac 安装包", exact: true }).click();
   const detail = page.locator(".task-detail-panel");
+  await expect(detail.locator(".detail-title")).toHaveValue("检查 Mac 安装包");
+  await detail.getByRole("button", { name: "返回父任务" }).click();
   await expect(detail.locator(".detail-title")).toHaveValue(demoTaskTitle);
   await detail.getByRole("button", { name: "关闭详情" }).click();
 
@@ -473,6 +521,71 @@ test("label editor defaults to private, forces inheritance, and sizes to its opt
   await dialog.getByRole("combobox", { name: "可见用户范围" }).selectOption("users");
   const specifiedBox = await dialog.boundingBox();
   expect(specifiedBox!.height).toBeGreaterThanOrEqual(teamBox!.height);
+});
+
+test("label tree supports pointer dragging in the browser", async ({ page }) => {
+  await page.goto("/?demo=1");
+  const sidebar = page.locator(".sidebar");
+  const source = sidebar.locator('.label-row[data-label-id="urgent"]');
+  const target = sidebar.locator('.label-row[data-label-id="backend"]');
+  const sourceBox = await source.boundingBox();
+  expect(sourceBox).not.toBeNull();
+
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2 - 20,
+    { steps: 4 },
+  );
+  await expect(sidebar.locator(".label-root-drop-zone")).toBeAttached();
+
+  const targetBox = await target.boundingBox();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(
+    targetBox!.x + targetBox!.width / 2,
+    targetBox!.y + targetBox!.height / 2,
+    { steps: 10 },
+  );
+  await expect(target).toHaveClass(/drop-target/);
+  await page.mouse.up();
+
+  await expect(
+    sidebar.locator(
+      '.label-tree-node[data-label-id="backend"] .label-tree-node[data-label-id="urgent"]',
+    ),
+  ).toBeVisible();
+
+  const nestedSourceBox = await source.boundingBox();
+  expect(nestedSourceBox).not.toBeNull();
+  await page.mouse.move(
+    nestedSourceBox!.x + nestedSourceBox!.width / 2,
+    nestedSourceBox!.y + nestedSourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    nestedSourceBox!.x + nestedSourceBox!.width / 2,
+    nestedSourceBox!.y + nestedSourceBox!.height / 2 - 20,
+    { steps: 4 },
+  );
+  const rootDropZone = sidebar.locator(".label-root-drop-zone");
+  await expect(rootDropZone).toBeAttached();
+  await expect(rootDropZone).toHaveText("");
+  await expect(rootDropZone).toHaveCSS("opacity", "0");
+  const rootDropBox = await rootDropZone.boundingBox();
+  expect(rootDropBox).not.toBeNull();
+  await page.mouse.move(
+    rootDropBox!.x + rootDropBox!.width / 2,
+    rootDropBox!.y + rootDropBox!.height / 2,
+    { steps: 10 },
+  );
+  await page.mouse.up();
+  await expect(
+    sidebar.locator('.label-tree > .label-tree-node[data-label-id="urgent"]'),
+  ).toBeVisible();
 });
 
 test("mind map dragging adds labels and moving to inbox clears them", async ({ page }) => {
@@ -1230,13 +1343,52 @@ test("task list preferences are independent for smart and label lists", async ({
   await expect(page.getByRole("menuitem", { name: "排序 自定义" })).toBeVisible();
 });
 
-test("retired custom grouping is absent from the task list", async ({ page }) => {
+test("custom grouping is shared by list and kanban views", async ({ page }) => {
   await page.goto("/?demo=1");
-  await expect(page.getByRole("button", { name: "添加分组" })).toHaveCount(0);
-  await page.getByRole("button", { name: "分组与排序" }).click();
-  await page.getByRole("menuitem", { name: "分组 无" }).click();
-  await expect(page.getByRole("menu", { name: "分组方式" })
-    .getByRole("menuitemradio", { name: "自定义" })).toHaveCount(0);
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitem", { name: "添加分组" }).click();
+  await expect(page.getByRole("button", { name: "未分组 5" })).toBeVisible();
+  await page.getByRole("textbox", { name: "分组名称" }).fill("进行中");
+  await page.getByRole("button", { name: "添加", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: "进行中 0" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加分组", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "管理分组“进行中”" }).click();
+  const sectionMenu = page.getByRole("menu");
+  await expect(sectionMenu.getByRole("menuitem", { name: "重命名" })).toBeVisible();
+  await expect(sectionMenu.getByRole("menuitem", { name: "在上方添加分组" })).toBeVisible();
+  await expect(sectionMenu.getByRole("menuitem", { name: "在下方添加分组" })).toBeVisible();
+  await expect(sectionMenu.getByRole("menuitem", { name: "删除" })).toBeVisible();
+  await page.getByRole("button", { name: "管理分组“进行中”" }).click();
+
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitemradio", { name: "看板" }).click();
+  const board = page.getByLabel("任务看板");
+  await expect(board.getByRole("region", { name: "未分组" })).toBeVisible();
+  const sectionColumn = board.getByRole("region", { name: "进行中" });
+  await expect(sectionColumn).toBeVisible();
+  await expect(board.getByRole("button", { name: "新分组" })).toBeVisible();
+  await expect(sectionColumn).toHaveCSS("width", "282px");
+  await expect(sectionColumn.locator(".kanban-column-header")).toHaveCSS("height", "40px");
+
+  await sectionColumn.getByRole("button", { name: "在“进行中”中新建" }).click();
+  await sectionColumn.getByRole("textbox", { name: "添加任务至“进行中”" })
+    .fill("自定义分组任务");
+  await sectionColumn.getByRole("textbox", { name: "添加任务至“进行中”" })
+    .press("Enter");
+  await expect(sectionColumn.getByText("自定义分组任务", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitemradio", { name: "列表" }).click();
+  const listSection = page.locator(".task-group").filter({ hasText: "进行中" });
+  await expect(listSection.getByText("自定义分组任务", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "管理分组“进行中”" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("menuitem", { name: "删除" }).click();
+  await expect(page.getByRole("button", { name: "进行中 1" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "未分组 6" })).toBeVisible();
+  await expect(page.getByText("自定义分组任务", { exact: true })).toBeVisible();
 });
 
 test("custom sorting supports pointer and keyboard sorting", async ({ page }) => {
