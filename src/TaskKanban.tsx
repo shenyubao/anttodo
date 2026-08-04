@@ -774,6 +774,7 @@ function KanbanCard({
         transition,
         "--priority-color": getPriorityOption(task.priority).color,
       } as CSSProperties}
+      onClick={onSelect}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
@@ -789,6 +790,7 @@ function KanbanCard({
           aria-label={`拖动${task.kind === "note" ? "笔记" : "任务"}“${task.title}”`}
           {...attributes}
           {...listeners}
+          onClick={(event) => event.stopPropagation()}
         >
           <GripVertical />
         </button>
@@ -812,7 +814,14 @@ function KanbanCard({
             {task.status === "completed" ? <Check /> : <Circle />}
           </button>
         )}
-        <button type="button" className="kanban-card-content" onClick={onSelect}>
+        <button
+          type="button"
+          className="kanban-card-content"
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect();
+          }}
+        >
           <span className="kanban-card-title">{task.title}</span>
         </button>
       </div>
