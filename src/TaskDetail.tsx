@@ -10,7 +10,6 @@ import {
   ListTodo,
   MessageCircle,
   NotebookPen,
-  Plus,
   RotateCcw,
   SquareTerminal,
   Trash2,
@@ -45,7 +44,7 @@ import {
 import type { AttachmentService } from "./lib/attachments";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
-import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
+import { TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
 import { useTaskTitleTokens } from "./useTaskTitleTokens";
 import {
   aiCliLabel,
@@ -511,13 +510,15 @@ function TaskParticipantsControl({
 }
 
 function SubtaskDueDateControl({
-  subtask,
+  dueAt,
+  completed = false,
   online,
   onSave,
 }: {
-  subtask: Subtask;
+  dueAt: string | null;
+  completed?: boolean;
   online: boolean;
-  onSave: (dueAt: string | null) => Promise<void>;
+  onSave: (dueAt: string | null) => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState("");
@@ -526,7 +527,7 @@ function SubtaskDueDateControl({
 
   useEffect(() => {
     if (!open) return;
-    const initial = subtask.due_at ? new Date(subtask.due_at) : new Date();
+    const initial = dueAt ? new Date(dueAt) : new Date();
     const offset = initial.getTimezoneOffset() * 60_000;
     setDate(new Date(initial.getTime() - offset).toISOString().slice(0, 10));
     const close = (event: PointerEvent) => {
@@ -541,25 +542,25 @@ function SubtaskDueDateControl({
       document.removeEventListener("pointerdown", close);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open, subtask.due_at]);
+  }, [open, dueAt]);
 
-  const dueDate = subtask.due_at ? new Date(subtask.due_at) : null;
+  const dueDate = dueAt ? new Date(dueAt) : null;
   const formatted = dueDate
     ? `${dueDate.getMonth() + 1}月${dueDate.getDate()}日`
     : "";
   const overdue = Boolean(
-    subtask.due_at
-    && !subtask.completed
-    && new Date(subtask.due_at).getTime() < Date.now(),
+    dueAt
+    && !completed
+    && new Date(dueAt).getTime() < Date.now(),
   );
 
   async function save(value: string | null) {
     setSaving(true);
     try {
-      const dueAt = value
+      const nextDueAt = value
         ? new Date(`${value}T23:59:59.999`).toISOString()
         : null;
-      await onSave(dueAt);
+      await onSave(nextDueAt);
       setOpen(false);
     } finally {
       setSaving(false);
@@ -570,8 +571,8 @@ function SubtaskDueDateControl({
     <div className="subtask-date-control" ref={rootRef}>
       <button
         type="button"
-        className={clsx("subtask-date-trigger", subtask.due_at && "has-date", overdue && "overdue")}
-        aria-label={subtask.due_at ? `截止时间：${formatted}` : "设置子任务截止时间"}
+        className={clsx("subtask-date-trigger", dueAt && "has-date", overdue && "overdue")}
+        aria-label={dueAt ? `截止时间：${formatted}` : "设置子任务截止时间"}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={!online || saving}
@@ -918,6 +919,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   );
   const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
   const subtaskInputRef = useRef<HTMLInputElement>(null);
+  const [draftSubtaskDueAt, setDraftSubtaskDueAt] = useState<string | null>(null);
+  const [draftSubtaskCli, setDraftSubtaskCli] = useState<AiCliTool | null>(null);
   const assignableMembers = useMemo(
     () => getAssignableMembers(bundle, task, currentUserId),
     [bundle, currentUserId, task],
@@ -930,6 +933,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     features: { assignee: true, labels: false },
     inputRef: subtaskInputRef,
   });
+  const draftSubtaskAssignee: AssigneeTarget = draftSubtaskCli
+    ? { kind: "cli", tool: draftSubtaskCli }
+    : subtaskTokens.assigneeId
+      ? { kind: "user", userId: subtaskTokens.assigneeId }
+      : { kind: "none" };
   const [cliPickerOpen, setCliPickerOpen] = useState(false);
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
@@ -957,6 +965,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     setImmersive(false);
     setCliPickerOpen(false);
     subtaskTokens.reset();
+    setDraftSubtaskDueAt(null);
+    setDraftSubtaskCli(null);
     setToolbarOpen(false);
     setActivityOpen(false);
     setCommentComposerOpen(false);
@@ -1184,7 +1194,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         <header className="detail-toolbar">
           {subtaskToolbarLeading}
           <SubtaskDueDateControl
-            subtask={focusedSubtask}
+            dueAt={focusedSubtask.due_at}
+            completed={focusedSubtask.completed}
             online={writable}
             onSave={(dueAt) => onUpdateSubtask(focusedSubtask.id, { due_at: dueAt })}
           />
@@ -1420,16 +1431,116 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               <em>{task.subtasks.filter((item) => item.completed).length}/{task.subtasks.length}</em>
             </div>
             <div className="subtask-list">
-            {task.subtasks.map((subtask) => (
-              <div className="subtask-row" key={subtask.id}>
-                <input
-                  type="checkbox"
-                  aria-label={`完成子任务：${subtask.title}`}
-                  checked={subtask.completed}
-                  disabled={!writable}
-                  onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked)}
+              {task.subtasks.map((subtask) => (
+                <div className="subtask-row" key={subtask.id}>
+                  <input
+                    type="checkbox"
+                    aria-label={`完成子任务：${subtask.title}`}
+                    checked={subtask.completed}
+                    disabled={!writable}
+                    onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked)}
+                  />
+                  <span className={clsx("subtask-title", subtask.completed && "completed")}>{subtask.title}</span>
+                  <div className="subtask-actions">
+                    <TaskAssigneeControl
+                      task={task}
+                      bundle={bundle}
+                      currentUserId={currentUserId}
+                      aiWorkSettings={aiWorkSettings}
+                      online={writable}
+                      onLoad={onLoadAssignees}
+                      onAssign={(target) => handleAssignSubtask(subtask.id, target)}
+                      target={subtaskAssigneeTarget(subtask)}
+                      compact
+                    />
+                    <SubtaskDueDateControl
+                      dueAt={subtask.due_at}
+                      completed={subtask.completed}
+                      online={writable}
+                      onSave={(dueAt) => onUpdateSubtask(subtask.id, { due_at: dueAt })}
+                    />
+                    {desktopAiAvailable && subtask.cli_assignee && (
+                      <button
+                        type="button"
+                        className="subtask-terminal-trigger"
+                        aria-label={`打开 ${aiCliLabel(subtask.cli_assignee)} 终端：${subtask.title}`}
+                        title={`打开 ${aiCliLabel(subtask.cli_assignee)} 终端`}
+                        onClick={() => void showSubtaskTerminal(subtask)}
+                      >
+                        <SquareTerminal />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="subtask-delete"
+                      aria-label={`删除子任务：${subtask.title}`}
+                      disabled={!writable}
+                      onClick={() => void onDeleteSubtask(subtask.id)}
+                    >
+                      <Trash2 />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <form
+                className={clsx(
+                  "subtask-add",
+                  (
+                    Boolean(subtaskTokens.title.trim())
+                    || Boolean(draftSubtaskDueAt)
+                    || draftSubtaskAssignee.kind !== "none"
+                  ) && "has-draft",
+                )}
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (subtaskTokens.token || !writable) return;
+                  const payload = subtaskTokens.toSubmitPayload();
+                  if (!payload.title) return;
+                  await onCreateSubtask(payload.title, {
+                    assignee_id: draftSubtaskAssignee.kind === "user"
+                      ? draftSubtaskAssignee.userId
+                      : null,
+                    cli_assignee: draftSubtaskAssignee.kind === "cli"
+                      ? draftSubtaskAssignee.tool
+                      : null,
+                    due_at: draftSubtaskDueAt,
+                  });
+                  subtaskTokens.reset();
+                  setDraftSubtaskDueAt(null);
+                  setDraftSubtaskCli(null);
+                }}
+              >
+                <span
+                  className="subtask-add-check"
+                  aria-hidden="true"
+                  onClick={() => subtaskInputRef.current?.focus()}
                 />
-                <span className={clsx("subtask-title", subtask.completed && "completed")}>{subtask.title}</span>
+                <div className="subtask-add-field task-title-token-field">
+                  <input
+                    ref={subtaskInputRef}
+                    value={subtaskTokens.title}
+                    onChange={subtaskTokens.handleChange}
+                    onKeyDown={(event) => {
+                      if (subtaskTokens.handleKeyDown(event)) return;
+                    }}
+                    placeholder="回车添加下一项"
+                    disabled={!writable}
+                    aria-label="添加子任务"
+                  />
+                  {subtaskTokens.token && (
+                    <TaskTitleTokenMenu
+                      kind={subtaskTokens.token.kind}
+                      assigneeCandidates={subtaskTokens.assigneeCandidates}
+                      labelCandidates={subtaskTokens.labelCandidates}
+                      activeIndex={subtaskTokens.activeIndex}
+                      onSelectAssignee={(member) => {
+                        setDraftSubtaskCli(null);
+                        subtaskTokens.selectAssignee(member);
+                      }}
+                      onSelectLabel={subtaskTokens.selectLabel}
+                    />
+                  )}
+                </div>
                 <div className="subtask-actions">
                   <TaskAssigneeControl
                     task={task}
@@ -1438,83 +1549,30 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     aiWorkSettings={aiWorkSettings}
                     online={writable}
                     onLoad={onLoadAssignees}
-                    onAssign={(target) => handleAssignSubtask(subtask.id, target)}
-                    target={subtaskAssigneeTarget(subtask)}
+                    onAssign={async (target) => {
+                      if (target.kind === "cli") {
+                        setDraftSubtaskCli(target.tool);
+                        subtaskTokens.setAssigneeId(null);
+                        return;
+                      }
+                      setDraftSubtaskCli(null);
+                      subtaskTokens.setAssigneeId(
+                        target.kind === "user" ? target.userId : null,
+                      );
+                    }}
+                    target={draftSubtaskAssignee}
                     compact
                   />
                   <SubtaskDueDateControl
-                    subtask={subtask}
+                    dueAt={draftSubtaskDueAt}
                     online={writable}
-                    onSave={(dueAt) => onUpdateSubtask(subtask.id, { due_at: dueAt })}
+                    onSave={(dueAt) => {
+                      setDraftSubtaskDueAt(dueAt);
+                    }}
                   />
-                  {desktopAiAvailable && subtask.cli_assignee && (
-                    <button
-                      type="button"
-                      className="subtask-terminal-trigger"
-                      aria-label={`打开 ${aiCliLabel(subtask.cli_assignee)} 终端：${subtask.title}`}
-                      title={`打开 ${aiCliLabel(subtask.cli_assignee)} 终端`}
-                      onClick={() => void showSubtaskTerminal(subtask)}
-                    >
-                      <SquareTerminal />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="subtask-delete"
-                    aria-label={`删除子任务：${subtask.title}`}
-                    disabled={!writable}
-                    onClick={() => void onDeleteSubtask(subtask.id)}
-                  >
-                    <Trash2 />
-                  </button>
                 </div>
-              </div>
-            ))}
+              </form>
             </div>
-            <form
-              className="subtask-add"
-              onSubmit={async (event) => {
-                event.preventDefault();
-                if (subtaskTokens.token || !writable) return;
-                const payload = subtaskTokens.toSubmitPayload();
-                if (!payload.title) return;
-                await onCreateSubtask(payload.title, {
-                  assignee_id: payload.assigneeId,
-                });
-                subtaskTokens.reset();
-              }}
-            >
-              <Plus />
-              <div className="subtask-add-field task-title-token-field">
-                <input
-                  ref={subtaskInputRef}
-                  value={subtaskTokens.title}
-                  onChange={subtaskTokens.handleChange}
-                  onKeyDown={(event) => {
-                    if (subtaskTokens.handleKeyDown(event)) return;
-                  }}
-                  placeholder="添加子任务"
-                  disabled={!writable}
-                />
-                {subtaskTokens.token && (
-                  <TaskTitleTokenMenu
-                    kind={subtaskTokens.token.kind}
-                    assigneeCandidates={subtaskTokens.assigneeCandidates}
-                    labelCandidates={subtaskTokens.labelCandidates}
-                    activeIndex={subtaskTokens.activeIndex}
-                    onSelectAssignee={subtaskTokens.selectAssignee}
-                    onSelectLabel={subtaskTokens.selectLabel}
-                  />
-                )}
-              </div>
-              <TaskTitleTokenChips
-                assignee={subtaskTokens.assignee}
-                labels={[]}
-                disabled={!writable}
-                onRemoveAssignee={subtaskTokens.removeAssignee}
-                onRemoveLabel={subtaskTokens.removeLabel}
-              />
-            </form>
           </section>
         )}
         {activityOpen && (

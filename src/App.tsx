@@ -7291,6 +7291,13 @@ function TaskWorkspace({
     if (column.target.kind === "due") {
       dueAt = kanbanDueDate(column.target.bucket, now, dateTimePreferences.weekStartsOn);
     }
+    const sectionOrder = column.target.kind === "section"
+      ? {
+          listKey,
+          sectionId: column.target.sectionId,
+          taskIds: column.tasks.map((task) => task.id),
+        }
+      : undefined;
     const created = await onCreateTask({
       title: taskTitle,
       labelIds: [...labelIds],
@@ -7299,6 +7306,7 @@ function TaskWorkspace({
       assigneeId,
       dueAt,
       dueTimezone: dueAt ? systemTimeZone() : null,
+      optimisticOrder: sectionOrder,
     });
     const createdId = typeof created === "object" && created && "id" in created
       ? String(created.id)
@@ -7314,11 +7322,11 @@ function TaskWorkspace({
     if (createdId && cliAssignee) {
       await onAssignTask(createdId, { kind: "cli", tool: cliAssignee });
     }
-    if (createdId && column.target.kind === "section") {
+    if (createdId && sectionOrder) {
       await onSetTaskListOrder(
-        listKey,
-        column.target.sectionId,
-        [createdId, ...column.tasks.map((task) => task.id)],
+        sectionOrder.listKey,
+        sectionOrder.sectionId,
+        [createdId, ...sectionOrder.taskIds],
       );
     }
   }

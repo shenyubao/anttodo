@@ -11,7 +11,15 @@ import type {
   TaskSection,
   UserLabelOrder,
 } from "../types";
-import { groupTasks, isActiveTask, isCompletedTask, labelSubtreeIds, leafLabelsInScope, sortTasks } from "./taskList";
+import {
+  groupTasks,
+  isActiveTask,
+  isCompletedTask,
+  labelSubtreeIds,
+  leafLabelsInScope,
+  orderedTaskSections,
+  sortTasks,
+} from "./taskList";
 
 export type KanbanColumnTarget =
   | { kind: "none" }
@@ -185,43 +193,38 @@ export function buildKanbanColumns(input: {
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }) {
   if (input.preference.grouping === "custom") {
-    const groups = groupTasks({
-      tasks: input.tasks,
-      grouping: "custom",
-      sort: input.preference.sort,
-      direction: input.preference.direction,
-      labels: input.labels,
-      members: input.members,
-      sections: input.sections,
-      placements: input.placements,
-      now: input.now,
-      preferences: input.dateTimePreferences,
-      selectedLabelId: input.selectedLabelId,
-      userLabelOrder: input.userLabelOrder,
-    });
-    const columns: KanbanColumn[] = groups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      target: { kind: "section", sectionId: group.sectionId ?? null },
-      tasks: group.tasks,
-    }));
-    if (input.preference.show_completed) {
-      columns.push({
-        id: "completed",
-        title: "已完成",
-        target: { kind: "completed" },
-        tasks: sortTasks(
-          input.tasks.filter(isCompletedTask),
-          input.preference.sort,
-          input.preference.direction,
-          input.labels,
-          input.members,
-          input.placements,
-          input.userLabelOrder,
+    // Keep completed todos in their section columns so they stay draggable.
+    // Other groupings still isolate completed into a trailing column.
+    const tasks = input.preference.show_completed
+      ? input.tasks
+      : input.tasks.filter(isActiveTask);
+    const placementByTask = new Map(input.placements.map((item) => [item.task_id, item]));
+    const sortGroup = (items: Task[]) =>
+      sortTasks(
+        items,
+        input.preference.sort,
+        input.preference.direction,
+        input.labels,
+        input.members,
+        input.placements,
+        input.userLabelOrder,
+      );
+    return [
+      {
+        id: "section:ungrouped",
+        title: "未分组",
+        target: { kind: "section" as const, sectionId: null },
+        tasks: sortGroup(tasks.filter((task) => !placementByTask.get(task.id)?.section_id)),
+      },
+      ...orderedTaskSections(input.sections).map((section): KanbanColumn => ({
+        id: `section:${section.id}`,
+        title: section.name,
+        target: { kind: "section", sectionId: section.id },
+        tasks: sortGroup(
+          tasks.filter((task) => placementByTask.get(task.id)?.section_id === section.id),
         ),
-      });
-    }
-    return columns;
+      })),
+    ] satisfies KanbanColumn[];
   }
 
   const activeTasks = input.tasks.filter(isActiveTask);

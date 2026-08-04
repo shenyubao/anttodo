@@ -112,7 +112,7 @@ function readSchedulePanelOpen() {
 function taskEvent(task: Task, labels: Label[], editable = false): EventInput | null {
   if (task.deleted_at || !task.due_at) return null;
   const label = labels.find((candidate) => task.label_ids.includes(candidate.id));
-  const color = label?.color || "#4772fa";
+  const color = label?.color || "#9EB3FC";
   const start = task.due_start_at || task.due_at;
   return {
     id: task.id,
@@ -503,7 +503,7 @@ function ScheduleTaskPanel({
                   className={clsx("calendar-schedule-task", online && "is-draggable")}
                   data-task-id={task.id}
                   data-event-title={task.title}
-                  data-event-color={group.label?.color ?? "#4772fa"}
+                  data-event-color={group.label?.color ?? "#9EB3FC"}
                   key={`${group.id}:${task.id}`}
                   title={online ? "拖到日历中安排截止时间" : "离线模式下不能安排任务"}
                 >

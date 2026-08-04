@@ -177,7 +177,7 @@ describe("task kanban", () => {
     expect(new Set(instances).size).toBe(instances.length);
   });
 
-  it("builds custom columns shared by todos and notes with fixed edge columns", () => {
+  it("builds custom columns shared by todos, notes, and completed tasks", () => {
     const result = buildKanbanColumns({
       tasks: [
         task("todo", { status: "open" }),
@@ -212,7 +212,6 @@ describe("task kanban", () => {
       "section:ungrouped",
       "section:first",
       "section:later",
-      "completed",
     ]);
     expect(result.find((column) => column.id === "section:ungrouped")?.tasks.map((item) => item.id))
       .toEqual(["loose"]);
@@ -220,9 +219,38 @@ describe("task kanban", () => {
       .toEqual(["note"]);
     expect(result.find((column) => column.id === "section:first")?.target)
       .toEqual({ kind: "section", sectionId: "first" });
-    expect(result.find((column) => column.id === "completed")?.tasks.map((item) => item.id))
-      .toEqual(["done"]);
+    expect(result.find((column) => column.id === "section:first")?.tasks.map((item) => item.id))
+      .toEqual(["todo", "done"]);
+    expect(result.some((column) => column.id === "completed")).toBe(false);
     expect(result.some((column) => column.id === "notes")).toBe(false);
+
+    const hiddenCompleted = buildKanbanColumns({
+      tasks: [
+        task("todo", { status: "open" }),
+        task("done", { status: "completed", completed_at: now.toISOString() }),
+      ],
+      preference: {
+        grouping: "custom",
+        sort: "custom",
+        direction: "asc",
+        show_completed: false,
+      },
+      labels,
+      members,
+      sections: [
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+      ],
+      placements: [
+        { workspace_id: "w", list_key: "all", task_id: "todo", section_id: "first", position: 0 },
+        { workspace_id: "w", list_key: "all", task_id: "done", section_id: "first", position: 1 },
+      ],
+      now,
+      dateTimePreferences: { weekStartsOn: 1 },
+      listTitle: "所有",
+      selectedLabelId: null,
+    });
+    expect(hiddenCompleted.find((column) => column.id === "section:first")?.tasks.map((item) => item.id))
+      .toEqual(["todo"]);
 
     const reopened = buildKanbanColumns({
       tasks: [
