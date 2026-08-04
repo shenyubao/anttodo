@@ -10,6 +10,8 @@ import type {
   TaskPlacement,
   TaskSection,
 } from "../types";
+import { isSameDay } from "date-fns";
+import { aiCliLabel } from "./aiWork";
 
 export type TaskListGroup = {
   id: string;
@@ -24,6 +26,7 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   direction: "asc",
   show_labels: false,
   show_completed: false,
+  view_mode: "list",
 } as const;
 
 export function effectiveTaskPriority(task: Task) {
@@ -62,6 +65,36 @@ export function taskListKey(smartView: string, selectedLabelId: string | null) {
   return selectedLabelId ? `label:${selectedLabelId}` : smartView;
 }
 
+export function filterTasksForView(input: {
+  tasks: Task[];
+  smartView: string;
+  selectedLabelId: string | null;
+  currentUserId: string;
+  now?: Date;
+}) {
+  const { tasks, smartView, selectedLabelId, currentUserId } = input;
+  const now = input.now ?? new Date();
+  if (!selectedLabelId && smartView === "trash") {
+    return tasks
+      .filter((task) => Boolean(task.deleted_at))
+      .sort((left, right) => String(right.deleted_at).localeCompare(String(left.deleted_at)));
+  }
+  let result = tasks.filter((task) => !task.deleted_at);
+  if (selectedLabelId) {
+    return result.filter((task) => task.label_ids.includes(selectedLabelId));
+  }
+  if (smartView === "today") {
+    return result.filter((task) => task.due_at && isSameDay(new Date(task.due_at), now));
+  }
+  if (smartView === "assigned") {
+    return result.filter((task) => task.assignee_id === currentUserId);
+  }
+  if (smartView === "inbox") {
+    return result.filter((task) => task.label_ids.length === 0);
+  }
+  return result;
+}
+
 export function defaultSortDirection(sort: TaskListSort): SortDirection {
   return sort === "created" || sort === "updated" || sort === "priority" ? "desc" : "asc";
 }
@@ -77,6 +110,7 @@ export function resolveTaskListPreference(
     ...found,
     show_labels: found.show_labels ?? false,
     show_completed: found.show_completed ?? false,
+    view_mode: found.view_mode ?? "list",
   };
   return {
     ...resolved,
@@ -158,6 +192,9 @@ export function sortTasks(
         - (labelRank.get(b) ?? Number.MAX_SAFE_INTEGER))
       .map((id) => labelName.get(id) ?? "")
       .join("\u0000") || null;
+  const assigneeKey = (task: Task) => task.cli_assignee
+    ? aiCliLabel(task.cli_assignee)
+    : task.assignee_id ? memberName.get(task.assignee_id) ?? task.assignee_id : null;
 
   return [...tasks].sort((left, right) => {
     let result = 0;
@@ -191,8 +228,8 @@ export function sortTasks(
         - priorityRank[effectiveTaskPriority(right)];
     } else if (sort === "assignee") {
       result = nullableCompare(
-        left.assignee_id ? memberName.get(left.assignee_id) : null,
-        right.assignee_id ? memberName.get(right.assignee_id) : null,
+        assigneeKey(left),
+        assigneeKey(right),
         (a, b) => collator.compare(a, b),
         directionFactor,
       );
@@ -305,6 +342,13 @@ export function groupTasks(input: {
     add("priority:low", "低优先级", tasks.filter((task) => effectiveTaskPriority(task) === "low"));
     add("priority:none", "无优先级", tasks.filter((task) => effectiveTaskPriority(task) === "none"));
   } else if (grouping === "assignee") {
+    for (const tool of ["codex", "claude"] as const) {
+      add(
+        `assignee:cli:${tool}`,
+        aiCliLabel(tool),
+        tasks.filter((task) => task.cli_assignee === tool),
+      );
+    }
     for (const member of [...members].sort((a, b) =>
       (a.profile?.display_name ?? a.user_id).localeCompare(
         b.profile?.display_name ?? b.user_id,
@@ -316,7 +360,11 @@ export function groupTasks(input: {
         tasks.filter((task) => task.assignee_id === member.user_id),
       );
     }
-    add("assignee:none", "未指派", tasks.filter((task) => !task.assignee_id));
+    add(
+      "assignee:none",
+      "未指派",
+      tasks.filter((task) => !task.assignee_id && !task.cli_assignee),
+    );
   } else {
     add("none", "", tasks);
   }

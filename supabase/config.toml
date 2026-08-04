@@ -519,3 +519,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/notification-dispatch/deno.json"
 entrypoint = "./functions/notification-dispatch/index.ts"
+
+[functions.cli-device-auth]
+enabled = true
+verify_jwt = false
+import_map = "./functions/cli-device-auth/deno.json"
+entrypoint = "./functions/cli-device-auth/index.ts"

@@ -5,6 +5,7 @@ import {
   dingtalkExchangeOnce,
   dingtalkDesktopCallbackUrl,
   dingtalkFrameLoginParams,
+  dingtalkFrameLoginUrl,
   dingtalkLoginErrorAction,
   dingtalkLoginErrorMessage,
   dingtalkOAuthAuthorizeUrl,
@@ -88,6 +89,22 @@ describe("dingtalk sso helpers", () => {
     expect(dingtalkLoginErrorAction("系统繁忙", 1, 3)).toBe("retry");
     expect(dingtalkLoginErrorAction("系统繁忙", 3, 3)).toBe("fail");
     expect(dingtalkLoginErrorAction("应用不存在", 1, 3)).toBe("fail");
+  });
+
+  it("builds the official DingTalk iframe login URL directly", () => {
+    const url = new URL(dingtalkFrameLoginUrl({
+      redirectUri: "https://app.anttodo.com/auth/dingtalk/callback",
+      clientId: "dingirmgwhj3vsssirep",
+      state: "workspace.state",
+    }));
+    expect(url.origin + url.pathname).toBe("https://login.dingtalk.com/oauth2/auth");
+    expect(url.searchParams.get("iframe")).toBe("true");
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      "https://app.anttodo.com/auth/dingtalk/callback",
+    );
+    expect(url.searchParams.get("client_id")).toBe("dingirmgwhj3vsssirep");
+    expect(url.searchParams.get("scope")).toBe(DINGTALK_LOGIN_SCOPE);
+    expect(url.searchParams.get("state")).toBe("workspace.state");
   });
 
   it("validates dingtalk client ids", () => {

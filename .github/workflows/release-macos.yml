@@ -1,4 +1,4 @@
-name: Release macOS to R2
+name: Release macOS to OSS
 
 on:
   push:
@@ -18,15 +18,20 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      R2_BUCKET: ${{ vars.R2_BUCKET }}
-      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
-      R2_PREFIX: ${{ vars.R2_PREFIX }}
+      ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+      ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+      OSS_BUCKET: ${{ vars.OSS_BUCKET }}
+      OSS_REGION: ${{ vars.OSS_REGION }}
+      OSS_PREFIX: ${{ vars.OSS_PREFIX }}
+      OSS_PUBLIC_BASE_URL: ${{ vars.OSS_PUBLIC_BASE_URL }}
       VITE_PUBLIC_APP_URL: ${{ vars.VITE_PUBLIC_APP_URL || 'https://app.anttodo.com' }}
       VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
       VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
 
     steps:
       - name: Check out repository
@@ -46,16 +51,22 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Prepare Apple notarization key
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 -D > "$key_path"
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+
       - name: Package Apple Silicon and Intel builds
         run: pnpm package:mac:all
 
-      - name: Upload packages and latest aliases to R2
+      - name: Upload packages and latest aliases to OSS
         if: startsWith(github.ref, 'refs/tags/')
-        run: pnpm upload:mac:r2 -- --expected-version="${GITHUB_REF_NAME}"
+        run: pnpm upload:mac:oss -- --expected-version="${GITHUB_REF_NAME}"
 
-      - name: Upload packages and latest aliases to R2 (manual run)
+      - name: Upload packages and latest aliases to OSS (manual run)
         if: github.event_name == 'workflow_dispatch'
-        run: pnpm upload:mac:r2
+        run: pnpm upload:mac:oss
 
       - name: Keep workflow artifacts
         uses: actions/upload-artifact@v4

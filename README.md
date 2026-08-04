@@ -58,8 +58,17 @@ pnpm ios:sync
 pnpm ios:open
 ```
 
-iOS Bundle Identifier 默认为 `com.anttodo.ios`。首次真机构建时，在 Xcode 的
-Signing & Capabilities 中选择 Apple Developer Team，并让 Xcode 自动管理签名。
+一键构建并提交 TestFlight（会 bump 版本、同步 Web 到 iOS、归档并上传）：
+
+```bash
+pnpm ios:testflight
+```
+
+需要与 macOS 公证相同的 App Store Connect API 凭据（`APPLE_API_KEY`、
+`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`），可写入 `.env.local`。可用
+`--dry-run` 只校验环境，`--skip-bump` / `--skip-sync` 跳过对应步骤。首次
+真机构建时，在 Xcode 的 Signing & Capabilities 中选择 Apple Developer Team，
+并让 Xcode 自动管理签名。iOS Bundle Identifier 默认为 `com.anttodo.ios`。
 
 ## 环境变量
 
@@ -165,12 +174,36 @@ pnpm test:e2e
 pnpm package:mac
 pnpm package:mac:all
 pnpm ios:sync
+pnpm ios:testflight
 ```
 
-`pnpm package:mac` 会在 `release/` 生成未签名的 DMG 和 ZIP。Apple Developer
-签名、公证和自动更新不包含在 v1。`pnpm package:mac:all` 会同时生成 Apple
-Silicon 和 Intel 产物；R2 上传、四个 `-latest` 下载地址与 GitHub Actions 发布
-配置见 [macOS 打包与 R2 发布](docs/mac-release-r2.md)。
+CLI 位于独立 workspace 包 `@anttodo/cli`，要求 Node.js 22+：
+
+```bash
+pnpm cli:build
+pnpm cli:run man
+pnpm cli:test
+pnpm cli:pack
+node cli/dist/index.js man --format pretty
+```
+
+CLI 默认连接 `https://app.anttodo.com`，正常使用不需要额外设置环境变量。
+
+本地完整 CLI 集成测试需先启动 Supabase 与设备授权函数：
+
+```bash
+supabase functions serve cli-device-auth --no-verify-jwt --workdir .
+pnpm cli:test:integration
+pnpm cli:test:browser
+```
+
+本次仓库只生成可发布 tarball，不执行 npm 发布。
+
+`pnpm package:mac` 会在 `release/` 生成使用 Developer ID 签名并已公证的 DMG
+和 ZIP；若本机没有签名证书或公证凭据，命令会失败，避免产出未签名包。
+`pnpm package:mac:all` 会同时生成 Apple Silicon 和 Intel 产物；证书和 CI 配置、
+OSS 上传、稳定 `-latest` 下载地址与 GitHub Actions 发布见
+[macOS 打包与 OSS 发布](docs/mac-release-oss.md)。
 
 ## 连接器
 
@@ -187,6 +220,7 @@ Silicon 和 Intel 产物；R2 上传、四个 `-latest` 下载地址与 GitHub A
 
 ```text
 docs/                     Docusaurus 文档站（docs.anttodo.com）
+cli/                      @anttodo/cli workspace 包
 electron/                 Electron main/preload
 src/                      共享 React 客户端
 supabase/migrations/      数据库与 RLS

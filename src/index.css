@@ -4,8 +4,8 @@
   font-family:
     "Color Emoji", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--surface);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --blue: #4772fa;
@@ -17,9 +17,32 @@
   --surface: #ffffff;
   --sidebar: #fff;
   --rail: #f5f5f5;
+  --panel: #ffffff;
+  --settings-sidebar: #f8f8f8;
+  --hover: rgb(25 25 25 / 4%);
+  --selected: rgb(25 25 25 / 6%);
+  --switch-track: rgb(25 25 25 / 12%);
   --danger: #e25555;
   --warning: #f59e0b;
   --navigation-rail-width: 50px;
+  --shadow-default: 0 5px 18px rgb(0 0 0 / 20%);
+}
+
+html.dark {
+  color-scheme: dark;
+  --blue-soft: rgb(71 114 250 / 18%);
+  --text: #e6e6e6;
+  --muted: rgb(230 230 230 / 55%);
+  --line: rgb(255 255 255 / 8%);
+  --surface: #1f1f1f;
+  --sidebar: #242424;
+  --rail: #1a1a1a;
+  --panel: #242424;
+  --settings-sidebar: #2a2a2a;
+  --hover: rgb(255 255 255 / 6%);
+  --selected: rgb(255 255 255 / 10%);
+  --switch-track: rgb(255 255 255 / 18%);
+  --shadow-default: 0 5px 18px rgb(0 0 0 / 45%);
 }
 
 * {
@@ -204,6 +227,133 @@ a {
 
 .session-bridge-screen p {
   margin: 0;
+}
+
+.cli-auth-screen {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 0%, rgb(71 114 250 / 10%), transparent 34%),
+    #f7f8fb;
+}
+
+.cli-auth-card {
+  width: min(420px, 100%);
+  padding: 24px;
+  color: #191919;
+  border: 1px solid rgb(25 25 25 / 6%);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 16px 44px rgb(25 25 25 / 10%);
+}
+
+.cli-auth-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 14px;
+  color: #4772fa;
+  border-radius: 14px;
+  background: rgb(71 114 250 / 9%);
+}
+
+.cli-auth-icon svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.7;
+}
+
+.cli-auth-card h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  text-align: center;
+}
+
+.cli-auth-description,
+.cli-auth-warning,
+.cli-auth-result p {
+  margin: 10px 0 0;
+  color: rgb(25 25 25 / 55%);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.cli-auth-details {
+  display: grid;
+  gap: 0;
+  margin: 20px 0 0;
+  padding: 4px 14px;
+  border-radius: 10px;
+  background: rgb(25 25 25 / 3%);
+}
+
+.cli-auth-details > div {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  font-size: 13px;
+}
+
+.cli-auth-details > div:last-child {
+  border-bottom: 0;
+}
+
+.cli-auth-details dt {
+  color: rgb(25 25 25 / 42%);
+}
+
+.cli-auth-details dd {
+  margin: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-auth-warning {
+  padding: 10px 12px;
+  color: #8a5a12;
+  border-radius: 8px;
+  background: #fff8e8;
+  text-align: left;
+}
+
+.cli-auth-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.cli-auth-result {
+  min-height: 220px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+}
+
+.cli-auth-result > svg {
+  width: 38px;
+  height: 38px;
+  margin-bottom: 12px;
+  color: rgb(25 25 25 / 32%);
+  stroke-width: 1.5;
+}
+
+.cli-auth-result.success > svg {
+  color: #2baa62;
+}
+
+.cli-auth-result.error > svg {
+  color: #d84a4a;
 }
 
 .auth-card {
@@ -613,6 +763,11 @@ a {
   overflow: hidden;
 }
 
+.dingtalk-qr-frame iframe {
+  display: block;
+  border: 0;
+}
+
 .dingtalk-qr svg {
   width: 138px;
   height: 138px;
@@ -825,7 +980,7 @@ a {
 
 .app-shell {
   --sidebar-width: 213px;
-  --detail-width: 440px;
+  --detail-width: 572px;
 
   position: relative;
   width: 100%;
@@ -1036,7 +1191,7 @@ body.is-electron.is-macos :where(
   gap: 8px;
   padding: 9px 5px 11px;
   background: var(--rail);
-  border-right: 1px solid rgb(25 25 25 / 5%);
+  border-right: 1px solid var(--line);
 }
 
 .rail-drag-space {
@@ -1088,11 +1243,11 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border-radius: 10px;
   margin: 2px 0 7px;
-  color: #52606f;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 700;
-  background: #fff;
-  border: 1px solid #e1e4e9;
+  background: var(--surface);
+  border: 1px solid var(--line);
   cursor: pointer;
   transition:
     border-color 120ms ease,
@@ -1130,20 +1285,19 @@ body.is-electron.is-macos .rail-button.active svg {
   left: calc(100% + 12px);
   width: 218px;
   padding: 7px;
-  border: 1px solid #e2e5ea;
+  border: 1px solid var(--line);
   border-radius: 13px;
-  background: #fff;
-  box-shadow:
-    0 18px 45px rgb(30 36 50 / 18%),
-    0 2px 8px rgb(30 36 50 / 8%);
+  background: var(--panel);
+  box-shadow: var(--shadow-default);
   animation: profile-menu-in 130ms ease;
+  color: var(--text);
 }
 
 .profile-menu-item,
 .profile-workspace-item {
   width: 100%;
   border: 0;
-  color: #353a43;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -1162,7 +1316,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .profile-menu-item:hover,
 .profile-menu-item[aria-expanded="true"] {
-  background: #f1f3f6;
+  background: var(--hover);
 }
 
 .profile-menu-item > svg {
@@ -1170,7 +1324,7 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 19px;
   flex: 0 0 19px;
   stroke-width: 1.8;
-  color: #5f6671;
+  color: var(--muted);
 }
 
 .profile-menu-item > span {
@@ -1285,9 +1439,9 @@ body.is-electron.is-macos .rail-button.active svg {
   display: grid;
   place-items: center;
   border-radius: 7px;
-  color: #5b6370;
-  background: #fff;
-  border: 1px solid #e2e5ea;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
   font-size: 10px;
   font-weight: 700;
 }
@@ -1300,7 +1454,7 @@ body.is-electron.is-macos .rail-button.active svg {
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: #858b96;
+  color: var(--muted);
   cursor: pointer;
 }
 
@@ -1311,8 +1465,8 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .rail-button:hover {
-  color: #59606b;
-  background: rgb(255 255 255 / 70%);
+  color: var(--text);
+  background: var(--hover);
 }
 
 .rail-button.active {
@@ -1382,11 +1536,11 @@ body.is-electron.is-macos .rail-button.active svg {
   width: min(346px, calc(100vw - 70px));
   max-height: min(520px, calc(100vh - 24px));
   overflow: hidden;
-  border: 1px solid rgb(25 25 25 / 8%);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  color: #191919;
-  background: #fff;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow-default);
   animation: profile-menu-in 130ms ease;
 }
 
@@ -1396,7 +1550,7 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  border-bottom: 1px solid var(--line);
 }
 
 .notification-panel > header > strong {
@@ -1412,7 +1566,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 8px;
   border: 0;
   border-radius: 7px;
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
   font-size: 12px;
@@ -1420,7 +1574,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .notification-panel > header > button:hover:not(:disabled) {
   color: #4772fa;
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .notification-panel > header > button:disabled {
@@ -1449,16 +1603,16 @@ body.is-electron.is-macos .rail-button.active svg {
   gap: 10px;
   padding: 13px 14px;
   border: 0;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
-  color: #191919;
-  background: #fff;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  background: var(--panel);
   cursor: pointer;
   text-align: left;
 }
 
 .notification-list > button:hover,
 .notification-list > button.unread {
-  background: rgb(71 114 250 / 5%);
+  background: var(--blue-soft);
 }
 
 .notification-list > button.unread::before {
@@ -1503,11 +1657,11 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .notification-summary {
-  color: rgb(25 25 25 / 52%);
+  color: var(--muted);
 }
 
 .notification-list time {
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -1517,7 +1671,7 @@ body.is-electron.is-macos .rail-button.active svg {
   display: grid;
   place-items: center;
   margin: 0;
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -1526,7 +1680,7 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   flex-direction: column;
   background: var(--sidebar);
-  border-right: 1px solid rgb(25 25 25 / 5%);
+  border-right: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -1574,7 +1728,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 12px;
   border: 0;
   border-radius: 10px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font-size: 14px;
@@ -1592,13 +1746,13 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .sidebar-item:hover,
 .label-row:hover {
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .sidebar-item.active,
 .label-row.active {
-  color: #191919;
-  background: rgb(25 25 25 / 6%);
+  color: var(--text);
+  background: var(--selected);
   font-weight: 400;
 }
 
@@ -1612,7 +1766,7 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: rgb(25 25 25 / 30%);
+  color: var(--muted);
   font-size: 12px;
   font-weight: 700;
 }
@@ -1847,14 +2001,14 @@ body.is-electron.is-macos .rail-button.active svg {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--surface);
 }
 
 .calendar-sidebar {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--surface);
 }
 
 .mini-calendar {
@@ -1872,7 +2026,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .mini-calendar-header strong {
-  color: #191919;
+  color: var(--text);
   font-size: 14px;
   font-weight: 400;
   line-height: 20px;
@@ -1891,18 +2045,18 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 7px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
 }
 
 .mini-calendar-header button:hover {
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .mini-calendar-header button:focus-visible {
   outline: none;
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .mini-calendar-header svg {
@@ -1931,7 +2085,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .mini-calendar-weekdays {
   height: 28px;
   align-items: center;
-  color: rgb(25 25 25 / 42%);
+  color: var(--muted);
   font-size: 12px;
   text-align: center;
 }
@@ -1949,7 +2103,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 0 5px;
   border: 0;
   border-radius: 7px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font-size: 12px;
@@ -1957,16 +2111,16 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .mini-calendar-grid > button:hover {
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .mini-calendar-grid > button:focus-visible {
   outline: none;
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .mini-calendar-grid > button.outside {
-  color: rgb(25 25 25 / 32%);
+  color: var(--muted);
 }
 
 .mini-calendar-grid > button.today > span:first-child {
@@ -2026,11 +2180,11 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   justify-content: space-between;
   padding: 0 16px 0 20px;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  border-bottom: 1px solid var(--line);
 }
 
 .calendar-sidebar-heading > span {
-  color: #191919;
+  color: var(--text);
   font-size: 18px;
   font-weight: 600;
 }
@@ -2040,15 +2194,15 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 6px;
   border: 0;
   border-radius: 7px;
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
   font-size: 12px;
 }
 
 .calendar-sidebar-heading > button:hover {
-  color: #191919;
-  background: rgb(25 25 25 / 5%);
+  color: var(--text);
+  background: var(--hover);
 }
 
 .calendar-list {
@@ -2069,7 +2223,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 6px 0 10px;
   border: 0;
   border-radius: 9px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font-size: 14px;
@@ -2077,7 +2231,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .calendar-all-item:hover {
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .calendar-all-item strong {
@@ -2089,7 +2243,7 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 22px;
   display: grid;
   place-items: center;
-  border: 1px solid rgb(25 25 25 / 18%);
+  border: 1px solid var(--muted);
   border-radius: 50%;
   color: #fff;
 }
@@ -2115,7 +2269,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 10px;
   border: 0;
   border-radius: 10px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font: inherit;
@@ -2123,7 +2277,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .calendar-list-item:hover {
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .calendar-visibility-check {
@@ -2131,7 +2285,7 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 14px;
   display: grid;
   place-items: center;
-  border: 1px solid rgb(25 25 25 / 18%);
+  border: 1px solid var(--muted);
   border-radius: 4px;
   color: #fff;
 }
@@ -2187,15 +2341,15 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 7px;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
 }
 
 .calendar-label-expander:hover,
 .calendar-label-expander:focus-visible {
-  color: #191919;
-  background: rgb(25 25 25 / 5%);
+  color: var(--text);
+  background: var(--hover);
   outline: none;
 }
 
@@ -2212,8 +2366,8 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 100%;
   display: flex;
   flex-direction: row;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--surface);
 }
 
 .calendar-stage {
@@ -2234,8 +2388,8 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: space-between;
   gap: 18px;
   padding: 0 16px 0 20px;
-  background: #fff;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
 }
 
 .calendar-toolbar-title {
@@ -2254,14 +2408,14 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 7px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
 }
 
 .calendar-sidebar-toggle:hover,
 .calendar-sidebar-toggle:focus-visible {
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
   outline: none;
 }
 
@@ -2277,17 +2431,17 @@ body.is-electron.is-macos .rail-button.active svg {
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--panel);
   cursor: pointer;
 }
 
 .calendar-schedule-toggle:hover,
 .calendar-schedule-toggle:focus-visible {
   outline: none;
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .calendar-schedule-toggle svg {
@@ -2329,28 +2483,28 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: center;
   gap: 5px;
   padding: 0 9px 0 11px;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--panel);
   cursor: pointer;
   font-size: 13px;
 }
 
 .calendar-view-trigger:hover,
 .calendar-view-trigger[aria-expanded="true"] {
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .calendar-view-trigger svg {
   width: 13px;
   height: 13px;
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
 }
 
 .calendar-date-navigation {
   height: 30px;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -2362,9 +2516,9 @@ body.is-electron.is-macos .rail-button.active svg {
   place-items: center;
   padding: 0 10px;
   border: 0;
-  border-right: 1px solid rgb(25 25 25 / 8%);
-  color: #191919;
-  background: #fff;
+  border-right: 1px solid var(--line);
+  color: var(--text);
+  background: var(--panel);
   cursor: pointer;
   font-size: 13px;
 }
@@ -2374,7 +2528,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .calendar-date-navigation button:hover {
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .calendar-date-navigation svg {
@@ -2389,11 +2543,12 @@ body.is-electron.is-macos .rail-button.active svg {
   right: 0;
   width: 192px;
   padding: 6px 0;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  background: var(--panel);
+  box-shadow: var(--shadow-default);
   animation: profile-menu-in 130ms ease;
+  color: var(--text);
 }
 
 .calendar-view-row {
@@ -2421,7 +2576,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 8px;
   border: 0;
   border-radius: 7px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font-size: 14px;
@@ -2429,7 +2584,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .calendar-view-row > button:hover {
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .calendar-view-row.active > button {
@@ -2477,27 +2632,28 @@ body.is-electron.is-macos .rail-button.active svg {
 .calendar-canvas {
   --fc-classic-primary: #4772fa;
   --fc-classic-event: #4772fa;
-  --fc-classic-event-contrast: #191919;
-  --fc-classic-today: rgb(71 114 250 / 5%);
+  --fc-classic-event-contrast: var(--text);
+  --fc-classic-today: var(--blue-soft);
   --fc-classic-now: #ff6161;
-  --fc-classic-background: #fff;
-  --fc-classic-faint: rgb(25 25 25 / 3%);
-  --fc-classic-muted: rgb(25 25 25 / 5%);
-  --fc-classic-strong: rgb(25 25 25 / 8%);
-  --fc-classic-foreground: #191919;
-  --fc-classic-faint-foreground: rgb(25 25 25 / 34%);
-  --fc-classic-muted-foreground: rgb(25 25 25 / 45%);
-  --fc-classic-border: rgb(25 25 25 / 7%);
-  --fc-classic-strong-border: rgb(25 25 25 / 12%);
+  --fc-classic-background: var(--surface);
+  --fc-classic-faint: var(--hover);
+  --fc-classic-muted: var(--selected);
+  --fc-classic-strong: var(--selected);
+  --fc-classic-foreground: var(--text);
+  --fc-classic-faint-foreground: var(--muted);
+  --fc-classic-muted-foreground: var(--muted);
+  --fc-classic-border: var(--line);
+  --fc-classic-strong-border: var(--line);
 
   min-width: 0;
   min-height: 0;
   flex: 1;
   overflow: hidden;
+  background: var(--surface);
 }
 
 .calendar-canvas > div {
-  color: #191919;
+  color: var(--text);
   font-family: inherit;
   font-size: 13px;
   line-height: 1.35;
@@ -2505,8 +2661,8 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .calendar-canvas [role="columnheader"] {
   min-height: 32px;
-  color: rgb(25 25 25 / 42%);
-  background: #fff;
+  color: var(--muted);
+  background: var(--surface);
   font-size: 12px;
   font-weight: 400;
 }
@@ -2574,14 +2730,14 @@ body.is-electron.is-macos .rail-button.active svg {
   flex: 0 0 242px;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid rgb(25 25 25 / 6%);
-  color: #191919;
-  background: #fff;
+  border-left: 1px solid var(--line);
+  color: var(--text);
+  background: var(--panel);
   transition: box-shadow 120ms ease, background-color 120ms ease;
 }
 
 .calendar-schedule-panel.is-calendar-drop-target {
-  background: color-mix(in srgb, #4772fa 3%, white);
+  background: color-mix(in srgb, #4772fa 8%, var(--panel));
   box-shadow: inset 3px 0 0 #4772fa;
 }
 
@@ -2592,7 +2748,7 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   justify-content: space-between;
   padding: 0 10px 0 16px;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  border-bottom: 1px solid var(--line);
 }
 
 .calendar-schedule-header strong {
@@ -2609,16 +2765,16 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 7px;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
 }
 
 .calendar-schedule-header button:hover,
 .calendar-schedule-header button:focus-visible {
-  color: #191919;
+  color: var(--text);
   outline: none;
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .calendar-schedule-header svg {
@@ -2633,8 +2789,8 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   margin: 0;
   padding: 0 16px;
-  color: rgb(25 25 25 / 52%);
-  background: rgb(25 25 25 / 3%);
+  color: var(--muted);
+  background: var(--hover);
   font-size: 12px;
 }
 
@@ -2669,7 +2825,7 @@ body.is-electron.is-macos .rail-button.active svg {
   gap: 7px;
   padding-right: 12px;
   border: 0;
-  color: rgb(25 25 25 / 62%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
   font: inherit;
@@ -2679,9 +2835,9 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .calendar-schedule-group-header:hover,
 .calendar-schedule-group-header:focus-visible {
-  color: #191919;
+  color: var(--text);
   outline: none;
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .calendar-schedule-group-header > svg:first-child {
@@ -2698,7 +2854,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .calendar-schedule-group-header > svg:nth-child(2) {
   width: 15px;
   height: 15px;
-  color: #8e95a3;
+  color: var(--muted);
   stroke-width: 1.8;
 }
 
@@ -2717,7 +2873,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .calendar-schedule-group-header > em {
-  color: rgb(25 25 25 / 34%);
+  color: var(--muted);
   font-size: 11px;
   font-style: normal;
 }
@@ -2787,7 +2943,7 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: center;
   gap: 7px;
   padding: 24px 18px;
-  color: rgb(25 25 25 / 38%);
+  color: var(--muted);
   text-align: center;
 }
 
@@ -2799,7 +2955,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .calendar-schedule-empty strong {
-  color: rgb(25 25 25 / 58%);
+  color: var(--text);
   font-size: 13px;
   font-weight: 500;
 }
@@ -2840,8 +2996,8 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 100%;
   display: flex;
   flex-direction: column;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--surface);
 }
 
 .mind-map-toolbar {
@@ -2854,8 +3010,8 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: space-between;
   gap: 18px;
   padding: 0 16px 0 20px;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
-  background: #fff;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
 }
 
 .mind-map-toolbar-title {
@@ -2886,8 +3042,8 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .mind-map-readonly {
-  color: rgb(25 25 25 / 48%);
-  background: rgb(25 25 25 / 5%);
+  color: var(--muted);
+  background: var(--selected);
 }
 
 .mind-map-error {
@@ -2911,10 +3067,10 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: center;
   gap: 6px;
   padding: 0 10px;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--panel);
   cursor: pointer;
   font-size: 13px;
 }
@@ -2922,7 +3078,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .mind-map-toolbar-actions button:hover,
 .mind-map-toolbar-actions button:focus-visible {
   outline: none;
-  background: rgb(25 25 25 / 4%);
+  background: var(--hover);
 }
 
 .mind-map-toolbar-actions svg {
@@ -2937,7 +3093,13 @@ body.is-electron.is-macos .rail-button.active svg {
   min-height: 0;
   flex: 1;
   overflow: hidden;
-  background: #fbfbfc;
+  background: var(--surface);
+}
+
+html.dark .mind-map-canvas {
+  background:
+    radial-gradient(circle at 1px 1px, rgb(255 255 255 / 8%) 1px, transparent 0) 0 0 / 18px 18px,
+    #1a1a1a;
 }
 
 .mind-map-canvas:focus {
@@ -2962,11 +3124,11 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   padding: 0 13px;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  color: #191919;
-  background: #fff;
-  box-shadow: 0 1px 3px rgb(25 25 25 / 5%);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
   font-size: 13px;
   transition:
     border-color 120ms ease,
@@ -2994,7 +3156,7 @@ body.is-electron.is-macos .rail-button.active svg {
   place-items: center;
   margin-right: -6px;
   border-radius: 7px;
-  color: rgb(25 25 25 / 42%);
+  color: var(--muted);
   transition: color 120ms ease, background 120ms ease;
 }
 
@@ -3022,7 +3184,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .mind-map-node-month {
-  border-color: rgb(71 114 250 / 22%);
+  border-color: rgb(71 114 250 / 28%);
   color: #315ad7;
   font-weight: 600;
 }
@@ -3031,7 +3193,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .mind-map-node-week,
 .mind-map-node-day {
   padding: 0 10px;
-  background: #f2f5ff;
+  background: color-mix(in srgb, #4772fa 9%, var(--panel));
 }
 
 .mind-map-node-month .mind-map-date-content,
@@ -3041,31 +3203,52 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .mind-map-node-week {
-  color: rgb(25 25 25 / 68%);
+  color: var(--text);
 }
 
 .mind-map-node-day {
-  border-color: rgb(71 114 250 / 16%);
+  border-color: rgb(71 114 250 / 18%);
+  color: var(--text);
   font-weight: 500;
+}
+
+html.dark .mind-map-node-month {
+  color: #8fb0ff;
+}
+
+html.dark .mind-map-node-month,
+html.dark .mind-map-node-week,
+html.dark .mind-map-node-day {
+  background: color-mix(in srgb, #4772fa 16%, var(--panel));
+  border-color: rgb(71 114 250 / 28%);
+}
+
+html.dark .mind-map-node-week,
+html.dark .mind-map-node-day {
+  color: var(--text);
+}
+
+html.dark .mind-map-date-content > svg {
+  color: #8fb0ff;
 }
 
 .mind-map-node-inbox,
 .mind-map-node-unscheduled {
-  color: rgb(25 25 25 / 58%);
-  background: rgb(25 25 25 / 3%);
+  color: var(--muted);
+  background: var(--hover);
   font-weight: 500;
 }
 
 .mind-map-node-inbox {
   border-color: rgb(71 114 250 / 14%);
-  color: #315ad7;
-  background: rgb(71 114 250 / 5%);
+  color: #6884ed;
+  background: rgb(71 114 250 / 10%);
 }
 
 .mind-map-node-label {
   border-color: color-mix(in srgb, var(--mind-map-label-color) 22%, transparent);
-  color: rgb(25 25 25 / 72%);
-  background: color-mix(in srgb, var(--mind-map-label-color) 9%, white);
+  color: var(--text);
+  background: color-mix(in srgb, var(--mind-map-label-color) 16%, var(--panel));
   font-weight: 600;
 }
 
@@ -3222,13 +3405,13 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 3px;
   border: 0;
   outline: none;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   font: inherit;
 }
 
 .mind-map-draft-form input::placeholder {
-  color: rgb(25 25 25 / 32%);
+  color: var(--muted);
 }
 
 .mind-map-node-spinner {
@@ -3253,21 +3436,21 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .mind-map-canvas .react-flow__controls {
   overflow: hidden;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  box-shadow: 0 4px 14px rgb(0 0 0 / 9%);
+  box-shadow: var(--shadow-default);
 }
 
 .mind-map-canvas .react-flow__controls-button {
   width: 30px;
   height: 30px;
-  border-bottom-color: rgb(25 25 25 / 8%);
-  color: #191919;
-  background: #fff;
+  border-bottom-color: var(--line);
+  color: var(--text);
+  background: var(--panel);
 }
 
 .mind-map-canvas .react-flow__controls-button:hover {
-  background: #f6f6f7;
+  background: var(--hover);
 }
 
 .mind-map-bottom-bar {
@@ -3279,10 +3462,10 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   padding: 4px;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 16%);
+  background: var(--panel);
+  box-shadow: var(--shadow-default);
   transform: translateX(-50%);
 }
 
@@ -3295,7 +3478,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 12px;
   border: 0;
   border-radius: 8px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font: inherit;
@@ -3323,7 +3506,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .mind-map-bottom-divider {
   width: 1px;
   height: 20px;
-  background: rgb(25 25 25 / 8%);
+  background: var(--line);
 }
 
 .mind-map-menu-scrim {
@@ -3343,11 +3526,12 @@ body.is-electron.is-macos .rail-button.active svg {
   z-index: 60;
   width: 164px;
   padding: 4px 0;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  background: var(--panel);
+  box-shadow: var(--shadow-default);
   animation: profile-menu-in 130ms ease;
+  color: var(--text);
 }
 
 .mind-map-context-menu button {
@@ -3369,7 +3553,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .mind-map-context-menu button:hover,
 .mind-map-context-menu button:focus-visible {
   outline: none;
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .mind-map-context-menu button:disabled {
@@ -3686,6 +3870,8 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: space-between;
   gap: 16px;
   border-bottom: 0;
+  color: var(--text);
+  background: var(--surface);
 }
 
 .header-title {
@@ -3738,6 +3924,62 @@ body.is-electron.is-macos .rail-button.active svg {
 .task-view-menu {
   top: 38px;
   right: 0;
+  width: 164px;
+}
+
+.task-view-mode-section {
+  padding: 8px 12px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.task-view-mode-section > span {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.task-view-mode-section > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.task-view-mode-section button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-view-mode-section button:hover,
+.task-view-mode-section button:focus-visible {
+  outline: none;
+  background: var(--hover);
+}
+
+.task-view-mode-section button[aria-checked="true"] {
+  color: #4772fa;
+}
+
+.task-view-mode-section button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.task-view-mode-section svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.7;
 }
 
 .task-view-submenu {
@@ -3842,30 +4084,124 @@ body.is-electron.is-macos .rail-button.active svg {
   margin: 0 20px;
   padding: 0 12px;
   border-radius: 10px;
-  background: rgb(25 25 25 / 3%);
-  color: rgb(25 25 25 / 20%);
+  background: var(--hover);
+  color: var(--muted);
 }
 
 .quick-add:focus-within {
   box-shadow: inset 0 0 0 1px #4772fa;
 }
 
-.quick-add svg {
+.quick-add > svg {
   width: 16px;
+  flex: 0 0 auto;
 }
 
+.quick-add-field {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.quick-add-input,
 .quick-add input {
   min-width: 0;
+  width: 100%;
   flex: 1;
   border: 0;
   outline: 0;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   font-size: 14px;
+  line-height: 21px;
+  caret-color: var(--text);
 }
 
+.quick-add-input.has-date-mark {
+  color: transparent;
+}
+
+.quick-add-input::placeholder,
 .quick-add input::placeholder {
-  color: rgb(25 25 25 / 20%);
+  color: var(--muted);
+}
+
+.quick-add-mirror {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.quick-add-date-mark {
+  position: relative;
+  z-index: 2;
+  margin: 0;
+  padding: 0 1px;
+  border: 0;
+  border-radius: 3px;
+  color: #4772fa;
+  background: rgb(71 114 250 / 12%);
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.quick-add-due {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.quick-add-due-chip {
+  max-width: 148px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  color: #4772fa;
+  background: rgb(71 114 250 / 10%);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.quick-add-due-chip:hover,
+.quick-add-due-chip:focus-visible {
+  outline: 0;
+  background: rgb(71 114 250 / 16%);
+}
+
+.quick-add-due-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.quick-add-due-chip > svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.quick-add-due-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quick-add kbd {
@@ -4005,6 +4341,361 @@ body.is-electron.is-macos .rail-button.active svg {
   flex: 1;
   overflow: auto;
   padding: 16px 0 70px;
+}
+
+.kanban-workspace {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.kanban-workspace > .offline-banner {
+  flex: 0 0 auto;
+  margin: 0 20px 8px;
+}
+
+.kanban-scroll {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.kanban-board {
+  width: max-content;
+  min-width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  padding: 0 8px 12px;
+}
+
+.kanban-column {
+  width: 282px;
+  min-width: 282px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  transition: background-color 120ms ease;
+}
+
+.kanban-column.drop-target {
+  background: var(--blue-soft);
+}
+
+.kanban-column-header {
+  height: 40px;
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 0 8px;
+}
+
+.kanban-column-header > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.kanban-column-header h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 26px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-column-header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kanban-column-header > button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.kanban-column-header > button:hover,
+.kanban-column-header > button:focus-visible {
+  outline: none;
+  background: var(--hover);
+}
+
+.kanban-column-header > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.kanban-column-header svg {
+  width: 18px;
+  height: 18px;
+}
+
+.kanban-column-body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 2px 12px 12px;
+  scrollbar-width: thin;
+}
+
+.kanban-quick-add {
+  margin: 2px 12px 4px;
+}
+
+.kanban-quick-add input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #4772fa;
+  border-radius: 10px;
+  outline: none;
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 14px;
+  box-shadow: 0 2px 3px rgb(25 25 25 / 3%);
+}
+
+.kanban-card {
+  position: relative;
+  min-height: 62px;
+  margin-bottom: 8px;
+  padding: 0 12px 7px;
+  border: 1px solid rgb(25 25 25 / 8%);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 2px 3px rgb(25 25 25 / 3%);
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+html.dark .kanban-card {
+  border-color: var(--line);
+  box-shadow: 0 2px 3px rgb(0 0 0 / 18%);
+}
+
+.kanban-card:hover {
+  background: var(--hover);
+}
+
+.kanban-card.selected {
+  border-color: rgb(71 114 250 / 45%);
+  box-shadow: inset 2px 0 #4772fa, 0 2px 3px rgb(25 25 25 / 3%);
+}
+
+.kanban-card.dragging {
+  z-index: 3;
+  opacity: 0.6;
+  box-shadow: var(--shadow-default);
+}
+
+.kanban-card.completed {
+  opacity: 0.58;
+}
+
+.kanban-card.completed .kanban-card-title {
+  text-decoration: line-through;
+}
+
+.kanban-card-main {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+.kanban-checkbox,
+.kanban-note-icon {
+  width: 29px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 29px;
+  padding: 0;
+  border: 0;
+  color: var(--priority-color, #4772fa);
+  background: transparent;
+}
+
+.kanban-checkbox {
+  cursor: pointer;
+}
+
+.kanban-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.kanban-checkbox svg,
+.kanban-note-icon svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+
+.kanban-card-content {
+  min-width: 0;
+  min-height: 40px;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.kanban-card-title {
+  display: block;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-card-meta {
+  min-height: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 29px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.kanban-card-meta time {
+  color: #6884ed;
+}
+
+.kanban-card-meta time.overdue {
+  color: #df6262;
+}
+
+.kanban-card-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kanban-card-label i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--kanban-label-color);
+}
+
+.kanban-card-avatar {
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  font-size: 7px;
+}
+
+.ai-cli-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #fff;
+  line-height: 1;
+}
+
+.ai-cli-avatar svg {
+  width: 62%;
+  height: 62%;
+}
+
+.ai-cli-avatar-codex {
+  background: #111111;
+}
+
+.ai-cli-avatar-claude {
+  background: #d97757;
+}
+
+.task-cli-running {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 5px;
+  color: #4772fa;
+  background: rgb(71 114 250 / 10%);
+}
+
+.task-cli-running svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 1.8;
+}
+
+.kanban-card-drag {
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: grab;
+  opacity: 0;
+}
+
+.kanban-card:hover .kanban-card-drag,
+.kanban-card-drag:focus-visible {
+  opacity: 1;
+}
+
+.kanban-card-drag:hover,
+.kanban-card-drag:focus-visible {
+  outline: none;
+  background: var(--selected);
+}
+
+.kanban-card-drag:active {
+  cursor: grabbing;
+}
+
+.kanban-card-drag svg {
+  width: 14px;
+  height: 14px;
 }
 
 .offline-banner {
@@ -4156,6 +4847,186 @@ body.is-electron.is-macos .rail-button.active svg {
   position: relative;
 }
 
+.task-context-menu {
+  position: fixed;
+  z-index: 60;
+  width: 220px;
+  padding: 8px 0 4px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  animation: profile-menu-in 130ms ease;
+}
+
+.task-context-section {
+  padding: 0 12px 8px;
+}
+
+.task-context-section-label {
+  display: block;
+  height: 22px;
+  color: rgb(25 25 25 / 30%);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 22px;
+}
+
+.task-context-icon-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.task-context-icon-row > button {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: rgb(25 25 25 / 60%);
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-context-icon-row > button:hover,
+.task-context-icon-row > button:focus-visible {
+  background: rgb(25 25 25 / 5%);
+  outline: none;
+}
+
+.task-context-icon-row > button.selected {
+  background: rgb(71 114 250 / 12%);
+}
+
+.task-context-icon-row > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.task-context-icon-row > button svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.task-context-icon-row > button[data-priority] svg {
+  color: var(--priority-color);
+  fill: color-mix(in srgb, var(--priority-color) 18%, transparent);
+}
+
+.task-context-icon-row > button[data-priority="none"] svg {
+  fill: transparent;
+}
+
+.task-context-plus7 {
+  position: absolute;
+  right: 3px;
+  bottom: 4px;
+  color: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.task-context-divider {
+  height: 1px;
+  margin: 2px 12px 6px;
+  background: rgb(25 25 25 / 6%);
+}
+
+.task-context-menu > button[role="menuitem"] {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border: 0;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.task-context-menu > button[role="menuitem"]:hover,
+.task-context-menu > button[role="menuitem"]:focus-visible {
+  background: rgb(25 25 25 / 5%);
+  outline: none;
+}
+
+.task-context-menu > button[role="menuitem"].danger {
+  color: #e5484d;
+}
+
+.task-context-menu > button[role="menuitem"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.task-context-menu > button[role="menuitem"] svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke-width: 1.8;
+}
+
+.task-context-subtask-date {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.task-context-subtask-date input[type="date"] {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgb(25 25 25 / 12%);
+  border-radius: 8px;
+  color: #191919;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.task-context-subtask-date-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.task-context-subtask-date-actions > button {
+  width: auto;
+  min-width: 64px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  color: rgb(25 25 25 / 60%);
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.task-context-subtask-date-actions > button.primary {
+  border-color: transparent;
+  color: #fff;
+  background: #4772fa;
+}
+
+.task-context-subtask-date-actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .task-row {
   position: relative;
   min-height: 40px;
@@ -4164,18 +5035,19 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 20px 0 18px;
   border-bottom: 0;
   border-radius: 0;
-  box-shadow: inset 0 -1px rgb(25 25 25 / 5%);
+  color: var(--text);
+  box-shadow: inset 0 -1px var(--line);
 }
 
 .task-row:hover,
 .task-row.selected {
-  background: rgb(25 25 25 / 3%);
+  background: var(--hover);
 }
 
 .task-row.selected {
   box-shadow:
     inset 2px 0 var(--blue),
-    inset 0 -1px rgb(25 25 25 / 5%);
+    inset 0 -1px var(--line);
 }
 
 .task-row.completed {
@@ -4186,15 +5058,23 @@ body.is-electron.is-macos .rail-button.active svg {
   text-decoration: line-through;
 }
 
+.task-row.pending .task-title {
+  color: var(--muted);
+}
+
+.task-save-state {
+  color: rgb(71 114 250 / 72%);
+}
+
 .task-tree-item.dragging {
   opacity: 0.55;
-  background: #fff;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 16%);
+  background: var(--panel);
+  box-shadow: var(--shadow-default);
 }
 
 .task-tree-item.dragging .task-row {
-  background: #fff;
-  box-shadow: inset 0 -1px rgb(25 25 25 / 5%);
+  background: var(--panel);
+  box-shadow: inset 0 -1px var(--line);
 }
 
 .task-drag-handle {
@@ -4338,7 +5218,7 @@ body.is-electron.is-macos .rail-button.active svg {
   flex: 0 0 40px;
   border: 0;
   background: transparent;
-  color: var(--blue);
+  color: var(--priority-color, var(--blue));
   cursor: pointer;
 }
 
@@ -4412,7 +5292,7 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   justify-content: flex-end;
   gap: 7px;
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -4475,11 +5355,12 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   padding: 0 20px 0 42px;
-  box-shadow: inset 0 -1px rgb(25 25 25 / 5%);
+  color: var(--text);
+  box-shadow: inset 0 -1px var(--line);
 }
 
 .task-list-subtask-row:hover {
-  background: rgb(25 25 25 / 3%);
+  background: var(--hover);
 }
 
 .task-list-subtask-row.completed {
@@ -4535,7 +5416,7 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: center;
   padding: 0;
   border: 0;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   font: inherit;
@@ -4546,6 +5427,7 @@ body.is-electron.is-macos .rail-button.active svg {
   min-width: 0;
   flex: 0 1 auto;
   overflow: hidden;
+  color: inherit;
   font-size: 14px;
   font-weight: 400;
   line-height: 21px;
@@ -4554,6 +5436,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .task-list-subtask-row.completed .task-list-subtask-title {
+  color: var(--muted);
   text-decoration: line-through;
 }
 
@@ -4569,11 +5452,16 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  color: rgb(0 0 0 / 85%);
+  color: color-mix(in srgb, var(--task-label-color) 72%, #111 28%);
   background: color-mix(in srgb, var(--task-label-color) 50%, transparent);
   font-size: 12px;
   font-weight: 400;
   line-height: 24px;
+}
+
+html.dark .task-label {
+  color: color-mix(in srgb, var(--task-label-color) 45%, #fff 55%);
+  background: color-mix(in srgb, var(--task-label-color) 38%, transparent);
 }
 
 .empty-state {
@@ -4621,8 +5509,12 @@ body.is-electron.is-macos .rail-button.active svg {
   container-name: task-detail;
   container-type: inline-size;
   border-left: 1px solid var(--line);
-  background: #fff;
-  box-shadow: -8px 0 30px rgb(35 42 64 / 4%);
+  background: var(--panel);
+  box-shadow: -8px 0 30px rgb(0 0 0 / 12%);
+}
+
+html.dark .task-detail {
+  box-shadow: -8px 0 30px rgb(0 0 0 / 35%);
 }
 
 .task-detail-dialog-overlay {
@@ -4637,8 +5529,8 @@ body.is-electron.is-macos .rail-button.active svg {
   z-index: 1200;
   top: 50%;
   left: 50%;
-  width: min(400px, calc(100vw - 24px));
-  height: min(300px, calc(100vh - 24px));
+  width: min(520px, calc(100vw - 24px));
+  height: min(520px, calc(100vh - 24px));
   padding: 0;
   border: 0;
   border-radius: 14px;
@@ -4840,9 +5732,9 @@ body.is-electron.is-macos .rail-button.active svg {
 .task-detail-dialog .detail-toolbar > button.detail-complete-trigger {
   width: 18px;
   height: 18px;
-  border: 1.5px solid #4772fa;
+  border: 1.5px solid var(--priority-color, #4772fa);
   border-radius: 5px;
-  color: #4772fa;
+  color: var(--priority-color, #4772fa);
   background: transparent;
 }
 
@@ -4898,10 +5790,8 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .task-more-menu {
-  position: absolute;
+  position: fixed;
   z-index: 1300;
-  top: 36px;
-  right: 0;
   width: 164px;
   padding: 4px 0;
   border: 1px solid rgb(25 25 25 / 10%);
@@ -4909,6 +5799,8 @@ body.is-electron.is-macos .rail-button.active svg {
   color: #191919;
   background: #fff;
   box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  /* Portaled outside Dialog.Content; override body scroll-lock pointer-events: none. */
+  pointer-events: auto;
 }
 
 .task-more-menu > button {
@@ -5120,6 +6012,12 @@ body.is-electron.is-macos .rail-button.active svg {
   visibility: visible;
 }
 
+.task-assignee-divider {
+  height: 1px;
+  margin: 4px 10px;
+  background: rgb(25 25 25 / 9%);
+}
+
 .task-assignee-status,
 .task-assignee-error {
   margin: 0;
@@ -5149,6 +6047,8 @@ body.is-electron.is-macos .rail-button.active svg {
   box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
   font-size: 14px;
   line-height: normal;
+  /* Portaled outside Dialog.Content; override body scroll-lock pointer-events: none. */
+  pointer-events: auto;
 }
 
 .due-tabs {
@@ -5966,6 +6866,8 @@ body.is-electron.is-macos .rail-button.active svg {
   color: #191919;
   background: #fff;
   box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  /* Portaled outside Dialog.Content; override body scroll-lock pointer-events: none. */
+  pointer-events: auto;
 }
 
 .priority-menu > button {
@@ -6029,7 +6931,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .task-activity {
   margin-top: 22px;
-  color: #191919;
+  color: var(--text);
 }
 
 .task-activity-header {
@@ -6214,9 +7116,9 @@ body.is-electron.is-macos .rail-button.active svg {
   flex: 0 1 auto;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid rgb(25 25 25 / 5%);
-  color: #191919;
-  background: #fff;
+  border-top: 1px solid var(--line);
+  color: var(--text);
+  background: var(--panel);
 }
 
 .task-comments.comments-composer-only {
@@ -6241,7 +7143,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .comments-heading em {
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   font-size: 12px;
   font-style: normal;
   font-weight: 400;
@@ -6249,7 +7151,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .comments-list {
   min-height: 0;
-  max-height: var(--comments-list-height);
+  max-height: var(--comments-list-height, none);
   flex: 0 1 auto;
   overflow-y: auto;
   padding: 0 20px 8px;
@@ -6260,7 +7162,7 @@ body.is-electron.is-macos .rail-button.active svg {
   place-items: center;
   min-height: 64px;
   margin: 0;
-  color: rgb(25 25 25 / 32%);
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -6286,14 +7188,14 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: rgb(25 25 25 / 38%);
+  color: var(--muted);
   font-size: 11px;
   line-height: 21px;
 }
 
 .comment-meta > strong {
   overflow: hidden;
-  color: rgb(25 25 25 / 62%);
+  color: var(--text);
   font-size: 12px;
   font-weight: 500;
   text-overflow: ellipsis;
@@ -6315,7 +7217,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 7px;
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
 }
@@ -6370,8 +7272,8 @@ body.is-electron.is-macos .rail-button.active svg {
   border: 1px solid #4772fa;
   border-radius: 8px;
   outline: none;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--surface);
   font: inherit;
   font-size: 14px;
   line-height: 21px;
@@ -6469,7 +7371,7 @@ body.is-electron.is-macos .rail-button.active svg {
   position: relative;
   flex: 0 0 auto;
   padding: 8px 20px 16px;
-  border-top: 1px solid rgb(25 25 25 / 5%);
+  border-top: 1px solid var(--line);
 }
 
 .comment-pending-images {
@@ -6510,12 +7412,12 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 7px 8px 7px 12px;
   border: 1px solid transparent;
   border-radius: 6px;
-  background: rgb(25 25 25 / 5%);
+  background: var(--selected);
 }
 
 .comment-input-shell:focus-within {
   border-color: #4772fa;
-  background: #fff;
+  background: var(--surface);
 }
 
 .comment-input-shell textarea {
@@ -6528,7 +7430,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   outline: 0;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   font: inherit;
   font-size: 14px;
@@ -6536,7 +7438,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .comment-input-shell textarea::placeholder {
-  color: rgb(25 25 25 / 22%);
+  color: var(--muted);
 }
 
 .comment-input-shell > button {
@@ -6638,23 +7540,28 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .task-detail-dialog .task-comments {
-  min-height: 0;
-  max-height: 100%;
-  flex-basis: auto;
+  flex: 0 0 auto;
+  min-height: auto;
+  max-height: 55%;
+  overflow: hidden;
 }
 
 .task-detail-dialog .task-comments.comments-composer-only {
-  min-height: 0;
-  flex-basis: auto;
+  flex: 0 0 auto;
+  min-height: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 .task-detail-dialog .comments-heading {
   height: 34px;
-  flex-basis: 34px;
+  flex: 0 0 34px;
   padding: 0 16px;
 }
 
 .task-detail-dialog .comments-list {
+  flex: 1 1 auto;
+  min-height: 0;
   padding-inline: 16px;
 }
 
@@ -6718,7 +7625,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .detail-title {
   min-height: 58px;
-  color: #20232a;
+  color: var(--text);
   font-size: 19px;
   font-weight: 700;
   line-height: 1.45;
@@ -6915,8 +7822,8 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   gap: 7px;
   padding: 0 0 0 24px;
-  color: #191919;
-  border-bottom: 1px solid rgb(25 25 25 / 5%);
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
   font-size: 14px;
   line-height: 21px;
 }
@@ -6939,7 +7846,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .subtask-row .completed {
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   text-decoration: line-through;
 }
 
@@ -6961,6 +7868,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .subtask-assignee-control .task-assignee-trigger,
 .subtask-date-trigger,
+.subtask-terminal-trigger,
 .subtask-delete {
   width: 28px;
   height: 40px;
@@ -6969,24 +7877,27 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 8px;
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
 }
 
 .subtask-assignee-control .task-assignee-trigger:hover,
 .subtask-date-trigger:hover,
+.subtask-terminal-trigger:hover,
 .subtask-delete:hover,
 .subtask-assignee-control .task-assignee-trigger:focus-visible,
 .subtask-date-trigger:focus-visible,
+.subtask-terminal-trigger:focus-visible,
 .subtask-delete:focus-visible {
   outline: 0;
-  color: rgb(25 25 25 / 60%);
-  background: rgb(25 25 25 / 5%);
+  color: var(--text);
+  background: var(--hover);
 }
 
 .subtask-assignee-control .task-assignee-trigger > svg,
 .subtask-date-trigger svg,
+.subtask-terminal-trigger svg,
 .subtask-delete svg {
   width: 18px;
   height: 18px;
@@ -7027,6 +7938,10 @@ body.is-electron.is-macos .rail-button.active svg {
 .subtask-date-trigger.overdue span,
 .subtask-date-trigger.overdue svg {
   color: #df5151;
+}
+
+.subtask-terminal-trigger {
+  color: #4772fa;
 }
 
 .subtask-delete {
@@ -7370,7 +8285,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 3px 5px;
   border: 0;
   border-radius: 8px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -7378,7 +8293,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .task-label-trigger:hover,
 .task-label-trigger.active {
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
 }
 
 .task-label-trigger:disabled {
@@ -7395,8 +8310,8 @@ body.is-electron.is-macos .rail-button.active svg {
   gap: 6px;
   padding: 0 8px;
   border-radius: 7px;
-  color: rgb(25 25 25 / 72%);
-  background: rgb(25 25 25 / 5%);
+  color: var(--text);
+  background: var(--selected);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -7408,7 +8323,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .task-label-inbox {
-  color: #191919;
+  color: var(--text);
   background: transparent;
   font-size: 14px;
 }
@@ -7572,6 +8487,109 @@ body.is-electron.is-macos .rail-button.active svg {
   background: rgb(71 114 250 / 8%);
 }
 
+.detail-toolbar > .detail-terminal-trigger {
+  width: 31px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 31px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: #858b95;
+  background: transparent;
+  cursor: pointer;
+}
+
+.detail-terminal-control {
+  position: relative;
+  height: 31px;
+  flex: 0 0 31px;
+}
+
+.detail-toolbar > .detail-terminal-control > .detail-terminal-trigger {
+  width: 31px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 31px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: #858b95;
+  background: transparent;
+  cursor: pointer;
+}
+
+.detail-toolbar > .detail-terminal-trigger svg,
+.detail-toolbar > .detail-terminal-control > .detail-terminal-trigger svg {
+  width: 17px;
+  height: 17px;
+}
+
+.detail-toolbar > .detail-terminal-trigger:hover:not(:disabled),
+.detail-toolbar > .detail-terminal-trigger.active,
+.detail-toolbar > .detail-terminal-control > .detail-terminal-trigger:hover:not(:disabled),
+.detail-toolbar > .detail-terminal-control > .detail-terminal-trigger.active {
+  color: #4772fa;
+  background: rgb(71 114 250 / 8%);
+}
+
+.detail-toolbar > .detail-terminal-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.detail-toolbar > .detail-terminal-trigger:focus-visible,
+.detail-toolbar > .detail-terminal-control > .detail-terminal-trigger:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 55%);
+  outline-offset: 1px;
+}
+
+.detail-cli-picker {
+  position: absolute;
+  z-index: 1300;
+  top: 35px;
+  right: 0;
+  width: 148px;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  color: #191919;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+}
+
+.detail-cli-picker > button {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 0;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.detail-cli-picker > button:hover,
+.detail-cli-picker > button:focus-visible {
+  outline: 0;
+  background: rgb(25 25 25 / 5%);
+}
+
+.detail-cli-picker > button svg {
+  width: 16px;
+  height: 16px;
+  color: #858b95;
+}
+
+.label-type-icon.label-ai-icon {
+  color: #4772fa;
+}
+
 .task-participants-control {
   position: relative;
   display: inline-flex;
@@ -7703,6 +8721,108 @@ body.is-electron.is-macos .rail-button.active svg {
   width: 16px;
 }
 
+.task-detail-cli .detail-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.task-cli-terminal {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #171717;
+}
+
+.task-cli-terminal > header {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 8px;
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+  color: rgb(255 255 255 / 65%);
+  background: #202020;
+  font-size: 11px;
+}
+
+.task-cli-terminal > header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  color: rgb(255 255 255 / 75%);
+  background: rgb(255 255 255 / 8%);
+  cursor: pointer;
+  font: inherit;
+}
+
+.task-cli-terminal > header button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.task-cli-terminal-host {
+  min-height: 0;
+  flex: 1;
+  padding: 0;
+}
+
+.task-cli-terminal-host .xterm,
+.task-cli-terminal-host .xterm-screen {
+  height: 100%;
+}
+
+.task-cli-terminal-error {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: 28px;
+  color: rgb(255 255 255 / 62%);
+  text-align: center;
+}
+
+.task-cli-terminal-error strong {
+  color: #fff;
+  font-size: 14px;
+}
+
+.task-cli-terminal-error p {
+  max-width: 320px;
+  margin: 7px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.task-cli-terminal-error > div {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.task-cli-terminal-error button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 7px;
+  color: #fff;
+  background: rgb(255 255 255 / 8%);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
 .task-detail.rich-editor-immersive {
   position: fixed;
   z-index: 1500;
@@ -7788,10 +8908,11 @@ body.is-electron.is-macos .rail-button.active svg {
   overflow: auto;
   transform: translate(-50%, -50%);
   padding: 24px;
-  border: 1px solid #e5e7ec;
+  border: 1px solid var(--line);
   border-radius: 15px;
-  background: white;
-  box-shadow: 0 28px 80px rgb(24 30 48 / 28%);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-default);
   animation: dialog-in 150ms ease;
 }
 
@@ -7804,6 +8925,164 @@ body.is-electron.is-macos .rail-button.active svg {
   margin: 7px 0 20px;
   color: #8d929c;
   font-size: 11px;
+}
+
+.ai-work-settings-dialog {
+  width: min(480px, calc(100vw - 40px));
+  padding: 0;
+  overflow: hidden;
+}
+
+.ai-work-settings-dialog > header,
+.ai-work-settings-dialog > footer {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+}
+
+.ai-work-settings-dialog > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.ai-work-settings-dialog > header h2 {
+  min-width: 0;
+  flex: 1;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.ai-work-settings-dialog > header button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.ai-work-settings-dialog > header button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.ai-work-settings-dialog > header svg {
+  width: 17px;
+  height: 17px;
+}
+
+.ai-work-settings-body {
+  display: grid;
+  gap: 20px;
+  padding: 20px;
+}
+
+.ai-work-settings-body section > label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-cli-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-cli-options > button {
+  min-width: 0;
+  height: 42px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.ai-cli-options > button[aria-checked="true"] {
+  border-color: rgb(71 114 250 / 58%);
+  color: #4772fa;
+  background: rgb(71 114 250 / 7%);
+}
+
+.ai-cli-options svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.ai-cli-options > button > svg:last-child {
+  width: 15px;
+  height: 15px;
+}
+
+.ai-working-path-control {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-working-path-control input {
+  min-width: 0;
+  height: 36px;
+  flex: 1;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: 0;
+  color: var(--text);
+  background: var(--hover);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ai-working-path-control button {
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.ai-working-path-control button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ai-work-settings-error {
+  margin: -8px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.ai-work-settings-dialog > footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+}
+
+.ai-work-settings-dialog > footer .button {
+  min-width: 72px;
 }
 
 .task-search-overlay {
@@ -7821,8 +9100,9 @@ body.is-electron.is-macos .rail-button.active svg {
   transform: translateX(-50%);
   border: 0;
   border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-default);
   animation: task-search-in 150ms ease;
 }
 
@@ -7832,7 +9112,7 @@ body.is-electron.is-macos .rail-button.active svg {
   margin: 0 20px;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid rgb(25 25 25 / 10%);
+  border-bottom: 1px solid var(--line);
 }
 
 .task-search-header:focus-within {
@@ -7844,7 +9124,7 @@ body.is-electron.is-macos .rail-button.active svg {
   left: 0;
   width: 18px;
   height: 18px;
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   stroke-width: 1.6;
   pointer-events: none;
 }
@@ -7855,7 +9135,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 42px 0 32px;
   border: 0;
   outline: 0;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   font-size: 16px;
   font-weight: 400;
@@ -7863,7 +9143,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .task-search-header input::placeholder {
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
 }
 
 .task-search-close {
@@ -7876,15 +9156,15 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   border-radius: 8px;
-  color: rgb(25 25 25 / 50%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
 }
 
 .task-search-close:hover,
 .task-search-close:focus-visible {
-  color: #191919;
-  background: rgb(25 25 25 / 5%);
+  color: var(--text);
+  background: var(--hover);
   outline: 0;
 }
 
@@ -7905,7 +9185,7 @@ body.is-electron.is-macos .rail-button.active svg {
   place-content: center;
   justify-items: center;
   padding-bottom: 24px;
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
 }
 
 .task-search-illustration {
@@ -7924,13 +9204,13 @@ body.is-electron.is-macos .rail-button.active svg {
   width: 42px;
   height: 42px;
   margin-bottom: 14px;
-  color: rgb(25 25 25 / 25%);
+  color: var(--muted);
   stroke-width: 1.3;
 }
 
 .task-search-no-results strong {
   margin-bottom: 6px;
-  color: rgb(25 25 25 / 65%);
+  color: var(--text);
   font-size: 15px;
   font-weight: 500;
 }
@@ -7952,13 +9232,13 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #191919;
+  color: var(--text);
   font-size: 12px;
   font-weight: 600;
 }
 
 .task-search-results > header em {
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   font-size: 10px;
   font-style: normal;
   font-weight: 400;
@@ -7980,7 +9260,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 8px;
   border: 0;
   border-radius: 8px;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -7988,7 +9268,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .task-search-result:hover,
 .task-search-result:focus-visible {
-  background: rgb(25 25 25 / 5%);
+  background: var(--hover);
   outline: 0;
 }
 
@@ -8646,9 +9926,11 @@ body.is-electron.is-macos .rail-button.active svg {
   grid-template-columns: 213px minmax(0, 1fr);
   padding: 0;
   overflow: hidden;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: 20px;
-  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  background: var(--surface);
+  box-shadow: var(--shadow-default);
+  color: var(--text);
 }
 
 .settings-overlay {
@@ -8660,8 +9942,8 @@ body.is-electron.is-macos .rail-button.active svg {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid rgb(25 25 25 / 5%);
-  background: #f8f8f8;
+  border-right: 1px solid var(--line);
+  background: var(--settings-sidebar);
 }
 
 .settings-dialog .settings-modal-title {
@@ -8671,7 +9953,7 @@ body.is-electron.is-macos .rail-button.active svg {
   flex: 0 0 50px;
   margin: 0;
   padding: 0 18px;
-  color: #191919;
+  color: var(--text);
   font-size: 16px;
   font-weight: 700;
   line-height: 22px;
@@ -8702,7 +9984,7 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   padding: 0 8px;
-  color: rgb(25 25 25 / 30%);
+  color: var(--muted);
   font-size: 12px;
   font-weight: 700;
   line-height: 16px;
@@ -8718,7 +10000,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 8px;
   border: 0;
   border-radius: 8px;
-  color: rgb(25 25 25 / 78%);
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
   font-size: 14px;
@@ -8728,8 +10010,8 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .settings-tab:hover,
 .settings-tab.active {
-  color: #191919;
-  background: rgb(25 25 25 / 4%);
+  color: var(--text);
+  background: var(--hover);
 }
 
 .settings-tab:focus {
@@ -8752,12 +10034,13 @@ body.is-electron.is-macos .rail-button.active svg {
   min-width: 0;
   overflow-y: auto;
   padding: 50px 20px 40px;
-  background: #fff;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .date-time-settings {
   min-height: 100%;
-  color: #191919;
+  color: var(--text);
 }
 
 .date-time-settings > h1 {
@@ -8770,7 +10053,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .notification-settings {
   min-height: 100%;
-  color: #191919;
+  color: var(--text);
 }
 
 .notification-settings > h1 {
@@ -8783,7 +10066,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .notification-settings-lead {
   margin: 0 18px 16px;
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   font-size: 13px;
   line-height: 18px;
 }
@@ -8792,7 +10075,7 @@ body.is-electron.is-macos .rail-button.active svg {
   overflow: hidden;
   margin: 0 0 14px;
   border-radius: 10px;
-  background: rgb(25 25 25 / 2%);
+  background: var(--hover);
 }
 
 .notification-settings-header,
@@ -8805,6 +10088,7 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0 18px;
   font-size: 14px;
   line-height: 18px;
+  color: var(--text);
 }
 
 .notification-settings-table.has-dingtalk .notification-settings-header,
@@ -8813,7 +10097,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .notification-settings-header {
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   font-size: 12px;
   font-weight: 600;
 }
@@ -8824,12 +10108,12 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .notification-settings-row + .notification-settings-row {
-  border-top: 1px solid rgb(25 25 25 / 5%);
+  border-top: 1px solid var(--line);
 }
 
 .notification-settings-hint {
   margin: 0 18px 12px;
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -8838,7 +10122,7 @@ body.is-electron.is-macos .rail-button.active svg {
   overflow: hidden;
   margin-bottom: 14px;
   border-radius: 10px;
-  background: rgb(25 25 25 / 2%);
+  background: var(--hover);
 }
 
 .date-time-format-card {
@@ -8852,7 +10136,7 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: space-between;
   gap: 20px;
   padding: 0 18px;
-  color: #191919;
+  color: var(--text);
   font-size: 14px;
   font-weight: 400;
   line-height: 18px;
@@ -8868,7 +10152,7 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: rgb(25 25 25 / 60%);
+  color: var(--muted);
 }
 
 .date-time-select-wrap select {
@@ -8877,11 +10161,16 @@ body.is-electron.is-macos .rail-button.active svg {
   padding: 0;
   border: 0;
   outline: 0;
-  color: inherit;
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
   font: inherit;
   text-align: right;
+}
+
+.date-time-select-wrap select option {
+  color: var(--text);
+  background: var(--surface);
 }
 
 .date-time-select-wrap svg {
@@ -8889,6 +10178,7 @@ body.is-electron.is-macos .rail-button.active svg {
   height: 10px;
   flex: 0 0 10px;
   stroke-width: 1.7;
+  color: currentColor;
 }
 
 .date-time-select-wrap select:disabled,
@@ -8920,7 +10210,7 @@ body.is-electron.is-macos .rail-button.active svg {
   position: absolute;
   inset: 0;
   border-radius: 999px;
-  background: rgb(25 25 25 / 10%);
+  background: var(--switch-track);
   cursor: pointer;
   transition: background 130ms ease;
 }
@@ -8957,21 +10247,209 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .date-time-zone-card p {
   margin: -1px 43px 0 18px;
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   font-size: 12px;
   font-weight: 400;
   line-height: 17px;
 }
 
+.appearance-settings {
+  min-height: 100%;
+  color: var(--text);
+}
+
+.appearance-settings > h1 {
+  height: 25px;
+  margin: 0 18px 13px;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 25px;
+}
+
+.appearance-settings-card {
+  overflow: hidden;
+  margin: 0 0 22px;
+  border-radius: 10px;
+  background: var(--hover);
+}
+
+.appearance-settings-card .date-time-setting-row {
+  min-height: 44px;
+}
+
+.appearance-settings-hint {
+  margin: -2px 18px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 17px;
+}
+
+.appearance-theme-section {
+  margin: 0 2px;
+}
+
+.appearance-theme-section-title {
+  margin: 0 16px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.appearance-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 148px));
+  gap: 16px 20px;
+  padding: 0 16px;
+}
+
+.appearance-theme-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.appearance-theme-preview {
+  position: relative;
+  width: 148px;
+  height: 96px;
+  display: grid;
+  grid-template-columns: 14px 36px minmax(0, 1fr);
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 8%);
+}
+
+.appearance-theme-card.selected .appearance-theme-preview,
+.appearance-theme-card:focus-visible .appearance-theme-preview {
+  border-color: var(--blue);
+}
+
+.appearance-theme-card:focus {
+  outline: none;
+}
+
+.appearance-theme-preview-rail,
+.appearance-theme-preview-sidebar,
+.appearance-theme-preview-main {
+  min-width: 0;
+  min-height: 0;
+}
+
+.appearance-theme-preview.theme-default {
+  background: #ffffff;
+}
+
+.appearance-theme-preview.theme-default .appearance-theme-preview-rail {
+  background: #f5f5f5;
+  border-right: 1px solid rgb(25 25 25 / 5%);
+}
+
+.appearance-theme-preview.theme-default .appearance-theme-preview-sidebar {
+  background: #ffffff;
+  border-right: 1px solid rgb(25 25 25 / 5%);
+}
+
+.appearance-theme-preview.theme-default .appearance-theme-preview-main {
+  background: #ffffff;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.appearance-theme-preview.theme-default .appearance-theme-preview-main > span {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: rgb(25 25 25 / 8%);
+}
+
+.appearance-theme-preview.theme-default .appearance-theme-preview-main > span:first-child {
+  width: 62%;
+  height: 10px;
+  background: rgb(25 25 25 / 14%);
+}
+
+.appearance-theme-preview.theme-dark {
+  background: #1f1f1f;
+}
+
+.appearance-theme-preview.theme-dark .appearance-theme-preview-rail {
+  background: #1a1a1a;
+  border-right: 1px solid rgb(255 255 255 / 8%);
+}
+
+.appearance-theme-preview.theme-dark .appearance-theme-preview-sidebar {
+  background: #242424;
+  border-right: 1px solid rgb(255 255 255 / 8%);
+}
+
+.appearance-theme-preview.theme-dark .appearance-theme-preview-main {
+  background: #1f1f1f;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.appearance-theme-preview.theme-dark .appearance-theme-preview-main > span {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.appearance-theme-preview.theme-dark .appearance-theme-preview-main > span:first-child {
+  width: 62%;
+  height: 10px;
+  background: rgb(255 255 255 / 16%);
+}
+
+.appearance-theme-check {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--blue);
+  color: #fff;
+}
+
+.appearance-theme-check svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.4;
+}
+
+.appearance-theme-label {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--text);
+}
+
 .date-time-offline-note {
   margin: 8px 18px 0;
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   font-size: 12px;
 }
 
 .account-settings {
   position: relative;
   min-height: 100%;
+  color: var(--text);
 }
 
 .account-profile {
@@ -8979,7 +10457,7 @@ body.is-electron.is-macos .rail-button.active svg {
   display: flex;
   flex-direction: column;
   align-items: center;
-  color: #191919;
+  color: var(--text);
 }
 
 .account-avatar-button {
@@ -9037,8 +10515,8 @@ body.is-electron.is-macos .rail-button.active svg {
 .account-avatar-fallback {
   display: grid;
   place-items: center;
-  color: #5c626c;
-  background: rgb(25 25 25 / 6%);
+  color: var(--muted);
+  background: var(--selected);
   font-size: 18px;
   font-weight: 600;
 }
@@ -9055,7 +10533,7 @@ body.is-electron.is-macos .rail-button.active svg {
   align-items: center;
   gap: 5px;
   margin-top: 5px;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -9081,7 +10559,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .account-settings-group {
   padding: 4px 0;
   border-radius: 10px;
-  background: rgb(25 25 25 / 2%);
+  background: var(--hover);
 }
 
 .account-setting-row {
@@ -9091,7 +10569,7 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: space-between;
   gap: 20px;
   padding: 0 18px;
-  color: #191919;
+  color: var(--text);
   font-size: 14px;
 }
 
@@ -9103,7 +10581,7 @@ body.is-electron.is-macos .rail-button.active svg {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   font-size: 13px;
   font-weight: 400;
   text-align: right;
@@ -9148,7 +10626,7 @@ body.is-electron.is-macos .rail-button.active svg {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   font-size: 13px;
   font-weight: 400;
   text-align: right;
@@ -9159,8 +10637,8 @@ body.is-electron.is-macos .rail-button.active svg {
 .account-coming-soon {
   padding: 3px 8px;
   border-radius: 6px;
-  color: rgb(25 25 25 / 38%);
-  background: rgb(25 25 25 / 4%);
+  color: var(--muted);
+  background: var(--selected);
   font-size: 11px;
   font-style: normal;
   line-height: 18px;
@@ -9175,7 +10653,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .account-id {
   display: block;
   margin-top: 14px;
-  color: rgb(25 25 25 / 24%);
+  color: var(--muted);
   font-size: 10px;
   text-align: center;
 }
@@ -9217,7 +10695,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .account-action-dialog h2 {
   padding-right: 38px;
-  color: #191919;
+  color: var(--text);
   font-size: 16px;
   font-weight: 700;
   line-height: 22px;
@@ -9225,7 +10703,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .account-action-description {
   margin: 8px 0 20px;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   font-size: 13px;
   line-height: 20px;
 }
@@ -9233,7 +10711,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .account-action-field {
   display: grid;
   gap: 7px;
-  color: rgb(25 25 25 / 65%);
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -9241,11 +10719,11 @@ body.is-electron.is-macos .rail-button.active svg {
   width: 100%;
   height: 36px;
   padding: 0 11px;
-  border: 1px solid rgb(25 25 25 / 10%);
+  border: 1px solid var(--line);
   border-radius: 8px;
   outline: none;
-  color: #191919;
-  background: #fff;
+  color: var(--text);
+  background: var(--surface);
   font: inherit;
 }
 
@@ -9256,7 +10734,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .account-field-counter {
   margin-top: 5px;
-  color: rgb(25 25 25 / 32%);
+  color: var(--muted);
   font-size: 11px;
   text-align: right;
 }
@@ -9352,7 +10830,7 @@ body.is-electron.is-macos .rail-button.active svg {
   place-content: center;
   justify-items: center;
   gap: 10px;
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
 }
 
 .settings-placeholder svg {
@@ -9362,7 +10840,7 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .settings-placeholder strong {
-  color: rgb(25 25 25 / 65%);
+  color: var(--text);
   font-size: 16px;
 }
 
@@ -9372,16 +10850,17 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .about-settings-panel {
   min-height: 100%;
+  color: var(--text);
 }
 
 .about-settings-card {
   display: grid;
   gap: 0;
   margin-top: 4px;
-  border: 1px solid rgb(25 25 25 / 6%);
+  border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
-  background: rgb(25 25 25 / 2%);
+  background: var(--hover);
 }
 
 .about-settings-row {
@@ -9391,7 +10870,7 @@ body.is-electron.is-macos .rail-button.active svg {
   justify-content: space-between;
   gap: 16px;
   padding: 0 16px;
-  border-top: 1px solid rgb(25 25 25 / 5%);
+  border-top: 1px solid var(--line);
 }
 
 .about-settings-row:first-child {
@@ -9399,12 +10878,12 @@ body.is-electron.is-macos .rail-button.active svg {
 }
 
 .about-settings-row span {
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   font-size: 13px;
 }
 
 .about-settings-row strong {
-  color: #191919;
+  color: var(--text);
   font-size: 13px;
   font-weight: 500;
 }
@@ -9426,7 +10905,7 @@ body.is-electron.is-macos .rail-button.active svg {
 .about-settings-status {
   width: 100%;
   margin: 2px 0 0;
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -9441,7 +10920,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .about-settings-web-note {
   margin: 16px 0 0;
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   font-size: 13px;
   line-height: 20px;
 }
@@ -9512,6 +10991,7 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .team-settings-panel {
   min-height: 100%;
+  color: var(--text);
 }
 
 .team-settings-header {
@@ -9520,7 +11000,7 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .team-settings-header h2 {
   margin: 0;
-  color: #191919;
+  color: var(--text);
   font-size: 20px;
   font-weight: 600;
   line-height: 28px;
@@ -9528,7 +11008,7 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .team-settings-header p {
   margin: 6px 0 0;
-  color: rgb(25 25 25 / 40%);
+  color: var(--muted);
   font-size: 13px;
   line-height: 20px;
 }
@@ -9542,26 +11022,26 @@ body.is-electron.is-macos .desktop-update-banner {
   min-height: 58px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgb(25 25 25 / 2%);
+  background: var(--hover);
 }
 
 .team-settings-panel .member-avatar {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  color: rgb(25 25 25 / 58%);
-  background: rgb(25 25 25 / 6%);
+  color: var(--muted);
+  background: var(--selected);
   font-size: 11px;
 }
 
 .team-settings-panel .member-row strong {
-  color: #191919;
+  color: var(--text);
   font-size: 13px;
   font-weight: 500;
 }
 
 .team-settings-panel .member-row div span {
-  color: rgb(25 25 25 / 36%);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -9607,21 +11087,22 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .team-settings-panel .role-chip {
-  color: rgb(25 25 25 / 48%);
-  background: rgb(25 25 25 / 5%);
+  color: var(--muted);
+  background: var(--selected);
   font-size: 10px;
 }
 
 .team-settings-panel .role-select {
   height: 30px;
-  border-color: rgb(25 25 25 / 10%);
-  color: rgb(25 25 25 / 60%);
+  border-color: var(--line);
+  color: var(--muted);
   font-size: 11px;
+  background: var(--panel);
 }
 
 .user-groups-panel {
   min-height: 100%;
-  color: #191919;
+  color: var(--text);
 }
 
 .user-groups-header {
@@ -9660,7 +11141,7 @@ body.is-electron.is-macos .desktop-update-banner {
   gap: 11px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgb(25 25 25 / 2%);
+  background: var(--hover);
 }
 
 .user-group-icon {
@@ -9695,7 +11176,7 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .user-group-copy > span {
-  color: rgb(25 25 25 / 36%);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -9713,8 +11194,8 @@ body.is-electron.is-macos .desktop-update-banner {
   overflow: hidden;
   padding: 1px 5px;
   border-radius: 5px;
-  color: rgb(25 25 25 / 45%);
-  background: rgb(25 25 25 / 4%);
+  color: var(--muted);
+  background: var(--selected);
   font-size: 10px;
   line-height: 16px;
   text-overflow: ellipsis;
@@ -9750,7 +11231,7 @@ body.is-electron.is-macos .desktop-update-banner {
   min-height: 150px;
   place-items: center;
   border-radius: 10px;
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   background: rgb(25 25 25 / 2%);
   font-size: 13px;
 }
@@ -10087,6 +11568,7 @@ body.is-electron.is-macos .desktop-update-banner {
   display: grid;
   gap: 12px;
   align-content: start;
+  color: var(--text);
 }
 
 .team-management-list-panel > h1 {
@@ -10094,6 +11576,7 @@ body.is-electron.is-macos .desktop-update-banner {
   font-size: 20px;
   font-weight: 600;
   line-height: 28px;
+  color: var(--text);
 }
 
 .team-management-list {
@@ -10103,14 +11586,14 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .team-management-item {
   overflow: hidden;
-  border: 1px solid rgb(25 25 25 / 9%);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .team-management-item.expanded {
   border-color: rgb(71 114 250 / 28%);
-  box-shadow: 0 3px 12px rgb(25 25 25 / 5%);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 18%);
 }
 
 .team-management-item-trigger {
@@ -10122,14 +11605,14 @@ body.is-electron.is-macos .desktop-update-banner {
   gap: 10px;
   padding: 8px 12px;
   border: 0;
-  color: #191919;
+  color: var(--text);
   background: transparent;
   text-align: left;
   cursor: pointer;
 }
 
 .team-management-item-trigger:hover {
-  background: rgb(25 25 25 / 3%);
+  background: var(--hover);
 }
 
 .team-management-item-trigger > .workspace-initial {
@@ -10156,7 +11639,7 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .team-management-item-copy small {
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -10164,7 +11647,7 @@ body.is-electron.is-macos .desktop-update-banner {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: rgb(25 25 25 / 48%);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -10179,7 +11662,7 @@ body.is-electron.is-macos .desktop-update-banner {
 .team-management-item-trigger > svg {
   width: 16px;
   height: 16px;
-  color: rgb(25 25 25 / 35%);
+  color: var(--muted);
   transition: transform 150ms ease;
 }
 
@@ -10189,8 +11672,8 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .team-management-item-detail {
   padding: 18px 16px 20px;
-  border-top: 1px solid rgb(25 25 25 / 6%);
-  background: rgb(25 25 25 / 1.5%);
+  border-top: 1px solid var(--line);
+  background: var(--hover);
 }
 
 .team-danger-zone {
@@ -10214,7 +11697,7 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .team-danger-zone p {
   margin: 0;
-  color: rgb(25 25 25 / 50%);
+  color: var(--muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -10525,7 +12008,7 @@ body.is-electron.is-macos .desktop-update-banner {
 .team-mgmt-settings-lead,
 .team-mgmt-settings-readonly-note {
   margin: 0;
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -10542,17 +12025,17 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .team-mgmt-settings-form label > span {
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   font-size: 12px;
 }
 
 .team-mgmt-settings-form input {
   height: 36px;
   padding: 0 12px;
-  border: 1px solid rgb(25 25 25 / 12%);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: white;
-  color: #191919;
+  background: var(--surface);
+  color: var(--text);
   font-size: 14px;
 }
 
@@ -10562,7 +12045,7 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .team-mgmt-settings-form small {
-  color: rgb(25 25 25 / 45%);
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -10573,15 +12056,15 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .team-mgmt-settings-readonly > span {
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   font-size: 12px;
 }
 
 .team-mgmt-settings-readonly code {
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgb(25 25 25 / 4%);
-  color: #191919;
+  background: var(--hover);
+  color: var(--text);
   font-size: 12px;
   word-break: break-all;
 }
@@ -10596,12 +12079,13 @@ body.is-electron.is-macos .desktop-update-banner {
   font-size: 20px;
   font-weight: 600;
   line-height: 28px;
+  color: var(--text);
 }
 
 .sso-settings-lead,
 .sso-settings-readonly-note {
   margin: 0;
-  color: rgb(25 25 25 / 55%);
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -10964,11 +12448,11 @@ body.is-electron.is-macos .desktop-update-banner {
   gap: 9px;
   padding: 8px 10px 8px 13px;
   transform: translateX(-50%);
-  border: 1px solid #dfe3ee;
+  border: 1px solid var(--line);
   border-radius: 10px;
-  color: #4d535e;
-  background: rgb(255 255 255 / 96%);
-  box-shadow: 0 12px 35px rgb(29 37 63 / 16%);
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  box-shadow: var(--shadow-default);
   font-size: 11px;
 }
 
@@ -10987,7 +12471,7 @@ body.is-electron.is-macos .desktop-update-banner {
   place-items: center;
   border: 0;
   border-radius: 6px;
-  color: #969ba4;
+  color: var(--muted);
   background: transparent;
   cursor: pointer;
 }
@@ -11051,7 +12535,8 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .mobile-app-sidebar,
-.mobile-app-sidebar-scrim {
+.mobile-app-sidebar-scrim,
+.mobile-app-sidebar-edge {
   display: none;
 }
 
@@ -11066,7 +12551,11 @@ body.is-electron.is-macos .desktop-update-banner {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
-  padding: 8px 8px 8px 12px;
+  padding:
+    max(8px, env(safe-area-inset-top, 0px))
+    8px
+    8px
+    max(12px, env(safe-area-inset-left, 0px));
   border-bottom: 1px solid rgb(25 25 25 / 5%);
 }
 
@@ -11360,7 +12849,11 @@ body.is-electron.is-macos .desktop-update-banner {
   flex: 0 0 auto;
   display: grid;
   gap: 2px;
-  padding: 8px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom));
+  padding:
+    8px
+    max(8px, env(safe-area-inset-right, 0px))
+    max(8px, env(safe-area-inset-bottom, 0px))
+    max(8px, env(safe-area-inset-left, 0px));
   border-top: 1px solid rgb(25 25 25 / 5%);
   background: #fff;
 }
@@ -11485,12 +12978,23 @@ body.is-electron.is-macos .desktop-update-banner {
     right: 0;
     top: 0;
     bottom: 0;
-    width: min(390px, calc(100vw - var(--navigation-rail-width)));
+    width: min(507px, calc(100vw - var(--navigation-rail-width)));
     box-shadow: -18px 0 45px rgb(25 31 48 / 18%);
   }
 }
 
 @media (max-width: 640px) {
+  .mobile-app-sidebar-edge {
+    position: fixed;
+    z-index: 59;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 24px;
+    display: block;
+    touch-action: none;
+  }
+
   .mobile-app-sidebar-scrim {
     position: fixed;
     z-index: 60;
@@ -11511,6 +13015,10 @@ body.is-electron.is-macos .desktop-update-banner {
     pointer-events: auto;
   }
 
+  .mobile-app-sidebar-scrim.is-dragging {
+    transition: none;
+  }
+
   .mobile-app-sidebar {
     position: fixed;
     z-index: 61;
@@ -11525,9 +13033,9 @@ body.is-electron.is-macos .desktop-update-banner {
     box-shadow: 12px 0 35px rgb(25 31 48 / 18%);
     transition: transform 180ms ease, visibility 180ms ease;
     pointer-events: none;
+    touch-action: pan-y;
   }
 
-  body.is-capacitor .mobile-app-sidebar,
   body.is-capacitor .task-detail {
     top: var(--safe-area-top);
     right: var(--safe-area-right);
@@ -11541,11 +13049,19 @@ body.is-electron.is-macos .desktop-update-banner {
     pointer-events: auto;
   }
 
+  .mobile-app-sidebar.is-dragging {
+    visibility: visible;
+    transform: translateX(var(--mobile-sidebar-x, -104%));
+    transition: none;
+    pointer-events: auto;
+    touch-action: none;
+  }
+
   .mobile-app-sidebar .notification-panel {
     position: fixed;
-    inset: 70px 10px auto 10px;
+    inset: calc(70px + env(safe-area-inset-top, 0px)) 10px auto 10px;
     width: auto;
-    max-height: calc(100vh - 82px);
+    max-height: calc(100vh - 82px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   }
 
   .navigation-rail {

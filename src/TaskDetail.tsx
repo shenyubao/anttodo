@@ -10,6 +10,8 @@ import {
   MessageCircle,
   NotebookPen,
   Plus,
+  RotateCcw,
+  SquareTerminal,
   Trash2,
   Type,
   UserRound,
@@ -20,23 +22,44 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { DueDateControl } from "./DueDateControl";
+import { AiCliAvatar } from "./AiCliAvatar";
 import { MemberAvatar } from "./MemberAvatar";
-import { PriorityControl } from "./PriorityControl";
+import { getPriorityOption, PriorityControl } from "./PriorityControl";
 import { TaskComments, type CreateCommentInput } from "./TaskComments";
 import { TaskActivity } from "./TaskActivity";
+import { TaskCliTerminal } from "./TaskCliTerminal";
 import {
   TaskRichTextEditor,
   type TaskRichTextEditorHandle,
 } from "./TaskRichTextEditor";
 import type { AttachmentService } from "./lib/attachments";
 import { getAssignableMembers } from "./lib/taskAssignment";
+import {
+  aiCliLabel,
+  buildSubtaskCliPrompt,
+  buildTaskCliPrompt,
+  isAiWorkConfigured,
+  requestAiWorkSettings,
+  sameAssignee,
+  subtaskAssigneeTarget,
+  subtaskTerminalSessionKey,
+  taskAssigneeTarget,
+  taskTerminalSessionKey,
+} from "./lib/aiWork";
+import { trackAiTerminalSession, untrackAiTerminalSession } from "./lib/aiTerminalSessions";
 import type {
+  AiCliTool,
+  AiWorkSettings,
+  AssigneeTarget,
   DateTimePreferences,
   ReminderSchedule,
   Subtask,
@@ -55,6 +78,8 @@ export type TaskDetailProps = {
   attachmentService: AttachmentService;
   now: Date;
   dateTimePreferences: DateTimePreferences;
+  aiWorkSettings: AiWorkSettings;
+  settingsLabelName?: string | null;
   onClose: () => void;
   onUpdate: (patch: Partial<Task>) => Promise<void>;
   onSaveSchedule: (
@@ -62,14 +87,15 @@ export type TaskDetailProps = {
     schedule: ReminderSchedule,
   ) => Promise<void>;
   onLoadAssignees: () => Promise<string[]>;
-  onAssign: (assigneeId: string | null) => Promise<void>;
+  onAssign: (target: AssigneeTarget) => Promise<void>;
+  onAssignSubtask: (subtaskId: string, target: AssigneeTarget) => Promise<void>;
   onToggleLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
   onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
   onCreateSubtask: (title: string) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "assignee_id">>,
+    patch: Partial<Pick<Subtask, "due_at">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   commentsRevision: number;
@@ -86,19 +112,21 @@ function TaskAssigneeControl({
   task,
   bundle,
   currentUserId,
+  aiWorkSettings,
   online,
   onLoad,
   onAssign,
-  assigneeId = task.assignee_id,
+  target = taskAssigneeTarget(task),
   compact = false,
 }: {
   task: Task;
   bundle: WorkspaceBundle;
   currentUserId: string;
+  aiWorkSettings: AiWorkSettings;
   online: boolean;
   onLoad: () => Promise<string[]>;
-  onAssign: (assigneeId: string | null) => Promise<void>;
-  assigneeId?: string | null;
+  onAssign: (target: AssigneeTarget) => Promise<void>;
+  target?: AssigneeTarget;
   compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -109,7 +137,10 @@ function TaskAssigneeControl({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const onLoadRef = useRef(onLoad);
-  const assignee = bundle.members.find((member) => member.user_id === assigneeId);
+  const assignee = target.kind === "user"
+    ? bundle.members.find((member) => member.user_id === target.userId)
+    : undefined;
+  const cliTools = window.anttodoDesktop?.aiWork ? aiWorkSettings.cli_tools : [];
   const candidates = useMemo(
     () => getAssignableMembers(bundle, task, currentUserId, candidateIds ?? []),
     [bundle, candidateIds, currentUserId, task],
@@ -174,9 +205,9 @@ function TaskAssigneeControl({
     };
   }, [open]);
 
-  async function choose(nextAssigneeId: string | null) {
+  async function choose(nextTarget: AssigneeTarget) {
     if (saving || !online) return;
-    if (assigneeId === nextAssigneeId) {
+    if (sameAssignee(target, nextTarget)) {
       setOpen(false);
       triggerRef.current?.focus();
       return;
@@ -184,7 +215,7 @@ function TaskAssigneeControl({
     setSaving(true);
     setError("");
     try {
-      await onAssign(nextAssigneeId);
+      await onAssign(nextTarget);
       setOpen(false);
       triggerRef.current?.focus();
     } catch (cause) {
@@ -211,7 +242,9 @@ function TaskAssigneeControl({
     items[nextIndex]?.focus();
   }
 
-  const assigneeName = assignee?.profile?.display_name ?? "未指派";
+  const assigneeName = target.kind === "cli"
+    ? aiCliLabel(target.tool)
+    : assignee?.profile?.display_name ?? "未指派";
   return (
     <div className={clsx("task-assignee-control", compact && "subtask-assignee-control")} ref={rootRef}>
       <button
@@ -224,7 +257,9 @@ function TaskAssigneeControl({
         disabled={!online || saving}
         onClick={() => setOpen((value) => !value)}
       >
-        {assignee ? (
+        {target.kind === "cli" ? (
+          <AiCliAvatar tool={target.tool} className="detail-assignee-avatar" />
+        ) : assignee ? (
           <MemberAvatar member={assignee} className="detail-assignee-avatar" />
         ) : (
           <UserRound />
@@ -240,23 +275,38 @@ function TaskAssigneeControl({
           <button
             type="button"
             role="menuitemradio"
-            aria-checked={assigneeId === null}
+            aria-checked={target.kind === "none"}
             disabled={saving}
-            onClick={() => void choose(null)}
+            onClick={() => void choose({ kind: "none" })}
           >
             <UserRound className="assignee-none-icon" />
             <span>不指派</span>
             <Check className="assignee-selected-icon" />
           </button>
+          {cliTools.map((tool) => (
+            <button
+              key={tool}
+              type="button"
+              role="menuitemradio"
+              aria-checked={target.kind === "cli" && target.tool === tool}
+              disabled={saving}
+              onClick={() => void choose({ kind: "cli", tool })}
+            >
+              <AiCliAvatar tool={tool} className="assignee-menu-avatar" />
+              <span>{aiCliLabel(tool)}</span>
+              <Check className="assignee-selected-icon" />
+            </button>
+          ))}
+          {cliTools.length > 0 && <div className="task-assignee-divider" aria-hidden="true" />}
           {loading && <p className="task-assignee-status" role="status">正在读取成员…</p>}
           {!loading && candidates.map((member) => (
             <button
               key={member.user_id}
               type="button"
               role="menuitemradio"
-              aria-checked={assigneeId === member.user_id}
+              aria-checked={target.kind === "user" && target.userId === member.user_id}
               disabled={saving}
-              onClick={() => void choose(member.user_id)}
+              onClick={() => void choose({ kind: "user", userId: member.user_id })}
             >
               <MemberAvatar member={member} className="assignee-menu-avatar" />
               <span>{member.user_id === currentUserId ? "我" : member.profile?.display_name ?? "团队成员"}</span>
@@ -668,6 +718,13 @@ type TaskDetailContentHandle = {
   close: () => Promise<void>;
 };
 
+type ActiveCliTerminal = {
+  sessionId: string;
+  tool: import("./types").AiCliTool;
+  targetLabel: string;
+  prompt: string;
+};
+
 function TaskMoreMenu({
   task,
   online,
@@ -679,8 +736,10 @@ function TaskMoreMenu({
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setOpen(false);
@@ -689,25 +748,57 @@ function TaskMoreMenu({
 
   useEffect(() => {
     if (!open) return;
-    const frame = window.requestAnimationFrame(() => {
-      rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    });
     const closeOnOutside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", closeOnOutside);
     document.addEventListener("keydown", closeOnEscape);
     return () => {
-      window.cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", closeOnOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !menuRef.current) return;
+
+    const positionMenu = () => {
+      const trigger = triggerRef.current!.getBoundingClientRect();
+      const menu = menuRef.current!;
+      const gap = 8;
+      const inset = 12;
+      const width = Math.min(164, window.innerWidth - inset * 2);
+      const height = menu.offsetHeight;
+      const left = Math.min(
+        Math.max(trigger.right - width, inset),
+        Math.max(inset, window.innerWidth - width - inset),
+      );
+      const preferredTop = trigger.bottom + gap;
+      const top = preferredTop + height <= window.innerHeight - inset
+        ? preferredTop
+        : Math.max(inset, trigger.top - height - gap);
+      setPosition({ width, left, top });
+    };
+
+    positionMenu();
+    menuRef.current.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("scroll", positionMenu, true);
+    return () => {
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("scroll", positionMenu, true);
+    };
+  }, [error, open]);
 
   async function switchKind() {
     if (!online || saving) return;
@@ -739,8 +830,14 @@ function TaskMoreMenu({
       >
         <Ellipsis />
       </button>
-      {open && (
-        <div className="task-more-menu" role="menu" aria-label="更多操作">
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="task-more-menu"
+          role="menu"
+          aria-label="更多操作"
+          style={position}
+        >
           <button
             type="button"
             role="menuitem"
@@ -762,7 +859,8 @@ function TaskMoreMenu({
             <span>{task.kind === "note" ? "切换为待办" : "切换为笔记"}</span>
           </button>
           {error && <p role="alert">{error}</p>}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -780,11 +878,14 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   attachmentService,
   now,
   dateTimePreferences,
+  aiWorkSettings,
+  settingsLabelName = null,
   onClose,
   onUpdate,
   onSaveSchedule,
   onLoadAssignees,
   onAssign,
+  onAssignSubtask,
   onToggleLabel,
   onToggleParticipant,
   onCreateSubtask,
@@ -802,7 +903,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
 }, forwardedRef) {
   const [draftTitle, setDraftTitle] = useState(task.title);
   const [newSubtask, setNewSubtask] = useState("");
-  const [subtasksOpen, setSubtasksOpen] = useState(task.subtasks.length > 0);
+  const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
+  const [cliPickerOpen, setCliPickerOpen] = useState(false);
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [immersive, setImmersive] = useState(false);
@@ -812,17 +914,80 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const saveTimer = useRef<number | undefined>(undefined);
   const editorRef = useRef<TaskRichTextEditorHandle>(null);
   const closingRef = useRef(false);
+  const activeTerminalRef = useRef<ActiveCliTerminal | null>(null);
+  const startedTerminalsRef = useRef(new Map<string, AiCliTool>());
+  const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
+  const cliPickerRef = useRef<HTMLDivElement>(null);
   const writable = online && editable;
+  const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
+  activeTerminalRef.current = activeTerminal;
 
   useEffect(() => setDraftTitle(task.title), [task.id, task.title]);
   useEffect(() => {
+    // Keep CLI processes running across todo switches; restore the view if this
+    // task still has a remembered terminal session.
     setImmersive(false);
-    setSubtasksOpen(task.subtasks.length > 0);
+    setCliPickerOpen(false);
     setNewSubtask("");
     setToolbarOpen(false);
     setActivityOpen(false);
     setCommentComposerOpen(false);
+    const preferred = preferredTerminalByTaskRef.current.get(task.id);
+    setActiveTerminal(
+      preferred && startedTerminalsRef.current.has(preferred.sessionId)
+        ? preferred
+        : null,
+    );
   }, [task.id]);
+  useEffect(() => {
+    if (!cliPickerOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!cliPickerRef.current?.contains(event.target as Node)) setCliPickerOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCliPickerOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [cliPickerOpen]);
+  useEffect(() => {
+    if (task.status !== "completed") return;
+    preferredTerminalByTaskRef.current.delete(task.id);
+    setActiveTerminal(null);
+    const sessionIds = [
+      taskTerminalSessionKey(task.id),
+      ...task.subtasks.map((subtask) => subtaskTerminalSessionKey(subtask.id)),
+    ];
+    for (const sessionId of sessionIds) {
+      startedTerminalsRef.current.delete(sessionId);
+      untrackAiTerminalSession(sessionId);
+    }
+  }, [task.id, task.status, task.subtasks]);
+  useEffect(() => {
+    const terminalBridge = window.anttodoDesktop?.aiWork?.terminal;
+    if (!terminalBridge) return;
+    for (const [sessionId, expectedTool] of startedTerminalsRef.current) {
+      const currentTool = sessionId === taskTerminalSessionKey(task.id)
+        ? task.cli_assignee
+        : task.subtasks.find(
+            (subtask) => sessionId === subtaskTerminalSessionKey(subtask.id),
+          )?.cli_assignee ?? null;
+      if (currentTool === expectedTool) continue;
+      void terminalBridge.stop(sessionId);
+      startedTerminalsRef.current.delete(sessionId);
+      untrackAiTerminalSession(sessionId);
+      for (const [taskId, terminal] of preferredTerminalByTaskRef.current) {
+        if (terminal.sessionId === sessionId) {
+          preferredTerminalByTaskRef.current.delete(taskId);
+        }
+      }
+      setActiveTerminal((current) => current?.sessionId === sessionId ? null : current);
+    }
+  }, [task.cli_assignee, task.id, task.subtasks]);
   useEffect(() => {
     if (!activityOpen) return;
     const closeActivity = (event: KeyboardEvent) => {
@@ -857,6 +1022,79 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     }, 500);
   }
 
+  function stopTerminalSession(sessionId: string) {
+    const bridge = window.anttodoDesktop?.aiWork?.terminal;
+    if (bridge) void bridge.stop(sessionId);
+    startedTerminalsRef.current.delete(sessionId);
+    untrackAiTerminalSession(sessionId);
+    for (const [taskId, terminal] of preferredTerminalByTaskRef.current) {
+      if (terminal.sessionId === sessionId) {
+        preferredTerminalByTaskRef.current.delete(taskId);
+      }
+    }
+  }
+
+  function leaveCliView() {
+    const current = activeTerminalRef.current;
+    if (current) stopTerminalSession(current.sessionId);
+    preferredTerminalByTaskRef.current.delete(task.id);
+    setActiveTerminal(null);
+  }
+
+  function openTerminalView(terminal: ActiveCliTerminal) {
+    preferredTerminalByTaskRef.current.set(task.id, terminal);
+    setToolbarOpen(false);
+    setCommentComposerOpen(false);
+    setActivityOpen(false);
+    setCliPickerOpen(false);
+    setActiveTerminal(terminal);
+  }
+
+  async function showTaskTerminal(tool: AiCliTool | null = task.cli_assignee) {
+    if (!tool || !desktopAiAvailable) return;
+    const description = editorRef.current?.getMarkdown() ?? task.description;
+    await editorRef.current?.flush().catch(() => undefined);
+    const sessionId = taskTerminalSessionKey(task.id);
+    startedTerminalsRef.current.set(sessionId, tool);
+    trackAiTerminalSession(task.id, sessionId);
+    openTerminalView({
+      sessionId,
+      tool,
+      targetLabel: `待办：${task.title}`,
+      prompt: buildTaskCliPrompt({ ...task, description }),
+    });
+  }
+
+  async function showSubtaskTerminal(subtask: Subtask) {
+    if (!subtask.cli_assignee || !desktopAiAvailable) return;
+    const description = editorRef.current?.getMarkdown() ?? task.description;
+    await editorRef.current?.flush().catch(() => undefined);
+    const sessionId = subtaskTerminalSessionKey(subtask.id);
+    startedTerminalsRef.current.set(sessionId, subtask.cli_assignee);
+    trackAiTerminalSession(task.id, sessionId);
+    openTerminalView({
+      sessionId,
+      tool: subtask.cli_assignee,
+      targetLabel: `子任务：${subtask.title}`,
+      prompt: buildSubtaskCliPrompt({ ...task, description }, subtask),
+    });
+  }
+
+  async function handleAssign(target: AssigneeTarget) {
+    await onAssign(target);
+    if (target.kind === "cli") {
+      await showTaskTerminal(target.tool);
+    }
+  }
+
+  async function handleAssignSubtask(subtaskId: string, target: AssigneeTarget) {
+    await onAssignSubtask(subtaskId, target);
+    if (target.kind !== "cli") return;
+    const subtask = task.subtasks.find((item) => item.id === subtaskId);
+    if (!subtask) return;
+    await showSubtaskTerminal({ ...subtask, cli_assignee: target.tool });
+  }
+
   async function closeDetail() {
     if (closingRef.current) return;
     closingRef.current = true;
@@ -865,6 +1103,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       await onUpdate({ title: draftTitle }).catch(() => undefined);
     }
     await editorRef.current?.flush().catch(() => undefined);
+    // Closing the panel while the CLI view is open counts as leaving the view.
+    if (activeTerminalRef.current) leaveCliView();
     onClose();
   }
 
@@ -880,6 +1120,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           type="button"
           disabled={!writable}
           aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
+          style={{
+            "--priority-color": getPriorityOption(task.priority).color,
+          } as CSSProperties}
           onClick={() => void onUpdate({
             status: task.status === "completed" ? "open" : "completed",
             completed_at: task.status === "completed" ? null : new Date().toISOString(),
@@ -894,8 +1137,31 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     <button type="button" onClick={() => void closeDetail()} aria-label="关闭详情"><X /></button>
   );
 
+  const aiWorkConfigured = isAiWorkConfigured(aiWorkSettings);
+  const cliTools = aiWorkSettings.cli_tools;
+  const settingsTitle = settingsLabelName?.trim()
+    || bundle.labels.find((label) => task.label_ids.includes(label.id))?.name
+    || "设置 AI 助理";
+  const cliTerminalLabel = activeTerminal
+    ? "显示待办内容"
+    : !aiWorkConfigured
+      ? "设置 AI 助理"
+      : !task.cli_assignee
+        ? "选择 CLI 并打开终端"
+        : `打开 ${aiCliLabel(task.cli_assignee)} 终端`;
+
+  async function assignCliAndOpenTerminal(tool: AiCliTool) {
+    setCliPickerOpen(false);
+    await handleAssign({ kind: "cli", tool });
+  }
+
   return (
-    <div className={clsx("task-detail", `task-detail-${presentation}`, immersive && "rich-editor-immersive")}>
+    <div className={clsx(
+      "task-detail",
+      `task-detail-${presentation}`,
+      immersive && "rich-editor-immersive",
+      activeTerminal && "task-detail-cli",
+    )}>
       <header className="detail-toolbar">
         {toolbarLeading}
         {presentation === "panel" && task.kind === "note" && (
@@ -909,14 +1175,69 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           onSave={onSaveSchedule}
         />
         <div className="detail-toolbar-spacer" />
-        <TaskAssigneeControl
-          task={task}
-          bundle={bundle}
-          currentUserId={currentUserId}
-          online={writable}
-          onLoad={onLoadAssignees}
-          onAssign={onAssign}
-        />
+        {task.kind !== "note" && (
+          <TaskAssigneeControl
+            task={task}
+            bundle={bundle}
+            currentUserId={currentUserId}
+            aiWorkSettings={aiWorkSettings}
+            online={writable}
+            onLoad={onLoadAssignees}
+            onAssign={handleAssign}
+          />
+        )}
+        {task.kind !== "note" && desktopAiAvailable && (
+          <div className="detail-terminal-control" ref={cliPickerRef}>
+            <button
+              className={clsx(
+                "detail-terminal-trigger",
+                (activeTerminal || cliPickerOpen) && "active",
+              )}
+              type="button"
+              title={cliTerminalLabel}
+              aria-label={cliTerminalLabel}
+              aria-pressed={Boolean(activeTerminal)}
+              aria-haspopup={aiWorkConfigured && !task.cli_assignee ? "menu" : undefined}
+              aria-expanded={aiWorkConfigured && !task.cli_assignee ? cliPickerOpen : undefined}
+              onClick={() => {
+                if (activeTerminal) {
+                  leaveCliView();
+                  return;
+                }
+                if (!aiWorkConfigured) {
+                  requestAiWorkSettings({ title: settingsTitle });
+                  return;
+                }
+                if (!task.cli_assignee) {
+                  if (cliTools.length === 1) {
+                    void assignCliAndOpenTerminal(cliTools[0]);
+                    return;
+                  }
+                  setCliPickerOpen((open) => !open);
+                  return;
+                }
+                void showTaskTerminal();
+              }}
+            >
+              <SquareTerminal />
+            </button>
+            {cliPickerOpen && !task.cli_assignee && cliTools.length > 0 && (
+              <div className="detail-cli-picker" role="menu" aria-label="选择 CLI">
+                {cliTools.map((tool) => (
+                  <button
+                    key={tool}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void assignCliAndOpenTerminal(tool)}
+                  >
+                    <SquareTerminal />
+                    <span>{aiCliLabel(tool)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {task.kind !== "note" && (
           <PriorityControl
             priority={task.priority}
@@ -929,37 +1250,40 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           online={writable}
           onUpdate={onUpdate}
           onShowActivity={() => {
+            leaveCliView();
+            setCliPickerOpen(false);
             setCommentComposerOpen(false);
             setActivityOpen(true);
           }}
         />
       </header>
       <div className="detail-body">
-        <div className="detail-caption">
-          <textarea
-            className="detail-title"
-            value={draftTitle}
-            disabled={!writable}
-            aria-label={task.kind === "note" ? "笔记标题" : "任务标题"}
-            onChange={(event) => {
-              setDraftTitle(event.target.value);
-              scheduleSave({ title: event.target.value });
-            }}
-            rows={2}
+        {!activeTerminal && (
+          <div className="detail-caption">
+            <textarea
+              className="detail-title"
+              value={draftTitle}
+              disabled={!writable}
+              aria-label={task.kind === "note" ? "笔记标题" : "任务标题"}
+              onChange={(event) => {
+                setDraftTitle(event.target.value);
+                scheduleSave({ title: event.target.value });
+              }}
+              rows={2}
+            />
+          </div>
+        )}
+        {activeTerminal ? (
+          <TaskCliTerminal
+            taskId={task.id}
+            sessionId={activeTerminal.sessionId}
+            tool={activeTerminal.tool}
+            cwd={aiWorkSettings.default_working_path ?? ""}
+            prompt={activeTerminal.prompt}
+            targetLabel={activeTerminal.targetLabel}
           />
-          {task.kind !== "note" && (
-            <button
-              className={clsx("switch-mode", subtasksOpen && "active")}
-              type="button"
-              title={subtasksOpen ? "收起子任务" : "展开子任务"}
-              aria-label={subtasksOpen ? "收起子任务" : "展开子任务"}
-              aria-expanded={subtasksOpen}
-              onClick={() => setSubtasksOpen((open) => !open)}
-            >
-              <ListTodo />
-            </button>
-          )}
-        </div>
+        ) : (
+          <>
         <TaskRichTextEditor
           key={task.id}
           ref={editorRef}
@@ -973,7 +1297,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           toolbarHost={toolbarHost}
           toolbarOpen={toolbarOpen}
         />
-        {task.kind !== "note" && subtasksOpen && (
+        {task.kind !== "note" && (
           <section className="detail-section">
             <div className="detail-section-title">
               <span>子任务</span>
@@ -995,10 +1319,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     task={task}
                     bundle={bundle}
                     currentUserId={currentUserId}
+                    aiWorkSettings={aiWorkSettings}
                     online={writable}
                     onLoad={onLoadAssignees}
-                    onAssign={(assigneeId) => onUpdateSubtask(subtask.id, { assignee_id: assigneeId })}
-                    assigneeId={subtask.assignee_id}
+                    onAssign={(target) => handleAssignSubtask(subtask.id, target)}
+                    target={subtaskAssigneeTarget(subtask)}
                     compact
                   />
                   <SubtaskDueDateControl
@@ -1006,6 +1331,17 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     online={writable}
                     onSave={(dueAt) => onUpdateSubtask(subtask.id, { due_at: dueAt })}
                   />
+                  {desktopAiAvailable && subtask.cli_assignee && (
+                    <button
+                      type="button"
+                      className="subtask-terminal-trigger"
+                      aria-label={`打开 ${aiCliLabel(subtask.cli_assignee)} 终端：${subtask.title}`}
+                      title={`打开 ${aiCliLabel(subtask.cli_assignee)} 终端`}
+                      onClick={() => void showSubtaskTerminal(subtask)}
+                    >
+                      <SquareTerminal />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="subtask-delete"
@@ -1048,8 +1384,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             onClose={() => setActivityOpen(false)}
           />
         )}
+          </>
+        )}
       </div>
-      {!immersive && !activityOpen && (comments.length > 0 || commentComposerOpen) && (
+      {!activeTerminal && !immersive && !activityOpen && (comments.length > 0 || commentComposerOpen) && (
         <TaskComments
           task={task}
           comments={comments}
@@ -1073,7 +1411,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           }}
         />
       )}
-      <div ref={setToolbarHost} className={clsx("detail-editor-toolbar-dock", toolbarOpen && "open")} />
+      <div
+        ref={setToolbarHost}
+        className={clsx("detail-editor-toolbar-dock", !activeTerminal && toolbarOpen && "open")}
+      />
       <footer className="detail-footer">
         <TaskLabelControl
           task={task}
@@ -1089,6 +1430,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           onLoadAssignees={onLoadAssignees}
           onToggleParticipant={onToggleParticipant}
         />
+        {!activeTerminal && (
+          <>
         <button
           className={clsx("detail-text-style-trigger", toolbarOpen && "active")}
           type="button"
@@ -1113,14 +1456,18 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         >
           <MessageCircle />
         </button>
+          </>
+        )}
         <button
           type="button"
-          title="移至垃圾桶"
-          aria-label="移至垃圾桶"
+          title={task.deleted_at ? "还原" : "移至回收站"}
+          aria-label={task.deleted_at ? "还原" : "移至回收站"}
           disabled={!writable}
-          onClick={() => void onUpdate({ deleted_at: new Date().toISOString() })}
+          onClick={() => void onUpdate({
+            deleted_at: task.deleted_at ? null : new Date().toISOString(),
+          })}
         >
-          <Trash2 />
+          {task.deleted_at ? <RotateCcw /> : <Trash2 />}
         </button>
       </footer>
     </div>
@@ -1143,13 +1490,13 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             if (document.querySelector(
-              ".due-popover, .task-detail-dialog .priority-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-more-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
+              ".due-popover, .priority-menu, .task-more-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
             )) return;
             void contentRef.current?.close();
           }}
           onPointerDownOutside={(event) => {
             const target = event.target as HTMLElement | null;
-            if (target?.closest(".due-popover")) {
+            if (target?.closest(".due-popover, .priority-menu, .task-more-menu")) {
               event.preventDefault();
               return;
             }
@@ -1158,11 +1505,15 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
           }}
           onFocusOutside={(event) => {
             const target = event.target as HTMLElement | null;
-            if (target?.closest(".due-popover")) event.preventDefault();
+            if (target?.closest(".due-popover, .priority-menu, .task-more-menu")) {
+              event.preventDefault();
+            }
           }}
           onInteractOutside={(event) => {
             const target = event.target as HTMLElement | null;
-            if (target?.closest(".due-popover")) event.preventDefault();
+            if (target?.closest(".due-popover, .priority-menu, .task-more-menu")) {
+              event.preventDefault();
+            }
           }}
         >
           <Dialog.Title className="sr-only">

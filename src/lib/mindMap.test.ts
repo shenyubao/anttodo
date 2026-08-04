@@ -32,6 +32,7 @@ function task(overrides: Partial<Task> = {}): Task {
     participant_ids: [],
     subtasks: [],
     ...overrides,
+    cli_assignee: overrides.cli_assignee ?? null,
     kind: overrides.kind ?? "todo",
     reminders: overrides.reminders ?? [],
     reminder_persistent: overrides.reminder_persistent ?? false,

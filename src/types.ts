@@ -7,6 +7,12 @@ export type LabelPermissionLevel = 1 | 2;
 export type TaskStatus = "open" | "completed" | "cancelled";
 export type TaskPriority = "none" | "low" | "medium" | "high";
 export type TaskKind = "todo" | "note";
+export type AiCliTool = "codex" | "claude";
+export type AssigneeTarget =
+  | { kind: "none" }
+  | { kind: "user"; userId: string }
+  | { kind: "cli"; tool: AiCliTool };
+export type TaskViewMode = "list" | "kanban";
 export type ReminderAnchor = "start" | "end";
 export type ReminderUnit = "minute" | "hour" | "day" | "week";
 export type ConnectorType = "mock" | "yunxiao" | "dingtalk";
@@ -39,6 +45,15 @@ export type DateTimePreferences = {
   showWeekNumbers: boolean;
   showHolidayAdjustments: boolean;
   timeZoneEnabled: boolean;
+};
+
+export type AiWorkSettings = {
+  user_id: string;
+  workspace_id: string;
+  cli_tools: AiCliTool[];
+  default_working_path: string | null;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type Profile = {
@@ -148,6 +163,7 @@ export type Subtask = {
   position: number;
   due_at: string | null;
   assignee_id: string | null;
+  cli_assignee: AiCliTool | null;
   created_by: string | null;
 };
 
@@ -196,6 +212,7 @@ export type Task = {
   due_timezone: string | null;
   recurrence: TaskRecurrence | null;
   assignee_id: string | null;
+  cli_assignee: AiCliTool | null;
   created_by: string;
   completed_at: string | null;
   deleted_at: string | null;
@@ -302,6 +319,7 @@ export type TaskListPreference = {
   direction: SortDirection;
   show_labels: boolean;
   show_completed: boolean;
+  view_mode: TaskViewMode;
   updated_at?: string;
 };
 

@@ -129,6 +129,10 @@ export function DueDateControl({
   now,
   preferences,
   onSave,
+  autoOpen = false,
+  showTrigger = true,
+  anchorPoint,
+  onClose,
 }: {
   task: Task;
   online: boolean;
@@ -141,8 +145,17 @@ export function DueDateControl({
     >,
     schedule: ReminderSchedule,
   ) => Promise<void>;
+  autoOpen?: boolean;
+  showTrigger?: boolean;
+  anchorPoint?: { left: number; top: number };
+  onClose?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(autoOpen);
+
+  function setPopoverOpen(next: boolean) {
+    setOpen(next);
+    if (!next) onClose?.();
+  }
   const [tab, setTab] = useState<"point" | "range">("point");
   const [pointDate, setPointDate] = useState("");
   const [pointTime, setPointTime] = useState("");
@@ -231,18 +244,22 @@ export function DueDateControl({
   ]);
 
   useEffect(() => {
+    if (autoOpen) setOpen(true);
+  }, [autoOpen, task.id]);
+
+  useEffect(() => {
     if (!open) return;
     const closeOnOutside = (event: PointerEvent) => {
       const target = event.target as Node;
       if (rootRef.current?.contains(target) || popoverRef.current?.contains(target)) {
         return;
       }
-      setOpen(false);
+      setPopoverOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation();
-        setOpen(false);
+        setPopoverOpen(false);
         triggerRef.current?.focus();
       }
     };
@@ -255,14 +272,27 @@ export function DueDateControl({
   }, [open]);
 
   useLayoutEffect(() => {
-    if (!open || !triggerRef.current || !popoverRef.current) return;
+    if (!open || !popoverRef.current) return;
+    if (!triggerRef.current && !anchorPoint) return;
     const positionPopover = () => {
-      const trigger = triggerRef.current!.getBoundingClientRect();
       const popover = popoverRef.current!;
       const gap = 8;
       const inset = 12;
       const width = Math.min(260, window.innerWidth - inset * 2);
       const height = popover.offsetHeight;
+      if (anchorPoint && !triggerRef.current) {
+        const left = Math.min(
+          Math.max(anchorPoint.left, inset),
+          Math.max(inset, window.innerWidth - width - inset),
+        );
+        const top = Math.min(
+          Math.max(anchorPoint.top, inset),
+          Math.max(inset, window.innerHeight - height - inset),
+        );
+        setPosition({ width, left, top });
+        return;
+      }
+      const trigger = triggerRef.current!.getBoundingClientRect();
       const left = Math.min(
         Math.max(trigger.left, inset),
         Math.max(inset, window.innerWidth - width - inset),
@@ -276,7 +306,18 @@ export function DueDateControl({
     positionPopover();
     window.addEventListener("resize", positionPopover);
     return () => window.removeEventListener("resize", positionPopover);
-  }, [open, tab, allDay, pointHasTime, reminderOpen, repeatOpen, customOpen, error]);
+  }, [
+    open,
+    tab,
+    allDay,
+    pointHasTime,
+    reminderOpen,
+    repeatOpen,
+    customOpen,
+    error,
+    anchorPoint?.left,
+    anchorPoint?.top,
+  ]);
 
   const dueFields: DueFields = {
     due_at: task.due_at,
@@ -495,7 +536,7 @@ export function DueDateControl({
         setError("部分提醒时间已过期，规则已保留但不会补发，请调整日期或提醒");
         return;
       }
-      setOpen(false);
+      setPopoverOpen(false);
     } finally {
       setBusy(false);
     }
@@ -510,7 +551,7 @@ export function DueDateControl({
         due_is_all_day: false,
         due_timezone: null,
       }, { reminders: [], persistent: false, recurrence: null });
-      setOpen(false);
+      setPopoverOpen(false);
     } finally {
       setBusy(false);
     }
@@ -518,20 +559,22 @@ export function DueDateControl({
 
   return (
     <div className="detail-due-control" ref={rootRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={status?.overdue ? "detail-due-trigger overdue" : "detail-due-trigger"}
-        aria-label="设置到期时间"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        disabled={!online}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <CalendarDays />
-        <span>{formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}</span>
-        {status && <em>{status.label}</em>}
-      </button>
+      {showTrigger && (
+        <button
+          ref={triggerRef}
+          type="button"
+          className={status?.overdue ? "detail-due-trigger overdue" : "detail-due-trigger"}
+          aria-label="设置到期时间"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          disabled={!online}
+          onClick={() => setPopoverOpen(!open)}
+        >
+          <CalendarDays />
+          <span>{formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}</span>
+          {status && <em>{status.label}</em>}
+        </button>
+      )}
       {open && createPortal(
         <div
           ref={popoverRef}

@@ -20,6 +20,7 @@ import type {
   TaskActivityEvent,
   TaskActivityPage,
 } from "./types";
+import { aiCliLabel } from "./lib/aiWork";
 
 type ActivityTone = "create" | "edit" | "complete" | "delete" | "assign" | "label";
 
@@ -73,7 +74,7 @@ function changedFieldPresentation(
 ): Omit<TaskActivityPresentation, "icon" | "tone"> {
   if (changes.deleted_at) {
     return changes.deleted_at.after
-      ? { action: "移入了垃圾桶", detail: "" }
+      ? { action: "移入了回收站", detail: "" }
       : { action: "恢复了任务", detail: "" };
   }
   if (changes.status) {
@@ -121,9 +122,12 @@ export function taskActivityPresentation(
     };
   }
   if (event.event_type === "task.assignee_changed") {
+    const cli = event.payload.cli_assignee;
     return {
       action: "修改了负责人",
-      detail: memberName(event.payload.assignee_id, members),
+      detail: cli === "codex" || cli === "claude"
+        ? aiCliLabel(cli)
+        : memberName(event.payload.assignee_id, members),
       tone: "assign",
       icon: <UserRound />,
     };
@@ -153,10 +157,31 @@ export function taskActivityPresentation(
   if (event.event_type === "task.subtask_updated") {
     const changes = record(event.payload.changes) as Record<string, Change>;
     const completed = changes.completed?.after;
+    if (changes.cli_assignee?.after === "codex" || changes.cli_assignee?.after === "claude") {
+      const tool = changes.cli_assignee.after;
+      return {
+        action: "修改了子任务负责人",
+        detail: `${String(event.payload.title ?? "")} · ${aiCliLabel(tool)}`,
+        tone: "assign",
+        icon: <UserRound />,
+      };
+    }
     if (changes.assignee_id) {
       return {
         action: "修改了子任务负责人",
         detail: `${String(event.payload.title ?? "")} · ${memberName(changes.assignee_id.after, members)}`,
+        tone: "assign",
+        icon: <UserRound />,
+      };
+    }
+    if (changes.cli_assignee) {
+      const value = changes.cli_assignee as { after?: unknown };
+      const tool = value.after;
+      return {
+        action: "修改了子任务负责人",
+        detail: `${String(event.payload.title ?? "")} · ${
+          tool === "codex" || tool === "claude" ? aiCliLabel(tool) : "未指派"
+        }`,
         tone: "assign",
         icon: <UserRound />,
       };
@@ -184,7 +209,7 @@ export function taskActivityPresentation(
   if (event.event_type === "task.updated") {
     const presentation = changedFieldPresentation(changeMap(event), preferences);
     const isComplete = presentation.action === "完成了任务";
-    const isDelete = presentation.action === "移入了垃圾桶" || presentation.action === "放弃了任务";
+    const isDelete = presentation.action === "移入了回收站" || presentation.action === "放弃了任务";
     return {
       ...presentation,
       tone: isComplete ? "complete" : isDelete ? "delete" : "edit",

@@ -154,8 +154,9 @@ export function TaskComments({
     if (!list) return;
     const rows = [...list.querySelectorAll<HTMLElement>(":scope > .comment-row")];
     const updateHeight = () => {
+      list.style.removeProperty("--comments-list-height");
       const firstFiveHeight = rows.slice(0, 5).reduce(
-        (height, row) => height + row.getBoundingClientRect().height,
+        (height, row) => height + row.offsetHeight,
         8,
       );
       list.style.setProperty("--comments-list-height", `${Math.ceil(firstFiveHeight)}px`);

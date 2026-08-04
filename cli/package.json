@@ -1,0 +1,42 @@
+{
+  "name": "@anttodo/cli",
+  "version": "0.1.0",
+  "description": "Command-line client for AntTodo",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "anttodo": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:integration": "pnpm build && node scripts/local-integration.mjs",
+    "test:browser": "node scripts/local-browser-test.mjs",
+    "pack:check": "pnpm pack --dry-run"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.110.8",
+    "commander": "14.0.1",
+    "open": "10.2.0",
+    "qrcode": "1.5.4",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "@types/qrcode": "1.5.5",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

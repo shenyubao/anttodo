@@ -15,5 +15,5 @@ pnpm deploy:landing
 `app.anttodo.com/auth/session-bridge` 获取不含用户信息的布尔登录状态。
 
 Mac 版本信息由官网 Worker 的 `/api/downloads/macos` 同源代理读取，源清单为
-`https://download.anttodo.com/macos/latest.json`；读取失败时页面会回退到稳定的
+`https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/latest.json`；读取失败时页面会回退到稳定的
 Apple Silicon 与 Intel 下载地址，并隐藏版本号。

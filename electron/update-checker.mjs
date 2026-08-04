@@ -1,5 +1,6 @@
-export const UPDATE_MANIFEST_URL = "https://download.anttodo.com/macos/latest.json";
-export const DOWNLOAD_HOST = "download.anttodo.com";
+export const UPDATE_MANIFEST_URL =
+  "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/latest.json";
+export const DOWNLOAD_HOST = "anttodo-yuce.oss-cn-hangzhou.aliyuncs.com";
 
 /**
  * @param {unknown} value

@@ -33,5 +33,30 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
     getAppVersion: () => ipcRenderer.invoke("anttodo:app-version"),
     check: () => ipcRenderer.invoke("anttodo:check-for-update"),
     openDownload: (url) => ipcRenderer.invoke("anttodo:open-download-url", url)
+  }),
+  aiWork: Object.freeze({
+    selectDirectory: () => ipcRenderer.invoke("anttodo:ai-select-directory"),
+    terminal: Object.freeze({
+      start: (input) => ipcRenderer.invoke("anttodo:ai-terminal-start", input),
+      write: (sessionId, data) =>
+        ipcRenderer.invoke("anttodo:ai-terminal-write", sessionId, data),
+      resize: (sessionId, cols, rows) =>
+        ipcRenderer.invoke("anttodo:ai-terminal-resize", sessionId, cols, rows),
+      stop: (sessionId) => ipcRenderer.invoke("anttodo:ai-terminal-stop", sessionId),
+      onData: (sessionId, listener) => {
+        const handler = (_event, payload) => {
+          if (payload?.sessionId === sessionId) listener(payload.data);
+        };
+        ipcRenderer.on("anttodo:ai-terminal-data", handler);
+        return () => ipcRenderer.removeListener("anttodo:ai-terminal-data", handler);
+      },
+      onExit: (sessionId, listener) => {
+        const handler = (_event, payload) => {
+          if (payload?.sessionId === sessionId) listener(payload);
+        };
+        ipcRenderer.on("anttodo:ai-terminal-exit", handler);
+        return () => ipcRenderer.removeListener("anttodo:ai-terminal-exit", handler);
+      }
+    })
   })
 });

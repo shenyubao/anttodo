@@ -1,5 +1,6 @@
 packages:
   - "."
+  - "cli"
   - "docs"
   - "landing"
 allowBuilds:
@@ -7,6 +8,7 @@ allowBuilds:
   core-js: true
   electron-winstaller: false
   esbuild: true
+  node-pty: true
   sharp: true
   workerd: true
 minimumReleaseAgeExclude:

@@ -104,6 +104,7 @@ const task = (
   due_timezone: null,
   recurrence: null,
   assignee_id: userId,
+  cli_assignee: null,
   created_by: userId,
   completed_at: null,
   deleted_at: null,
@@ -133,6 +134,7 @@ const tasks: Task[] = [
         position: 0,
         due_at: null,
         assignee_id: userId,
+        cli_assignee: null,
         created_by: userId,
       },
       {
@@ -143,6 +145,7 @@ const tasks: Task[] = [
         position: 1,
         due_at: addDays(now, 1).toISOString(),
         assignee_id: "demo-member",
+        cli_assignee: null,
         created_by: userId,
       },
     ],

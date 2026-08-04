@@ -25,6 +25,7 @@ function task(id: string, title: string, patch: Partial<Task> = {}): Task {
     participant_ids: [],
     subtasks: [],
     ...patch,
+    cli_assignee: patch.cli_assignee ?? null,
     kind: patch.kind ?? "todo",
     reminders: patch.reminders ?? [],
     reminder_persistent: patch.reminder_persistent ?? false,

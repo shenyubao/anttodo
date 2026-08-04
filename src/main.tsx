@@ -1,11 +1,26 @@
+import "./instrument";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import * as Sentry from "@sentry/react";
 import { Capacitor } from "@capacitor/core";
 import { queryPersister } from "./lib/persistence";
+import {
+  applyThemePreference,
+  loadThemePreference,
+  subscribeSystemTheme,
+} from "./lib/themePreference";
 import App from "./App";
 import "./index.css";
+
+applyThemePreference(loadThemePreference());
+subscribeSystemTheme(() => {
+  const preference = loadThemePreference();
+  if (preference.followSystem) {
+    applyThemePreference(preference);
+  }
+});
 
 if (window.anttodoDesktop) {
   document.body.classList.add("is-electron");
@@ -32,7 +47,13 @@ const queryClient = new QueryClient({
   },
 });
 
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("root")!, {
+  onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
+    console.warn("Uncaught error", error, errorInfo.componentStack);
+  }),
+  onCaughtError: Sentry.reactErrorHandler(),
+  onRecoverableError: Sentry.reactErrorHandler(),
+}).render(
   <StrictMode>
     <PersistQueryClientProvider
       client={queryClient}

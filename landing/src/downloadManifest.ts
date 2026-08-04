@@ -1,8 +1,10 @@
 export const MAC_DOWNLOAD_MANIFEST = "/api/downloads/macos";
 
 export const FALLBACK_MAC_DOWNLOADS = {
-  arm64: "https://download.anttodo.com/macos/AntTodo-arm64-latest.dmg",
-  x64: "https://download.anttodo.com/macos/AntTodo-x64-latest.dmg",
+  arm64:
+    "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/AntTodo-arm64-latest.dmg",
+  x64:
+    "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/AntTodo-x64-latest.dmg",
 } as const;
 
 export type MacDownloads = {
@@ -15,7 +17,8 @@ function safeDownloadUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "download.anttodo.com"
+    return url.protocol === "https:"
+        && url.hostname === "anttodo-yuce.oss-cn-hangzhou.aliyuncs.com"
       ? url.toString()
       : null;
   } catch {

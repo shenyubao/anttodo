@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import type { TaskPriority } from "./types";
 
 export const PRIORITY_OPTIONS: ReadonlyArray<{
@@ -46,13 +47,16 @@ export function PriorityControl({
   useEffect(() => {
     if (!open) return;
     const closeOnOutside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-        setError("");
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
       }
+      setOpen(false);
+      setError("");
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.stopPropagation();
         setOpen(false);
         setError("");
         triggerRef.current?.focus();
@@ -148,7 +152,7 @@ export function PriorityControl({
       >
         <Flag />
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={menuRef}
           className="priority-menu"
@@ -177,7 +181,8 @@ export function PriorityControl({
             </button>
           ))}
           {error && <p className="priority-error" role="alert">{error}</p>}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

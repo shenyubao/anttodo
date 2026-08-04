@@ -3,9 +3,13 @@ import { appRoutePath, parseAppRoute, type AppRoute } from "./appRoute";
 
 describe("application routes", () => {
   const routes: AppRoute[] = [
-    { workspaceId: "workspace-1", kind: "view", view: "all" },
-    { workspaceId: "workspace-1", kind: "view", view: "today" },
-    { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发" },
+    { workspaceId: "workspace-1", kind: "view", view: "all", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "all", mode: "kanban" },
+    { workspaceId: "workspace-1", kind: "view", view: "today", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "today", mode: "kanban" },
+    { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },
+    { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "list" },
+    { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "task", taskId: "task-1", itemKind: "task" },
     { workspaceId: "workspace-1", kind: "task", taskId: "note-1", itemKind: "note" },
     { workspaceId: "workspace-1", kind: "calendar" },
@@ -20,5 +24,17 @@ describe("application routes", () => {
     expect(parseAppRoute("/team/acme")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/tags")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/views/unknown")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/tasks/timeline")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/views/today/timeline")).toBeNull();
+  });
+
+  it("keeps legacy task-list URLs in list mode and normalizes trash", () => {
+    expect(parseAppRoute("/workspaces/workspace-1/tasks")).toMatchObject({ mode: "list" });
+    expect(parseAppRoute("/workspaces/workspace-1/views/trash/kanban")).toEqual({
+      workspaceId: "workspace-1",
+      kind: "view",
+      view: "trash",
+      mode: "list",
+    });
   });
 });

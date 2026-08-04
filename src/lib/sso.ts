@@ -156,6 +156,16 @@ export function dingtalkOAuthAuthorizeUrl(input: {
   return url.toString();
 }
 
+export function dingtalkFrameLoginUrl(input: {
+  redirectUri: string;
+  clientId: string;
+  state: string;
+}) {
+  const url = new URL(dingtalkOAuthAuthorizeUrl(input));
+  url.searchParams.set("iframe", "true");
+  return url.toString();
+}
+
 export function dingtalkDesktopCallbackUrl(handoffCode: string) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(handoffCode)) return null;
   const url = new URL("anttodo://auth/callback");

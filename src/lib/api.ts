@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  AiWorkSettings,
+  AssigneeTarget,
   AppNotification,
   Connector,
   DateTimePreferences,
@@ -13,6 +15,7 @@ import type {
   SyncConflict,
   SyncRun,
   Task,
+  TaskReminder,
   TaskActivityEvent,
   TaskActivityPage,
   TaskComment,
@@ -311,16 +314,28 @@ export async function markAllNotificationsRead(
   assertNoError(error);
 }
 
-export async function loadWorkspaces(client: SupabaseClient): Promise<Workspace[]> {
+export async function loadWorkspaces(
+  client: SupabaseClient,
+  userId: string,
+): Promise<Workspace[]> {
+  // RLS lets members read every row in their workspaces; filter to the current
+  // user so the switcher is one entry per joined team, not one per teammate.
   const { data: memberships, error } = await client
     .from("workspace_members")
     .select("role, workspaces(*)")
+    .eq("user_id", userId)
     .order("joined_at", { ascending: true });
   assertNoError(error);
-  return (memberships ?? []).flatMap((membership) => {
+
+  const seen = new Set<string>();
+  const workspaces: Workspace[] = [];
+  for (const membership of memberships ?? []) {
     const workspace = membership.workspaces as unknown as Workspace | null;
-    return workspace ? [{ ...workspace, role: membership.role }] : [];
-  });
+    if (!workspace || seen.has(workspace.id)) continue;
+    seen.add(workspace.id);
+    workspaces.push({ ...workspace, role: membership.role });
+  }
+  return workspaces;
 }
 
 export async function loadUserQuota(
@@ -347,6 +362,45 @@ export async function loadDateTimePreferences(
     .maybeSingle();
   assertNoError(error);
   return preferenceRowToModel(data);
+}
+
+export async function loadAiWorkSettings(
+  client: SupabaseClient,
+  userId: string,
+  workspaceId: string,
+): Promise<AiWorkSettings> {
+  const { data, error } = await client
+    .from("user_ai_work_settings")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  assertNoError(error);
+  return (data as AiWorkSettings | null) ?? {
+    user_id: userId,
+    workspace_id: workspaceId,
+    cli_tools: [],
+    default_working_path: null,
+  };
+}
+
+export async function saveAiWorkSettings(
+  client: SupabaseClient,
+  settings: AiWorkSettings,
+) {
+  const { data, error } = await client
+    .from("user_ai_work_settings")
+    .upsert({
+      user_id: settings.user_id,
+      workspace_id: settings.workspace_id,
+      cli_tools: settings.cli_tools,
+      default_working_path: settings.default_working_path,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id,workspace_id" })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as AiWorkSettings;
 }
 
 export async function saveDateTimePreferences(
@@ -390,7 +444,7 @@ export async function loadWorkspaceBundle(
       .from("tasks")
       .select("*, task_labels(label_id), task_participants(user_id), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
       .eq("workspace_id", workspaceId)
-      .is("deleted_at", null)
+      .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
       .order("created_at", { ascending: false }),
     client
       .from("connector_instances")
@@ -548,7 +602,7 @@ export async function saveTaskSchedule(
     p_recurrence: schedule.recurrence,
   });
   assertNoError(error);
-  return data;
+  return (data ?? []) as TaskReminder[];
 }
 
 export async function saveTaskListPreference(
@@ -743,7 +797,7 @@ export async function createTask(
     p_description: input.description ?? "",
     p_due_at: input.dueAt ?? null,
     p_due_timezone: input.dueTimezone ?? null,
-    p_priority: input.priority ?? "none",
+    p_priority: input.priority ?? "low",
     p_assignee_id: input.assigneeId ?? null,
     p_kind: input.kind ?? "todo",
   });
@@ -765,14 +819,29 @@ export async function listTaskAssigneeIds(
 export async function assignTask(
   client: SupabaseClient,
   taskId: string,
-  assigneeId: string | null,
+  target: AssigneeTarget,
 ) {
   const { data, error } = await client.rpc("assign_task", {
     p_task_id: taskId,
-    p_assignee_id: assigneeId,
+    p_assignee_id: target.kind === "user" ? target.userId : null,
+    p_cli_assignee: target.kind === "cli" ? target.tool : null,
   });
   assertNoError(error);
   return data as Task;
+}
+
+export async function assignSubtask(
+  client: SupabaseClient,
+  subtaskId: string,
+  target: AssigneeTarget,
+) {
+  const { data, error } = await client.rpc("assign_subtask", {
+    p_subtask_id: subtaskId,
+    p_assignee_id: target.kind === "user" ? target.userId : null,
+    p_cli_assignee: target.kind === "cli" ? target.tool : null,
+  });
+  assertNoError(error);
+  return data as import("../types").Subtask;
 }
 
 export async function toggleTaskLabel(

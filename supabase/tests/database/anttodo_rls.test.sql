@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(137);
+select plan(141);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -619,6 +619,9 @@ select is(
   'note'::public.task_kind,
   'unauthorized users cannot change an item type'
 );
+update public.tasks
+set kind = 'todo'
+where id = '40000000-0000-0000-0000-000000000001';
 select is(
   anttodo_private.label_permission_level_for_user(
     '30000000-0000-0000-0000-000000000002',
@@ -872,6 +875,17 @@ select is(
   false,
   'show_completed defaults to false for a newly saved preference'
 );
+select is(
+  (
+    select view_mode
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'list',
+  'view_mode defaults to list for a newly saved preference'
+);
 select lives_ok(
   $$
     update public.task_list_preferences
@@ -913,6 +927,39 @@ select is(
   ),
   true,
   'show_completed persists after update'
+);
+select lives_ok(
+  $$
+    update public.task_list_preferences
+    set view_mode = 'kanban'
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  'a user can update view_mode on their preference'
+);
+select is(
+  (
+    select view_mode
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'kanban',
+  'view_mode persists after update'
+);
+select throws_ok(
+  $$
+    update public.task_list_preferences
+    set view_mode = 'timeline'
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  '23514',
+  null,
+  'view_mode rejects unopened modes'
 );
 select lives_ok(
   $$

@@ -6,9 +6,9 @@ export default defineConfig({
   server: {
     proxy: {
       "/api/downloads/macos": {
-        target: "https://download.anttodo.com",
+        target: "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com",
         changeOrigin: true,
-        rewrite: () => "/macos/latest.json",
+        rewrite: () => "/release/macos/latest.json",
       },
     },
   },

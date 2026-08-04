@@ -75,6 +75,7 @@ const ATTACHMENT_ACCEPT = [
 
 export type TaskRichTextEditorHandle = {
   flush: () => Promise<void>;
+  getMarkdown: () => string;
   retry: () => Promise<void>;
 };
 
@@ -304,6 +305,7 @@ export const TaskRichTextEditor = forwardRef<
     forwardedRef,
     () => ({
       flush: () => queueRef.current?.flush() ?? Promise.resolve(),
+      getMarkdown: () => editorRef.current?.getMarkdown() ?? initialMarkdown,
       retry: () => queueRef.current?.retry() ?? Promise.resolve(),
     }),
     [],

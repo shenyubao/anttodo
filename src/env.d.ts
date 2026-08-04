@@ -4,6 +4,7 @@ interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL?: string;
   readonly VITE_SUPABASE_PUBLISHABLE_KEY?: string;
   readonly VITE_PUBLIC_APP_URL?: string;
+  readonly VITE_APP_VERSION?: string;
 }
 
 interface ImportMeta {
@@ -61,6 +62,32 @@ interface Window {
       getAppVersion: () => Promise<string>;
       check: () => Promise<DesktopUpdateCheckResult>;
       openDownload: (url: string) => Promise<boolean>;
+    };
+    aiWork: {
+      selectDirectory: () => Promise<string | null>;
+      terminal: {
+        start: (input: {
+          sessionId: string;
+          tool: "codex" | "claude";
+          cwd: string;
+          prompt: string;
+          cols: number;
+          rows: number;
+        }) => Promise<{
+          sessionId: string;
+          buffer: string;
+          running: boolean;
+          exitCode: number | null;
+        }>;
+        write: (sessionId: string, data: string) => Promise<boolean>;
+        resize: (sessionId: string, cols: number, rows: number) => Promise<boolean>;
+        stop: (sessionId: string) => Promise<boolean>;
+        onData: (sessionId: string, listener: (data: string) => void) => () => void;
+        onExit: (
+          sessionId: string,
+          listener: (event: { exitCode: number; signal: number }) => void,
+        ) => () => void;
+      };
     };
   };
 }

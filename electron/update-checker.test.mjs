@@ -9,13 +9,15 @@ import {
   safeDownloadUrl,
 } from "./update-checker.mjs";
 
-const arm64Url = "https://download.anttodo.com/macos/AntTodo-arm64-latest.dmg";
-const x64Url = "https://download.anttodo.com/macos/AntTodo-x64-latest.dmg";
+const arm64Url =
+  "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/AntTodo-arm64-latest.dmg";
+const x64Url =
+  "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/AntTodo-x64-latest.dmg";
 
 function sampleManifest(version = "1.2.3") {
   return {
     schemaVersion: 1,
-    product: "蚂蚁待办",
+    product: "蚂蚁清单",
     version,
     publishedAt: "2026-08-02T00:00:00.000Z",
     downloads: {
@@ -32,10 +34,10 @@ function sampleManifest(version = "1.2.3") {
 }
 
 describe("desktop update checker", () => {
-  it("allows only https download.anttodo.com urls", () => {
+  it("allows only https anttodo-yuce.oss-cn-hangzhou.aliyuncs.com urls", () => {
     expect(safeDownloadUrl(arm64Url)).toBe(arm64Url);
     expect(isAllowedDownloadUrl(arm64Url)).toBe(true);
-    expect(isAllowedDownloadUrl("http://download.anttodo.com/macos/x.dmg")).toBe(false);
+    expect(isAllowedDownloadUrl("http://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/x.dmg")).toBe(false);
     expect(isAllowedDownloadUrl("https://evil.example/macos/x.dmg")).toBe(false);
     expect(isAllowedDownloadUrl("not-a-url")).toBe(false);
   });
@@ -43,10 +45,12 @@ describe("desktop update checker", () => {
   it("parses and compares semver cores", () => {
     expect(parseVersionParts("1.2.3")).toEqual([1, 2, 3]);
     expect(parseVersionParts("1.2.3-beta.1")).toEqual([1, 2, 3]);
+    expect(parseVersionParts("1.0.202608031243")).toEqual([1, 0, 202608031243]);
     expect(parseVersionParts("1.2")).toBeNull();
     expect(compareVersions("1.2.3", "1.2.4")).toBeLessThan(0);
     expect(compareVersions("1.3.0", "1.2.9")).toBeGreaterThan(0);
     expect(compareVersions("1.2.3", "1.2.3-rc.1")).toBe(0);
+    expect(compareVersions("1.0.202608021000", "1.0.202608031243")).toBeLessThan(0);
   });
 
   it("resolves mac arch and picks the matching dmg", () => {

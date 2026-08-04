@@ -10,7 +10,7 @@ const SECURITY_HEADERS = {
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
-    "connect-src 'self' https://download.anttodo.com",
+    "connect-src 'self' https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com",
     "frame-src https://app.anttodo.com",
     "font-src 'self'",
     "base-uri 'self'",
@@ -42,9 +42,12 @@ export default {
     if (redirectUrl) return Response.redirect(redirectUrl, 308);
 
     if (url.pathname === "/api/downloads/macos") {
-      const manifest = await fetch("https://download.anttodo.com/macos/latest.json", {
-        headers: { Accept: "application/json" },
-      });
+      const manifest = await fetch(
+        "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/latest.json",
+        {
+          headers: { Accept: "application/json" },
+        },
+      );
       if (!manifest.ok) {
         return new Response(JSON.stringify({ error: "manifest_unavailable" }), {
           status: 502,

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Notification, powerMonitor, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Notification, powerMonitor, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,12 +13,21 @@ import {
   checkForDesktopUpdate,
   isAllowedDownloadUrl,
 } from "./update-checker.mjs";
+import { createAiTerminalManager } from "./ai-terminal.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const authCallbackQueue = createAuthCallbackQueue(5);
 let mainWindow = null;
 let isQuitting = false;
+
+const aiTerminalManager = createAiTerminalManager({
+  send: (ownerId, channel, payload) => {
+    const target = BrowserWindow.getAllWindows()
+      .find((window) => window.webContents.id === ownerId)?.webContents;
+    if (target && !target.isDestroyed()) target.send(channel, payload);
+  },
+});
 
 function restoreMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -152,6 +161,25 @@ ipcMain.handle("anttodo:open-download-url", async (_event, url) => {
   return true;
 });
 
+ipcMain.handle("anttodo:ai-select-directory", async (event) => {
+  const owner = windowForEvent(event);
+  if (!owner) return null;
+  const result = await dialog.showOpenDialog(owner, {
+    title: "选择 AI 助理默认工作路径",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
+ipcMain.handle("anttodo:ai-terminal-start", (event, input) =>
+  aiTerminalManager.start(event.sender.id, input));
+ipcMain.handle("anttodo:ai-terminal-write", (event, sessionId, data) =>
+  aiTerminalManager.write(sessionId, event.sender.id, data));
+ipcMain.handle("anttodo:ai-terminal-resize", (event, sessionId, cols, rows) =>
+  aiTerminalManager.resize(sessionId, event.sender.id, cols, rows));
+ipcMain.handle("anttodo:ai-terminal-stop", (event, sessionId) =>
+  aiTerminalManager.stop(sessionId, event.sender.id));
+
 function createWindow() {
   const isMac = process.platform === "darwin";
   const window = new BrowserWindow({
@@ -168,6 +196,7 @@ function createWindow() {
       sandbox: true
     }
   });
+  const webContentsId = window.webContents.id;
   mainWindow = window;
   window.on("close", (event) => {
     if (process.platform === "darwin" && !isQuitting) {
@@ -176,7 +205,11 @@ function createWindow() {
     }
   });
   window.on("closed", () => {
+    aiTerminalManager.stopOwner(webContentsId);
     if (mainWindow === window) mainWindow = null;
+  });
+  window.webContents.on("render-process-gone", () => {
+    aiTerminalManager.stopOwner(webContentsId);
   });
   window.webContents.on("did-finish-load", notifyAuthCallbackAvailable);
 
@@ -224,5 +257,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  for (const window of BrowserWindow.getAllWindows()) {
+    aiTerminalManager.stopOwner(window.webContents.id);
+  }
   reminderScheduler.dispose();
 });

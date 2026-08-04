@@ -1273,7 +1273,7 @@ function MindMapCanvas({
     if (!isTask && !isLabel) return;
     const itemName = node.data.task?.kind === "note" ? "笔记" : "任务";
     const confirmed = isTask
-      ? window.confirm(`删除${itemName}“${node.data.label}”？此操作会将${itemName}移入已删除。`)
+      ? window.confirm(`删除${itemName}“${node.data.label}”？此操作会将${itemName}移入回收站。`)
       : window.confirm(`确定删除标签“${node.data.label}”吗？其子标签也会被删除。`);
     if (!confirmed) return;
     setContextBusy(true);

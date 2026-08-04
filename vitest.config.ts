@@ -7,6 +7,7 @@ export default defineConfig({
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
       "electron/**/*.test.mjs",
+      "scripts/**/*.test.mjs",
     ],
     coverage: {
       reporter: ["text", "html"]

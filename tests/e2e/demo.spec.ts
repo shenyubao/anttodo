@@ -16,6 +16,61 @@ test("demo task flow and details drawer", async ({ page }) => {
   await expect(page.locator(".detail-title")).toHaveValue(demoTaskTitle);
 });
 
+test("task views switch per list and kanban supports column creation", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await expect(page.getByRole("menuitemradio", { name: "列表" }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("menuitem", { name: "时间线，暂未开放" })).toBeDisabled();
+  await page.getByRole("menuitemradio", { name: "看板" }).click();
+
+  await expect(page).toHaveURL(/\/tasks\/kanban$/);
+  const board = page.getByLabel("任务看板");
+  await expect(board).toBeVisible();
+  await expect(board.getByRole("heading", { name: "所有", exact: true })).toBeVisible();
+  await expect(board.getByRole("heading", { name: "笔记", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "今天" }).click();
+  await expect(page).toHaveURL(/\/views\/today$/);
+  await expect(page.getByLabel("任务看板")).toHaveCount(0);
+  await page.getByRole("button", { name: "所有" }).click();
+  await expect(page).toHaveURL(/\/tasks\/kanban$/);
+
+  await board.getByText(demoTaskTitle, { exact: true }).click();
+  await page.reload();
+  await page.getByRole("button", { name: "关闭详情" }).click();
+  await expect(page).toHaveURL(/\/tasks\/kanban$/);
+
+  await page.getByRole("button", { name: "在“笔记”中新建" }).click();
+  const noteInput = page.getByRole("textbox", { name: "添加任务至“笔记”" });
+  await noteInput.fill("看板快速笔记");
+  await noteInput.press("Enter");
+  const noteCard = page.locator(".kanban-card").filter({ hasText: "看板快速笔记" });
+  await expect(noteCard).toHaveCount(1);
+  await expect(noteCard.locator(".kanban-note-icon")).toBeVisible();
+  await noteCard.getByText("看板快速笔记", { exact: true }).click();
+  await expect(page.locator(".task-detail-panel").getByRole("textbox", { name: "笔记标题" }))
+    .toHaveValue("看板快速笔记");
+  await page.getByRole("button", { name: "关闭详情" }).click();
+
+  await page.getByRole("button", { name: "分组与排序" }).click();
+  await page.getByRole("menuitem", { name: "分组 无" }).click();
+  await page.getByRole("menu", { name: "分组方式" })
+    .getByRole("menuitemradio", { name: "优先级" })
+    .click();
+  const highPriorityColumn = board.getByRole("region", { name: "高优先级" });
+  const sourceHandle = board.getByRole("button", { name: "拖动任务“补齐树形标签 RLS 测试”" });
+  const sourceBox = await sourceHandle.boundingBox();
+  const targetBox = await highPriorityColumn.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + 80, { steps: 8 });
+  await page.mouse.up();
+  await expect(highPriorityColumn.getByText("补齐树形标签 RLS 测试", { exact: true })).toBeVisible();
+});
+
 test("task list expands, completes, and remembers subtasks per workspace", async ({ page }) => {
   await page.goto("/?demo=1");
 
@@ -62,6 +117,10 @@ test("task list expands, completes, and remembers subtasks per workspace", async
 });
 
 test("quick add creates notes and keeps its per-workspace settings", async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
   await page.goto("/?demo=1");
   const quickInput = page.getByPlaceholder('添加任务至“所有”');
   await quickInput.click();
@@ -75,8 +134,11 @@ test("quick add creates notes and keeps its per-workspace settings", async ({ pa
   await page.getByPlaceholder('添加笔记至“所有”').fill(noteTitle);
   await page.getByPlaceholder('添加笔记至“所有”').press("Enter");
   const row = page.locator(".task-row").filter({ hasText: noteTitle });
+  await expect(row).toHaveCount(1);
   await expect(row.locator(".task-note-icon")).toBeVisible();
   await expect(row.locator(".task-checkbox")).toHaveCount(0);
+  expect(await row.evaluate((element) => element.getBoundingClientRect().height)).toBe(40);
+  await expect(page.getByText("正在整理任务…", { exact: true })).toHaveCount(0);
 
   await row.getByText(noteTitle, { exact: true }).click();
   const detail = page.locator(".task-detail-panel");
@@ -92,6 +154,7 @@ test("quick add creates notes and keeps its per-workspace settings", async ({ pa
 
   await page.reload();
   await expect(page.getByPlaceholder('添加笔记至“所有”')).toBeVisible();
+  expect(consoleErrors).toEqual([]);
 });
 
 test("offline mode disables note creation and type switching", async ({ page, context }) => {
@@ -666,6 +729,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
   expect(settingsTabLabels).toEqual([
     "账户与安全",
     "日期与时间",
+    "外观",
     "通知配置",
     "快捷键",
     "团队管理",
@@ -679,6 +743,12 @@ test("settings matches the reference geometry and reads account data", async ({ 
     "团队配置",
   ]);
   await expect(dialog.getByRole("button", { name: "连接器", exact: true })).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "外观", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "外观" })).toBeVisible();
+  await expect(dialog.getByRole("switch", { name: "跟随系统" })).toBeVisible();
+  await expect(dialog.getByRole("option", { name: "默认" })).toBeVisible();
+  await expect(dialog.getByRole("option", { name: "暗夜" })).toBeVisible();
 
   await dialog.getByRole("button", { name: "团队管理", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "团队管理" })).toBeVisible();
@@ -1095,15 +1165,18 @@ test("priority menu updates the toolbar and task list without reordering", async
   await menu.getByRole("menuitemradio", { name: "中优先级" }).click();
   await expect(page.getByRole("button", { name: "设置优先级，当前中优先级" })).toBeVisible();
   await expect(taskRow.locator(".priority-bar")).toHaveCSS("background-color", "rgb(255, 172, 56)");
+  await expect(taskRow.locator(".task-checkbox")).toHaveCSS("color", "rgb(255, 172, 56)");
   await expect(page.locator(".task-title")).toHaveText(initialOrder);
 
   await page.getByRole("button", { name: "设置优先级，当前中优先级" }).click();
   await menu.getByRole("menuitemradio", { name: "低优先级" }).click();
   await expect(taskRow.locator(".priority-bar")).toHaveCSS("background-color", "rgb(71, 114, 250)");
+  await expect(taskRow.locator(".task-checkbox")).toHaveCSS("color", "rgb(71, 114, 250)");
 
   await page.getByRole("button", { name: "设置优先级，当前低优先级" }).click();
   await menu.getByRole("menuitemradio", { name: "无优先级" }).click();
   await expect(taskRow.locator(".priority-bar")).toHaveCount(0);
+  await expect(taskRow.locator(".task-checkbox")).toHaveCSS("color", "rgb(156, 160, 166)");
   await expect(page.locator(".task-title")).toHaveText(initialOrder);
 });
 

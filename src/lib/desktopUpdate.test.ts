@@ -26,7 +26,8 @@ const available: DesktopUpdateCheckResult = {
   status: "available",
   currentVersion: "0.1.0",
   latestVersion: "0.2.0",
-  downloadUrl: "https://download.anttodo.com/macos/AntTodo-arm64-latest.dmg",
+  downloadUrl:
+    "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos/AntTodo-arm64-latest.dmg",
 };
 
 describe("desktopUpdate snooze", () => {

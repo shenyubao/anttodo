@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Label, Member, Task } from "../types";
-import { groupTasks, resolveTaskListPreference, sortTasks } from "./taskList";
+import {
+  filterTasksForView,
+  groupTasks,
+  resolveTaskListPreference,
+  sortTasks,
+} from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
 const labels: Label[] = [
@@ -32,6 +37,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   participant_ids: [],
   subtasks: [],
   ...patch,
+  cli_assignee: patch.cli_assignee ?? null,
   kind: patch.kind ?? "todo",
   reminders: patch.reminders ?? [],
   reminder_persistent: patch.reminder_persistent ?? false,
@@ -50,6 +56,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: false,
+      view_mode: "list",
     }], "all").grouping).toBe("none");
   });
 
@@ -64,7 +71,23 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: true,
+      view_mode: "kanban",
     }], "all").show_completed).toBe(true);
+  });
+
+  it("defaults view mode to list and preserves a saved kanban mode", () => {
+    expect(resolveTaskListPreference([], "all").view_mode).toBe("list");
+    expect(resolveTaskListPreference([{
+      user_id: "u",
+      workspace_id: "w",
+      list_key: "all",
+      grouping: "none",
+      sort: "custom",
+      direction: "asc",
+      show_labels: false,
+      show_completed: false,
+      view_mode: "kanban",
+    }], "all").view_mode).toBe("kanban");
   });
 
   it("keeps null values last in either due-date direction", () => {
@@ -173,5 +196,78 @@ describe("task list grouping and sorting", () => {
       .toEqual([["低优先级", ["low"]], ["无优先级", ["note"]]]);
     expect(sortTasks(tasks, "priority", "asc", labels, members, []).map((item) => item.id))
       .toEqual(["note", "low"]);
+  });
+
+  it("groups CLI assignees separately from unassigned tasks", () => {
+    const groups = groupTasks({
+      tasks: [
+        task("codex", { cli_assignee: "codex" }),
+        task("member", { assignee_id: "u" }),
+        task("none"),
+      ],
+      grouping: "assignee",
+      sort: "assignee",
+      direction: "asc",
+      labels,
+      members,
+      sections: [],
+      placements: [],
+      now,
+      preferences: { weekStartsOn: 1 },
+    });
+    expect(groups.map((group) => [group.title, group.tasks.map((item) => item.id)]))
+      .toEqual([
+        ["Codex", ["codex"]],
+        ["张三", ["member"]],
+        ["未指派", ["none"]],
+      ]);
+  });
+
+  it("keeps the assigned-to-me view limited to real users", () => {
+    const result = filterTasksForView({
+      tasks: [
+        task("mine", { assignee_id: "u" }),
+        task("cli", { cli_assignee: "codex" }),
+        task("none"),
+      ],
+      smartView: "assigned",
+      selectedLabelId: null,
+      currentUserId: "u",
+    });
+    expect(result.map((item) => item.id)).toEqual(["mine"]);
+  });
+
+  it("filters trash tasks by deleted_at and excludes them from other views", () => {
+    const tasks = [
+      task("alive"),
+      task("recent-trash", { deleted_at: "2026-07-28T00:00:00.000Z" }),
+      task("older-trash", { deleted_at: "2026-07-20T00:00:00.000Z" }),
+      task("inbox", { label_ids: [] }),
+      task("labeled", { label_ids: ["a"] }),
+    ];
+    expect(
+      filterTasksForView({
+        tasks,
+        smartView: "trash",
+        selectedLabelId: null,
+        currentUserId: "u",
+      }).map((item) => item.id),
+    ).toEqual(["recent-trash", "older-trash"]);
+    expect(
+      filterTasksForView({
+        tasks,
+        smartView: "all",
+        selectedLabelId: null,
+        currentUserId: "u",
+      }).map((item) => item.id),
+    ).toEqual(["alive", "inbox", "labeled"]);
+    expect(
+      filterTasksForView({
+        tasks,
+        smartView: "inbox",
+        selectedLabelId: null,
+        currentUserId: "u",
+      }).map((item) => item.id),
+    ).toEqual(["alive", "inbox"]);
   });
 });
