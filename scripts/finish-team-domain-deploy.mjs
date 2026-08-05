@@ -1,32 +1,19 @@
 #!/usr/bin/env node
 /**
- * Finish production setup that Wrangler OAuth cannot do alone:
+ * Finish production Cloudflare setup that Wrangler OAuth cannot do alone:
  * 1) Cloudflare DNS *.team.anttodo.com (proxied)
  * 2) Advanced certificate for *.team.anttodo.com
- * 3) Apply workspace_slug migration via Supabase Management API
+ *
+ * Database migrations belong on the self-hosted stack via `pnpm supabase:push`.
  *
  * Usage:
- *   CLOUDFLARE_API_TOKEN=... SUPABASE_ACCESS_TOKEN=... node scripts/finish-team-domain-deploy.mjs
+ *   CLOUDFLARE_API_TOKEN=... node scripts/finish-team-domain-deploy.mjs
  *
  * Cloudflare token needs: Zone.DNS Edit, Zone.SSL and Certificates Edit
- * Supabase token: Personal access token (sbp_...) with project access
  */
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, "..");
 
 const CF_TOKEN = process.env.CLOUDFLARE_API_TOKEN?.trim();
-const SB_TOKEN = process.env.SUPABASE_ACCESS_TOKEN?.trim();
 const ZONE_NAME = "anttodo.com";
-const PROJECT_REF = "pyykoomrgvynyjlbfdba";
-const MIGRATION_VERSION = "20260801163702";
-const MIGRATION_FILE = path.join(
-  root,
-  "supabase/migrations/20260801163702_workspace_slug.sql",
-);
 
 async function cf(method, pathname, body) {
   const res = await fetch(`https://api.cloudflare.com/client/v4${pathname}`, {
@@ -44,25 +31,6 @@ async function cf(method, pathname, body) {
     );
   }
   return json.result;
-}
-
-async function sbQuery(query) {
-  const res = await fetch(
-    `https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${SB_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Supabase query failed (${res.status}): ${text}`);
-  }
-  return text ? JSON.parse(text) : null;
 }
 
 async function ensureDns(zoneId) {
@@ -116,46 +84,9 @@ async function ensureCert(zoneId) {
   }
 }
 
-async function ensureMigration() {
-  const columns = await sbQuery(`
-    select column_name
-    from information_schema.columns
-    where table_schema = 'public'
-      and table_name = 'workspaces'
-      and column_name = 'slug'
-  `);
-  const hasSlug = Array.isArray(columns) && columns.length > 0;
-  if (hasSlug) {
-    console.log("workspaces.slug already exists");
-  } else {
-    const sql = fs.readFileSync(MIGRATION_FILE, "utf8");
-    await sbQuery(sql);
-    console.log("Applied workspace_slug migration SQL");
-  }
-
-  const rows = await sbQuery(`
-    select version
-    from supabase_migrations.schema_migrations
-    where version = '${MIGRATION_VERSION}'
-  `);
-  if (Array.isArray(rows) && rows.length > 0) {
-    console.log("Migration version already recorded:", MIGRATION_VERSION);
-    return;
-  }
-  await sbQuery(`
-    insert into supabase_migrations.schema_migrations (version, name, statements)
-    values ('${MIGRATION_VERSION}', 'workspace_slug', array[]::text[])
-    on conflict do nothing
-  `);
-  console.log("Recorded migration version:", MIGRATION_VERSION);
-}
-
 async function main() {
   if (!CF_TOKEN) {
     throw new Error("Set CLOUDFLARE_API_TOKEN (Zone.DNS Edit + Zone.SSL Edit)");
-  }
-  if (!SB_TOKEN) {
-    throw new Error("Set SUPABASE_ACCESS_TOKEN (sbp_...)");
   }
 
   const zones = await cf("GET", `/zones?name=${ZONE_NAME}`);
@@ -165,7 +96,6 @@ async function main() {
 
   await ensureDns(zone.id);
   await ensureCert(zone.id);
-  await ensureMigration();
   console.log("Done.");
 }
 

@@ -75,9 +75,17 @@ pnpm ios:testflight
 `.env.local` 已被 Git 忽略。浏览器端只允许读取带 `VITE_` 前缀的公开配置：
 
 ```dotenv
-VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_URL=https://supabase.example.com
 VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_your_key
 VITE_PUBLIC_APP_URL=https://todo.example.com
+```
+
+生产环境使用自托管 Supabase，`VITE_SUPABASE_URL` 应指向自托管 API 源（不是
+`*.supabase.co`）。向生产推送迁移时还需要配置 SSH 目标：
+
+```dotenv
+ANTTODO_SUPABASE_SELFHOST_SSH=supabase
+ANTTODO_SUPABASE_SELFHOST_DOCKER_DIR=/home/ubuntu/projects/supabase/docker
 ```
 
 手机号登录还需要以下仅供 Supabase Edge Function 使用的服务端配置。禁止为这些
@@ -95,9 +103,10 @@ SEND_SMS_HOOK_SECRETS=v1,whsec_<base64-secret>
 
 `ALIYUN_SMS_SIGN_NAME` 必须与阿里云短信控制台中审核通过的签名完全一致，模板
 验证码变量名应为 `code`。本地 Auth Hook 与 Edge Function 使用同一个
-`SEND_SMS_HOOK_SECRETS`；线上应通过 Supabase Function Secrets 注入这些值。
-`config.toml` 中的 Twilio 占位值只用于绕过当前 Supabase CLI 的本地 Phone
-Provider 开关校验，Send SMS Hook 会完全替代它；不得填写真实 Twilio 凭据。
+`SEND_SMS_HOOK_SECRETS`；线上应写入自托管栈的 Edge Function 环境变量，不要当作
+Vite 环境变量提交。`config.toml` 中的 Twilio 占位值只用于绕过当前 Supabase CLI
+的本地 Phone Provider 开关校验，Send SMS Hook 会完全替代它；不得填写真实
+Twilio 凭据。
 
 `VITE_PUBLIC_APP_URL` 是主站 Web 根地址（邀请链接与钉钉回调）。团队 SSO
 入口使用 `https://app.anttodo.com/team/{slug}` 格式；主站根路径仅暴露手机号
@@ -123,10 +132,11 @@ pnpm supabase:test
 无标签待办显示在收集箱中，收集箱本身不是标签。连接器密钥由
 `connector-admin` Edge Function 写入 Vault。
 
-远端迁移前：
+生产库迁移走自托管 SSH（`pnpm supabase:push`），不链接也不推送到 Supabase
+Cloud。推送前：
 
 1. 在本地执行 reset 和 pgTAP。
-2. 运行 Supabase database/security advisors。
+2. 确认 `ANTTODO_SUPABASE_SELFHOST_SSH` 已配置。
 3. 检查远端未知对象，禁止删除不属于 AntTodo 的表或函数。
 4. 执行迁移后查询表、RLS、策略和函数状态。
 
@@ -143,14 +153,14 @@ pnpm supabase:start
 supabase functions serve send-sms --env-file .env.local --no-verify-jwt
 ```
 
-部署线上环境时：
+部署线上自托管环境时：
 
-1. 使用 `supabase secrets set` 上传所有 `ALIYUN_*` 和
-   `SEND_SMS_HOOK_SECRETS`，不要上传为 Vite 环境变量。
-2. 使用 `supabase functions deploy send-sms --no-verify-jwt` 部署函数。
-3. 在 Supabase Authentication 中启用 Phone Provider。
-4. 在 Authentication > Hooks 新增 Send SMS HTTP Hook，URL 指向
-   `/functions/v1/send-sms`，并把生成的签名密钥同步到 Function Secrets。
+1. 将所有 `ALIYUN_*` 和 `SEND_SMS_HOOK_SECRETS` 写入自托管 Edge Function
+   环境（不要上传为 Vite 环境变量）。
+2. 按自托管流程发布 `send-sms`（`--no-verify-jwt`）。
+3. 在 Auth（GoTrue）配置中启用 Phone Provider。
+4. 配置 Send SMS HTTP Hook，URL 指向自托管
+   `/functions/v1/send-sms`，并把生成的签名密钥同步到函数环境。
 5. 将短信最短发送间隔设为 60 秒，并按实际成本配置 SMS/IP 限流。
 
 ## 文档站

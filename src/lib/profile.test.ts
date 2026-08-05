@@ -31,7 +31,7 @@ describe("profile avatars", () => {
   it("builds and recognizes only the current user's avatar path", () => {
     const path = buildAvatarObjectPath(userId, objectId);
     expect(path).toBe(`${userId}/${objectId}.webp`);
-    const publicUrl = `https://project.supabase.co/storage/v1/object/public/profile-avatars/${path}`;
+    const publicUrl = `https://supabase.example.com/storage/v1/object/public/profile-avatars/${path}`;
     expect(avatarObjectPathFromPublicUrl(publicUrl, userId)).toBe(path);
     expect(avatarObjectPathFromPublicUrl(publicUrl, "20000000-0000-4000-8000-000000000002"))
       .toBeNull();

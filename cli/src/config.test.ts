@@ -33,10 +33,10 @@ describe("public configuration", () => {
     delete process.env.ANTTODO_APP_URL;
     delete process.env.ANTTODO_DEVICE_AUTH_URL;
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      supabaseUrl: "https://example.supabase.co",
+      supabaseUrl: "https://supabase.example.com",
       publishableKey: "sb_publishable_production_key",
       appUrl: DEFAULT_APP_URL,
-      deviceAuthorizationEndpoint: "https://example.supabase.co/functions/v1/cli-device-auth",
+      deviceAuthorizationEndpoint: "https://supabase.example.com/functions/v1/cli-device-auth",
     }), {
       status: 200,
       headers: { "content-type": "application/json" },

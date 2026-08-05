@@ -11,7 +11,9 @@ describe("buildSentryTracePropagationTargets", () => {
     expect(
       targets.some(
         (target) =>
-          typeof target === "string" && target.includes("supabase.co"),
+          typeof target === "string" &&
+          (target.includes("supabase.co") ||
+            target.includes("supabase.example.com")),
       ),
     ).toBe(false);
   });

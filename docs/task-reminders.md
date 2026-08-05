@@ -1,6 +1,6 @@
 # 任务提醒发布配置
 
-提醒规则随数据库迁移发布；Chrome Web Push 还需要在目标 Supabase 项目中配置
+提醒规则随数据库迁移发布；Chrome Web Push 还需要在自托管 Supabase 栈中配置
 VAPID 和派发密钥。私钥及派发密钥不得提交到仓库。
 
 ## Edge Function Secrets
@@ -11,25 +11,19 @@ VAPID 和派发密钥。私钥及派发密钥不得提交到仓库。
 pnpm dlx web-push@3.6.7 generate-vapid-keys
 ```
 
+在自托管栈的 Edge Function 环境（例如 Docker `functions` 服务的 secrets / `.env`）
 为 `reminder-subscription`、`reminder-dispatch` 和 `reminder-ack` 配置：
 
-```bash
-supabase secrets set \
-  VAPID_PUBLIC_KEY='<public key>' \
-  VAPID_PRIVATE_KEY='<private key>' \
-  VAPID_SUBJECT='mailto:notifications@example.com' \
-  PUBLIC_APP_URL='https://app.example.com' \
-  REMINDER_DISPATCH_SECRET='<random secret>' \
-  REMINDER_ACK_SECRET='<different random secret>'
+```dotenv
+VAPID_PUBLIC_KEY=<public key>
+VAPID_PRIVATE_KEY=<private key>
+VAPID_SUBJECT=mailto:notifications@example.com
+PUBLIC_APP_URL=https://app.example.com
+REMINDER_DISPATCH_SECRET=<random secret>
+REMINDER_ACK_SECRET=<different random secret>
 ```
 
-发布函数：
-
-```bash
-supabase functions deploy reminder-subscription
-supabase functions deploy reminder-dispatch --no-verify-jwt
-supabase functions deploy reminder-ack --no-verify-jwt
-```
+然后按自托管流程发布上述三个函数（本地开发可用 `supabase functions serve`）。
 
 ## Cron Vault Secrets
 
@@ -38,7 +32,7 @@ supabase functions deploy reminder-ack --no-verify-jwt
 
 ```sql
 select vault.create_secret(
-  'https://<project-ref>.supabase.co',
+  'https://supabase.example.com',
   'anttodo_project_url',
   'AntTodo reminder Edge Function base URL'
 );
