@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
+import { resolveUser } from "../_shared/resolveUser.ts";
 
 type InviteRole = "member" | "admin";
 
@@ -19,11 +20,12 @@ function isInviteRole(value: unknown): value is InviteRole {
 }
 
 export default {
-  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
-    const userId = ctx.userClaims?.id;
-    if (!userId) return jsonError("Authentication required", 401);
+    const user = await resolveUser(req, ctx.supabaseAdmin);
+    if (!user) return jsonError("Authentication required", 401);
+    const userId = user.id;
 
     const body = await req.json().catch(() => null) as InviteRequest | null;
     if (!body?.action) return jsonError("Invalid request");
@@ -100,15 +102,13 @@ export default {
     }
 
     if (body.action !== "disable") return jsonError("Unsupported action");
-    const { data, error } = await ctx.supabaseAdmin
+    // Idempotent: already-revoked links still return success.
+    const { error } = await ctx.supabaseAdmin
       .from("workspace_invite_links")
       .update({ revoked_at: new Date().toISOString() })
       .eq("workspace_id", workspaceId)
-      .is("revoked_at", null)
-      .select("id")
-      .maybeSingle();
+      .is("revoked_at", null);
     if (error) return jsonError(error.message, 400);
-    if (!data) return jsonError("Invite link not enabled", 404);
     return Response.json({ disabled: true });
   }),
 };

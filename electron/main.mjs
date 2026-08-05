@@ -13,6 +13,7 @@ import {
   checkForDesktopUpdate,
   isAllowedDownloadUrl,
 } from "./update-checker.mjs";
+import { createDesktopAutoUpdater } from "./auto-updater.mjs";
 import { createAiTerminalManager } from "./ai-terminal.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,11 @@ const isDev = !app.isPackaged;
 const authCallbackQueue = createAuthCallbackQueue(5);
 let mainWindow = null;
 let isQuitting = false;
+
+const desktopAutoUpdater = createDesktopAutoUpdater({
+  isPackaged: app.isPackaged,
+  platform: process.platform,
+});
 
 const aiTerminalManager = createAiTerminalManager({
   send: (ownerId, channel, payload) => {
@@ -159,6 +165,10 @@ ipcMain.handle("anttodo:open-download-url", async (_event, url) => {
   if (typeof url !== "string" || !isAllowedDownloadUrl(url)) return false;
   await shell.openExternal(url);
   return true;
+});
+
+ipcMain.handle("anttodo:download-and-install-update", async () => {
+  return desktopAutoUpdater.downloadAndInstall();
 });
 
 ipcMain.handle("anttodo:ai-select-directory", async (event) => {

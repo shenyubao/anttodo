@@ -1,15 +1,17 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
+import { resolveUser } from "../_shared/resolveUser.ts";
 
 function error(message: string, status = 400) {
   return Response.json({ error: message }, { status });
 }
 
 export default {
-  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return error("Method not allowed", 405);
-    const userId = ctx.userClaims?.id;
-    if (!userId) return error("Authentication required", 401);
+    const user = await resolveUser(req, ctx.supabaseAdmin);
+    if (!user) return error("Authentication required", 401);
+    const userId = user.id;
     const body = await req.json();
     const vapidPublicKey = Deno.env.get("VAPID_PUBLIC_KEY") ?? "";
     if (body.action === "config") return Response.json({ vapidPublicKey });

@@ -10,7 +10,7 @@ async function openDemoTask(page: Page) {
 
 test("demo task flow and details drawer", async ({ page }) => {
   await page.goto("/?demo=1");
-  await expect(page.getByRole("heading", { name: "所有" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
   await page.getByText(demoTaskTitle, { exact: true }).click();
   await expect(page.locator(".task-detail")).toBeVisible();
   await expect(page.locator(".detail-title")).toHaveValue(demoTaskTitle);
@@ -24,7 +24,7 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await expect(page.getByRole("menuitem", { name: "时间线，暂未开放" })).toBeDisabled();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
 
-  await expect(page).toHaveURL(/\/tasks\/kanban$/);
+  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
   const board = page.getByLabel("任务看板");
   await expect(board).toBeVisible();
   await expect(board.getByRole("heading", { name: "未分组", exact: true })).toBeVisible();
@@ -33,12 +33,17 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await page.getByRole("button", { name: "今天" }).click();
   await expect(page).toHaveURL(/\/views\/today$/);
   await expect(page.getByLabel("任务看板")).toHaveCount(0);
-  await page.getByRole("button", { name: "所有" }).click();
-  await expect(page).toHaveURL(/\/tasks\/kanban$/);
+  await page.getByRole("button", { name: "指派给我" }).click();
+  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
 
   await board.getByText(demoTaskTitle, { exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "关闭详情" }).click();
+  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
+
+  await page.getByRole("button", { name: "所有" }).click();
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitemradio", { name: "看板" }).click();
   await expect(page).toHaveURL(/\/tasks\/kanban$/);
 
   await page.getByRole("button", { name: "在“未分组”中新建" }).click();
@@ -158,6 +163,7 @@ test("task list expands, completes, and remembers subtasks per workspace", async
   await page.getByRole("menuitemradio", { name: "AntTodo 产品团队" }).click();
   await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
 
+  await page.getByRole("button", { name: "所有" }).click();
   const noSubtasksRow = page.locator(".task-tree-item").filter({
     hasText: "优化任务详情抽屉交互",
   });
@@ -170,17 +176,17 @@ test("quick add creates notes and keeps its per-workspace settings", async ({ pa
     if (message.type() === "error") consoleErrors.push(message.text());
   });
   await page.goto("/?demo=1");
-  const quickInput = page.getByPlaceholder('添加任务至“所有”');
+  const quickInput = page.getByPlaceholder('添加任务至“指派给我”');
   await quickInput.click();
   await page.getByRole("button", { name: "快速新增设置" }).click();
   const menu = page.getByRole("menu", { name: "快速新增设置" });
   await menu.getByRole("radio", { name: "笔记" }).click();
   await expect(menu.getByRole("radio", { name: "高优先级" })).toBeDisabled();
-  await expect(page.getByPlaceholder('添加笔记至“所有”')).toBeVisible();
+  await expect(page.getByPlaceholder('添加笔记至“指派给我”')).toBeVisible();
 
   const noteTitle = "快速新增笔记";
-  await page.getByPlaceholder('添加笔记至“所有”').fill(noteTitle);
-  await page.getByPlaceholder('添加笔记至“所有”').press("Enter");
+  await page.getByPlaceholder('添加笔记至“指派给我”').fill(noteTitle);
+  await page.getByPlaceholder('添加笔记至“指派给我”').press("Enter");
   const row = page.locator(".task-row").filter({ hasText: noteTitle });
   await expect(row).toHaveCount(1);
   await expect(row.locator(".task-note-icon")).toBeVisible();
@@ -201,7 +207,7 @@ test("quick add creates notes and keeps its per-workspace settings", async ({ pa
   await expect(detail.locator(".priority-trigger")).toBeVisible();
 
   await page.reload();
-  await expect(page.getByPlaceholder('添加笔记至“所有”')).toBeVisible();
+  await expect(page.getByPlaceholder('添加笔记至“指派给我”')).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });
 
@@ -271,9 +277,8 @@ test("notes hide and restore preserved task state across every entry surface", a
 
   await page.getByRole("button", { name: "思维导图" }).click();
   await page.getByRole("button", { name: "一览全部" }).click();
-  const mindMapNode = page.locator(".react-flow__node-task").filter({ hasText: noteTitle });
-  await expect(mindMapNode.locator(".mind-map-note-icon")).toBeVisible();
-  await expect(mindMapNode.getByRole("button", { name: "完成任务" })).toHaveCount(0);
+  await expect(page.locator(".react-flow__node-task").filter({ hasText: noteTitle }))
+    .toHaveCount(0);
 
   await page.getByRole("button", { name: "日历", exact: true }).click();
   const calendarEvent = page.getByRole("button").filter({ hasText: noteTitle });
@@ -440,6 +445,10 @@ test("mind map is full width and supports creation, details, and date dragging",
 
   await page.getByRole("button", { name: "日历", exact: true }).click();
   await expect(page.locator(".calendar-sidebar")).toBeVisible();
+  await expect(page.getByRole("button", { name: "用户" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "标签" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "未指派" })).toBeVisible();
+  await expect(page.locator(".calendar-assignee-all-check")).toHaveClass(/active/);
   await expect(page.locator(".calendar-all-check")).toHaveClass(/active/);
 });
 
@@ -863,6 +872,13 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await expect(dialog.getByRole("option", { name: "默认" })).toBeVisible();
   await expect(dialog.getByRole("option", { name: "暗夜" })).toBeVisible();
 
+  await dialog.getByRole("button", { name: "快捷键", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "快捷键" })).toBeVisible();
+  await expect(dialog.getByText("通用", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("保存", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("添加任务", { exact: true })).toBeVisible();
+  await expect(dialog.locator(".shortcuts-settings-binding").first()).toBeVisible();
+
   await dialog.getByRole("button", { name: "团队管理", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "团队管理" })).toBeVisible();
   await expect(dialog.getByRole("textbox", { name: "团队名称" })).toHaveValue(
@@ -881,10 +897,16 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await expect(dialog.getByRole("textbox", { name: "团队名称" })).toHaveValue(
     "AntTodo 演示团队",
   );
-  await expect(dialog.getByRole("region", { name: "邀请链接" })).toBeVisible();
+  await expect(dialog.getByRole("region", { name: "邀请成员加入" })).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "成员管理", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "AntTodo 演示团队" })).toBeVisible();
+  await expect(dialog.getByText("产品同学", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "产品同学的角色" })).toHaveValue("member");
+  await expect(dialog.getByRole("region", { name: "邀请成员加入" })).toBeVisible();
+  await expect(dialog.getByText("通过邀请链接加入的成员")).toHaveCount(0);
   const inviteSwitch = dialog.getByRole("switch", { name: "启用邀请链接" });
   await expect(inviteSwitch).not.toBeChecked();
-  await expect(dialog.locator(".invite-link-control")).toHaveCSS("height", "36px");
   await inviteSwitch.check();
   await expect(inviteSwitch).toBeChecked();
   await dialog.getByRole("combobox", { name: "邀请链接加入身份" })
@@ -893,12 +915,6 @@ test("settings matches the reference geometry and reads account data", async ({ 
     .toBeVisible();
   await dialog.getByRole("button", { name: "复制链接" }).click();
   await expect(page.locator(".toast")).toContainText("演示邀请链接已复制");
-
-  await dialog.getByRole("button", { name: "成员管理", exact: true }).click();
-  await expect(dialog.getByRole("heading", { name: "AntTodo 演示团队" })).toBeVisible();
-  await expect(dialog.getByText("产品同学", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("combobox", { name: "产品同学的角色" })).toHaveValue("member");
-  await expect(dialog.getByRole("region", { name: "邀请链接" })).toHaveCount(0);
 
   await dialog.getByRole("button", { name: "单点登录", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "单点登录" })).toBeVisible();
@@ -1524,13 +1540,9 @@ test("creates a workspace from the switcher and lets only its owner confirm dele
   await expect(item.getByRole("button", { name: "删除团队" })).toBeVisible();
   await item.getByRole("button", { name: "删除团队" }).click();
 
-  const deleteDialog = page.getByRole("dialog", { name: "永久删除“客户端体验团队”" });
-  const confirmButton = deleteDialog.getByRole("button", { name: "永久删除" });
-  await expect(confirmButton).toBeDisabled();
-  await deleteDialog.getByRole("textbox", { name: "输入团队名称确认删除" })
-    .fill("客户端体验团队");
-  await expect(confirmButton).toBeEnabled();
-  await confirmButton.click();
+  const deleteDialog = page.getByRole("dialog", { name: "删除团队“客户端体验团队”" });
+  await expect(deleteDialog).toContainText("无法恢复");
+  await deleteDialog.getByRole("button", { name: "确认删除" }).click();
   await expect(page.locator(".toast")).toContainText("团队已永久删除");
 });
 

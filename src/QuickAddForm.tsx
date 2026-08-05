@@ -238,6 +238,7 @@ export function QuickAddForm({
       <div className="quick-add-field task-title-token-field">
         <input
           ref={inputRef}
+          data-quick-add-input=""
           className={showHighlight ? "quick-add-input has-date-mark" : "quick-add-input"}
           value={title}
           onChange={tokens.handleChange}

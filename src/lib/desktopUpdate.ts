@@ -20,9 +20,32 @@ export type DesktopUpdateAvailable = Extract<
   { status: "available" }
 >;
 
+export type DesktopUpdateInstallResult =
+  | { status: "installing" }
+  | { status: "unavailable"; message: string }
+  | { status: "error"; message: string };
+
+export type DesktopUpdateDownloadProgress = {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+};
+
 export const UPDATE_SNOOZE_STORAGE_KEY = "anttodo.updateSnooze";
 export const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000;
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export function formatUpdateProgressLabel(
+  progress: DesktopUpdateDownloadProgress | null | undefined,
+): string {
+  if (!progress) return "正在下载更新…";
+  const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
+  if (progress.total > 0) {
+    return `正在下载更新… ${percent}%`;
+  }
+  return "正在下载更新…";
+}
 
 type UpdateSnoozeRecord = {
   version: string;

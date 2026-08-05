@@ -88,15 +88,6 @@ test("switches to enterprise login, validates slug, and opens the canonical team
       }),
     });
   });
-  await page.addInitScript(() => {
-    (window as typeof window & {
-      DTFrameLogin: (frame: { id: string }) => void;
-    }).DTFrameLogin = ({ id }) => {
-      const container = document.getElementById(id);
-      if (container) container.textContent = "模拟钉钉二维码";
-    };
-  });
-
   const enterpriseTab = page.getByRole("tab", { name: "企业联合登录" });
   await enterpriseTab.click();
   await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
@@ -110,7 +101,9 @@ test("switches to enterprise login, validates slug, and opens the canonical team
   await expect(page).toHaveURL(/\/team\/yucekj$/);
   await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveCount(0);
   await expect(page.getByText("宇策科技", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("钉钉登录二维码")).toContainText("模拟钉钉二维码");
+  await expect(page.getByRole("button", { name: "跳转到钉钉授权" })).toBeVisible();
+  await expect(page.getByLabel("钉钉登录二维码")).toHaveCount(0);
+  await expect(page.getByText("使用钉钉扫码登录")).toHaveCount(0);
 });
 
 test("desktop enterprise login requests a desktop state and opens DingTalk externally", async ({
@@ -231,9 +224,11 @@ test("previews a workspace invite before asking the visitor to sign in", async (
       contentType: "application/json",
       body: JSON.stringify({
         workspaceName: "AntTodo 产品团队",
+        workspaceSlug: "anttodo-product",
         inviterDisplayName: "申玉宝",
         role: "admin",
         status: "active",
+        ssoEnabled: false,
       }),
     });
   });
@@ -246,4 +241,59 @@ test("previews a workspace invite before asking the visitor to sign in", async (
   await page.getByRole("button", { name: "登录后加入" }).click();
   await expect(page.getByLabel("手机号验证码登录")).toBeVisible();
   await expect(page.getByRole("tab", { name: "钉钉扫码" })).toHaveCount(0);
+});
+
+test("forces DingTalk SSO when the invited workspace has SSO enabled", async ({
+  page,
+}) => {
+  const linkId = "8f85facc-891b-422c-bb8b-2978f0c0b51b";
+  await page.route("**/functions/v1/workspace-invite-preview", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workspaceName: "预测科技",
+        workspaceSlug: "yucekj",
+        inviterDisplayName: "团队管理员",
+        role: "member",
+        status: "active",
+        ssoEnabled: true,
+      }),
+    });
+  });
+  await page.route("**/functions/v1/sso-login", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workspace: {
+          id: "21000000-0000-4000-8000-000000000001",
+          name: "预测科技",
+          slug: "yucekj",
+        },
+        providers: [
+          {
+            provider: "dingtalk",
+            displayName: "钉钉企业登录",
+            flow: "qr_or_redirect",
+            config: {
+              corpId: "dingcorp",
+              appKey: "ding-app-key",
+              agentId: null,
+              redirectUri: "http://127.0.0.1:4173/auth/dingtalk/callback",
+              state: "21000000-0000-4000-8000-000000000001.web.state",
+            },
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(`/invite/${linkId}`);
+  await expect(page.getByRole("heading", { name: "预测科技" })).toBeVisible();
+  await page.getByRole("button", { name: "钉钉登录并加入" }).click();
+  await expect(page.getByLabel("手机号验证码登录")).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveCount(0);
+  await expect(page.getByText("预测科技", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "跳转到钉钉授权" })).toBeVisible();
 });

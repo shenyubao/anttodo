@@ -62,25 +62,29 @@ function label(
 }
 
 describe("mind map tree", () => {
-  it("preserves note identity and hidden task state on task nodes", () => {
+  it("excludes notes from the mind map tree", () => {
     const note = task({
       id: "note",
       kind: "note",
-      status: "completed",
-      completed_at: "2026-08-01T01:00:00.000Z",
-      priority: "high",
+      title: "笔记",
+      label_ids: ["tag"],
+      due_at: "2026-08-01T08:00:00.000Z",
+    });
+    const todo = task({
+      id: "todo",
+      title: "待办",
+      due_at: "2026-08-01T08:00:00.000Z",
     });
     const root = buildMindMapTree({
-      tasks: [note],
-      labels: [],
+      tasks: [note, todo],
+      labels: [label("tag", 0, null, "标签")],
       preferences: DEFAULT_DATE_TIME_PREFERENCES,
     });
-    expect(root.children.at(-2)?.children[0].task).toMatchObject({
-      id: "note",
-      kind: "note",
-      status: "completed",
-      priority: "high",
-    });
+    const collectTaskIds = (node: typeof root): string[] => [
+      ...(node.task ? [node.task.id] : []),
+      ...node.children.flatMap(collectTaskIds),
+    ];
+    expect(collectTaskIds(root)).toEqual(["todo"]);
   });
 
   it("builds date, inbox and unscheduled branches without deleted tasks", () => {

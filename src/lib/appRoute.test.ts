@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { appRoutePath, parseAppRoute, type AppRoute } from "./appRoute";
+import {
+  appRoutePath,
+  DEFAULT_SMART_VIEW,
+  parseAppRoute,
+  type AppRoute,
+} from "./appRoute";
 
 describe("application routes", () => {
   const routes: AppRoute[] = [
     { workspaceId: "workspace-1", kind: "view", view: "all", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "all", mode: "kanban" },
+    { workspaceId: "workspace-1", kind: "view", view: "assigned", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "assigned", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },
@@ -29,7 +36,18 @@ describe("application routes", () => {
   });
 
   it("keeps legacy task-list URLs in list mode and normalizes trash", () => {
-    expect(parseAppRoute("/workspaces/workspace-1/tasks")).toMatchObject({ mode: "list" });
+    expect(parseAppRoute("/workspaces/workspace-1/tasks")).toEqual({
+      workspaceId: "workspace-1",
+      kind: "view",
+      view: "all",
+      mode: "list",
+    });
+    expect(parseAppRoute("/workspaces/workspace-1")).toEqual({
+      workspaceId: "workspace-1",
+      kind: "view",
+      view: DEFAULT_SMART_VIEW,
+      mode: "list",
+    });
     expect(parseAppRoute("/workspaces/workspace-1/views/trash/kanban")).toEqual({
       workspaceId: "workspace-1",
       kind: "view",

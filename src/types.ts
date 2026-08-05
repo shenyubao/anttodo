@@ -111,9 +111,11 @@ export type WorkspaceInviteLink = {
 
 export type WorkspaceInvitePreview = {
   workspaceName: string;
+  workspaceSlug: string;
   inviterDisplayName: string;
   role: WorkspaceInviteRole;
   status: "active" | "revoked";
+  ssoEnabled: boolean;
 };
 
 export type Label = {

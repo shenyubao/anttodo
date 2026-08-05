@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clearUpdateSnooze,
+  formatUpdateProgressLabel,
   isUpdateSnoozed,
   shouldShowUpdatePrompt,
   snoozeUpdate,
@@ -68,5 +69,25 @@ describe("desktopUpdate snooze", () => {
     expect(
       shouldShowUpdatePrompt({ status: "error", message: "offline" }, 1_000, storage),
     ).toBe(false);
+  });
+
+  it("formats download progress labels", () => {
+    expect(formatUpdateProgressLabel(null)).toBe("正在下载更新…");
+    expect(
+      formatUpdateProgressLabel({
+        percent: 42.6,
+        transferred: 42,
+        total: 100,
+        bytesPerSecond: 10,
+      }),
+    ).toBe("正在下载更新… 43%");
+    expect(
+      formatUpdateProgressLabel({
+        percent: 10,
+        transferred: 0,
+        total: 0,
+        bytesPerSecond: 0,
+      }),
+    ).toBe("正在下载更新…");
   });
 });

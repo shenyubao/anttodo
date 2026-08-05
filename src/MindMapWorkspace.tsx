@@ -69,6 +69,7 @@ import {
 } from "./lib/mindMap";
 import type { DateTimePreferences, Label, LabelPermissionLevel, Member, Task, UserLabelOrder, WorkspaceBundle } from "./types";
 import { mergeLabelIds } from "./lib/taskTitleTokens";
+import { useShortcutHandler } from "./ShortcutProvider";
 import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
 import { useTaskTitleTokens, type TaskTitleTokenSubmit } from "./useTaskTitleTokens";
 
@@ -1314,17 +1315,13 @@ function MindMapCanvas({
     else window.requestAnimationFrame(() => focusNode(nextKey, 0));
   }, [flow, focusNode, workspaceId]);
 
-  useEffect(() => {
-    const onEnter = (event: KeyboardEvent) => {
-      if (event.key !== "Enter" || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, button, [contenteditable='true']")) return;
-      event.preventDefault();
-      startTaskDraft();
-    };
-    window.addEventListener("keydown", onEnter, true);
-    return () => window.removeEventListener("keydown", onEnter, true);
-  }, [startTaskDraft]);
+  useShortcutHandler("mindmap.newTask", () => {
+    startTaskDraft();
+  });
+
+  useShortcutHandler("mindmap.fitView", () => {
+    void flow.fitView({ padding: 0.16, duration: 260 });
+  });
 
   useEffect(() => {
     if (!contextMenu) return;

@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
+import { resolveUser } from "../_shared/resolveUser.ts";
 
 type AdminRequest =
   | {
@@ -26,18 +27,33 @@ function jsonError(message: string, status = 400) {
 }
 
 export default {
-  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
     const body = (await req.json()) as AdminRequest;
-    const userId = ctx.userClaims?.id;
-    const userEmail = ctx.userClaims?.email;
-    if (!userId) return jsonError("Authentication required", 401);
+    const user = await resolveUser(req, ctx.supabaseAdmin);
+    if (!user) return jsonError("Authentication required", 401);
+    const userId = user.id;
+    const userEmail = user.email;
 
     if (body.action === "create-invite") {
+      const { data: membership, error: membershipError } = await ctx.supabaseAdmin
+        .from("workspace_members")
+        .select("role")
+        .eq("workspace_id", body.workspaceId)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (
+        membershipError ||
+        !membership ||
+        !["owner", "admin"].includes(membership.role)
+      ) {
+        return jsonError("Workspace administrator access required", 403);
+      }
+
       const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
       const tokenHash = await sha256(token);
-      const { error } = await ctx.supabase.from("workspace_invites").insert({
+      const { error } = await ctx.supabaseAdmin.from("workspace_invites").insert({
         workspace_id: body.workspaceId,
         email: body.email.trim().toLowerCase(),
         role: body.role ?? "member",
@@ -78,7 +94,7 @@ export default {
       return Response.json({ workspaceId: invite.workspace_id });
     }
 
-    const { data: connector, error: connectorError } = await ctx.supabase
+    const { data: connector, error: connectorError } = await ctx.supabaseAdmin
       .from("connector_instances")
       .select("id")
       .eq("id", body.connectorId)

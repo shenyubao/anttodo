@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
+import { resolveUser } from "../_shared/resolveUser.ts";
 
 type WorkspaceAdminRequest = {
   action: "delete";
@@ -71,11 +72,12 @@ async function removeWorkspaceFiles(
 }
 
 export default {
-  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
-    const userId = ctx.userClaims?.id;
-    if (!userId) return jsonError("Authentication required", 401);
+    const user = await resolveUser(req, ctx.supabaseAdmin);
+    if (!user) return jsonError("Authentication required", 401);
+    const userId = user.id;
 
     const body = await req.json().catch(() => null) as WorkspaceAdminRequest | null;
     if (

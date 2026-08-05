@@ -32,7 +32,18 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
   updates: Object.freeze({
     getAppVersion: () => ipcRenderer.invoke("anttodo:app-version"),
     check: () => ipcRenderer.invoke("anttodo:check-for-update"),
-    openDownload: (url) => ipcRenderer.invoke("anttodo:open-download-url", url)
+    openDownload: (url) => ipcRenderer.invoke("anttodo:open-download-url", url),
+    downloadAndInstall: () => ipcRenderer.invoke("anttodo:download-and-install-update"),
+    onDownloadProgress: (listener) => {
+      const handler = (_event, progress) => listener(progress);
+      ipcRenderer.on("anttodo:update-download-progress", handler);
+      return () => ipcRenderer.removeListener("anttodo:update-download-progress", handler);
+    },
+    onDownloadError: (listener) => {
+      const handler = (_event, payload) => listener(payload);
+      ipcRenderer.on("anttodo:update-download-error", handler);
+      return () => ipcRenderer.removeListener("anttodo:update-download-error", handler);
+    }
   }),
   aiWork: Object.freeze({
     selectDirectory: () => ipcRenderer.invoke("anttodo:ai-select-directory"),

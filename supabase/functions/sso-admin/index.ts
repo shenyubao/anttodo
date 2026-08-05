@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
+import { resolveUser } from "../_shared/resolveUser.ts";
 
 type SsoPublicConfig = {
   corpId: string;
@@ -59,17 +60,18 @@ async function requireAdmin(
 }
 
 export default {
-  fetch: withSupabase({ auth: "user" }, async (req, ctx) => {
+  fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
-    const userId = ctx.userClaims?.id;
-    if (!userId) return jsonError("Authentication required", 401);
+    const user = await resolveUser(req, ctx.supabaseAdmin);
+    if (!user) return jsonError("Authentication required", 401);
+    const userId = user.id;
 
     const body = (await req.json().catch(() => null)) as SsoAdminRequest | null;
     if (!body?.action) return jsonError("Invalid request");
 
     if (body.action === "save-secret" || body.action === "delete-secret") {
-      const { data: provider, error: providerError } = await ctx.supabase
+      const { data: provider, error: providerError } = await ctx.supabaseAdmin
         .from("workspace_sso_providers")
         .select("id, workspace_id")
         .eq("id", body.providerId)
@@ -109,7 +111,7 @@ export default {
         return jsonError("Workspace membership required", 403);
       }
 
-      const { data, error } = await ctx.supabase
+      const { data, error } = await ctx.supabaseAdmin
         .from("workspace_sso_providers")
         .select(
           "id, workspace_id, provider, enabled, public_config, credential_hint, created_at, updated_at",
@@ -126,7 +128,7 @@ export default {
     }
 
     if (body.action === "set-enabled") {
-      const { data, error } = await ctx.supabase
+      const { data, error } = await ctx.supabaseAdmin
         .from("workspace_sso_providers")
         .update({ enabled: body.enabled })
         .eq("workspace_id", body.workspaceId)
@@ -159,7 +161,7 @@ export default {
         p_actor_id: userId,
       });
 
-      const { error } = await ctx.supabase
+      const { error } = await ctx.supabaseAdmin
         .from("workspace_sso_providers")
         .delete()
         .eq("id", existing.id);
@@ -176,7 +178,7 @@ export default {
         return jsonError("AppKey 无效，企业内部应用 Client ID 通常以 ding 开头");
       }
 
-      const { data: existing } = await ctx.supabase
+      const { data: existing } = await ctx.supabaseAdmin
         .from("workspace_sso_providers")
         .select("id, public_config, credential_hint")
         .eq("workspace_id", body.workspaceId)
@@ -204,7 +206,7 @@ export default {
 
       let provider;
       if (existing) {
-        const { data, error } = await ctx.supabase
+        const { data, error } = await ctx.supabaseAdmin
           .from("workspace_sso_providers")
           .update({
             public_config: publicConfig,
@@ -223,7 +225,7 @@ export default {
         }
         provider = data;
       } else {
-        const { data, error } = await ctx.supabase
+        const { data, error } = await ctx.supabaseAdmin
           .from("workspace_sso_providers")
           .insert({
             workspace_id: body.workspaceId,

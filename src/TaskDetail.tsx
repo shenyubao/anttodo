@@ -37,6 +37,7 @@ import { getPriorityOption, PriorityControl } from "./PriorityControl";
 import { TaskComments, type CreateCommentInput } from "./TaskComments";
 import { TaskActivity } from "./TaskActivity";
 import { TaskCliTerminal } from "./TaskCliTerminal";
+import { FLUSH_PENDING_EDITS_EVENT } from "./ShortcutProvider";
 import {
   TaskRichTextEditor,
   type TaskRichTextEditorHandle,
@@ -967,6 +968,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   );
   const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
   const subtaskInputRef = useRef<HTMLInputElement>(null);
+  const focusedSubtaskTitleRef = useRef<HTMLInputElement>(null);
+  const editingSubtaskInputRef = useRef<HTMLInputElement>(null);
+  const skipSubtaskTitleCommitRef = useRef(false);
+  const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
+  const [editingSubtaskTitle, setEditingSubtaskTitle] = useState("");
   const [draftSubtaskDueAt, setDraftSubtaskDueAt] = useState<string | null>(null);
   const [draftSubtaskCli, setDraftSubtaskCli] = useState<AiCliTool | null>(null);
   const assignableMembers = useMemo(
@@ -1008,10 +1014,34 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     setDraftTitle(focusedSubtask?.title ?? task.title);
   }, [focusedSubtask?.id, focusedSubtask?.title, task.id, task.title]);
   useEffect(() => {
+    if (!focusedSubtask || !writable) return;
+    const input = focusedSubtaskTitleRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [focusedSubtask?.id, writable]);
+  useEffect(() => {
+    if (!editingSubtaskId) return;
+    if (task.subtasks.some((subtask) => subtask.id === editingSubtaskId)) return;
+    skipSubtaskTitleCommitRef.current = true;
+    setEditingSubtaskId(null);
+    setEditingSubtaskTitle("");
+  }, [editingSubtaskId, task.subtasks]);
+  useLayoutEffect(() => {
+    if (!editingSubtaskId) return;
+    const input = editingSubtaskInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [editingSubtaskId]);
+  useEffect(() => {
     // Keep CLI processes running across todo switches; restore the view if this
     // task still has a remembered terminal session.
     setImmersive(false);
     setCliPickerOpen(false);
+    skipSubtaskTitleCommitRef.current = true;
+    setEditingSubtaskId(null);
+    setEditingSubtaskTitle("");
     subtaskTokens.reset();
     setDraftSubtaskDueAt(null);
     setDraftSubtaskCli(null);
@@ -1115,6 +1145,33 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     }, 500);
   }
 
+  function beginEditSubtask(subtask: Subtask) {
+    if (!writable) return;
+    skipSubtaskTitleCommitRef.current = false;
+    setEditingSubtaskId(subtask.id);
+    setEditingSubtaskTitle(subtask.title);
+  }
+
+  function cancelEditSubtask() {
+    skipSubtaskTitleCommitRef.current = true;
+    setEditingSubtaskId(null);
+    setEditingSubtaskTitle("");
+  }
+
+  function commitEditSubtask() {
+    if (skipSubtaskTitleCommitRef.current) {
+      skipSubtaskTitleCommitRef.current = false;
+      return;
+    }
+    if (!editingSubtaskId) return;
+    const subtask = task.subtasks.find((item) => item.id === editingSubtaskId);
+    const nextTitle = editingSubtaskTitle.trim();
+    setEditingSubtaskId(null);
+    setEditingSubtaskTitle("");
+    if (!subtask || !nextTitle || nextTitle === subtask.title) return;
+    void onUpdateSubtask(subtask.id, { title: nextTitle }).catch(() => undefined);
+  }
+
   function stopTerminalSession(sessionId: string) {
     const bridge = window.anttodoDesktop?.aiWork?.terminal;
     if (bridge) void bridge.stop(sessionId);
@@ -1203,6 +1260,28 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     onClose();
   }
 
+  useEffect(() => {
+    const flushPending = () => {
+      if (!writable) return;
+      window.clearTimeout(saveTimer.current);
+      if (focusedSubtask && draftTitle !== focusedSubtask.title) {
+        void onUpdateSubtask(focusedSubtask.id, { title: draftTitle }).catch(() => undefined);
+      } else if (!focusedSubtask && draftTitle !== task.title) {
+        void onUpdate({ title: draftTitle }).catch(() => undefined);
+      }
+      void editorRef.current?.flush().catch(() => undefined);
+    };
+    window.addEventListener(FLUSH_PENDING_EDITS_EVENT, flushPending);
+    return () => window.removeEventListener(FLUSH_PENDING_EDITS_EVENT, flushPending);
+  }, [
+    draftTitle,
+    focusedSubtask,
+    onUpdate,
+    onUpdateSubtask,
+    task.title,
+    writable,
+  ]);
+
   useImperativeHandle(forwardedRef, () => ({ close: closeDetail }));
 
   if (focusedSubtask) {
@@ -1261,8 +1340,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         </header>
         <div className="detail-body">
           <div className="detail-caption">
-            <textarea
-              className="detail-title"
+            <input
+              ref={focusedSubtaskTitleRef}
+              className="detail-title subtask-detail-title"
               value={draftTitle}
               disabled={!writable}
               aria-label="子任务标题"
@@ -1270,7 +1350,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 setDraftTitle(event.target.value);
                 scheduleSubtaskSave(focusedSubtask.id, { title: event.target.value });
               }}
-              rows={2}
             />
             <button
               type="button"
@@ -1480,7 +1559,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             </div>
             <div className="subtask-list">
               {task.subtasks.map((subtask) => (
-                <div className="subtask-row" key={subtask.id}>
+                <div
+                  className={clsx("subtask-row", editingSubtaskId === subtask.id && "editing")}
+                  key={subtask.id}
+                >
                   <input
                     type="checkbox"
                     aria-label={`完成子任务：${subtask.title}`}
@@ -1488,7 +1570,35 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     disabled={!writable}
                     onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked)}
                   />
-                  <span className={clsx("subtask-title", subtask.completed && "completed")}>{subtask.title}</span>
+                  {editingSubtaskId === subtask.id ? (
+                    <input
+                      ref={editingSubtaskInputRef}
+                      className="subtask-title-input"
+                      value={editingSubtaskTitle}
+                      disabled={!writable}
+                      aria-label={`编辑子任务：${subtask.title}`}
+                      onChange={(event) => setEditingSubtaskTitle(event.target.value)}
+                      onBlur={() => commitEditSubtask()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitEditSubtask();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelEditSubtask();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className={clsx("subtask-title", subtask.completed && "completed")}
+                      disabled={!writable}
+                      onClick={() => beginEditSubtask(subtask)}
+                    >
+                      {subtask.title}
+                    </button>
+                  )}
                   <div className="subtask-actions">
                     <TaskAssigneeControl
                       task={task}

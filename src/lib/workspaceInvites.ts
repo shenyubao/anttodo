@@ -2,8 +2,59 @@ import type { WorkspaceInviteRole, WorkspaceRole } from "../types";
 
 const INVITE_PATH = /^\/invite\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i;
 
+export const PENDING_WORKSPACE_INVITE_KEY = "anttodo:pending-invite";
+export const PENDING_WORKSPACE_KEY = "anttodo:pending-workspace";
+
 export function workspaceInviteIdFromPath(pathname: string) {
   return INVITE_PATH.exec(pathname)?.[1] ?? null;
+}
+
+export function readPendingWorkspaceInvite() {
+  try {
+    return window.sessionStorage.getItem(PENDING_WORKSPACE_INVITE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function writePendingWorkspaceInvite(linkId: string) {
+  try {
+    window.sessionStorage.setItem(PENDING_WORKSPACE_INVITE_KEY, linkId);
+  } catch {
+    // Ignore quota / private-mode failures; accept can still be attempted manually.
+  }
+}
+
+export function clearPendingWorkspaceInvite() {
+  try {
+    window.sessionStorage.removeItem(PENDING_WORKSPACE_INVITE_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+export function writePendingWorkspace(workspaceId: string) {
+  try {
+    window.sessionStorage.setItem(PENDING_WORKSPACE_KEY, workspaceId);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+export function readPendingWorkspace() {
+  try {
+    return window.sessionStorage.getItem(PENDING_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingWorkspace() {
+  try {
+    window.sessionStorage.removeItem(PENDING_WORKSPACE_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
 }
 
 function validPublicBase(value: string | undefined) {

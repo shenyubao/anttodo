@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608042329",
+  "version": "1.0.202608050126",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -75,6 +75,7 @@
     "chinese-days": "^1.5.9",
     "clsx": "2.1.1",
     "date-fns": "4.4.0",
+    "electron-updater": "6.6.2",
     "idb-keyval": "6.3.0",
     "lucide-react": "1.26.0",
     "node-pty": "1.1.0",
@@ -148,6 +149,10 @@
       "artifactName": "AntTodo-${version}-${arch}.${ext}",
       "hardenedRuntime": true,
       "notarize": false
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos"
     }
   }
 }

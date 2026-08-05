@@ -66,22 +66,35 @@ spctl --assess --type execute --verbose=4 "release/mac-arm64/蚂蚁清单.app"
 ## 产物与稳定下载地址
 
 `pnpm package:mac:all` 会同时生成 Apple Silicon（`arm64`）和 Intel（`x64`）
-版本的 DMG 与 ZIP；对外分发只上传 DMG。`pnpm upload:mac:oss` 会上传版本化
-DMG，并覆盖以下稳定对象（默认 `OSS_PREFIX=release`）：
+版本的 DMG 与 ZIP。`pnpm upload:mac:oss` 会上传版本化 DMG/ZIP（及 ZIP 的
+`.blockmap`），并覆盖以下稳定对象（默认 `OSS_PREFIX=release`）。大文件分片上传
+使用串行 part，并在上传后回读校验 SHA-256，避免并行分片偶发写出“大小正确但内容损坏”
+的对象（Gatekeeper 会显示“已损坏，无法打开”）：
 
 ```text
 release/macos/AntTodo-arm64-latest.dmg
 release/macos/AntTodo-x64-latest.dmg
+release/macos/AntTodo-arm64-latest.zip
+release/macos/AntTodo-x64-latest.zip
+release/macos/AntTodo-<version>-arm64.zip
+release/macos/AntTodo-<version>-x64.zip
+release/macos/latest-mac.yml
 release/macos/latest.json
 ```
 
-官网应引用 `-latest` 地址；`latest.json` 还提供版本化地址、文件大小和 SHA-256，
-可供下载页动态展示或校验。
+官网首次安装应引用 `-latest` DMG 地址；`latest.json` 还提供版本化地址、文件大小和
+SHA-256，可供下载页动态展示或校验。桌面端应用内更新通过 `latest-mac.yml` 与同目录
+下的 ZIP 完成（由 `electron-updater` 下载并替换应用，无需手动重装）。
+
+打包时 `package.json` 的 `build.publish`（generic provider）会写入应用内的
+`app-update.yml`，feed URL 为：
+
+`https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos`
 
 ## 阿里云 OSS 配置
 
 1. 创建 OSS bucket（生产使用 `anttodo-yuce`），并确保公开读可访问对象，或通过
-   等价策略让官网与桌面端能拉取 `latest.json` 与 DMG。
+   等价策略让官网与桌面端能拉取 `latest.json`、`latest-mac.yml`、DMG 与 ZIP。
 2. 创建只允许目标 bucket 读写对象的 AccessKey。
 3. 在 GitHub 仓库配置以下 Actions secrets：
    - `ALIYUN_ACCESS_KEY_ID`
@@ -115,7 +128,7 @@ OSS_PUBLIC_BASE_URL=https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com
 pnpm deploy:mac
 ```
 
-仅上传 `release/` 中已有的两个 DMG：
+仅上传 `release/` 中已有的 DMG、ZIP 与更新 feed：
 
 ```bash
 pnpm upload:mac:oss

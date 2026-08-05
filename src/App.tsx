@@ -39,6 +39,7 @@ import {
   Cloud,
   CloudOff,
   Columns3,
+  Download,
   Ellipsis,
   FolderClosed,
   FolderOpen,
@@ -100,13 +101,20 @@ import { NotificationBell } from "./NotificationBell";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
 import { getPriorityOption } from "./PriorityControl";
+import { ShortcutProvider } from "./ShortcutProvider";
+import { ShortcutsSettingsPanel } from "./ShortcutsSettingsPanel";
 import { TaskContextMenu } from "./TaskContextMenu";
 import { TaskKanban } from "./TaskKanban";
 import { TaskSectionComposer } from "./TaskSectionComposer";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
 import type { CreateCommentInput } from "./TaskComments";
-import type { DesktopUpdateCheckResult } from "./lib/desktopUpdate";
+import type {
+  DesktopUpdateCheckResult,
+  DesktopUpdateDownloadProgress,
+} from "./lib/desktopUpdate";
+import { formatUpdateProgressLabel } from "./lib/desktopUpdate";
 import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
+import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
 import {
   assignSubtask as assignSubtaskApi,
   assignTask as assignTaskApi,
@@ -226,11 +234,17 @@ import {
   systemTimeZone,
 } from "./lib/dateTimePreferences";
 import {
+  buildWorkspaceTeamClientInviteUrl,
   buildWorkspaceTeamLoginUrl,
+  claimPendingDownloadGuide,
+  isTeamClientDownloadInvite,
+  markPendingDownloadGuide,
   resolveAppLocation,
 } from "./lib/appHost";
+import { DownloadClientDialog } from "./DownloadClientDialog";
 import {
   appRoutePath,
+  DEFAULT_SMART_VIEW,
   parseAppRoute,
   type AppRoute,
 } from "./lib/appRoute";
@@ -271,8 +285,17 @@ import {
   userLabelOrderRows,
   type LabelDropIntent,
 } from "./lib/labels";
+import {
+  areAllUserGroupsFullyVisible,
+  calendarAssigneeFilterIds,
+  CALENDAR_UNASSIGNED_ID,
+  isUserGroupFullyVisible,
+  toggleAllUserGroupsInAssigneeFilter,
+  toggleUserGroupInAssigneeFilter,
+} from "./lib/calendarVisibility";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
+import { memberDisplayName } from "./lib/taskTitleTokens";
 import { aiCliLabel, aiWorkSettingsTitleFromEvent, OPEN_AI_WORK_SETTINGS_EVENT, requestAiWorkSettings, stopCliTerminalsForTask } from "./lib/aiWork";
 import { useAiTerminalRunningTaskIds } from "./lib/aiTerminalSessions";
 import {
@@ -281,8 +304,14 @@ import {
 } from "./lib/permissions";
 import {
   buildWorkspaceInviteUrl,
+  clearPendingWorkspace,
+  clearPendingWorkspaceInvite,
+  readPendingWorkspace,
+  readPendingWorkspaceInvite,
   workspaceInviteIdFromPath,
   workspaceInviteRoleLabel,
+  writePendingWorkspace,
+  writePendingWorkspaceInvite,
 } from "./lib/workspaceInvites";
 import {
   buildDingtalkCallbackUrl,
@@ -436,6 +465,12 @@ export default function App() {
   const processedDesktopCodes = useRef(new Set<string>());
 
   useEffect(() => {
+    if (teamSlug && isTeamClientDownloadInvite(window.location.search)) {
+      markPendingDownloadGuide();
+    }
+  }, [teamSlug]);
+
+  useEffect(() => {
     if (!supabase || demoMode) return;
     void supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -495,10 +530,7 @@ export default function App() {
             });
             return;
           }
-          window.sessionStorage.setItem(
-            "anttodo:pending-workspace",
-            String(data.workspaceId),
-          );
+          writePendingWorkspace(String(data.workspaceId));
           setDesktopAuthStatus(null);
           code = await desktopAuthBridge.takePendingCallback();
         }
@@ -753,10 +785,27 @@ function WorkspaceInviteScreen({
     retry: false,
   });
 
-  if (!userId && showAuth) return <AuthScreen loginSurface="phone" />;
+  const preview = previewQuery.data;
+  const forceSso = Boolean(
+    preview?.ssoEnabled && preview.workspaceSlug,
+  );
+
+  if (!userId && showAuth) {
+    if (forceSso) {
+      return (
+        <AuthScreen
+          loginSurface="team-sso"
+          teamSlug={preview!.workspaceSlug}
+          showModeTabs={false}
+        />
+      );
+    }
+    return <AuthScreen loginSurface="phone" />;
+  }
 
   async function acceptInvite() {
     if (!userId) {
+      if (forceSso) writePendingWorkspaceInvite(inviteId);
       setShowAuth(true);
       return;
     }
@@ -770,12 +819,19 @@ function WorkspaceInviteScreen({
       setAccepting(false);
       return;
     }
-    window.sessionStorage.setItem("anttodo:pending-workspace", data.workspaceId);
+    clearPendingWorkspaceInvite();
+    writePendingWorkspace(data.workspaceId);
     window.location.assign("/");
   }
 
-  const preview = previewQuery.data;
   const unavailable = previewQuery.isError || preview?.status === "revoked";
+  const joinLabel = accepting
+    ? "正在加入…"
+    : userId
+    ? "确认加入"
+    : forceSso
+    ? "钉钉登录并加入"
+    : "登录后加入";
 
   return (
     <main className="invite-screen">
@@ -818,9 +874,8 @@ function WorkspaceInviteScreen({
               disabled={accepting}
               onClick={() => void acceptInvite()}
             >
-              {accepting ? "正在加入…" : userId ? "确认加入" : "登录后加入"}
+              {joinLabel}
             </button>
-            <p className="invite-confirmation">加入前由你确认，不会自动接受邀请。</p>
           </>
         )}
       </section>
@@ -952,10 +1007,7 @@ function DingtalkCallbackScreen() {
         setError(verifyError.message || "无法建立登录会话。");
         return;
       }
-      window.sessionStorage.setItem(
-        "anttodo:pending-workspace",
-        exchange.workspaceId,
-      );
+      writePendingWorkspace(exchange.workspaceId);
       window.location.replace("/");
     }
     void complete();
@@ -1016,54 +1068,58 @@ const SSO_PROVIDER_RENDERERS: Record<
 > = {
   dingtalk: ({
     provider,
-    workspaceName,
     error,
     canChangeProvider,
     onRedirect,
     onFrameError,
     onChangeProvider,
-  }) => (
-    <>
-      <div
-        className="dingtalk-qr-frame"
-        aria-label="钉钉登录二维码"
-      >
-        <iframe
-          title="钉钉登录二维码"
-          src={dingtalkFrameLoginUrl({
-            redirectUri: provider.config.redirectUri,
-            clientId: provider.config.appKey,
-            state: provider.config.state,
-          })}
-          width="300"
-          height="300"
-          onError={onFrameError}
-        />
-      </div>
-      <strong>使用钉钉扫码登录</strong>
-      <p>
-        正在登录「{workspaceName}」。请打开钉钉扫描二维码，或改用跳转授权。
-      </p>
-      {error && <p className="form-error" role="alert">{error}</p>}
-      <button
-        type="button"
-        className="button secondary full"
-        onClick={onRedirect}
-      >
-        <RefreshCw aria-hidden="true" />
-        跳转到钉钉授权
-      </button>
-      {canChangeProvider && (
-        <button
-          type="button"
-          className="auth-text-button"
-          onClick={onChangeProvider}
-        >
-          更换登录方式
-        </button>
-      )}
-    </>
-  ),
+  }) => {
+    const canRedirect = Boolean(
+      provider.config.redirectUri && provider.config.state && provider.config.appKey,
+    );
+    return (
+      <>
+        {!canRedirect && (
+          <div
+            className="dingtalk-qr-frame"
+            aria-label="钉钉登录二维码"
+          >
+            <iframe
+              title="钉钉登录二维码"
+              src={dingtalkFrameLoginUrl({
+                redirectUri: provider.config.redirectUri,
+                clientId: provider.config.appKey,
+                state: provider.config.state,
+              })}
+              width="300"
+              height="300"
+              onError={onFrameError}
+            />
+          </div>
+        )}
+        {error && <p className="form-error" role="alert">{error}</p>}
+        {canRedirect && (
+          <button
+            type="button"
+            className="button secondary full"
+            onClick={onRedirect}
+          >
+            <RefreshCw aria-hidden="true" />
+            跳转到钉钉授权
+          </button>
+        )}
+        {canChangeProvider && (
+          <button
+            type="button"
+            className="auth-text-button"
+            onClick={onChangeProvider}
+          >
+            更换登录方式
+          </button>
+        )}
+      </>
+    );
+  },
 };
 
 function AuthScreen({
@@ -1139,10 +1195,7 @@ function AuthScreen({
     }
     setSsoLogin(loginConfig);
     setSelectedProvider(initialWorkspaceSsoProvider(loginConfig.providers));
-    window.sessionStorage.setItem(
-      "anttodo:pending-workspace",
-      loginConfig.workspace.id,
-    );
+    writePendingWorkspace(loginConfig.workspace.id);
   }
 
   useEffect(() => {
@@ -1590,11 +1643,31 @@ function RemoteApplication({
   }, [attachmentService]);
 
   useEffect(() => {
+    const linkId = readPendingWorkspaceInvite();
+    if (!linkId) return;
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await client.functions.invoke("workspace-invite", {
+        body: { action: "accept", linkId },
+      });
+      if (cancelled) return;
+      clearPendingWorkspaceInvite();
+      if (!error && data?.workspaceId) {
+        writePendingWorkspace(String(data.workspaceId));
+      } else {
+        setNotice("邀请确认未完成。若你已通过企业登录加入，可直接开始使用。");
+      }
+      await queryClient.invalidateQueries({ queryKey: ["workspaces", userId] });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, userId, queryClient]);
+
+  useEffect(() => {
     if (!workspacesQuery.data?.length) return;
 
-    const pendingWorkspaceId = window.sessionStorage.getItem(
-      "anttodo:pending-workspace",
-    );
+    const pendingWorkspaceId = readPendingWorkspace();
     const pendingWorkspace = workspacesQuery.data.find(
       (workspace) => workspace.id === pendingWorkspaceId,
     );
@@ -1611,15 +1684,24 @@ function RemoteApplication({
 
     if (!workspaceId) {
       setWorkspaceId(preferred.id);
-      window.sessionStorage.removeItem("anttodo:pending-workspace");
+      clearPendingWorkspace();
       return;
     }
 
     if (slugWorkspace && slugWorkspace.id !== workspaceId) {
       setWorkspaceId(slugWorkspace.id);
+      clearPendingWorkspace();
+      return;
     }
+
+    if (pendingWorkspace && pendingWorkspace.id !== workspaceId) {
+      setWorkspaceId(pendingWorkspace.id);
+      clearPendingWorkspace();
+      return;
+    }
+
     if (pendingWorkspaceId) {
-      window.sessionStorage.removeItem("anttodo:pending-workspace");
+      clearPendingWorkspace();
     }
   }, [workspaceId, workspacesQuery.data, preferredTeamSlug, requestedWorkspaceId]);
 
@@ -3844,7 +3926,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     ? currentTaskReturnRoute(props.workspaceId)
     : workspaceInitialRoute;
   const [smartView, setSmartView] = useState<SmartView>(
-    initialListRoute?.kind === "view" ? initialListRoute.view : "all",
+    initialListRoute?.kind === "view" ? initialListRoute.view : DEFAULT_SMART_VIEW,
   );
   const [appSection, setAppSection] = useState<AppSection>(
     workspaceInitialRoute?.kind === "calendar" || workspaceInitialRoute?.kind === "mindmap"
@@ -3867,7 +3949,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [mobileAppSidebar, setMobileAppSidebar] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | null>(null);
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false);
+  const [downloadClientDialogOpen, setDownloadClientDialogOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_MIN_WIDTH);
   const [calendarSidebarWidth, setCalendarSidebarWidth] = useState(
     CALENDAR_SIDEBAR_DEFAULT_WIDTH,
@@ -3884,12 +3968,24 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [visibleCalendarIds, setVisibleCalendarIds] = useState<Set<string>>(
     () => new Set(["inbox", ...props.bundle.labels.map((label) => label.id)]),
   );
+  const [visibleAssigneeIds, setVisibleAssigneeIds] = useState<Set<string>>(
+    () => new Set(calendarAssigneeFilterIds(props.bundle.members)),
+  );
   const now = useMinuteNow();
   const {
     availableUpdate,
     remindLater: remindUpdateLater,
     downloadUpdate,
+    installing: updateInstalling,
+    progress: updateProgress,
+    installError: updateInstallError,
   } = useDesktopUpdateCheck();
+
+  useEffect(() => {
+    if (claimPendingDownloadGuide()) {
+      setDownloadClientDialogOpen(true);
+    }
+  }, []);
 
   const selectedTask = props.bundle.tasks.find((task) => task.id === selectedTaskId) ?? null;
   const selectedTaskEditable = selectedTask
@@ -3975,7 +4071,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   function changeWorkspace(workspaceId: string) {
-    writeRoute({ workspaceId, kind: "view", view: "all" });
+    writeRoute({ workspaceId, kind: "view", view: DEFAULT_SMART_VIEW });
     props.onWorkspaceChange(workspaceId);
   }
 
@@ -3983,7 +4079,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     if (selectedTaskId && !selectedTask) {
       setSelectedTaskId(null);
       setSelectedSubtaskId(null);
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
   }, [selectedTask, selectedTaskId]);
 
@@ -4008,9 +4104,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     if (selectedLabelId && !props.bundle.labels.some((label) => label.id === selectedLabelId)) {
       setSelectedLabelId(null);
-      setSmartView("all");
+      setSmartView(DEFAULT_SMART_VIEW);
       setViewMode("list");
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
   }, [props.bundle.labels, props.workspaceId, selectedLabelId]);
 
@@ -4022,9 +4118,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         if (props.workspaces.some((workspace) => workspace.id === route.workspaceId)) {
           props.onWorkspaceChange(route.workspaceId);
         } else {
-          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
           setAppSection("tasks");
-          setSmartView("all");
+          setSmartView(DEFAULT_SMART_VIEW);
           setViewMode("list");
           setSelectedLabelId(null);
           setSelectedTaskId(null);
@@ -4045,7 +4141,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       const listRoute = route.kind === "task"
         ? currentTaskReturnRoute(props.workspaceId)
         : route;
-      setSmartView(listRoute?.kind === "view" ? listRoute.view : "all");
+      setSmartView(listRoute?.kind === "view" ? listRoute.view : DEFAULT_SMART_VIEW);
       setSelectedLabelId(listRoute?.kind === "tag" ? listRoute.tagId : null);
       if (listRoute?.kind === "view" || listRoute?.kind === "tag") {
         setViewMode(listRoute.mode ?? "list");
@@ -4060,9 +4156,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     const route = currentApplicationRoute();
     if (route?.workspaceId !== props.workspaceId) {
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: "all" }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
       setAppSection("tasks");
-      setSmartView("all");
+      setSmartView(DEFAULT_SMART_VIEW);
       setViewMode("list");
       setSelectedLabelId(null);
       setSelectedTaskId(null);
@@ -4079,7 +4175,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     const listRoute = route.kind === "task"
       ? currentTaskReturnRoute(props.workspaceId)
       : route;
-    setSmartView(listRoute?.kind === "view" ? listRoute.view : "all");
+    setSmartView(listRoute?.kind === "view" ? listRoute.view : DEFAULT_SMART_VIEW);
     setSelectedLabelId(listRoute?.kind === "tag" ? listRoute.tagId : null);
     if (listRoute?.kind === "view" || listRoute?.kind === "tag") {
       setViewMode(listRoute.mode ?? "list");
@@ -4135,11 +4231,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     writeRoute({
       workspaceId: props.workspaceId,
       kind: section === "tasks" ? "view" : section,
-      ...(section === "tasks" ? { view: "all" as const } : {}),
+      ...(section === "tasks" ? { view: DEFAULT_SMART_VIEW } : {}),
     } as AppRoute);
     setAppSection(section);
     if (section === "tasks") {
-      setSmartView("all");
+      setSmartView(DEFAULT_SMART_VIEW);
       setSelectedLabelId(null);
     }
     setSelectedTaskId(null);
@@ -4157,7 +4253,34 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setMobileSidebar(true);
   }
 
+  function openSettings(tab: SettingsTab = "account") {
+    setSettingsInitialTab(tab);
+    setSettingsDialogOpen(true);
+  }
+
+  const shortcutScope = appSection === "calendar"
+    ? "calendar" as const
+    : appSection === "mindmap"
+    ? "mindmap" as const
+    : "tasks" as const;
+
   return (
+    <ShortcutProvider initialScope={shortcutScope}>
+    <WorkspaceShortcutBindings
+      appSection={shortcutScope}
+      settingsOpen={settingsDialogOpen}
+      smartView={smartView}
+      selectedTask={selectedTask}
+      online={props.online}
+      onOpenSearch={() => setSearchDialogOpen(true)}
+      onOpenSettings={() => openSettings("account")}
+      onOpenShortcutsSettings={() => openSettings("shortcuts")}
+      onChangeSection={changeSection}
+      onCreateSubtask={(taskId, title) => props.onCreateSubtask(taskId, title)}
+      onUpdateTask={props.onUpdateTask}
+      onCloseTask={closeTask}
+      onNotice={props.onNotice}
+    />
     <main
       className={clsx(
         "app-shell",
@@ -4188,7 +4311,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
         onSearch={() => setSearchDialogOpen(true)}
         onSectionChange={changeSection}
-        onSettings={() => setSettingsDialogOpen(true)}
+        onSettings={() => openSettings()}
         onMarkNotificationRead={props.onMarkNotificationRead}
         onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
         onOpenNotificationTask={(taskId) => {
@@ -4197,6 +4320,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setSelectedLabelId(null);
           selectTask(taskId);
         }}
+        onDownloadClient={() => setDownloadClientDialogOpen(true)}
         onSignOut={props.onSignOut}
       />
       <MobileAppSidebar
@@ -4214,6 +4338,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         smartView={smartView}
         selectedLabelId={selectedLabelId}
         visibleCalendarIds={visibleCalendarIds}
+        visibleAssigneeIds={visibleAssigneeIds}
         notifications={props.notifications}
         notificationsLoading={props.notificationsLoading}
         onOpen={() => setMobileAppSidebar(true)}
@@ -4239,13 +4364,31 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           const ids = ["inbox", ...props.bundle.labels.map((label) => label.id)];
           return ids.every((id) => current.has(id)) ? new Set() : new Set(ids);
         })}
+        onToggleAssignee={(id) => setVisibleAssigneeIds((current) => {
+          const next = new Set(current);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        })}
+        onShowAllAssignees={() => setVisibleAssigneeIds((current) => {
+          const ids = calendarAssigneeFilterIds(props.bundle.members);
+          return ids.every((id) => current.has(id)) ? new Set() : new Set(ids);
+        })}
+        onToggleUserGroup={(groupId) => setVisibleAssigneeIds((current) =>
+          toggleUserGroupInAssigneeFilter(current, groupId, props.bundle.userGroupMembers))}
+        onShowAllUserGroups={() => setVisibleAssigneeIds((current) =>
+          toggleAllUserGroupsInAssigneeFilter(
+            current,
+            props.bundle.userGroups.map((group) => group.id),
+            props.bundle.userGroupMembers,
+          ))}
         onSearch={() => {
           setMobileAppSidebar(false);
           setSearchDialogOpen(true);
         }}
         onSettings={() => {
           setMobileAppSidebar(false);
-          setSettingsDialogOpen(true);
+          openSettings();
         }}
         onMarkNotificationRead={props.onMarkNotificationRead}
         onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
@@ -4255,6 +4398,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setSmartView("all");
           setSelectedLabelId(null);
           selectTask(taskId);
+        }}
+        onDownloadClient={() => {
+          setMobileAppSidebar(false);
+          setDownloadClientDialogOpen(true);
         }}
         onSignOut={props.onSignOut}
       />
@@ -4286,6 +4433,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         openMobile={mobileSidebar}
         bundle={props.bundle}
         visibleCalendarIds={visibleCalendarIds}
+        visibleAssigneeIds={visibleAssigneeIds}
         onCloseMobile={() => setMobileSidebar(false)}
         onToggleCalendar={(id) => setVisibleCalendarIds((current) => {
           const next = new Set(current);
@@ -4297,6 +4445,24 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           const ids = ["inbox", ...props.bundle.labels.map((label) => label.id)];
           return ids.every((id) => current.has(id)) ? new Set() : new Set(ids);
         })}
+        onToggleAssignee={(id) => setVisibleAssigneeIds((current) => {
+          const next = new Set(current);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        })}
+        onShowAllAssignees={() => setVisibleAssigneeIds((current) => {
+          const ids = calendarAssigneeFilterIds(props.bundle.members);
+          return ids.every((id) => current.has(id)) ? new Set() : new Set(ids);
+        })}
+        onToggleUserGroup={(groupId) => setVisibleAssigneeIds((current) =>
+          toggleUserGroupInAssigneeFilter(current, groupId, props.bundle.userGroupMembers))}
+        onShowAllUserGroups={() => setVisibleAssigneeIds((current) =>
+          toggleAllUserGroupsInAssigneeFilter(
+            current,
+            props.bundle.userGroups.map((group) => group.id),
+            props.bundle.userGroupMembers,
+          ))}
         visibleDate={calendarVisibleDate}
         dateTimePreferences={props.dateTimePreferences}
         onSelectDate={(date) => setCalendarNavigationDate(new Date(date))}
@@ -4358,6 +4524,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           currentUserId={props.currentUserId}
           online={props.online}
           visibleCalendarIds={visibleCalendarIds}
+          visibleAssigneeIds={visibleAssigneeIds}
           dateTimePreferences={props.dateTimePreferences}
           onSelectTask={selectTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
@@ -4497,7 +4664,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       />
       <SettingsDialog
         open={settingsDialogOpen}
-        onOpenChange={setSettingsDialogOpen}
+        onOpenChange={(open) => {
+          setSettingsDialogOpen(open);
+          if (!open) setSettingsInitialTab(null);
+        }}
+        initialTab={settingsInitialTab}
         userId={props.currentUserId}
         userName={props.currentUserName}
         email={props.currentUserEmail}
@@ -4542,6 +4713,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onCreate={props.onCreateWorkspace}
         onCheckSlug={props.onCheckWorkspaceSlug}
       />
+      <DownloadClientDialog
+        open={downloadClientDialogOpen}
+        onOpenChange={setDownloadClientDialogOpen}
+      />
       {availableUpdate && (
         <DesktopUpdateBanner
           update={availableUpdate}
@@ -4549,6 +4724,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             void downloadUpdate();
           }}
           onRemindLater={remindUpdateLater}
+          installing={updateInstalling}
+          progress={updateProgress}
+          installError={updateInstallError}
         />
       )}
       {props.notice && (
@@ -4559,6 +4737,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         </div>
       )}
     </main>
+    </ShortcutProvider>
   );
 }
 
@@ -4579,6 +4758,7 @@ function NavigationRail({
   onMarkNotificationRead,
   onMarkAllNotificationsRead,
   onOpenNotificationTask,
+  onDownloadClient,
   onSignOut,
 }: {
   activeSection: AppSection;
@@ -4597,11 +4777,13 @@ function NavigationRail({
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
   onMarkAllNotificationsRead: () => Promise<void>;
   onOpenNotificationTask: (taskId: string) => void;
+  onDownloadClient: () => void;
   onSignOut: () => unknown;
 }) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
+  const showDownloadClient = !window.anttodoDesktop;
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -4751,6 +4933,16 @@ function NavigationRail({
       </button>
       <div className="rail-spacer" />
       <div className={clsx("connection-dot", !online && "offline")} title={online ? "在线" : "离线"} />
+      {showDownloadClient && (
+        <button
+          className="rail-button"
+          type="button"
+          aria-label="下载客户端"
+          onClick={onDownloadClient}
+        >
+          <Download />
+        </button>
+      )}
       <NotificationBell
         notifications={notifications}
         loading={notificationsLoading}
@@ -4775,6 +4967,7 @@ function MobileAppSidebar({
   smartView,
   selectedLabelId,
   visibleCalendarIds,
+  visibleAssigneeIds,
   notifications,
   notificationsLoading,
   onOpen,
@@ -4786,11 +4979,16 @@ function MobileAppSidebar({
   onLabel,
   onToggleCalendar,
   onShowAllCalendars,
+  onToggleAssignee,
+  onShowAllAssignees,
+  onToggleUserGroup,
+  onShowAllUserGroups,
   onSearch,
   onSettings,
   onMarkNotificationRead,
   onMarkAllNotificationsRead,
   onOpenNotificationTask,
+  onDownloadClient,
   onSignOut,
 }: {
   open: boolean;
@@ -4804,6 +5002,7 @@ function MobileAppSidebar({
   smartView: SmartView;
   selectedLabelId: string | null;
   visibleCalendarIds: Set<string>;
+  visibleAssigneeIds: Set<string>;
   notifications: AppNotification[];
   notificationsLoading: boolean;
   onOpen: () => void;
@@ -4815,11 +5014,16 @@ function MobileAppSidebar({
   onLabel: (id: string) => void;
   onToggleCalendar: (id: string) => void;
   onShowAllCalendars: () => void;
+  onToggleAssignee: (id: string) => void;
+  onShowAllAssignees: () => void;
+  onToggleUserGroup: (groupId: string) => void;
+  onShowAllUserGroups: () => void;
   onSearch: () => void;
   onSettings: () => void;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
   onMarkAllNotificationsRead: () => Promise<void>;
   onOpenNotificationTask: (taskId: string) => void;
+  onDownloadClient: () => void;
   onSignOut: () => unknown;
 }) {
   const [workspaceListOpen, setWorkspaceListOpen] = useState(false);
@@ -4827,6 +5031,7 @@ function MobileAppSidebar({
   const [dragOffset, setDragOffset] = useState<number | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const suppressScrimClickRef = useRef(false);
+  const showDownloadClient = !window.anttodoDesktop;
   const dragRef = useRef<{
     pointerId: number;
     kind: MobileSidebarDragKind;
@@ -4841,6 +5046,23 @@ function MobileAppSidebar({
   const trashedTasks = bundle.tasks.filter((task) => Boolean(task.deleted_at));
   const calendarIds = ["inbox", ...bundle.labels.map((label) => label.id)];
   const allCalendarsVisible = calendarIds.every((id) => visibleCalendarIds.has(id));
+  const assigneeIds = calendarAssigneeFilterIds(bundle.members);
+  const allAssigneesVisible = assigneeIds.every((id) => visibleAssigneeIds.has(id));
+  const sortedCalendarUserGroups = useMemo(
+    () => [...bundle.userGroups].sort((left, right) =>
+      left.name.localeCompare(right.name, "zh-Hans-CN")),
+    [bundle.userGroups],
+  );
+  const allUserGroupsVisible = areAllUserGroupsFullyVisible(
+    sortedCalendarUserGroups.map((group) => group.id),
+    visibleAssigneeIds,
+    bundle.userGroupMembers,
+  );
+  const sortedCalendarMembers = useMemo(
+    () => [...bundle.members].sort((left, right) =>
+      memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN")),
+    [bundle.members],
+  );
   const dragging = dragOffset !== null;
   const scrimProgress = dragging
     ? mobileSidebarDragProgress(mobileSidebarWidth(window.innerWidth), dragOffset)
@@ -5043,6 +5265,16 @@ function MobileAppSidebar({
             <button type="button" className="mobile-sidebar-icon-button" aria-label="搜索" onClick={onSearch}>
               <Search />
             </button>
+            {showDownloadClient && (
+              <button
+                type="button"
+                className="mobile-sidebar-icon-button"
+                aria-label="下载客户端"
+                onClick={onDownloadClient}
+              >
+                <Download />
+              </button>
+            )}
             <NotificationBell
               notifications={notifications}
               loading={notificationsLoading}
@@ -5179,10 +5411,76 @@ function MobileAppSidebar({
 
           {activeSection === "calendar" && (
             <>
-              <div className="mobile-sidebar-section-title">日历列表</div>
+              <div className="mobile-sidebar-section-title">用户组</div>
               <div className="mobile-calendar-list">
-                <button type="button" onClick={onShowAllCalendars} aria-pressed={allCalendarsVisible}>
-                  <CalendarDays /><span>所有</span>{allCalendarsVisible && <Check />}
+                <button
+                  type="button"
+                  onClick={onShowAllUserGroups}
+                  aria-pressed={allUserGroupsVisible}
+                  aria-label="全选用户组"
+                  disabled={sortedCalendarUserGroups.length === 0}
+                >
+                  <span>全选</span>{allUserGroupsVisible && <Check />}
+                </button>
+                {sortedCalendarUserGroups.length === 0 ? (
+                  <p className="mobile-calendar-filter-empty">暂无用户组</p>
+                ) : sortedCalendarUserGroups.map((group) => {
+                  const visible = isUserGroupFullyVisible(
+                    group.id,
+                    visibleAssigneeIds,
+                    bundle.userGroupMembers,
+                  );
+                  return (
+                    <button
+                      type="button"
+                      key={group.id}
+                      className={clsx(visible && "active")}
+                      onClick={() => onToggleUserGroup(group.id)}
+                      aria-pressed={visible}
+                    >
+                      <Users /><span>{group.name}</span>
+                      {visible && <Check />}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mobile-sidebar-section-title">用户</div>
+              <div className="mobile-calendar-list">
+                <button
+                  type="button"
+                  onClick={onShowAllAssignees}
+                  aria-pressed={allAssigneesVisible}
+                  aria-label="全选用户"
+                >
+                  <span>全选</span>{allAssigneesVisible && <Check />}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(visibleAssigneeIds.has(CALENDAR_UNASSIGNED_ID) && "active")}
+                  onClick={() => onToggleAssignee(CALENDAR_UNASSIGNED_ID)}
+                  aria-pressed={visibleAssigneeIds.has(CALENDAR_UNASSIGNED_ID)}
+                >
+                  <UserRound /><span>未指派</span>
+                  {visibleAssigneeIds.has(CALENDAR_UNASSIGNED_ID) && <Check />}
+                </button>
+                {sortedCalendarMembers.map((member) => (
+                  <button
+                    type="button"
+                    key={member.user_id}
+                    className={clsx(visibleAssigneeIds.has(member.user_id) && "active")}
+                    onClick={() => onToggleAssignee(member.user_id)}
+                    aria-pressed={visibleAssigneeIds.has(member.user_id)}
+                  >
+                    <MemberAvatar member={member} className="mobile-calendar-user-avatar" />
+                    <span>{memberDisplayName(member)}</span>
+                    {visibleAssigneeIds.has(member.user_id) && <Check />}
+                  </button>
+                ))}
+              </div>
+              <div className="mobile-sidebar-section-title">标签</div>
+              <div className="mobile-calendar-list">
+                <button type="button" onClick={onShowAllCalendars} aria-pressed={allCalendarsVisible} aria-label="全选">
+                  <span>全选</span>{allCalendarsVisible && <Check />}
                 </button>
                 <button
                   type="button"
@@ -7272,7 +7570,8 @@ function TaskWorkspace({
     ]);
     const kind: TaskKind = "todo";
     let priority = quickPriority;
-    let assigneeId: string | null = payload.assigneeId;
+    let assigneeId: string | null = payload.assigneeId
+      ?? (!selectedLabelId && smartView === "assigned" ? currentUserId : null);
     let cliAssignee: AiCliTool | null = null;
     let dueAt: string | null = null;
     if (column.target.kind === "label" && column.target.labelId) {
@@ -7452,6 +7751,8 @@ function TaskWorkspace({
     if (!title || !online || busy) return;
     setBusy(true);
     try {
+      const assigneeId = payload.assigneeId
+        ?? (!selectedLabelId && smartView === "assigned" ? currentUserId : null);
       const created = await onCreateTask({
         title,
         labelIds: payload.labelIds,
@@ -7459,7 +7760,7 @@ function TaskWorkspace({
         priority: quickKind === "note" ? "none" : quickPriority,
         dueAt: payload.due?.due_at ?? null,
         dueTimezone: payload.due?.due_timezone ?? null,
-        assigneeId: payload.assigneeId,
+        assigneeId,
         optimisticOrder: manualTaskOrderEnabled
           ? {
               listKey,
@@ -8785,11 +9086,6 @@ function TeamManagementList({
   workspaces: Workspace[];
   currentWorkspaceId: string;
   online: boolean;
-  onLoadInviteLink: WorkspaceAppProps["onLoadInviteLink"];
-  onEnableInviteLink: WorkspaceAppProps["onEnableInviteLink"];
-  onUpdateInviteLinkRole: WorkspaceAppProps["onUpdateInviteLinkRole"];
-  onDisableInviteLink: WorkspaceAppProps["onDisableInviteLink"];
-  onCopyInviteLink: WorkspaceAppProps["onCopyInviteLink"];
   onUpdateWorkspace: WorkspaceAppProps["onUpdateWorkspace"];
   onDeleteWorkspace: WorkspaceAppProps["onDeleteWorkspace"];
   onNotice: (message: string) => void;
@@ -8848,45 +9144,24 @@ function TeamManagementList({
 function TeamManagementPanel({
   workspace,
   online,
-  onLoadInviteLink,
-  onEnableInviteLink,
-  onUpdateInviteLinkRole,
-  onDisableInviteLink,
-  onCopyInviteLink,
   onUpdateWorkspace,
   onDeleteWorkspace,
   onNotice,
 }: {
   workspace: Workspace;
   online: boolean;
-  onLoadInviteLink: WorkspaceAppProps["onLoadInviteLink"];
-  onEnableInviteLink: WorkspaceAppProps["onEnableInviteLink"];
-  onUpdateInviteLinkRole: WorkspaceAppProps["onUpdateInviteLinkRole"];
-  onDisableInviteLink: WorkspaceAppProps["onDisableInviteLink"];
-  onCopyInviteLink: WorkspaceAppProps["onCopyInviteLink"];
   onUpdateWorkspace: WorkspaceAppProps["onUpdateWorkspace"];
   onDeleteWorkspace: WorkspaceAppProps["onDeleteWorkspace"];
   onNotice: (message: string) => void;
 }) {
   const canManage = workspace.role === "owner" || workspace.role === "admin";
-  const queryClient = useQueryClient();
-  const inviteLinkQuery = useQuery({
-    queryKey: ["workspace-invite-link", workspace.id],
-    queryFn: () => onLoadInviteLink(workspace.id),
-    enabled: canManage,
-  });
-  const inviteLink = inviteLinkQuery.data ?? null;
   const [name, setName] = useState(workspace.name);
   const [slug, setSlug] = useState(workspace.slug);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [inviteBusy, setInviteBusy] = useState(false);
-  const [inviteError, setInviteError] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
-  const activeInviteRole = inviteLink?.role ?? "member";
 
   useEffect(() => {
     setName(workspace.name);
@@ -8939,40 +9214,6 @@ function TeamManagementPanel({
     import.meta.env.VITE_PUBLIC_APP_URL,
     window.location.origin,
   );
-
-  async function setInviteEnabled(enabled: boolean) {
-    setInviteBusy(true);
-    setInviteError("");
-    try {
-      if (enabled) {
-        const link = await onEnableInviteLink(workspace.id, activeInviteRole);
-        queryClient.setQueryData(["workspace-invite-link", workspace.id], link);
-      } else {
-        await onDisableInviteLink(workspace.id);
-        queryClient.setQueryData(["workspace-invite-link", workspace.id], null);
-      }
-    } catch {
-      setInviteError(
-        enabled ? "邀请链接暂时无法启用。" : "邀请链接暂时无法关闭。",
-      );
-    } finally {
-      setInviteBusy(false);
-    }
-  }
-
-  async function setInviteRole(role: WorkspaceInviteRole) {
-    if (!inviteLink) return;
-    setInviteBusy(true);
-    setInviteError("");
-    try {
-      const link = await onUpdateInviteLinkRole(workspace.id, role);
-      queryClient.setQueryData(["workspace-invite-link", workspace.id], link);
-    } catch {
-      setInviteError("邀请身份暂时无法更新。");
-    } finally {
-      setInviteBusy(false);
-    }
-  }
 
   return (
     <div className="team-mgmt-settings-panel">
@@ -9027,68 +9268,13 @@ function TeamManagementPanel({
           </p>
         )}
       </form>
-      {canManage && (
-        <section className="invite-link-section" aria-label="邀请链接">
-          <label className="invite-link-toggle-row">
-            <span className="date-time-switch">
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label="启用邀请链接"
-                checked={Boolean(inviteLink)}
-                disabled={!online || inviteBusy || inviteLinkQuery.isLoading}
-                onChange={(event) => void setInviteEnabled(event.target.checked)}
-              />
-              <i aria-hidden="true" />
-            </span>
-            <span>启用邀请链接</span>
-          </label>
-          <div className={clsx("invite-link-control", !inviteLink && "disabled")}>
-            <span>通过邀请链接加入的成员</span>
-            <span className="invite-link-role">
-              <select
-                aria-label="邀请链接加入身份"
-                value={activeInviteRole}
-                disabled={!online || inviteBusy || !inviteLink}
-                onChange={(event) =>
-                  void setInviteRole(event.target.value as WorkspaceInviteRole)
-                }
-              >
-                <option value="member">普通成员</option>
-                <option value="admin">管理员</option>
-              </select>
-              <ChevronDown aria-hidden="true" />
-            </span>
-            <button
-              type="button"
-              disabled={!online || inviteBusy || !inviteLink}
-              onClick={() => inviteLink && void onCopyInviteLink(inviteLink)}
-            >
-              复制链接
-            </button>
-          </div>
-          {activeInviteRole === "admin" && inviteLink && (
-            <p className="invite-link-warning">
-              管理员可管理团队成员、标签权限和连接器。
-            </p>
-          )}
-          {inviteError && (
-            <p className="invite-link-error" role="alert">{inviteError}</p>
-          )}
-        </section>
-      )}
       {workspace.role === "owner" && (
         <section className="team-danger-zone" aria-label="危险操作">
-          <div>
-            <strong>删除团队</strong>
-            <p>永久删除团队及其任务、标签、成员、评论、附件、连接器和配置。</p>
-          </div>
           <button
             type="button"
             className="button danger"
             disabled={!online}
             onClick={() => {
-              setDeleteConfirmation("");
               setDeleteError("");
               setDeleteOpen(true);
             }}
@@ -9101,32 +9287,22 @@ function TeamManagementPanel({
         <Dialog.Portal>
           <Dialog.Overlay className="dialog-overlay" />
           <Dialog.Content className="dialog-content workspace-delete-dialog">
-            <Dialog.Title>永久删除“{workspace.name}”</Dialog.Title>
+            <Dialog.Title>删除团队“{workspace.name}”</Dialog.Title>
             <Dialog.Description>
-              团队中的所有数据都会被清理且无法还原。请输入完整团队名称以确认。
+              团队及其中的任务、标签、成员、评论、附件、连接器和配置将被永久删除，且无法恢复。请确认是否继续。
             </Dialog.Description>
-            <label>
-              <span>团队名称</span>
-              <input
-                autoFocus
-                value={deleteConfirmation}
-                disabled={deleteBusy}
-                onChange={(event) => setDeleteConfirmation(event.target.value)}
-                aria-label="输入团队名称确认删除"
-              />
-            </label>
             {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
             <div className="dialog-actions">
               <Dialog.Close className="button secondary" disabled={deleteBusy}>取消</Dialog.Close>
               <button
                 type="button"
                 className="button danger"
-                disabled={!online || deleteBusy || deleteConfirmation !== workspace.name}
+                disabled={!online || deleteBusy}
                 onClick={() => void (async () => {
                   setDeleteBusy(true);
                   setDeleteError("");
                   try {
-                    await onDeleteWorkspace(workspace.id, deleteConfirmation);
+                    await onDeleteWorkspace(workspace.id, workspace.name);
                     setDeleteOpen(false);
                     onNotice("团队已永久删除");
                   } catch (deleteCause) {
@@ -9140,7 +9316,7 @@ function TeamManagementPanel({
                   }
                 })()}
               >
-                {deleteBusy ? "正在删除…" : "永久删除"}
+                {deleteBusy ? "正在删除…" : "确认删除"}
               </button>
             </div>
             <Dialog.Close className="dialog-close" aria-label="关闭" disabled={deleteBusy}><X /></Dialog.Close>
@@ -9156,12 +9332,35 @@ function TeamSettingsPanel({
   bundle,
   online,
   onUpdateMemberRole,
+  onLoadInviteLink,
+  onEnableInviteLink,
+  onUpdateInviteLinkRole,
+  onDisableInviteLink,
+  onCopyInviteLink,
 }: {
   workspace: Workspace;
   bundle: WorkspaceBundle;
   online: boolean;
   onUpdateMemberRole: WorkspaceAppProps["onUpdateMemberRole"];
+  onLoadInviteLink: WorkspaceAppProps["onLoadInviteLink"];
+  onEnableInviteLink: WorkspaceAppProps["onEnableInviteLink"];
+  onUpdateInviteLinkRole: WorkspaceAppProps["onUpdateInviteLinkRole"];
+  onDisableInviteLink: WorkspaceAppProps["onDisableInviteLink"];
+  onCopyInviteLink: WorkspaceAppProps["onCopyInviteLink"];
 }) {
+  const canManage = workspace.role === "owner" || workspace.role === "admin";
+  const queryClient = useQueryClient();
+  const inviteLinkQuery = useQuery({
+    queryKey: ["workspace-invite-link", workspace.id],
+    queryFn: () => onLoadInviteLink(workspace.id),
+    enabled: canManage,
+    staleTime: 0,
+  });
+  const inviteLink = inviteLinkQuery.data ?? null;
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteError, setInviteError] = useState("");
+  const activeInviteRole = inviteLink?.role ?? "member";
+
   const groupsByMember = new Map<string, UserGroup[]>();
   for (const membership of bundle.userGroupMembers) {
     const group = bundle.userGroups.find((item) => item.id === membership.group_id);
@@ -9169,6 +9368,44 @@ function TeamSettingsPanel({
     const current = groupsByMember.get(membership.user_id) ?? [];
     current.push(group);
     groupsByMember.set(membership.user_id, current);
+  }
+
+  async function setInviteEnabled(enabled: boolean) {
+    setInviteBusy(true);
+    setInviteError("");
+    try {
+      if (enabled) {
+        const link = await onEnableInviteLink(workspace.id, activeInviteRole);
+        queryClient.setQueryData(["workspace-invite-link", workspace.id], link);
+      } else {
+        await onDisableInviteLink(workspace.id);
+        queryClient.setQueryData(["workspace-invite-link", workspace.id], null);
+      }
+    } catch {
+      setInviteError(
+        enabled ? "邀请链接暂时无法启用。" : "邀请链接暂时无法关闭。",
+      );
+      // Re-sync so a persisted stale "enabled" cache cannot keep the toggle stuck.
+      await queryClient.invalidateQueries({
+        queryKey: ["workspace-invite-link", workspace.id],
+      });
+    } finally {
+      setInviteBusy(false);
+    }
+  }
+
+  async function setInviteRole(role: WorkspaceInviteRole) {
+    if (!inviteLink) return;
+    setInviteBusy(true);
+    setInviteError("");
+    try {
+      const link = await onUpdateInviteLinkRole(workspace.id, role);
+      queryClient.setQueryData(["workspace-invite-link", workspace.id], link);
+    } catch {
+      setInviteError("邀请身份暂时无法更新。");
+    } finally {
+      setInviteBusy(false);
+    }
   }
 
   return (
@@ -9220,6 +9457,62 @@ function TeamSettingsPanel({
           </div>
         ))}
       </div>
+      {canManage && (
+        <section className="invite-link-section" aria-label="邀请成员加入">
+          <h3>邀请成员加入</h3>
+          <label className="invite-link-toggle-row">
+            <span className="date-time-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="启用邀请链接"
+                checked={Boolean(inviteLink)}
+                disabled={!online || inviteBusy || inviteLinkQuery.isLoading}
+                onChange={(event) => void setInviteEnabled(event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </span>
+            <span>启用邀请链接</span>
+          </label>
+          {inviteLink && (
+            <div className="invite-link-actions">
+              <label className="invite-link-role-field">
+                <span>加入身份</span>
+                <span className="invite-link-role">
+                  <select
+                    aria-label="邀请链接加入身份"
+                    value={activeInviteRole}
+                    disabled={!online || inviteBusy}
+                    onChange={(event) =>
+                      void setInviteRole(event.target.value as WorkspaceInviteRole)
+                    }
+                  >
+                    <option value="member">普通成员</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                  <ChevronDown aria-hidden="true" />
+                </span>
+              </label>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!online || inviteBusy}
+                onClick={() => void onCopyInviteLink(inviteLink)}
+              >
+                复制链接
+              </button>
+            </div>
+          )}
+          {activeInviteRole === "admin" && inviteLink && (
+            <p className="invite-link-warning">
+              管理员可管理团队成员、标签权限和连接器。
+            </p>
+          )}
+          {inviteError && (
+            <p className="invite-link-error" role="alert">{inviteError}</p>
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -9436,6 +9729,11 @@ function SsoSettingsPanel({
     import.meta.env.VITE_PUBLIC_APP_URL,
     window.location.origin,
   );
+  const clientInviteUrl = buildWorkspaceTeamClientInviteUrl(
+    workspace.slug,
+    import.meta.env.VITE_PUBLIC_APP_URL,
+    window.location.origin,
+  );
 
   useEffect(() => {
     if (!provider) return;
@@ -9567,6 +9865,19 @@ function SsoSettingsPanel({
       onNotice("团队登录地址已复制");
     } catch {
       onNotice("复制失败，请手动复制团队登录地址");
+    }
+  }
+
+  async function copyClientInviteUrl() {
+    if (!clientInviteUrl) {
+      onNotice("请先配置 VITE_PUBLIC_APP_URL，再复制客户端邀请链接");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(clientInviteUrl);
+      onNotice("客户端邀请链接已复制");
+    } catch {
+      onNotice("复制失败，请手动复制客户端邀请链接");
     }
   }
 
@@ -9709,6 +10020,10 @@ function SsoSettingsPanel({
             <span>团队登录地址</span>
             <strong className="sso-settings-link">{loginUrl || "未配置"}</strong>
           </div>
+          <div className="sso-settings-detail-row">
+            <span>客户端邀请链接</span>
+            <strong className="sso-settings-link">{clientInviteUrl || "未配置"}</strong>
+          </div>
         </section>
         {error && <p className="form-error" role="alert">{error}</p>}
         {canManage ? (
@@ -9720,6 +10035,14 @@ function SsoSettingsPanel({
               onClick={() => void copyLoginUrl()}
             >
               复制团队登录地址
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              disabled={!online || busy}
+              onClick={() => void copyClientInviteUrl()}
+            >
+              复制客户端邀请链接
             </button>
             <button
               type="button"
@@ -9919,7 +10242,9 @@ function AboutSettingsPanel() {
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const [checkResult, setCheckResult] = useState<DesktopUpdateCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
-  const [downloading, setDownloading] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [progress, setProgress] = useState<DesktopUpdateDownloadProgress | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -9932,9 +10257,29 @@ function AboutSettingsPanel() {
     };
   }, [isDesktop]);
 
+  useEffect(() => {
+    if (!isDesktop || !window.anttodoDesktop?.updates) return;
+    const desktopUpdates = window.anttodoDesktop.updates;
+    const unsubscribeProgress = desktopUpdates.onDownloadProgress?.((next) => {
+      setProgress(next);
+      setInstalling(true);
+      setInstallError(null);
+    });
+    const unsubscribeError = desktopUpdates.onDownloadError?.((payload) => {
+      setInstalling(false);
+      setProgress(null);
+      setInstallError(payload.message || "更新失败，请稍后重试");
+    });
+    return () => {
+      unsubscribeProgress?.();
+      unsubscribeError?.();
+    };
+  }, [isDesktop]);
+
   async function checkForUpdate() {
     if (!window.anttodoDesktop?.updates) return;
     setChecking(true);
+    setInstallError(null);
     try {
       const result = await window.anttodoDesktop.updates.check();
       setCheckResult(result);
@@ -9945,17 +10290,39 @@ function AboutSettingsPanel() {
     }
   }
 
-  async function downloadUpdate() {
-    if (!checkResult || checkResult.status !== "available") return;
-    setDownloading(true);
+  async function installUpdate() {
+    if (!checkResult || checkResult.status !== "available" || !window.anttodoDesktop?.updates) {
+      return;
+    }
+    setInstalling(true);
+    setInstallError(null);
+    setProgress({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 });
     try {
-      await window.anttodoDesktop?.updates.openDownload(checkResult.downloadUrl);
-    } finally {
-      setDownloading(false);
+      const result = await window.anttodoDesktop.updates.downloadAndInstall();
+      if (result.status === "installing") return;
+      if (result.status === "unavailable") {
+        await window.anttodoDesktop.updates.openDownload(checkResult.downloadUrl);
+        setInstalling(false);
+        setProgress(null);
+        return;
+      }
+      setInstallError(result.message);
+      setInstalling(false);
+      setProgress(null);
+    } catch {
+      setInstallError("更新失败，请稍后重试");
+      setInstalling(false);
+      setProgress(null);
     }
   }
 
-  const statusMessage = checkResult ? formatUpdateCheckMessage(checkResult) : null;
+  const statusMessage = installError
+    ? installError
+    : installing
+      ? formatUpdateProgressLabel(progress)
+      : checkResult
+        ? formatUpdateCheckMessage(checkResult)
+        : null;
   const updateAvailable = checkResult?.status === "available" ? checkResult : null;
   const versionLabel = formatAppVersionLabel(runtimeVersion ?? buildVersion);
 
@@ -9990,7 +10357,7 @@ function AboutSettingsPanel() {
           <button
             type="button"
             className="button"
-            disabled={checking}
+            disabled={checking || installing}
             onClick={() => {
               void checkForUpdate();
             }}
@@ -10001,20 +10368,24 @@ function AboutSettingsPanel() {
             <button
               type="button"
               className="button primary"
-              disabled={downloading}
+              disabled={installing}
               onClick={() => {
-                void downloadUpdate();
+                void installUpdate();
               }}
             >
-              {downloading ? "打开中…" : `下载 v${updateAvailable.latestVersion}`}
+              {installing
+                ? formatUpdateProgressLabel(progress)
+                : installError
+                  ? `重试更新 v${updateAvailable.latestVersion}`
+                  : `更新到 v${updateAvailable.latestVersion}`}
             </button>
           ) : null}
           {statusMessage ? (
             <p
               className={clsx(
                 "about-settings-status",
-                checkResult?.status === "error" && "is-error",
-                checkResult?.status === "available" && "is-available",
+                (checkResult?.status === "error" || installError) && "is-error",
+                checkResult?.status === "available" && !installError && "is-available",
               )}
               role="status"
             >
@@ -10034,6 +10405,7 @@ function AboutSettingsPanel() {
 function SettingsDialog({
   open,
   onOpenChange,
+  initialTab = null,
   userId,
   userName,
   email,
@@ -10068,6 +10440,7 @@ function SettingsDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialTab?: SettingsTab | null;
   userId: string;
   userName: string;
   email: string;
@@ -10111,6 +10484,13 @@ function SettingsDialog({
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState("");
+
+  useEffect(() => {
+    if (open && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [open, initialTab]);
+
   const settingsTabGroups: Array<{
     title: string | null;
     tabs: Array<{
@@ -10356,11 +10736,6 @@ function SettingsDialog({
                 workspaces={workspaces}
                 currentWorkspaceId={currentWorkspaceId}
                 online={online}
-                onLoadInviteLink={onLoadInviteLink}
-                onEnableInviteLink={onEnableInviteLink}
-                onUpdateInviteLinkRole={onUpdateInviteLinkRole}
-                onDisableInviteLink={onDisableInviteLink}
-                onCopyInviteLink={onCopyInviteLink}
                 onUpdateWorkspace={onUpdateWorkspace}
                 onDeleteWorkspace={onDeleteWorkspace}
                 onNotice={onNotice}
@@ -10371,6 +10746,11 @@ function SettingsDialog({
                 bundle={bundle}
                 online={online}
                 onUpdateMemberRole={onUpdateMemberRole}
+                onLoadInviteLink={onLoadInviteLink}
+                onEnableInviteLink={onEnableInviteLink}
+                onUpdateInviteLinkRole={onUpdateInviteLinkRole}
+                onDisableInviteLink={onDisableInviteLink}
+                onCopyInviteLink={onCopyInviteLink}
               />
             ) : activeTab === "user-groups" ? (
               <UserGroupsPanel
@@ -10389,6 +10769,8 @@ function SettingsDialog({
               />
             ) : activeTab === "about" ? (
               <AboutSettingsPanel />
+            ) : activeTab === "shortcuts" ? (
+              <ShortcutsSettingsPanel onNotice={onNotice} />
             ) : (
               <div className="settings-placeholder">
                 {(() => {

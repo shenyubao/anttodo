@@ -2,6 +2,8 @@ import type { TaskViewMode } from "../types";
 
 export type AppSmartView = "all" | "today" | "assigned" | "inbox" | "trash";
 
+export const DEFAULT_SMART_VIEW: AppSmartView = "assigned";
+
 export type AppRoute =
   | { workspaceId: string; kind: "view"; view: AppSmartView; mode?: TaskViewMode }
   | { workspaceId: string; kind: "tag"; tagId: string; mode?: TaskViewMode }
@@ -26,7 +28,10 @@ export function parseAppRoute(pathname: string): AppRoute | null {
   const workspaceId = decodeSegment(segments[1]);
   if (!workspaceId) return null;
 
-  if (segments.length === 2 || (segments.length === 3 && segments[2] === "tasks")) {
+  if (segments.length === 2) {
+    return { workspaceId, kind: "view", view: DEFAULT_SMART_VIEW, mode: "list" };
+  }
+  if (segments.length === 3 && segments[2] === "tasks") {
     return { workspaceId, kind: "view", view: "all", mode: "list" };
   }
   if (segments.length === 4 && segments[2] === "tasks" && segments[3] === "kanban") {

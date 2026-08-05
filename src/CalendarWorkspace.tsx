@@ -24,9 +24,15 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FolderClosed,
+  FolderOpen,
   GripVertical,
   Inbox,
+  LockKeyhole,
   PanelLeft,
+  Tag,
+  UserRound,
+  Users,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -41,6 +47,7 @@ import {
   startOfWeek,
 } from "date-fns";
 import { zhCN } from "date-fns/locale";
+import { useShortcutHandler } from "./ShortcutProvider";
 import {
   chineseCalendarDetail,
   systemTimeZone,
@@ -53,7 +60,20 @@ import {
   schedulePatchForCalendarMove,
   schedulePatchFromDrop,
 } from "./lib/calendarScheduling";
-import { compareSiblingLabels, userLabelOrderMap } from "./lib/labels";
+import {
+  areAllUserGroupsFullyVisible,
+  CALENDAR_UNASSIGNED_ID,
+  calendarAssigneeFilterIds,
+  isUserGroupFullyVisible,
+  taskIsVisibleOnCalendar,
+} from "./lib/calendarVisibility";
+import {
+  compareSiblingLabels,
+  hasExplicitLabelColor,
+  userLabelOrderMap,
+} from "./lib/labels";
+import { memberDisplayName } from "./lib/taskTitleTokens";
+import { MemberAvatar } from "./MemberAvatar";
 import type {
   DateTimePreferences,
   Label,
@@ -92,6 +112,14 @@ const VIEW_STORAGE_KEY = "anttodo:calendar-view";
 const MULTI_DAY_STORAGE_KEY = "anttodo:calendar-multi-day-count";
 const MULTI_WEEK_STORAGE_KEY = "anttodo:calendar-multi-week-count";
 const SCHEDULE_PANEL_OPEN_KEY = "anttodo:calendar-schedule-panel-open";
+const USER_GROUPS_COLLAPSED_KEY = "anttodo:calendar-user-groups-collapsed";
+const USERS_COLLAPSED_KEY = "anttodo:calendar-users-collapsed";
+const LABELS_COLLAPSED_KEY = "anttodo:calendar-labels-collapsed";
+
+function readStoredCollapsed(key: string) {
+  // First visit defaults to collapsed; only an explicit "0" keeps a section open.
+  return window.localStorage.getItem(key) !== "0";
+}
 
 function readStoredNumber(key: string, fallback: number, min: number, max: number) {
   const parsed = Number(window.localStorage.getItem(key));
@@ -131,12 +159,6 @@ function taskEvent(task: Task, labels: Label[], editable = false): EventInput | 
   };
 }
 
-function taskIsVisible(task: Task, visibleCalendarIds: Set<string>) {
-  return task.label_ids.length === 0
-    ? visibleCalendarIds.has("inbox")
-    : task.label_ids.some((labelId) => visibleCalendarIds.has(labelId));
-}
-
 function HolidayBadge({
   date,
   enabled,
@@ -164,12 +186,14 @@ function HolidayBadge({
 function MiniCalendar({
   bundle,
   visibleCalendarIds,
+  visibleAssigneeIds,
   visibleDate,
   dateTimePreferences,
   onSelectDate,
 }: {
   bundle: WorkspaceBundle;
   visibleCalendarIds: Set<string>;
+  visibleAssigneeIds: Set<string>;
   visibleDate: Date;
   dateTimePreferences: DateTimePreferences;
   onSelectDate: (date: Date) => void;
@@ -189,9 +213,10 @@ function MiniCalendar({
 
   const taskDates = useMemo(() => new Set(
     bundle.tasks
-      .filter((task) => task.due_at && !task.deleted_at && taskIsVisible(task, visibleCalendarIds))
+      .filter((task) => task.due_at && !task.deleted_at
+        && taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds))
       .map((task) => format(new Date(task.due_at!), "yyyy-MM-dd")),
-  ), [bundle.tasks, visibleCalendarIds]);
+  ), [bundle.tasks, visibleAssigneeIds, visibleCalendarIds]);
 
   return (
     <section className="mini-calendar" aria-label="日期导航">
@@ -259,6 +284,26 @@ function MiniCalendar({
   );
 }
 
+function CalendarVisibilityCheck({
+  checked,
+  color,
+  className,
+}: {
+  checked: boolean;
+  color: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={clsx("calendar-visibility-check", checked && "checked", className)}
+      style={checked ? { backgroundColor: color, borderColor: color } : undefined}
+      aria-hidden="true"
+    >
+      {checked && <Check />}
+    </span>
+  );
+}
+
 function CalendarLabelTree({
   labels,
   userLabelOrder,
@@ -289,42 +334,46 @@ function CalendarLabelTree({
     const hasChildren = labels.some((candidate) => candidate.parent_id === label.id);
     const isCollapsed = collapsed[label.id] ?? false;
     const visible = visibleCalendarIds.has(label.id);
+    const labelIcon = hasChildren
+      ? (isCollapsed ? <FolderClosed /> : <FolderOpen />)
+      : <Tag />;
 
     return (
       <div
         key={label.id}
-        className="calendar-label-tree-node"
+        className="label-tree-node"
         role="treeitem"
         aria-expanded={hasChildren ? !isCollapsed : undefined}
       >
-        <div className="calendar-label-tree-row" style={{ paddingLeft: depth * 16 }}>
-          {hasChildren ? (
-            <button
-              className="calendar-label-expander"
-              aria-label={`${isCollapsed ? "展开" : "收起"}${label.name}`}
-              onClick={() => onToggleCollapsed(label.id)}
-            >
-              {isCollapsed ? <ChevronRight /> : <ChevronDown />}
-            </button>
-          ) : <span className="calendar-label-expander-spacer" aria-hidden="true" />}
-          <button
-            className={clsx("calendar-list-item", visible && "active")}
-            aria-pressed={visible}
-            onClick={() => onToggleCalendar(label.id)}
+        <button
+          type="button"
+          className="label-row calendar-label-row"
+          style={{ paddingLeft: 12 + depth * 16 }}
+          aria-pressed={visible}
+          onClick={() => onToggleCalendar(label.id)}
+        >
+          <span
+            className={clsx("label-type-icon", hasChildren && "label-group-icon")}
+            onClick={hasChildren
+              ? (event) => {
+                  event.stopPropagation();
+                  onToggleCollapsed(label.id);
+                }
+              : undefined}
           >
-            <span
-              className="calendar-visibility-check"
-              style={{ backgroundColor: visible ? label.color : "transparent" }}
+            {labelIcon}
+          </span>
+          <span className="label-name">{label.name}</span>
+          {label.kind === "private" && <LockKeyhole size={12} />}
+          {hasExplicitLabelColor(label.color) && (
+            <i
+              className="label-color-dot"
+              style={{ backgroundColor: label.color }}
               aria-hidden="true"
-            >
-              {visible && <Check />}
-            </span>
-            <span className="calendar-list-icon" style={{ color: label.color }}>
-              <CalendarDays />
-            </span>
-            <span>{label.name}</span>
-          </button>
-        </div>
+            />
+          )}
+          <CalendarVisibilityCheck checked={visible} color={label.color} />
+        </button>
         {hasChildren && !isCollapsed && (
           <div role="group">
             <CalendarLabelTree
@@ -348,9 +397,14 @@ export function CalendarSidebar({
   openMobile,
   bundle,
   visibleCalendarIds,
+  visibleAssigneeIds,
   onCloseMobile,
   onToggleCalendar,
   onShowAll,
+  onToggleAssignee,
+  onShowAllAssignees,
+  onToggleUserGroup,
+  onShowAllUserGroups,
   visibleDate,
   dateTimePreferences,
   onSelectDate,
@@ -358,16 +412,73 @@ export function CalendarSidebar({
   openMobile: boolean;
   bundle: WorkspaceBundle;
   visibleCalendarIds: Set<string>;
+  visibleAssigneeIds: Set<string>;
   onCloseMobile: () => void;
   onToggleCalendar: (id: string) => void;
   onShowAll: () => void;
+  onToggleAssignee: (id: string) => void;
+  onShowAllAssignees: () => void;
+  onToggleUserGroup: (groupId: string) => void;
+  onShowAllUserGroups: () => void;
   visibleDate: Date;
   dateTimePreferences: DateTimePreferences;
   onSelectDate: (date: Date) => void;
 }) {
   const [collapsedLabels, setCollapsedLabels] = useState<Record<string, boolean>>({});
+  const [userGroupsCollapsed, setUserGroupsCollapsed] = useState(
+    () => readStoredCollapsed(USER_GROUPS_COLLAPSED_KEY),
+  );
+  const [usersCollapsed, setUsersCollapsed] = useState(
+    () => readStoredCollapsed(USERS_COLLAPSED_KEY),
+  );
+  const [labelsSectionCollapsed, setLabelsSectionCollapsed] = useState(
+    () => readStoredCollapsed(LABELS_COLLAPSED_KEY),
+  );
   const calendarIds = ["inbox", ...bundle.labels.map((label) => label.id)];
   const allVisible = calendarIds.every((calendarId) => visibleCalendarIds.has(calendarId));
+  const inboxVisible = visibleCalendarIds.has("inbox");
+  const assigneeIds = calendarAssigneeFilterIds(bundle.members);
+  const allAssigneesVisible = assigneeIds.every((id) => visibleAssigneeIds.has(id));
+  const unassignedVisible = visibleAssigneeIds.has(CALENDAR_UNASSIGNED_ID);
+  const sortedUserGroups = useMemo(
+    () => [...bundle.userGroups].sort((left, right) =>
+      left.name.localeCompare(right.name, "zh-Hans-CN")),
+    [bundle.userGroups],
+  );
+  const allUserGroupsVisible = areAllUserGroupsFullyVisible(
+    sortedUserGroups.map((group) => group.id),
+    visibleAssigneeIds,
+    bundle.userGroupMembers,
+  );
+  const sortedMembers = useMemo(
+    () => [...bundle.members].sort((left, right) =>
+      memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN")),
+    [bundle.members],
+  );
+
+  function toggleUserGroupsCollapsed() {
+    setUserGroupsCollapsed((collapsed) => {
+      const next = !collapsed;
+      window.localStorage.setItem(USER_GROUPS_COLLAPSED_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
+
+  function toggleUsersCollapsed() {
+    setUsersCollapsed((collapsed) => {
+      const next = !collapsed;
+      window.localStorage.setItem(USERS_COLLAPSED_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
+
+  function toggleLabelsSectionCollapsed() {
+    setLabelsSectionCollapsed((collapsed) => {
+      const next = !collapsed;
+      window.localStorage.setItem(LABELS_COLLAPSED_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
 
   return (
     <>
@@ -378,42 +489,198 @@ export function CalendarSidebar({
         <MiniCalendar
           bundle={bundle}
           visibleCalendarIds={visibleCalendarIds}
+          visibleAssigneeIds={visibleAssigneeIds}
           visibleDate={visibleDate}
           dateTimePreferences={dateTimePreferences}
           onSelectDate={onSelectDate}
         />
-        <div className="calendar-list" aria-label="日历列表">
-          <button className="calendar-all-item" onClick={onShowAll} aria-pressed={allVisible}>
-            <strong>所有</strong>
-            <span className={clsx("calendar-all-check", allVisible && "active")}>{allVisible && <Check />}</span>
-          </button>
-          <button
-            className={clsx("calendar-list-item", visibleCalendarIds.has("inbox") && "active")}
-            aria-pressed={visibleCalendarIds.has("inbox")}
-            onClick={() => onToggleCalendar("inbox")}
-          >
-            <span
-              className="calendar-visibility-check"
-              style={{ backgroundColor: visibleCalendarIds.has("inbox") ? "#8e95a3" : "transparent" }}
-              aria-hidden="true"
-            >
-              {visibleCalendarIds.has("inbox") && <Check />}
-            </span>
-            <span className="calendar-list-icon" style={{ color: "#8e95a3" }}><Inbox /></span>
-            <span>收集箱</span>
-          </button>
-          <div className="calendar-label-tree" role="tree" aria-label="标签树">
-            <CalendarLabelTree
-              labels={bundle.labels}
-              userLabelOrder={bundle.userLabelOrder}
-              visibleCalendarIds={visibleCalendarIds}
-              collapsed={collapsedLabels}
-              onToggleCollapsed={(labelId) => setCollapsedLabels((current) => ({
-                ...current,
-                [labelId]: !current[labelId],
-              }))}
-              onToggleCalendar={onToggleCalendar}
-            />
+        <div className="calendar-sidebar-filters">
+          <div className="calendar-user-group-section">
+            <div className="sidebar-section-header calendar-user-group-section-header">
+              <button
+                type="button"
+                className="calendar-section-collapse"
+                aria-expanded={!userGroupsCollapsed}
+                aria-controls="calendar-user-group-list"
+                onClick={toggleUserGroupsCollapsed}
+              >
+                {userGroupsCollapsed ? <ChevronRight /> : <ChevronDown />}
+                <span>用户组</span>
+              </button>
+              <button
+                type="button"
+                className="calendar-select-all"
+                aria-label="全选用户组"
+                aria-pressed={allUserGroupsVisible}
+                disabled={sortedUserGroups.length === 0}
+                onClick={onShowAllUserGroups}
+              >
+                <span
+                  className={clsx(
+                    "calendar-visibility-check",
+                    "calendar-user-group-all-check",
+                    allUserGroupsVisible && "active",
+                  )}
+                  style={allUserGroupsVisible
+                    ? { backgroundColor: "#4772fa", borderColor: "#4772fa" }
+                    : undefined}
+                  aria-hidden="true"
+                >
+                  {allUserGroupsVisible && <Check />}
+                </span>
+              </button>
+            </div>
+            {!userGroupsCollapsed && (
+              <div id="calendar-user-group-list" className="calendar-list" aria-label="用户组">
+                {sortedUserGroups.length === 0 ? (
+                  <p className="calendar-filter-empty">暂无用户组</p>
+                ) : sortedUserGroups.map((group) => {
+                  const visible = isUserGroupFullyVisible(
+                    group.id,
+                    visibleAssigneeIds,
+                    bundle.userGroupMembers,
+                  );
+                  return (
+                    <button
+                      key={group.id}
+                      type="button"
+                      className="label-row calendar-label-row"
+                      aria-pressed={visible}
+                      onClick={() => onToggleUserGroup(group.id)}
+                    >
+                      <span className="label-type-icon"><Users /></span>
+                      <span className="label-name">{group.name}</span>
+                      <CalendarVisibilityCheck checked={visible} color="#4772fa" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="calendar-user-section">
+            <div className="sidebar-section-header calendar-user-section-header">
+              <button
+                type="button"
+                className="calendar-section-collapse"
+                aria-expanded={!usersCollapsed}
+                aria-controls="calendar-user-list"
+                onClick={toggleUsersCollapsed}
+              >
+                {usersCollapsed ? <ChevronRight /> : <ChevronDown />}
+                <span>用户</span>
+              </button>
+              <button
+                type="button"
+                className="calendar-select-all"
+                aria-label="全选用户"
+                aria-pressed={allAssigneesVisible}
+                onClick={onShowAllAssignees}
+              >
+                <span
+                  className={clsx(
+                    "calendar-visibility-check",
+                    "calendar-assignee-all-check",
+                    allAssigneesVisible && "active",
+                  )}
+                  style={allAssigneesVisible
+                    ? { backgroundColor: "#4772fa", borderColor: "#4772fa" }
+                    : undefined}
+                  aria-hidden="true"
+                >
+                  {allAssigneesVisible && <Check />}
+                </span>
+              </button>
+            </div>
+            {!usersCollapsed && (
+              <div id="calendar-user-list" className="calendar-list" aria-label="用户">
+                <button
+                  type="button"
+                  className="label-row calendar-label-row"
+                  aria-pressed={unassignedVisible}
+                  onClick={() => onToggleAssignee(CALENDAR_UNASSIGNED_ID)}
+                >
+                  <span className="label-type-icon"><UserRound /></span>
+                  <span className="label-name">未指派</span>
+                  <CalendarVisibilityCheck checked={unassignedVisible} color="#4772fa" />
+                </button>
+                {sortedMembers.map((member) => {
+                  const visible = visibleAssigneeIds.has(member.user_id);
+                  return (
+                    <button
+                      key={member.user_id}
+                      type="button"
+                      className="label-row calendar-label-row"
+                      aria-pressed={visible}
+                      onClick={() => onToggleAssignee(member.user_id)}
+                    >
+                      <span className="label-type-icon calendar-user-avatar-wrap">
+                        <MemberAvatar member={member} className="calendar-user-avatar" />
+                      </span>
+                      <span className="label-name">{memberDisplayName(member)}</span>
+                      <CalendarVisibilityCheck checked={visible} color="#4772fa" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="calendar-label-section">
+            <div className="sidebar-section-header calendar-label-section-header">
+              <button
+                type="button"
+                className="calendar-section-collapse"
+                aria-expanded={!labelsSectionCollapsed}
+                aria-controls="calendar-label-list"
+                onClick={toggleLabelsSectionCollapsed}
+              >
+                {labelsSectionCollapsed ? <ChevronRight /> : <ChevronDown />}
+                <span>标签</span>
+              </button>
+              <button
+                type="button"
+                className="calendar-select-all"
+                aria-label="全选"
+                aria-pressed={allVisible}
+                onClick={onShowAll}
+              >
+                <span
+                  className={clsx("calendar-visibility-check", "calendar-all-check", allVisible && "active")}
+                  style={allVisible
+                    ? { backgroundColor: "#4772fa", borderColor: "#4772fa" }
+                    : undefined}
+                  aria-hidden="true"
+                >
+                  {allVisible && <Check />}
+                </span>
+              </button>
+            </div>
+            {!labelsSectionCollapsed && (
+              <div id="calendar-label-list" className="calendar-list" aria-label="标签">
+                <button
+                  type="button"
+                  className="label-row calendar-label-row"
+                  aria-pressed={inboxVisible}
+                  onClick={() => onToggleCalendar("inbox")}
+                >
+                  <span className="label-type-icon"><Inbox /></span>
+                  <span className="label-name">收集箱</span>
+                  <CalendarVisibilityCheck checked={inboxVisible} color="#8e95a3" />
+                </button>
+                <div className="calendar-label-tree" role="tree" aria-label="标签树">
+                  <CalendarLabelTree
+                    labels={bundle.labels}
+                    userLabelOrder={bundle.userLabelOrder}
+                    visibleCalendarIds={visibleCalendarIds}
+                    collapsed={collapsedLabels}
+                    onToggleCollapsed={(labelId) => setCollapsedLabels((current) => ({
+                      ...current,
+                      [labelId]: !current[labelId],
+                    }))}
+                    onToggleCalendar={onToggleCalendar}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -531,6 +798,7 @@ export function CalendarWorkspace({
   currentUserId,
   online,
   visibleCalendarIds,
+  visibleAssigneeIds,
   dateTimePreferences,
   onSelectTask,
   onSaveTaskSchedule,
@@ -544,6 +812,7 @@ export function CalendarWorkspace({
   currentUserId: string;
   online: boolean;
   visibleCalendarIds: Set<string>;
+  visibleAssigneeIds: Set<string>;
   dateTimePreferences: DateTimePreferences;
   onSelectTask: (taskId: string) => void;
   onSaveTaskSchedule: (
@@ -582,7 +851,7 @@ export function CalendarWorkspace({
   const events = useMemo(() => [
     ...bundle.tasks.flatMap((task) => {
       if (optimisticallyUnscheduledTaskIds.has(task.id)) return [];
-      if (!taskIsVisible(task, visibleCalendarIds)) return [];
+      if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds)) return [];
       const event = taskEvent(
         task,
         bundle.labels,
@@ -602,6 +871,7 @@ export function CalendarWorkspace({
     optimisticEvents,
     optimisticallyUnscheduledTaskIds,
     view,
+    visibleAssigneeIds,
     visibleCalendarIds,
   ]);
 
@@ -645,32 +915,6 @@ export function CalendarWorkspace({
     };
   }, [viewMenuOpen]);
 
-  useEffect(() => {
-    const shortcutViews: Record<string, CalendarViewId> = {
-      "1": "day",
-      d: "day",
-      "2": "week",
-      w: "week",
-      "3": "month",
-      m: "month",
-      "4": "year",
-      y: "year",
-      "5": "agenda",
-      a: "agenda",
-    };
-    const handleShortcut = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
-      const nextView = shortcutViews[event.key.toLowerCase()];
-      if (!nextView) return;
-      event.preventDefault();
-      changeView(nextView);
-    };
-    document.addEventListener("keydown", handleShortcut);
-    return () => document.removeEventListener("keydown", handleShortcut);
-  });
-
   function changeView(nextView: CalendarViewId) {
     const definition = CALENDAR_VIEWS.find((candidate) => candidate.id === nextView)!;
     setView(nextView);
@@ -678,6 +922,21 @@ export function CalendarWorkspace({
     calendarRef.current?.getApi().changeView(definition.fullCalendarView);
     setViewMenuOpen(false);
   }
+
+  useShortcutHandler("calendar.viewDay", () => changeView("day"));
+  useShortcutHandler("calendar.viewWeek", () => changeView("week"));
+  useShortcutHandler("calendar.viewMonth", () => changeView("month"));
+  useShortcutHandler("calendar.viewYear", () => changeView("year"));
+  useShortcutHandler("calendar.viewAgenda", () => changeView("agenda"));
+  useShortcutHandler("calendar.today", () => {
+    calendarRef.current?.getApi().today();
+  });
+  useShortcutHandler("calendar.prev", () => {
+    calendarRef.current?.getApi().prev();
+  });
+  useShortcutHandler("calendar.next", () => {
+    calendarRef.current?.getApi().next();
+  });
 
   function updateMultiDayCount(value: number) {
     setMultiDayCount(value);

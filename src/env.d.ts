@@ -28,6 +28,18 @@ type DesktopUpdateCheckResult =
       message: string;
     };
 
+type DesktopUpdateInstallResult =
+  | { status: "installing" }
+  | { status: "unavailable"; message: string }
+  | { status: "error"; message: string };
+
+type DesktopUpdateDownloadProgress = {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+};
+
 interface Window {
   anttodoDesktop?: {
     platform: string;
@@ -62,6 +74,13 @@ interface Window {
       getAppVersion: () => Promise<string>;
       check: () => Promise<DesktopUpdateCheckResult>;
       openDownload: (url: string) => Promise<boolean>;
+      downloadAndInstall: () => Promise<DesktopUpdateInstallResult>;
+      onDownloadProgress: (
+        listener: (progress: DesktopUpdateDownloadProgress) => void,
+      ) => () => void;
+      onDownloadError: (
+        listener: (payload: { message: string }) => void,
+      ) => () => void;
     };
     aiWork: {
       selectDirectory: () => Promise<string | null>;

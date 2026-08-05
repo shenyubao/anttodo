@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnvFiles } from "./load-local-env.mjs";
+import { buildLatestMacYml } from "./mac-update-feed.mjs";
 
 loadLocalEnvFiles();
 
@@ -28,6 +29,9 @@ const publishVersionFile = path.join(releaseDir, "macos-publish-version");
 const heartbeatMs = 10_000;
 const multipartThresholdBytes = 8 * 1024 * 1024;
 const ossTimeoutMs = 10 * 60 * 1000;
+// Parallel part uploads have corrupted large DMG/ZIP objects (same size, wrong bytes).
+const multipartParallel = 1;
+const uploadAttempts = 2;
 
 function resolvePublishVersion() {
   if (versionOverride) return versionOverride;
@@ -40,10 +44,12 @@ function resolvePublishVersion() {
 
 const version = resolvePublishVersion();
 
-// Public downloads are DMG-only; ZIP artifacts from electron-builder stay local/CI.
+// DMG for first install / website; ZIP (+ blockmap + latest-mac.yml) for in-app updates.
 const targets = [
   { arch: "arm64", format: "dmg", contentType: "application/x-apple-diskimage" },
   { arch: "x64", format: "dmg", contentType: "application/x-apple-diskimage" },
+  { arch: "arm64", format: "zip", contentType: "application/zip" },
+  { arch: "x64", format: "zip", contentType: "application/zip" },
 ];
 
 function fail(message) {
@@ -79,8 +85,21 @@ function publicUrl(key) {
   return `${publicBaseUrl}/${key.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-function sha256(file) {
-  return createHash("sha256").update(readFileSync(file)).digest("hex");
+async function sha256File(file) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function sha256Object(client, key) {
+  const result = await client.getStream(key);
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of result.stream) {
+    size += chunk.length;
+    hash.update(chunk);
+  }
+  return { sha256: hash.digest("hex"), size };
 }
 
 function formatBytes(bytes) {
@@ -103,54 +122,88 @@ function formatDuration(ms) {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-async function upload(client, file, key, { contentType, cacheControl, downloadName, step, total }) {
+async function putObject(client, file, key, { contentType, cacheControl, downloadName, onProgress }) {
+  const byteSize = statSync(file).size;
+  const headers = {
+    "Cache-Control": cacheControl,
+    "Content-Disposition": `attachment; filename="${downloadName}"`,
+  };
+
+  if (byteSize >= multipartThresholdBytes) {
+    await client.multipartUpload(key, file, {
+      timeout: ossTimeoutMs,
+      // Keep sequential: parallel part streams have produced same-size, wrong-hash objects.
+      parallel: multipartParallel,
+      partSize: 8 * 1024 * 1024,
+      mime: contentType,
+      headers,
+      progress(percentage) {
+        onProgress?.(percentage);
+      },
+    });
+    return;
+  }
+
+  await client.put(key, file, {
+    timeout: ossTimeoutMs,
+    headers: {
+      ...headers,
+      "Content-Type": contentType,
+    },
+  });
+}
+
+async function upload(client, file, key, { contentType, cacheControl, downloadName, step, total, expectedSha256 }) {
   const byteSize = statSync(file).size;
   const size = formatBytes(byteSize);
   const label = `[${step}/${total}]`;
+  const localSha = expectedSha256 ?? (await sha256File(file));
   console.log(`${label} ${dryRun ? "Would upload" : "Uploading"} ${bucket}/${key} (${size})`);
   if (dryRun) return;
 
   const startedAt = Date.now();
-  let lastProgressLog = 0;
   const heartbeat = setInterval(() => {
     console.log(
       `  …仍在上传（已用时 ${formatDuration(Date.now() - startedAt)}；大文件可能需要几分钟）`,
     );
   }, heartbeatMs);
 
-  const headers = {
-    "Cache-Control": cacheControl,
-    "Content-Disposition": `attachment; filename="${downloadName}"`,
-  };
-
   try {
-    if (byteSize >= multipartThresholdBytes) {
-      await client.multipartUpload(key, file, {
-        timeout: ossTimeoutMs,
-        parallel: 4,
-        partSize: 8 * 1024 * 1024,
-        mime: contentType,
-        headers,
-        progress(percentage) {
-          const now = Date.now();
-          if (percentage >= 1 || now - lastProgressLog >= heartbeatMs) {
-            lastProgressLog = now;
-            console.log(`  …进度 ${Math.floor(percentage * 100)}%`);
-          }
-        },
-      });
-    } else {
-      await client.put(key, file, {
-        timeout: ossTimeoutMs,
-        headers: {
-          ...headers,
-          "Content-Type": contentType,
-        },
-      });
+    let lastError = null;
+    for (let attempt = 1; attempt <= uploadAttempts; attempt += 1) {
+      let lastProgressLog = 0;
+      try {
+        await putObject(client, file, key, {
+          contentType,
+          cacheControl,
+          downloadName,
+          onProgress(percentage) {
+            const now = Date.now();
+            if (percentage >= 1 || now - lastProgressLog >= heartbeatMs) {
+              lastProgressLog = now;
+              console.log(`  …进度 ${Math.floor(percentage * 100)}%`);
+            }
+          },
+        });
+        console.log(`  …校验远程 SHA-256`);
+        const remote = await sha256Object(client, key);
+        if (remote.size !== byteSize || remote.sha256 !== localSha) {
+          throw new Error(
+            `checksum mismatch for ${key} (attempt ${attempt}/${uploadAttempts}): ` +
+              `local ${localSha} (${byteSize} B) vs remote ${remote.sha256} (${remote.size} B)`,
+          );
+        }
+        console.log(`${label} Done ${bucket}/${key} in ${formatDuration(Date.now() - startedAt)}`);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= uploadAttempts) break;
+        console.warn(
+          `  …上传或校验失败，准备重试：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
-    console.log(`${label} Done ${bucket}/${key} in ${formatDuration(Date.now() - startedAt)}`);
-  } catch (error) {
-    fail(error instanceof Error ? error.message : String(error));
+    fail(lastError instanceof Error ? lastError.message : String(lastError));
   } finally {
     clearInterval(heartbeat);
   }
@@ -183,7 +236,8 @@ if (version !== packageJson.version) {
   );
 }
 
-const artifacts = targets.map(({ arch, format, contentType }) => {
+const artifacts = [];
+for (const { arch, format, contentType } of targets) {
   const fileName = `${artifactProductName}-${version}-${arch}.${format}`;
   const file = path.join(releaseDir, fileName);
   if (!existsSync(file)) {
@@ -194,17 +248,55 @@ const artifacts = targets.map(({ arch, format, contentType }) => {
           : `; tip: re-run package:mac:all, or pass --version=<packaged-version>`),
     );
   }
-  return {
+  artifacts.push({
     arch,
     format,
     contentType,
     file,
     fileName,
     size: statSync(file).size,
+    sha256: await sha256File(file),
     versionedKey: objectKey("macos", `v${version}`, fileName),
     latestKey: objectKey("macos", `${artifactProductName}-${arch}-latest.${format}`),
-  };
-});
+    // electron-updater resolves paths relative to latest-mac.yml in this feed root.
+    feedKey: objectKey("macos", fileName),
+  });
+}
+
+const zipArtifacts = artifacts.filter((artifact) => artifact.format === "zip");
+const blockmapUploads = [];
+for (const artifact of zipArtifacts) {
+  const blockmapName = `${artifact.fileName}.blockmap`;
+  const blockmapFile = path.join(releaseDir, blockmapName);
+  if (!existsSync(blockmapFile)) {
+    console.warn(`warning: missing blockmap ${path.relative(root, blockmapFile)} (differential updates disabled for ${artifact.arch})`);
+    continue;
+  }
+  const blockmapSha = await sha256File(blockmapFile);
+  blockmapUploads.push(
+    {
+      file: blockmapFile,
+      key: objectKey("macos", `v${version}`, blockmapName),
+      contentType: "application/octet-stream",
+      cacheControl: "public, max-age=31536000, immutable",
+      downloadName: blockmapName,
+      expectedSha256: blockmapSha,
+    },
+    {
+      file: blockmapFile,
+      key: objectKey("macos", blockmapName),
+      contentType: "application/octet-stream",
+      cacheControl: "public, max-age=0, must-revalidate",
+      downloadName: blockmapName,
+      expectedSha256: blockmapSha,
+    },
+  );
+}
+
+const latestMacYml = buildLatestMacYml(zipArtifacts, version);
+const latestMacYmlFile = path.join(releaseDir, "latest-mac.yml");
+writeFileSync(latestMacYmlFile, latestMacYml);
+const latestMacYmlKey = objectKey("macos", "latest-mac.yml");
 
 const uploads = [
   ...artifacts.map((artifact) => ({
@@ -213,14 +305,34 @@ const uploads = [
     contentType: artifact.contentType,
     cacheControl: "public, max-age=31536000, immutable",
     downloadName: artifact.fileName,
+    expectedSha256: artifact.sha256,
   })),
+  ...blockmapUploads.filter((item) => item.key.includes(`/v${version}/`)),
   ...artifacts.map((artifact) => ({
     file: artifact.file,
     key: artifact.latestKey,
     contentType: artifact.contentType,
     cacheControl: "public, max-age=0, must-revalidate",
     downloadName: artifact.fileName,
+    expectedSha256: artifact.sha256,
   })),
+  // Feed-root copies keep the exact builder filenames referenced by latest-mac.yml.
+  ...zipArtifacts.map((artifact) => ({
+    file: artifact.file,
+    key: artifact.feedKey,
+    contentType: artifact.contentType,
+    cacheControl: "public, max-age=0, must-revalidate",
+    downloadName: artifact.fileName,
+    expectedSha256: artifact.sha256,
+  })),
+  ...blockmapUploads.filter((item) => !item.key.includes(`/v${version}/`)),
+  {
+    file: latestMacYmlFile,
+    key: latestMacYmlKey,
+    contentType: "text/yaml; charset=utf-8",
+    cacheControl: "public, max-age=0, must-revalidate",
+    downloadName: "latest-mac.yml",
+  },
 ];
 
 const totalBytes = artifacts.reduce((sum, artifact) => sum + artifact.size, 0);
@@ -255,11 +367,14 @@ const totalSteps = uploads.length + 1;
 for (const item of uploads) {
   step += 1;
   if (step === 1) console.log("\nPhase 1/2: versioned objects");
-  if (step === artifacts.length + 1) console.log("\nPhase 2/2: latest aliases");
+  if (step === artifacts.length + blockmapUploads.filter((item) => item.key.includes(`/v${version}/`)).length + 1) {
+    console.log("\nPhase 2/2: latest aliases + update feed");
+  }
   await upload(client, item.file, item.key, {
     contentType: item.contentType,
     cacheControl: item.cacheControl,
     downloadName: item.downloadName,
+    expectedSha256: item.expectedSha256,
     step,
     total: totalSteps,
   });
@@ -284,12 +399,15 @@ const manifest = {
                 versionedUrl: publicUrl(artifact.versionedKey),
                 fileName: artifact.fileName,
                 size: artifact.size,
-                sha256: sha256(artifact.file),
+                sha256: artifact.sha256,
               },
             ]),
         ),
       ]),
     ),
+  },
+  updateFeed: {
+    mac: publicUrl(latestMacYmlKey),
   },
 };
 
@@ -309,4 +427,5 @@ await upload(client, manifestFile, manifestKey, {
 console.log(`\nPublish finished in ${formatDuration(Date.now() - publishStartedAt)}`);
 console.log("Stable download URLs:");
 for (const artifact of artifacts) console.log(`${artifact.arch} ${artifact.format}: ${publicUrl(artifact.latestKey)}`);
+console.log(`update feed: ${publicUrl(latestMacYmlKey)}`);
 console.log(`manifest: ${publicUrl(manifestKey)}`);
