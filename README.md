@@ -163,6 +163,16 @@ supabase functions serve send-sms --env-file .env.local --no-verify-jwt
    `/functions/v1/send-sms`，并把生成的签名密钥同步到函数环境。
 5. 将短信最短发送间隔设为 60 秒，并按实际成本配置 SMS/IP 限流。
 
+若自托管主机（例如香港 AWS）无法直连 `dysmsapi.aliyuncs.com`，在阿里云函数
+计算部署 `alicloud/fc-send-sms`（Flask，监听 `9000`），并把生产侧已有的
+`ALIYUN_*` / `SEND_SMS_HOOK_SECRETS` 配进 FC 环境。推荐路径：
+
+- **中继模式（推荐）**：Auth 仍打自托管 `send-sms`；函数校验 Hook 后，经
+  `ALIYUN_SMS_RELAY_URL` + `ALIYUN_SMS_RELAY_BEARER` 把原始 Webhook 转到
+  FC，由 FC 调用国内短信 API。
+- **直连模式**：把 Auth Hook URI 改成 FC 公网 HTTPS 地址（若 FC 开启了
+  Bearer，需确认 Auth 能否附带该头；一般更稳妥走中继模式）。
+
 ## 文档站
 
 产品文档位于 `docs/`（Docusaurus），线上地址为
@@ -209,10 +219,11 @@ pnpm cli:test:browser
 
 本次仓库只生成可发布 tarball，不执行 npm 发布。
 
-`pnpm package:mac` 会在 `release/` 生成使用 Developer ID 签名并已公证的 DMG
-和 ZIP；若本机没有签名证书或公证凭据，命令会失败，避免产出未签名包。
-`pnpm package:mac:all` 会同时生成 Apple Silicon 和 Intel 产物；证书和 CI 配置、
-OSS 上传、稳定 `-latest` 下载地址与 GitHub Actions 发布见
+本地 macOS 发布推荐三步：`pnpm mac:submit`（提交公证）→
+`pnpm mac:list`（查看 ID/时间/状态）→ `pnpm mac:deploy`（装订并上传
+OSS）。一条龙可用 `pnpm mac:all`（或 `pnpm deploy:mac`）。一次性打包可用
+`pnpm package:mac` / `pnpm package:mac:all`（签名+等待公证+生成 DMG/ZIP）。
+证书、CI、OSS 与稳定下载地址见
 [macOS 打包与 OSS 发布](docs/mac-release-oss.md)。
 
 ## 连接器

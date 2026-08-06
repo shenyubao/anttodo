@@ -1,6 +1,7 @@
 node_modules/
 dist/
 release/
+alicloud/**/.venv/
 playwright-report/
 test-results/
 coverage/

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   package-and-upload:
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 210
     env:
       ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
       ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}

@@ -51,6 +51,18 @@ export type AliyunSmsRequest = {
   nonce?: string;
 };
 
+export function resolveAliyunSmsRelayUrl(raw: string | undefined) {
+  const value = raw?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return null;
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
 export async function buildAliyunSmsRequest(input: AliyunSmsRequest) {
   const host = input.endpoint
     .replace(/^https?:\/\//, "")

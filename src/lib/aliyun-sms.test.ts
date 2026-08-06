@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { buildAliyunSmsRequest } from "../../supabase/functions/_shared/aliyun-sms";
+import {
+  buildAliyunSmsRequest,
+  resolveAliyunSmsRelayUrl,
+} from "../../supabase/functions/_shared/aliyun-sms";
+
+describe("Aliyun SMS relay URL", () => {
+  it("accepts https relay URLs and rejects insecure ones", () => {
+    expect(resolveAliyunSmsRelayUrl("https://fc.example.com/sms/")).toBe(
+      "https://fc.example.com/sms",
+    );
+    expect(resolveAliyunSmsRelayUrl("http://fc.example.com/sms")).toBeNull();
+    expect(resolveAliyunSmsRelayUrl("")).toBeNull();
+    expect(resolveAliyunSmsRelayUrl(undefined)).toBeNull();
+  });
+});
 
 describe("Aliyun SendSms V3 request signing", () => {
   it("builds a deterministic signed request without exposing the secret", async () => {

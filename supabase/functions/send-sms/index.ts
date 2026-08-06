@@ -1,6 +1,9 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { Webhook } from "standardwebhooks";
-import { buildAliyunSmsRequest } from "../_shared/aliyun-sms.ts";
+import {
+  buildAliyunSmsRequest,
+  resolveAliyunSmsRelayUrl,
+} from "../_shared/aliyun-sms.ts";
 import {
   aliyunErrorStatus,
   normalizeWebhookSignature,
@@ -52,6 +55,54 @@ Deno.serve(async (req) => {
       requiredEnv("SEND_SMS_HOOK_SECRETS"),
     );
     const sms = parseSmsHookPayload(verifiedPayload);
+
+    const relayUrl = resolveAliyunSmsRelayUrl(
+      Deno.env.get("ALIYUN_SMS_RELAY_URL") ?? undefined,
+    );
+
+    // Mainland / FC relay: forward the verified Supabase SMS hook as-is.
+    // Used when this host cannot reach dysmsapi.aliyuncs.com directly.
+    if (relayUrl) {
+      const relayResponse = await fetch(relayUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${requiredEnv("ALIYUN_SMS_RELAY_BEARER")}`,
+          "content-type": req.headers.get("content-type") ?? "application/json",
+          "webhook-id": req.headers.get("webhook-id") ?? "",
+          "webhook-timestamp": req.headers.get("webhook-timestamp") ?? "",
+          "webhook-signature": normalizeWebhookSignature(
+            req.headers.get("webhook-signature"),
+          ),
+        },
+        body: rawPayload,
+        signal: AbortSignal.timeout(4_500),
+      });
+
+      if (!relayResponse.ok) {
+        const status = relayResponse.status === 429
+          ? 429
+          : relayResponse.status === 401 || relayResponse.status === 422
+          ? relayResponse.status
+          : 503;
+        console.error("SMS relay rejected request", {
+          webhookId,
+          phone: sms.maskedPhone,
+          status: relayResponse.status,
+        });
+        return jsonError(
+          status === 429 ? "SMS rate limited" : "SMS provider unavailable",
+          status,
+          status === 429 || status === 503,
+        );
+      }
+
+      console.info("SMS relay accepted request", {
+        webhookId,
+        phone: sms.maskedPhone,
+        relay: relayUrl,
+      });
+      return Response.json({});
+    }
 
     const request = await buildAliyunSmsRequest({
       accessKeyId: requiredEnv("ALIYUN_APIKEY"),

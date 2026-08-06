@@ -122,11 +122,30 @@ OSS_PREFIX=release
 OSS_PUBLIC_BASE_URL=https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com
 ```
 
-本地打包并上传：
+本地推荐拆成三步（Apple 公证排队长时可分开执行，默认等待上限
+`NOTARIZATION_TIMEOUT_MINUTES=180`）：
 
 ```bash
-pnpm deploy:mac
+# 1) 推库、bump 版本、签名打包，并向 Apple 提交公证（不阻塞等待）
+pnpm mac:submit
+
+# 2) 查看 Apple 公证历史 / 本地待完成提交（ID、时间、状态）
+pnpm mac:list
+
+# 3) 等待公证 Accepted → 装订票据 → 生成 DMG/ZIP → 上传 OSS
+pnpm mac:deploy
 ```
+
+需要一次跑完：
+
+```bash
+pnpm mac:all      # 等价于 mac:submit && mac:deploy
+pnpm deploy:mac   # 同 mac:all
+```
+
+`mac:submit` 会把各架构的 submission ID 写入
+`release/notarize-state.json`，供 `mac:deploy` 继续。若 submit 本地失败但
+Apple 已接收上传，脚本会从近期历史恢复 ID。
 
 仅上传 `release/` 中已有的 DMG、ZIP 与更新 feed：
 
