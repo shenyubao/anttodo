@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Check,
   ChevronLeft,
+  Clock,
   Ellipsis,
   History,
   Inbox,
@@ -27,6 +28,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FocusEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -60,6 +62,11 @@ import {
   taskTerminalSessionKey,
 } from "./lib/aiWork";
 import { trackAiTerminalSession, untrackAiTerminalSession } from "./lib/aiTerminalSessions";
+import {
+  formatHoursDetail,
+  formatHoursValue,
+  normalizeHoursInput,
+} from "./lib/taskHours";
 import type {
   AiCliTool,
   AiWorkSettings,
@@ -474,6 +481,7 @@ function SubtaskDueDateControl({
         return;
       }
       setOpen(false);
+      triggerRef.current?.focus();
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -537,6 +545,7 @@ function SubtaskDueDateControl({
         : null;
       await onSave(nextDueAt);
       setOpen(false);
+      triggerRef.current?.focus();
     } finally {
       setSaving(false);
     }
@@ -716,6 +725,126 @@ type ActiveCliTerminal = {
   prompt: string;
 };
 
+function TaskHoursDialog({
+  open,
+  task,
+  online,
+  onOpenChange,
+  onUpdate,
+}: {
+  open: boolean;
+  task: Task;
+  online: boolean;
+  onOpenChange: (open: boolean) => void;
+  onUpdate: (patch: Partial<Task>) => Promise<void>;
+}) {
+  const [estimate, setEstimate] = useState("");
+  const [actual, setActual] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setEstimate(task.estimate_hours == null ? "" : formatHoursValue(task.estimate_hours));
+    setActual(task.actual_hours == null ? "" : formatHoursValue(task.actual_hours));
+    setSaving(false);
+    setError("");
+  }, [open, task.actual_hours, task.estimate_hours, task.id]);
+
+  async function save() {
+    if (!online || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const estimateHours = normalizeHoursInput(estimate);
+      const actualHours = normalizeHoursInput(actual);
+      await onUpdate({
+        estimate_hours: estimateHours,
+        actual_hours: actualHours,
+      });
+      onOpenChange(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "工时保存失败，请重试");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content
+          className="dialog-content task-hours-dialog"
+          aria-describedby={undefined}
+        >
+          <header>
+            <Dialog.Title>登记工时</Dialog.Title>
+            <Dialog.Close asChild>
+              <button type="button" aria-label="关闭">
+                <X />
+              </button>
+            </Dialog.Close>
+          </header>
+          <div className="task-hours-dialog-body">
+            <label>
+              <span>预计工时</span>
+              <div className="task-hours-field">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.1}
+                  value={estimate}
+                  disabled={!online || saving}
+                  placeholder="可选"
+                  onChange={(event) => setEstimate(event.target.value)}
+                />
+                <em>小时</em>
+              </div>
+            </label>
+            <label>
+              <span>实际工时</span>
+              <div className="task-hours-field">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.1}
+                  value={actual}
+                  disabled={!online || saving}
+                  placeholder="可选"
+                  onChange={(event) => setActual(event.target.value)}
+                />
+                <em>小时</em>
+              </div>
+            </label>
+            {error && <p role="alert">{error}</p>}
+          </div>
+          <footer>
+            <button
+              type="button"
+              className="button secondary"
+              disabled={saving}
+              onClick={() => onOpenChange(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              disabled={!online || saving}
+              onClick={() => void save()}
+            >
+              保存
+            </button>
+          </footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 function TaskMoreMenu({
   task,
   online,
@@ -725,6 +854,7 @@ function TaskMoreMenu({
   onShowActivity: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [hoursOpen, setHoursOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [position, setPosition] = useState<CSSProperties>({});
@@ -734,6 +864,7 @@ function TaskMoreMenu({
 
   useEffect(() => {
     setOpen(false);
+    setHoursOpen(false);
     setError("");
   }, [task.id]);
 
@@ -844,6 +975,18 @@ function TaskMoreMenu({
             type="button"
             role="menuitem"
             disabled={!online || saving}
+            onClick={() => {
+              setOpen(false);
+              setHoursOpen(true);
+            }}
+          >
+            <Clock />
+            <span>登记工时</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!online || saving}
             onClick={() => void switchKind()}
           >
             {task.kind === "note" ? <ListTodo /> : <NotebookPen />}
@@ -853,6 +996,13 @@ function TaskMoreMenu({
         </div>,
         document.body,
       )}
+      <TaskHoursDialog
+        open={hoursOpen}
+        task={task}
+        online={online}
+        onOpenChange={setHoursOpen}
+        onUpdate={onUpdate}
+      />
     </div>
   );
 }
@@ -901,9 +1051,18 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   );
   const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
   const subtaskInputRef = useRef<HTMLInputElement>(null);
-  const focusedSubtaskTitleRef = useRef<HTMLInputElement>(null);
+  const focusedSubtaskTitleRef = useRef<HTMLTextAreaElement>(null);
+  const [subtaskTitleEditing, setSubtaskTitleEditing] = useState(false);
+  const [subtaskTitleEditingForId, setSubtaskTitleEditingForId] = useState<string | null>(null);
+  const focusedSubtaskKey = focusedSubtask?.id ?? null;
+  if (focusedSubtaskKey !== subtaskTitleEditingForId) {
+    setSubtaskTitleEditingForId(focusedSubtaskKey);
+    setSubtaskTitleEditing(Boolean(focusedSubtask && online && editable));
+  }
   const editingSubtaskInputRef = useRef<HTMLInputElement>(null);
   const skipSubtaskTitleCommitRef = useRef(false);
+  const committingDraftSubtaskRef = useRef(false);
+  const commitDraftSubtaskRef = useRef<() => Promise<void>>(async () => undefined);
   const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState("");
   const [draftSubtaskDueAt, setDraftSubtaskDueAt] = useState<string | null>(null);
@@ -934,25 +1093,47 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [activityOpen, setActivityOpen] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const editorRef = useRef<TaskRichTextEditorHandle>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const closingRef = useRef(false);
   const activeTerminalRef = useRef<ActiveCliTerminal | null>(null);
   const startedTerminalsRef = useRef(new Map<string, AiCliTool>());
   const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
   const cliPickerRef = useRef<HTMLDivElement>(null);
   const writable = online && editable;
+  const hoursLabel = formatHoursDetail(task.estimate_hours, task.actual_hours);
   const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
   activeTerminalRef.current = activeTerminal;
 
   useEffect(() => {
     setDraftTitle(focusedSubtask?.title ?? task.title);
   }, [focusedSubtask?.id, focusedSubtask?.title, task.id, task.title]);
-  useEffect(() => {
-    if (!focusedSubtask || !writable) return;
+  useLayoutEffect(() => {
+    if (focusedSubtask) return;
+    const title = titleRef.current;
+    if (!title) return;
+    title.style.height = "0px";
+    title.style.height = `${title.scrollHeight}px`;
+  }, [draftTitle, focusedSubtask, presentation, task.id]);
+  useLayoutEffect(() => {
+    if (!focusedSubtask || !writable || !subtaskTitleEditing) return;
     const input = focusedSubtaskTitleRef.current;
     if (!input) return;
     input.focus();
+  }, [focusedSubtask?.id, writable, subtaskTitleEditing]);
+  useLayoutEffect(() => {
+    if (!focusedSubtask || !writable || !subtaskTitleEditing) return;
+    const input = focusedSubtaskTitleRef.current;
+    if (!input) return;
     input.select();
   }, [focusedSubtask?.id, writable]);
+  useLayoutEffect(() => {
+    if (!focusedSubtask || !subtaskTitleEditing) return;
+    const title = focusedSubtaskTitleRef.current;
+    if (!title) return;
+    const maxHeight = 48; // 2 lines × 24px line-height
+    title.style.height = "0px";
+    title.style.height = `${Math.min(title.scrollHeight, maxHeight)}px`;
+  }, [draftTitle, focusedSubtask, subtaskTitleEditing]);
   useEffect(() => {
     if (!editingSubtaskId) return;
     if (task.subtasks.some((subtask) => subtask.id === editingSubtaskId)) return;
@@ -1105,6 +1286,40 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     void onUpdateSubtask(subtask.id, { title: nextTitle }).catch(() => undefined);
   }
 
+  async function commitDraftSubtask() {
+    if (committingDraftSubtaskRef.current || subtaskTokens.token || !writable) return;
+    const payload = subtaskTokens.toSubmitPayload();
+    if (!payload.title) return;
+    committingDraftSubtaskRef.current = true;
+    const assigneeId = draftSubtaskAssignee.kind === "user"
+      ? draftSubtaskAssignee.userId
+      : null;
+    const cliAssignee = draftSubtaskAssignee.kind === "cli"
+      ? draftSubtaskAssignee.tool
+      : null;
+    const dueAt = draftSubtaskDueAt;
+    subtaskTokens.reset();
+    setDraftSubtaskDueAt(null);
+    setDraftSubtaskCli(null);
+    try {
+      await onCreateSubtask(payload.title, {
+        assignee_id: assigneeId,
+        cli_assignee: cliAssignee,
+        due_at: dueAt,
+      });
+    } finally {
+      committingDraftSubtaskRef.current = false;
+    }
+  }
+  commitDraftSubtaskRef.current = commitDraftSubtask;
+
+  function handleDraftSubtaskFormBlur(event: FocusEvent<HTMLFormElement>) {
+    const next = event.relatedTarget as Node | null;
+    if (next && event.currentTarget.contains(next)) return;
+    if (next instanceof Element && next.closest(".subtask-date-popover")) return;
+    void commitDraftSubtask().catch(() => undefined);
+  }
+
   function stopTerminalSession(sessionId: string) {
     const bridge = window.anttodoDesktop?.aiWork?.terminal;
     if (bridge) void bridge.stop(sessionId);
@@ -1188,6 +1403,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       await onUpdate({ title: draftTitle }).catch(() => undefined);
     }
     await editorRef.current?.flush().catch(() => undefined);
+    await commitDraftSubtaskRef.current().catch(() => undefined);
     // Closing the panel while the CLI view is open counts as leaving the view.
     if (activeTerminalRef.current) leaveCliView();
     onClose();
@@ -1203,6 +1419,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         void onUpdate({ title: draftTitle }).catch(() => undefined);
       }
       void editorRef.current?.flush().catch(() => undefined);
+      void commitDraftSubtaskRef.current().catch(() => undefined);
     };
     window.addEventListener(FLUSH_PENDING_EDITS_EVENT, flushPending);
     return () => window.removeEventListener(FLUSH_PENDING_EDITS_EVENT, flushPending);
@@ -1239,7 +1456,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           type="button"
           disabled={!writable}
           aria-label={focusedSubtask.completed ? "重新打开子任务" : "完成子任务"}
-          onClick={() => void onToggleSubtask(focusedSubtask.id, !focusedSubtask.completed)}
+          onClick={() => void onToggleSubtask(focusedSubtask.id, !focusedSubtask.completed).catch(() => {})}
         >
           {focusedSubtask.completed && <Check />}
         </button>
@@ -1272,17 +1489,46 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         </header>
         <div className="detail-body">
           <div className="detail-caption">
-            <input
-              ref={focusedSubtaskTitleRef}
-              className="detail-title subtask-detail-title"
-              value={draftTitle}
-              disabled={!writable}
-              aria-label="子任务标题"
-              onChange={(event) => {
-                setDraftTitle(event.target.value);
-                scheduleSubtaskSave(focusedSubtask.id, { title: event.target.value });
-              }}
-            />
+            {subtaskTitleEditing && writable ? (
+              <textarea
+                ref={focusedSubtaskTitleRef}
+                className="detail-title subtask-detail-title"
+                value={draftTitle}
+                aria-label="子任务标题"
+                rows={1}
+                onChange={(event) => {
+                  setDraftTitle(event.target.value);
+                  scheduleSubtaskSave(focusedSubtask.id, { title: event.target.value });
+                }}
+                onBlur={() => setSubtaskTitleEditing(false)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            ) : (
+              <div
+                className="detail-title subtask-detail-title subtask-detail-title-clamp"
+                role={writable ? "textbox" : undefined}
+                tabIndex={writable ? 0 : undefined}
+                aria-label="子任务标题"
+                aria-readonly={!writable}
+                onClick={() => {
+                  if (writable) setSubtaskTitleEditing(true);
+                }}
+                onKeyDown={(event) => {
+                  if (!writable) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSubtaskTitleEditing(true);
+                  }
+                }}
+              >
+                {draftTitle}
+              </div>
+            )}
             <button
               type="button"
               className="detail-parent-task"
@@ -1446,6 +1692,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         {!activeTerminal && (
           <div className="detail-caption">
             <textarea
+              ref={titleRef}
               className="detail-title"
               value={draftTitle}
               disabled={!writable}
@@ -1454,9 +1701,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 setDraftTitle(event.target.value);
                 scheduleSave({ title: event.target.value });
               }}
-              rows={2}
+              rows={1}
             />
           </div>
+        )}
+        {!activeTerminal && hoursLabel && (
+          <p className="detail-hours">{hoursLabel}</p>
         )}
         {activeTerminal ? (
           <TaskCliTerminal
@@ -1499,7 +1749,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     aria-label={`完成子任务：${subtask.title}`}
                     checked={subtask.completed}
                     disabled={!writable}
-                    onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked)}
+                    onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked).catch(() => {})}
                   />
                   {editingSubtaskId === subtask.id ? (
                     <input
@@ -1579,24 +1829,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     || draftSubtaskAssignee.kind !== "none"
                   ) && "has-draft",
                 )}
-                onSubmit={async (event) => {
+                onSubmit={(event) => {
                   event.preventDefault();
-                  if (subtaskTokens.token || !writable) return;
-                  const payload = subtaskTokens.toSubmitPayload();
-                  if (!payload.title) return;
-                  await onCreateSubtask(payload.title, {
-                    assignee_id: draftSubtaskAssignee.kind === "user"
-                      ? draftSubtaskAssignee.userId
-                      : null,
-                    cli_assignee: draftSubtaskAssignee.kind === "cli"
-                      ? draftSubtaskAssignee.tool
-                      : null,
-                    due_at: draftSubtaskDueAt,
-                  });
-                  subtaskTokens.reset();
-                  setDraftSubtaskDueAt(null);
-                  setDraftSubtaskCli(null);
+                  void commitDraftSubtask().catch(() => undefined);
                 }}
+                onBlur={handleDraftSubtaskFormBlur}
               >
                 <span
                   className="subtask-add-check"

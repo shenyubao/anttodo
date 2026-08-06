@@ -2,16 +2,24 @@ import { describe, expect, it } from "vitest";
 import type { WorkspaceBundle } from "../types";
 import {
   applyTaskListOrderToBundle,
+  applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
   appendSubtaskInBundle,
   appendTaskToBundle,
+  createOptimisticSubtask,
   createOptimisticTask,
+  createOptimisticTaskSection,
   findTaskIdForSubtask,
+  isOptimisticSubtaskId,
   patchSubtaskInBundle,
   removeSubtaskFromBundle,
   removeTaskFromBundle,
+  removeTaskSectionFromBundle,
+  replaceOptimisticSubtask,
   replaceOptimisticTask,
+  replaceOptimisticTaskSection,
+  sectionIdFromRealtimeChange,
   taskIdFromRealtimeChange,
 } from "./taskCache";
 
@@ -52,6 +60,95 @@ describe("task cache updates", () => {
       ["two", 0],
       ["other", 0],
     ]);
+  });
+
+  it("inserts a section optimistically and renumbers neighbors", () => {
+    const bundle = emptyBundle();
+    bundle.taskSections = [
+      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 0, created_by: "user" },
+      { id: "two", workspace_id: "workspace", list_key: "all", name: "二", position: 1, created_by: "user" },
+    ];
+    const optimistic = createOptimisticTaskSection({
+      workspaceId: "workspace",
+      listKey: "all",
+      name: "新分组",
+      position: 1,
+      createdBy: "user",
+      sectionId: "optimistic-section:new",
+    });
+
+    const next = applyTaskSectionInsertToBundle(bundle, {
+      listKey: "all",
+      section: optimistic,
+      index: 1,
+    });
+
+    expect(next.taskSections.map((section) => [section.id, section.position])).toEqual([
+      ["one", 0],
+      ["two", 2],
+      ["optimistic-section:new", 1],
+    ]);
+  });
+
+  it("replaces an optimistic section id and remaps placements", () => {
+    let bundle = emptyBundle();
+    const optimistic = createOptimisticTaskSection({
+      workspaceId: "workspace",
+      listKey: "all",
+      name: "新分组",
+      position: 0,
+      createdBy: "user",
+      sectionId: "optimistic-section:new",
+    });
+    bundle = applyTaskSectionInsertToBundle(bundle, {
+      listKey: "all",
+      section: optimistic,
+      index: 0,
+    });
+    bundle = {
+      ...bundle,
+      taskPlacements: [{
+        workspace_id: "workspace",
+        list_key: "all",
+        task_id: "task",
+        section_id: optimistic.id,
+        position: 0,
+      }],
+    };
+
+    const replaced = replaceOptimisticTaskSection(bundle, optimistic.id, {
+      ...optimistic,
+      id: "server-section",
+    });
+
+    expect(replaced.taskSections.map((section) => section.id)).toEqual(["server-section"]);
+    expect(replaced.taskPlacements[0]?.section_id).toBe("server-section");
+  });
+
+  it("removes a section and clears placements into ungrouped", () => {
+    const bundle = emptyBundle();
+    bundle.taskSections = [
+      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 0, created_by: "user" },
+    ];
+    bundle.taskPlacements = [{
+      workspace_id: "workspace",
+      list_key: "all",
+      task_id: "task",
+      section_id: "one",
+      position: 0,
+    }];
+
+    const next = removeTaskSectionFromBundle(bundle, "one");
+    expect(next.taskSections).toEqual([]);
+    expect(next.taskPlacements[0]?.section_id).toBeNull();
+  });
+
+  it("reads section ids from realtime payloads", () => {
+    expect(sectionIdFromRealtimeChange({
+      table: "task_sections",
+      new: { id: "section-1" },
+      old: {},
+    })).toBe("section-1");
   });
 
   it("replaces an optimistic task in place and keeps its custom placement", () => {
@@ -189,5 +286,58 @@ describe("task cache updates", () => {
     });
     bundle = removeSubtaskFromBundle(bundle, "sub-1");
     expect(bundle.tasks[0].subtasks).toEqual([]);
+  });
+
+  it("creates and replaces optimistic subtasks without duplicates", () => {
+    const task = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "父任务",
+      labelIds: [],
+      optimisticId: "task-parent",
+      now: "2026-08-03T00:00:00.000Z",
+    });
+    let bundle = appendTaskToBundle(emptyBundle(), task);
+    const optimistic = createOptimisticSubtask({
+      taskId: task.id,
+      userId: "user",
+      title: "新子任务",
+      position: 0,
+      dueAt: "2026-08-06T00:00:00.000Z",
+      assigneeId: "member-1",
+      optimisticId: "optimistic-subtask:draft",
+    });
+    expect(isOptimisticSubtaskId(optimistic.id)).toBe(true);
+    bundle = appendSubtaskInBundle(bundle, task.id, optimistic);
+    expect(bundle.tasks[0].subtasks).toHaveLength(1);
+    expect(bundle.tasks[0].subtasks[0]).toMatchObject({
+      id: optimistic.id,
+      title: "新子任务",
+      due_at: "2026-08-06T00:00:00.000Z",
+      assignee_id: "member-1",
+    });
+
+    const created = {
+      ...optimistic,
+      id: "sub-server-1",
+    };
+    // Simulate realtime already appending the server row before replace.
+    bundle = appendSubtaskInBundle(bundle, task.id, created);
+    expect(bundle.tasks[0].subtasks).toHaveLength(2);
+
+    bundle = replaceOptimisticSubtask(bundle, task.id, optimistic.id, created);
+    expect(bundle.tasks[0].subtasks).toEqual([created]);
+
+    const failedOptimistic = createOptimisticSubtask({
+      taskId: task.id,
+      userId: "user",
+      title: "失败子任务",
+      position: 1,
+      optimisticId: "optimistic-subtask:failed",
+    });
+    bundle = appendSubtaskInBundle(bundle, task.id, failedOptimistic);
+    expect(bundle.tasks[0].subtasks).toHaveLength(2);
+    bundle = removeSubtaskFromBundle(bundle, failedOptimistic.id);
+    expect(bundle.tasks[0].subtasks).toEqual([created]);
   });
 });

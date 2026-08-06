@@ -54,6 +54,8 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   reminders: patch.reminders ?? [],
   reminder_persistent: patch.reminder_persistent ?? false,
   recurrence: patch.recurrence ?? null,
+  estimate_hours: patch.estimate_hours ?? null,
+  actual_hours: patch.actual_hours ?? null,
 });
 
 describe("task list grouping and sorting", () => {
@@ -68,6 +70,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: false,
+      show_hours: false,
       view_mode: "list",
     }], "all").grouping).toBe("custom");
   });
@@ -84,6 +87,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: false,
+      show_hours: false,
       view_mode: "list",
     }], "label:work", treeLabels).grouping).toBe("priority");
   });
@@ -99,6 +103,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: true,
+      show_hours: false,
       view_mode: "kanban",
     }], "all").show_completed).toBe(true);
   });
@@ -114,6 +119,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: false,
+      show_hours: false,
       view_mode: "kanban",
     }], "all").view_mode).toBe("kanban");
   });
@@ -131,8 +137,25 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       show_labels: false,
       show_completed: false,
+      show_hours: false,
       view_mode: "kanban",
     }], "all", [], "kanban").grouping).toBe("priority");
+  });
+
+  it("defaults show_hours to false and preserves a saved value", () => {
+    expect(resolveTaskListPreference([], "all").show_hours).toBe(false);
+    expect(resolveTaskListPreference([{
+      user_id: "u",
+      workspace_id: "w",
+      list_key: "all",
+      grouping: "none",
+      sort: "custom",
+      direction: "asc",
+      show_labels: false,
+      show_completed: false,
+      show_hours: true,
+      view_mode: "list",
+    }], "all").show_hours).toBe(true);
   });
 
   it("keeps null values last in either due-date direction", () => {

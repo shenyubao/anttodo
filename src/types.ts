@@ -213,6 +213,8 @@ export type Task = {
   due_is_all_day: boolean;
   due_timezone: string | null;
   recurrence: TaskRecurrence | null;
+  estimate_hours: number | null;
+  actual_hours: number | null;
   assignee_id: string | null;
   cli_assignee: AiCliTool | null;
   created_by: string;
@@ -321,6 +323,7 @@ export type TaskListPreference = {
   direction: SortDirection;
   show_labels: boolean;
   show_completed: boolean;
+  show_hours: boolean;
   view_mode: TaskViewMode;
   updated_at?: string;
 };

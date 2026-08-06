@@ -30,6 +30,8 @@ function task(id: string, title: string, patch: Partial<Task> = {}): Task {
     reminders: patch.reminders ?? [],
     reminder_persistent: patch.reminder_persistent ?? false,
     recurrence: patch.recurrence ?? null,
+    estimate_hours: patch.estimate_hours ?? null,
+    actual_hours: patch.actual_hours ?? null,
   };
 }
 

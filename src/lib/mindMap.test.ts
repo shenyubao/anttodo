@@ -39,6 +39,8 @@ function task(overrides: Partial<Task> = {}): Task {
     reminders: overrides.reminders ?? [],
     reminder_persistent: overrides.reminder_persistent ?? false,
     recurrence: overrides.recurrence ?? null,
+    estimate_hours: overrides.estimate_hours ?? null,
+    actual_hours: overrides.actual_hours ?? null,
   };
 }
 

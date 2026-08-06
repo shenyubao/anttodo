@@ -26,6 +26,8 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   due_is_all_day: false,
   due_timezone: null,
   recurrence: null,
+  estimate_hours: null,
+  actual_hours: null,
   assignee_id: null,
   created_by: "u",
   completed_at: null,

@@ -18,6 +18,7 @@ import {
   type ParsedTaskDateMatch,
   type ParsedTaskDue,
 } from "./lib/parseTaskDateText";
+import { parseEstimateHoursText } from "./lib/taskHours";
 import { mergeLabelIds } from "./lib/taskTitleTokens";
 import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
 import { useTaskTitleTokens } from "./useTaskTitleTokens";
@@ -47,6 +48,8 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
     due_is_all_day: due?.due_is_all_day ?? false,
     due_timezone: due?.due_timezone ?? systemTimeZone(),
     recurrence: null,
+    estimate_hours: null,
+    actual_hours: null,
     assignee_id: null,
     cli_assignee: null,
     created_by: "",
@@ -66,6 +69,7 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
 export type QuickAddSubmitPayload = {
   title: string;
   due: ParsedTaskDue | null;
+  estimateHours: number | null;
   assigneeId: string | null;
   labelIds: string[];
 };
@@ -195,12 +199,34 @@ export function QuickAddForm({
 
     let submitTitle = raw;
     let submitDue = due;
+    let estimateHours: number | null = null;
+
+    const hoursParsed = parseEstimateHoursText(submitTitle);
+    if (hoursParsed) {
+      estimateHours = hoursParsed.estimateHours;
+      submitTitle = hoursParsed.title.trim() || raw;
+    }
 
     if (kind === "todo" && dateMatch) {
-      const parsed = parseTaskDateText(title, { now, timeZone });
-      if (parsed && matchKey(parsed.match) === matchKey(dateMatch)) {
-        submitTitle = parsed.title.trim() || raw;
+      const parsed = parseTaskDateText(submitTitle, { now, timeZone });
+      if (parsed) {
+        submitTitle = parsed.title.trim() || submitTitle;
         if (!dueManual) submitDue = parsed.due;
+      } else {
+        const fromOriginal = parseTaskDateText(raw, { now, timeZone });
+        if (fromOriginal && matchKey(fromOriginal.match) === matchKey(dateMatch)) {
+          let afterDate = fromOriginal.title.trim() || raw;
+          const hoursAfterDate = parseEstimateHoursText(afterDate);
+          if (hoursAfterDate) {
+            estimateHours = hoursAfterDate.estimateHours;
+            afterDate = hoursAfterDate.title.trim() || afterDate;
+          } else if (!hoursParsed) {
+            const hoursInRaw = parseEstimateHoursText(raw);
+            if (hoursInRaw) estimateHours = hoursInRaw.estimateHours;
+          }
+          submitTitle = afterDate;
+          if (!dueManual) submitDue = fromOriginal.due;
+        }
       }
     }
 
@@ -222,6 +248,7 @@ export function QuickAddForm({
       await onSubmit({
         title: submitTitle,
         due: kind === "todo" ? submitDue : null,
+        estimateHours,
         assigneeId: previous.assigneeId,
         labelIds: mergeLabelIds(defaultLabelIds, previous.labelIds),
       });

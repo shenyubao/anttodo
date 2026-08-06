@@ -29,6 +29,7 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   direction: "asc",
   show_labels: false,
   show_completed: false,
+  show_hours: false,
   view_mode: "list",
 } as const;
 
@@ -204,6 +205,7 @@ export function resolveTaskListPreference(
     ...found,
     show_labels: found.show_labels ?? false,
     show_completed: found.show_completed ?? false,
+    show_hours: found.show_hours ?? false,
     view_mode: found.view_mode ?? "list",
   };
 }

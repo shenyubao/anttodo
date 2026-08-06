@@ -34,6 +34,7 @@ import {
   preferenceRowToModel,
 } from "./dateTimePreferences";
 import { mergeNotificationPreferenceRows } from "./notificationPreferences";
+import { coerceHours } from "./taskHours";
 import {
   isValidWorkspaceSlug,
   normalizeWorkspaceSlug,
@@ -593,6 +594,8 @@ export async function loadWorkspaceBundle(
         ...row,
         kind: row.kind ?? "todo",
         recurrence: row.recurrence ?? null,
+        estimate_hours: coerceHours(row.estimate_hours),
+        actual_hours: coerceHours(row.actual_hours),
         label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
         participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
         subtasks: [...(row.subtasks ?? [])].sort((a, b) => a.position - b.position),
@@ -834,6 +837,7 @@ export async function createTask(
     description?: string;
     dueAt?: string | null;
     dueTimezone?: string | null;
+    estimateHours?: number | null;
     priority?: TaskPriority;
     kind?: TaskKind;
     assigneeId?: string | null;
@@ -851,7 +855,28 @@ export async function createTask(
     p_kind: input.kind ?? "todo",
   });
   assertNoError(error);
-  return data;
+  const created = data as Task;
+  if (input.estimateHours == null) {
+    return {
+      ...created,
+      estimate_hours: coerceHours(created.estimate_hours),
+      actual_hours: coerceHours(created.actual_hours),
+    };
+  }
+
+  const { data: updated, error: updateError } = await client
+    .from("tasks")
+    .update({ estimate_hours: input.estimateHours })
+    .eq("id", created.id)
+    .select("*")
+    .single();
+  assertNoError(updateError);
+  const next = { ...created, ...updated } as Task;
+  return {
+    ...next,
+    estimate_hours: coerceHours(next.estimate_hours),
+    actual_hours: coerceHours(next.actual_hours),
+  };
 }
 
 export async function listTaskAssigneeIds(

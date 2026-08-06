@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608060953",
+  "version": "1.0.202608061553",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -126,7 +126,8 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map"
     ],
     "protocols": [
       {

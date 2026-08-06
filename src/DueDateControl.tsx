@@ -336,7 +336,7 @@ export function DueDateControl({
         "America/Los_Angeles",
         "UTC",
       ];
-  const status = getDueStatus(task.due_at, now);
+  const status = task.status === "completed" ? null : getDueStatus(task.due_at, now);
   const draftAllDay = tab === "point" ? !pointHasTime : allDay;
   const draftDueAnchor = tab === "point"
     ? (pointDate ? fromZonedDateTime(pointDate, pointHasTime ? pointTime || "00:00" : "00:00", timeZone) : null)

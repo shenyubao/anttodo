@@ -64,6 +64,7 @@ import {
   Smartphone,
   SquareTerminal,
   Tag,
+  Timer,
   Trash2,
   UserRound,
   Users,
@@ -160,6 +161,7 @@ import {
 } from "./lib/attachments";
 import { createDemoBundle, demoWorkspaces } from "./lib/demo";
 import { getDueStatus } from "./lib/dueTime";
+import { formatHoursList } from "./lib/taskHours";
 import { reminderTriggerAt } from "./lib/reminders";
 import { nextOccurrenceFields } from "./lib/recurrence";
 import {
@@ -185,18 +187,26 @@ import {
 } from "./lib/mobileSidebarGesture";
 import {
   applyTaskListOrderToBundle,
+  applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
   appendSubtaskInBundle,
   appendTaskToBundle,
+  createOptimisticSubtask,
   createOptimisticTask,
+  createOptimisticTaskSection,
   findTaskIdForSubtask,
   isOptimisticTaskId,
   patchSubtaskInBundle,
   patchTaskInBundle,
+  patchTaskSectionInBundle,
   removeSubtaskFromBundle,
   removeTaskFromBundle,
+  removeTaskSectionFromBundle,
+  replaceOptimisticSubtask,
   replaceOptimisticTask,
+  replaceOptimisticTaskSection,
+  sectionIdFromRealtimeChange,
   taskIdFromRealtimeChange,
 } from "./lib/taskCache";
 import {
@@ -1640,6 +1650,7 @@ function RemoteApplication({
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [activityRevision, setActivityRevision] = useState(0);
   const pendingTaskCreatesRef = useRef(0);
+  const pendingSectionMutationsRef = useRef(0);
   const recentLocalRealtimeChangesRef = useRef<Map<string, number>>(new Map());
   const realtimeRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
@@ -1852,6 +1863,11 @@ function RemoteApplication({
             const labelId = labelIdFromRealtimeChange(payload);
             // Keep suppressing until the window expires: one create can emit many ACL rows.
             if (labelId && hasRecentLocalChange(table, labelId)) return;
+          }
+          if (table === "task_sections") {
+            if (pendingSectionMutationsRef.current > 0) return;
+            const sectionId = sectionIdFromRealtimeChange(payload);
+            if (sectionId && hasRecentLocalChange(table, sectionId)) return;
           }
           void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
         },
@@ -2230,20 +2246,41 @@ function RemoteApplication({
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const task = previous?.tasks.find((item) => item.id === taskId);
-    rememberLocalRealtimeChanges("subtasks", [taskId]);
-    const { data, error } = await client.from("subtasks").insert({
-      task_id: taskId,
+    const optimistic = createOptimisticSubtask({
+      taskId,
+      userId,
       title,
       position: task?.subtasks.length ?? 0,
-      created_by: userId,
-      due_at: extras?.due_at ?? null,
-      assignee_id: extras?.assignee_id ?? null,
-      cli_assignee: extras?.cli_assignee ?? null,
-    }).select("*").single();
-    if (error) throw error;
+      dueAt: extras?.due_at ?? null,
+      assigneeId: extras?.assignee_id ?? null,
+      cliAssignee: extras?.cli_assignee ?? null,
+    });
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? appendSubtaskInBundle(bundle, taskId, data as Subtask) : bundle,
+      bundle ? appendSubtaskInBundle(bundle, taskId, optimistic) : bundle,
     );
+    rememberLocalRealtimeChanges("subtasks", [taskId]);
+    try {
+      const { data, error } = await client.from("subtasks").insert({
+        task_id: taskId,
+        title,
+        position: optimistic.position,
+        created_by: userId,
+        due_at: extras?.due_at ?? null,
+        assignee_id: extras?.assignee_id ?? null,
+        cli_assignee: extras?.cli_assignee ?? null,
+      }).select("*").single();
+      if (error) throw error;
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle
+          ? replaceOptimisticSubtask(bundle, taskId, optimistic.id, data as Subtask)
+          : bundle,
+      );
+    } catch (error) {
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle ? removeSubtaskFromBundle(bundle, optimistic.id) : bundle,
+      );
+      throw error;
+    }
   }
 
   async function toggleSubtask(subtaskId: string, completed: boolean) {
@@ -2260,6 +2297,7 @@ function RemoteApplication({
       .eq("id", subtaskId);
     if (error) {
       queryClient.setQueryData(queryKey, previous);
+      setNotice(error.message || "子任务更新失败，请重试");
       throw error;
     }
   }
@@ -2491,7 +2529,7 @@ function RemoteApplication({
       queryClient.setQueryData(queryKey, previous);
       throw error;
     }
-    await queryClient.invalidateQueries({ queryKey });
+    void queryClient.invalidateQueries({ queryKey });
   }
 
   async function createComment(taskId: string, input: CreateCommentInput) {
@@ -2514,26 +2552,58 @@ function RemoteApplication({
   }
 
   async function addTaskSection(listKey: string, name: string, index?: number) {
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const ordered = orderedTaskSections(
-      activeBundle.taskSections.filter((section) => section.list_key === listKey),
+      (previous ?? activeBundle).taskSections.filter((section) => section.list_key === listKey),
     );
     const position = Math.max(0, Math.min(index ?? ordered.length, ordered.length));
-    const nextIds = taskSectionOrderAfterInsert(ordered, "__new-section__", position);
+    const optimistic = createOptimisticTaskSection({
+      workspaceId: activeWorkspaceId,
+      listKey,
+      name,
+      position,
+      createdBy: userId,
+    });
+    const nextIds = taskSectionOrderAfterInsert(ordered, optimistic.id, position);
     const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
-    await Promise.all([
-      ...ordered.map((section) =>
-        updateTaskSection(client, section.id, {
-          position: positionById.get(section.id) ?? section.position,
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
+      ? applyTaskSectionInsertToBundle(current, {
+          listKey,
+          section: optimistic,
+          index: position,
+        })
+      : current);
+    pendingSectionMutationsRef.current += 1;
+    try {
+      const [, created] = await Promise.all([
+        Promise.all(ordered.map((section) => {
+          const nextPosition = positionById.get(section.id);
+          if (nextPosition === undefined || nextPosition === section.position) {
+            return Promise.resolve(section);
+          }
+          return updateTaskSection(client, section.id, { position: nextPosition });
         })),
-      createTaskSection(client, {
-        workspace_id: activeWorkspaceId,
-        list_key: listKey,
-        name,
-        position,
-        created_by: userId,
-      }),
-    ]);
-    await refresh();
+        createTaskSection(client, {
+          workspace_id: activeWorkspaceId,
+          list_key: listKey,
+          name,
+          position,
+          created_by: userId,
+        }),
+      ]);
+      rememberLocalRealtimeChanges("task_sections", [
+        created.id,
+        ...ordered.map((section) => section.id),
+      ]);
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+        current ? replaceOptimisticTaskSection(current, optimistic.id, created) : current);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    } finally {
+      pendingSectionMutationsRef.current = Math.max(0, pendingSectionMutationsRef.current - 1);
+    }
   }
 
   async function reorderTaskSections(listKey: string, sectionIds: string[]) {
@@ -2542,27 +2612,61 @@ function RemoteApplication({
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
       ? applyTaskSectionOrderToBundle(current, { listKey, sectionIds })
       : current);
+    pendingSectionMutationsRef.current += 1;
     try {
       await Promise.all(sectionIds.map((sectionId, position) =>
         updateTaskSection(client, sectionId, { position })));
+      rememberLocalRealtimeChanges("task_sections", sectionIds);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
+    } finally {
+      pendingSectionMutationsRef.current = Math.max(0, pendingSectionMutationsRef.current - 1);
     }
-    await refresh();
   }
 
   async function editTaskSection(
     sectionId: string,
     patch: Partial<Pick<TaskSection, "name" | "position">>,
   ) {
-    await updateTaskSection(client, sectionId, patch);
-    await refresh();
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+      current ? patchTaskSectionInBundle(current, sectionId, patch) : current);
+    pendingSectionMutationsRef.current += 1;
+    try {
+      const saved = await updateTaskSection(client, sectionId, patch);
+      rememberLocalRealtimeChanges("task_sections", [sectionId]);
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+        current
+          ? patchTaskSectionInBundle(current, sectionId, {
+              name: saved.name,
+              position: saved.position,
+            })
+          : current);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    } finally {
+      pendingSectionMutationsRef.current = Math.max(0, pendingSectionMutationsRef.current - 1);
+    }
   }
 
   async function removeTaskSection(sectionId: string) {
-    await deleteTaskSection(client, sectionId);
-    await refresh();
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+      current ? removeTaskSectionFromBundle(current, sectionId) : current);
+    pendingSectionMutationsRef.current += 1;
+    try {
+      await deleteTaskSection(client, sectionId);
+      rememberLocalRealtimeChanges("task_sections", [sectionId]);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    } finally {
+      pendingSectionMutationsRef.current = Math.max(0, pendingSectionMutationsRef.current - 1);
+    }
   }
 
   async function reorderTasks(
@@ -3049,6 +3153,8 @@ function DemoApplication() {
               reminders: [],
               reminder_persistent: false,
               recurrence: null,
+              estimate_hours: input.estimateHours ?? null,
+              actual_hours: null,
             },
             ...current.tasks,
           ],
@@ -3750,6 +3856,7 @@ type WorkspaceAppProps = {
     description?: string;
     dueAt?: string | null;
     dueTimezone?: string | null;
+    estimateHours?: number | null;
     priority?: TaskPriority;
     kind?: TaskKind;
     assigneeId?: string | null;
@@ -7534,7 +7641,7 @@ function TaskWorkspace({
   async function savePreference(
     patch: Partial<Pick<
       TaskListPreference,
-      "grouping" | "sort" | "direction" | "show_labels" | "show_completed" | "view_mode"
+      "grouping" | "sort" | "direction" | "show_labels" | "show_completed" | "show_hours" | "view_mode"
     >>,
   ) {
     if (!online) return;
@@ -7547,6 +7654,7 @@ function TaskWorkspace({
       direction: preference.direction,
       show_labels: preference.show_labels,
       show_completed: preference.show_completed,
+      show_hours: preference.show_hours,
       view_mode: preference.view_mode,
       ...patch,
     });
@@ -7554,21 +7662,32 @@ function TaskWorkspace({
 
   async function changeViewMode(mode: TaskViewMode) {
     if (!online || mode === viewMode) return;
-    if (mode === "kanban" && preference.grouping === "none") {
-      await savePreference({ view_mode: mode, grouping: "custom" });
-    } else {
-      await savePreference({ view_mode: mode });
-    }
+    const previousMode = viewMode;
     onViewModeChange(mode);
+    try {
+      if (mode === "kanban" && preference.grouping === "none") {
+        await savePreference({ view_mode: mode, grouping: "custom" });
+      } else {
+        await savePreference({ view_mode: mode });
+      }
+    } catch (error) {
+      onViewModeChange(previousMode);
+      throw error;
+    }
   }
 
   async function beginAddSection(index = sortedSections.length) {
     if (!online || !canManageSelectedLabel || isTrashView) return;
-    if (preference.grouping !== "custom") {
-      await savePreference({ grouping: "custom" });
-    }
     setSectionDraftIndex(Math.max(0, Math.min(index, sortedSections.length)));
     setSectionDraftName("");
+    if (preference.grouping === "custom") return;
+    try {
+      await savePreference({ grouping: "custom" });
+    } catch (error) {
+      setSectionDraftIndex(null);
+      setSectionDraftName("");
+      throw error;
+    }
   }
 
   function cancelSectionDraft() {
@@ -7580,12 +7699,15 @@ function TaskWorkspace({
   async function submitSectionDraft() {
     const name = sectionDraftName.trim();
     if (!name || sectionDraftIndex === null || !online || sectionDraftBusy) return;
+    const index = sectionDraftIndex;
     setSectionDraftBusy(true);
+    setSectionDraftIndex(null);
+    setSectionDraftName("");
     try {
-      await onCreateTaskSection(listKey, name, sectionDraftIndex);
-      setSectionDraftIndex(null);
-      setSectionDraftName("");
+      await onCreateTaskSection(listKey, name, index);
     } catch (error) {
+      setSectionDraftIndex(index);
+      setSectionDraftName(name);
       onNotice(error instanceof Error ? error.message : "添加分组失败，请重试");
     } finally {
       setSectionDraftBusy(false);
@@ -7612,6 +7734,7 @@ function TaskWorkspace({
     title: string;
     assigneeId: string | null;
     labelIds: string[];
+    estimateHours?: number | null;
   }) {
     if (!canCreateInKanbanColumn(column)) return;
     const taskTitle = payload.title.trim();
@@ -7656,6 +7779,7 @@ function TaskWorkspace({
       assigneeId,
       dueAt,
       dueTimezone: dueAt ? systemTimeZone() : null,
+      estimateHours: payload.estimateHours ?? null,
       optimisticOrder: sectionOrder,
     });
     const createdId = typeof created === "object" && created && "id" in created
@@ -7795,6 +7919,7 @@ function TaskWorkspace({
       due_is_all_day: boolean;
       due_timezone: string;
     } | null;
+    estimateHours: number | null;
     assigneeId: string | null;
     labelIds: string[];
   }) {
@@ -7810,6 +7935,7 @@ function TaskWorkspace({
         priority: quickKind === "note" ? "none" : quickPriority,
         dueAt: payload.due?.due_at ?? null,
         dueTimezone: payload.due?.due_timezone ?? null,
+        estimateHours: payload.estimateHours,
         assigneeId,
         optimisticOrder: manualTaskOrderEnabled
           ? {
@@ -7942,6 +8068,7 @@ function TaskWorkspace({
                 viewMode={viewMode}
                 showLabels={preference.show_labels}
                 showCompleted={preference.show_completed}
+                showHours={preference.show_hours}
                 online={online}
                 aiWorkAvailable={desktopAiAvailable}
                 onChangeViewMode={(mode) => {
@@ -7954,6 +8081,8 @@ function TaskWorkspace({
                   void savePreference({ show_labels: !preference.show_labels })}
                 onToggleShowCompleted={() =>
                   void savePreference({ show_completed: !preference.show_completed })}
+                onToggleShowHours={() =>
+                  void savePreference({ show_hours: !preference.show_hours })}
                 onOpenAiWorkSettings={() => openAiWorkSettings()}
               />
             </>
@@ -8013,6 +8142,7 @@ function TaskWorkspace({
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
+            showHours={preference.show_hours}
             customSort={preference.sort === "custom"}
             customGrouping={preference.grouping === "custom"}
             canManageSections={canManageSections}
@@ -8107,6 +8237,7 @@ function TaskWorkspace({
                       now={now}
                       dateTimePreferences={dateTimePreferences}
                       showLabels={preference.show_labels}
+                      showHours={preference.show_hours}
                       draggable={taskDragEnabled}
                       sectionDraggable={canManageSections}
                       collapsedTaskSubtasks={collapsedTaskSubtasks}
@@ -8184,6 +8315,7 @@ function TaskWorkspace({
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
+            showHours={preference.show_hours}
             collapsedTaskSubtasks={collapsedTaskSubtasks}
             onSelect={onSelectTask}
             onSelectSubtask={onSelectSubtask}
@@ -8237,6 +8369,7 @@ function LabelActionsMenu({
   viewMode,
   showLabels,
   showCompleted,
+  showHours,
   online,
   aiWorkAvailable,
   onChangeViewMode,
@@ -8244,6 +8377,7 @@ function LabelActionsMenu({
   onAddGroup,
   onToggleShowLabels,
   onToggleShowCompleted,
+  onToggleShowHours,
   onOpenAiWorkSettings,
 }: {
   hasSelectedLabel: boolean;
@@ -8251,6 +8385,7 @@ function LabelActionsMenu({
   viewMode: TaskViewMode;
   showLabels: boolean;
   showCompleted: boolean;
+  showHours: boolean;
   online: boolean;
   aiWorkAvailable: boolean;
   onChangeViewMode: (mode: TaskViewMode) => void;
@@ -8258,6 +8393,7 @@ function LabelActionsMenu({
   onAddGroup: () => void;
   onToggleShowLabels: () => void;
   onToggleShowCompleted: () => void;
+  onToggleShowHours: () => void;
   onOpenAiWorkSettings: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -8376,6 +8512,17 @@ function LabelActionsMenu({
             <span>{showLabels ? "隐藏标签" : "显示标签"}</span>
           </button>
           <button
+            role="menuitem"
+            disabled={!online}
+            onClick={() => {
+              onToggleShowHours();
+              setOpen(false);
+            }}
+          >
+            <Timer />
+            <span>{showHours ? "隐藏工时" : "显示工时"}</span>
+          </button>
+          <button
             role="menuitemcheckbox"
             aria-checked={showCompleted}
             disabled={!online}
@@ -8407,6 +8554,7 @@ function TaskGroup({
   now,
   dateTimePreferences,
   showLabels = false,
+  showHours = false,
   draggable = false,
   sectionDraggable = false,
   collapsedTaskSubtasks,
@@ -8442,6 +8590,7 @@ function TaskGroup({
   now: Date;
   dateTimePreferences: DateTimePreferences;
   showLabels?: boolean;
+  showHours?: boolean;
   draggable?: boolean;
   sectionDraggable?: boolean;
   collapsedTaskSubtasks: ReadonlySet<string>;
@@ -8655,6 +8804,7 @@ function TaskGroup({
               online={online && !isOptimisticTaskId(task.id) && canEditTask(task)}
               now={now}
               showLabels={showLabels}
+              showHours={showHours}
               draggable={draggable && !isOptimisticTaskId(task.id) && canEditTask(task)}
               subtasksCollapsed={collapsedTaskSubtasks.has(task.id)}
               onSelect={() => {
@@ -8721,6 +8871,7 @@ function TaskRow({
   online,
   now,
   showLabels = false,
+  showHours = false,
   draggable = false,
   subtasksCollapsed,
   onSelect,
@@ -8738,6 +8889,7 @@ function TaskRow({
   online: boolean;
   now: Date;
   showLabels?: boolean;
+  showHours?: boolean;
   draggable?: boolean;
   subtasksCollapsed: boolean;
   onSelect: () => void;
@@ -8758,30 +8910,23 @@ function TaskRow({
   const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
   const optimistic = isOptimisticTaskId(task.id);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
-  const dueStatus = getDueStatus(task.due_at, now);
+  const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
+  const hoursLabel = showHours
+    ? formatHoursList(task.estimate_hours, task.actual_hours)
+    : null;
   const hasSubtasks = task.kind !== "note" && task.subtasks.length > 0;
   const sortedSubtasks = useMemo(
     () => [...task.subtasks].sort((a, b) => a.position - b.position),
     [task.subtasks],
   );
-  const [pendingSubtaskIds, setPendingSubtaskIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const runningTerminalTaskIds = useAiTerminalRunningTaskIds();
   const terminalRunning = runningTerminalTaskIds.has(task.id);
 
-  async function toggleSubtask(subtask: Subtask) {
-    if (!online || pendingSubtaskIds.has(subtask.id)) return;
-    setPendingSubtaskIds((current) => new Set(current).add(subtask.id));
-    try {
-      await onToggleSubtask(subtask.id, !subtask.completed);
-    } finally {
-      setPendingSubtaskIds((current) => {
-        const next = new Set(current);
-        next.delete(subtask.id);
-        return next;
-      });
-    }
+  function toggleSubtask(subtask: Subtask) {
+    if (!online) return;
+    void onToggleSubtask(subtask.id, !subtask.completed).catch(() => {
+      // App.toggleSubtask already rolls back and surfaces a notice.
+    });
   }
 
   return (
@@ -8894,6 +9039,7 @@ function TaskRow({
                 {dueStatus.label}
               </time>
             )}
+            {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
             {assignee && (
               <MemberAvatar
                 member={assignee}
@@ -8929,11 +9075,12 @@ function TaskRow({
           aria-label={`子任务：${task.title}`}
         >
           {sortedSubtasks.map((subtask) => {
-            const pending = pendingSubtaskIds.has(subtask.id);
             const subtaskAssignee = members.find(
               (member) => member.user_id === subtask.assignee_id,
             );
-            const subtaskDueStatus = getDueStatus(subtask.due_at, now);
+            const subtaskDueStatus = subtask.completed
+              ? null
+              : getDueStatus(subtask.due_at, now);
             return (
               <article
                 key={subtask.id}
@@ -8954,10 +9101,10 @@ function TaskRow({
                   type="button"
                   className="task-list-subtask-checkbox"
                   aria-label={`${subtask.completed ? "重新打开" : "完成"}子任务：${subtask.title}`}
-                  disabled={!online || pending}
+                  disabled={!online}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void toggleSubtask(subtask);
+                    toggleSubtask(subtask);
                   }}
                 >
                   <span className={clsx("task-list-subtask-check", subtask.completed && "checked")}>

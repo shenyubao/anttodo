@@ -31,6 +31,7 @@ import { TaskContextMenu } from "./TaskContextMenu";
 import { TaskSectionComposer } from "./TaskSectionComposer";
 import { getPriorityOption } from "./PriorityControl";
 import { getDueStatus } from "./lib/dueTime";
+import { formatHoursList, parseEstimateHoursText } from "./lib/taskHours";
 import { aiCliLabel } from "./lib/aiWork";
 import type { KanbanColumn } from "./lib/taskKanban";
 import type {
@@ -54,12 +55,15 @@ type CreateTaskInput = {
   description?: string;
   dueAt?: string | null;
   dueTimezone?: string | null;
+  estimateHours?: number | null;
   priority?: TaskPriority;
   kind?: TaskKind;
   assigneeId?: string | null;
 };
 
-export type KanbanCreatePayload = TaskTitleTokenSubmit;
+export type KanbanCreatePayload = TaskTitleTokenSubmit & {
+  estimateHours?: number | null;
+};
 
 const kanbanCollisionDetection: CollisionDetection = (args) => {
   const pointerCollisions = pointerWithin(args);
@@ -89,6 +93,7 @@ export function TaskKanban({
   now,
   dateTimePreferences,
   showLabels,
+  showHours,
   customSort,
   customGrouping,
   canManageSections,
@@ -131,6 +136,7 @@ export function TaskKanban({
   now: Date;
   dateTimePreferences: DateTimePreferences;
   showLabels: boolean;
+  showHours: boolean;
   customSort: boolean;
   customGrouping: boolean;
   canManageSections: boolean;
@@ -274,6 +280,7 @@ export function TaskKanban({
       online={online}
       now={now}
       showLabels={showLabels}
+      showHours={showHours}
       customSort={customSort}
       customGrouping={customGrouping}
       canEditTask={canEditTask}
@@ -365,6 +372,7 @@ export function TaskKanban({
                 members={members}
                 now={now}
                 showLabels={showLabels}
+                showHours={showHours}
               />
             ) : null}
           </DragOverlay>,
@@ -408,6 +416,7 @@ function KanbanColumnView({
   online,
   now,
   showLabels,
+  showHours,
   customSort,
   customGrouping,
   canEditTask,
@@ -435,6 +444,7 @@ function KanbanColumnView({
   online: boolean;
   now: Date;
   showLabels: boolean;
+  showHours: boolean;
   customSort: boolean;
   customGrouping: boolean;
   canEditTask: (task: Task) => boolean;
@@ -487,9 +497,18 @@ function KanbanColumnView({
     if (tokens.token) return;
     const payload = tokens.toSubmitPayload();
     if (!payload.title || !canCreate || busy) return;
+    const hoursParsed = parseEstimateHoursText(payload.title);
+    const nextPayload = hoursParsed
+      ? {
+          ...payload,
+          title: hoursParsed.title.trim() || payload.title,
+          estimateHours: hoursParsed.estimateHours,
+        }
+      : { ...payload, estimateHours: null as number | null };
+    if (!nextPayload.title) return;
     setBusy(true);
     try {
-      await onCreate(column, payload);
+      await onCreate(column, nextPayload);
       tokens.reset();
       setAdding(false);
     } catch (error) {
@@ -710,6 +729,7 @@ function KanbanColumnView({
               online={online && canEditTask(task)}
               now={now}
               showLabels={showLabels}
+              showHours={showHours}
               draggable={online && canEditTask(task) && (
                 (customGrouping && column.target.kind === "section")
                 || customSort
@@ -739,6 +759,7 @@ function KanbanCard({
   online,
   now,
   showLabels,
+  showHours,
   draggable,
   onSelect,
   onToggle,
@@ -753,6 +774,7 @@ function KanbanCard({
   online: boolean;
   now: Date;
   showLabels: boolean;
+  showHours: boolean;
   draggable: boolean;
   onSelect: () => void;
   onToggle: () => Promise<void>;
@@ -768,6 +790,9 @@ function KanbanCard({
   const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
   const assignee = members.find((member) => member.user_id === task.assignee_id);
   const dueStatus = getDueStatus(task.due_at, now);
+  const hoursLabel = showHours
+    ? formatHoursList(task.estimate_hours, task.actual_hours)
+    : null;
   return (
     <article
       ref={setNodeRef}
@@ -836,6 +861,7 @@ function KanbanCard({
       </div>
       <div className="kanban-card-meta">
         {dueStatus && <time className={dueStatus.overdue ? "overdue" : ""}>{dueStatus.label}</time>}
+        {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
         {task.subtasks.length > 0 && (
           <span>{task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}</span>
         )}
@@ -873,16 +899,21 @@ function KanbanCardOverlay({
   members,
   now,
   showLabels,
+  showHours,
 }: {
   task: Task;
   labels: Label[];
   members: Member[];
   now: Date;
   showLabels: boolean;
+  showHours: boolean;
 }) {
   const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
   const assignee = members.find((member) => member.user_id === task.assignee_id);
-  const dueStatus = getDueStatus(task.due_at, now);
+  const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
+  const hoursLabel = showHours
+    ? formatHoursList(task.estimate_hours, task.actual_hours)
+    : null;
   return (
     <article
       className={clsx(
@@ -909,6 +940,7 @@ function KanbanCardOverlay({
       </div>
       <div className="kanban-card-meta">
         {dueStatus && <time className={dueStatus.overdue ? "overdue" : ""}>{dueStatus.label}</time>}
+        {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
         {task.subtasks.length > 0 && (
           <span>{task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}</span>
         )}

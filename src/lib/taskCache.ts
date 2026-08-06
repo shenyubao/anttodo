@@ -1,14 +1,19 @@
 import type {
+  AiCliTool,
   Subtask,
   Task,
   TaskKind,
   TaskPlacement,
   TaskPriority,
   TaskReminder,
+  TaskSection,
   WorkspaceBundle,
 } from "../types";
+import { orderedTaskSections, taskSectionOrderAfterInsert } from "./taskList";
 
 export const OPTIMISTIC_TASK_ID_PREFIX = "optimistic-task:";
+export const OPTIMISTIC_SECTION_ID_PREFIX = "optimistic-section:";
+export const OPTIMISTIC_SUBTASK_ID_PREFIX = "optimistic-subtask:";
 
 export type OptimisticTaskInput = {
   workspaceId: string;
@@ -18,6 +23,7 @@ export type OptimisticTaskInput = {
   description?: string;
   dueAt?: string | null;
   dueTimezone?: string | null;
+  estimateHours?: number | null;
   priority?: TaskPriority;
   kind?: TaskKind;
   assigneeId?: string | null;
@@ -45,6 +51,8 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
     due_is_all_day: false,
     due_timezone: input.dueTimezone ?? null,
     recurrence: null,
+    estimate_hours: input.estimateHours ?? null,
+    actual_hours: null,
     assignee_id: input.assigneeId ?? null,
     cli_assignee: null,
     created_by: input.userId,
@@ -81,6 +89,8 @@ function taskFromCreatedRow(
     due_is_all_day: created.due_is_all_day ?? false,
     due_timezone: created.due_timezone ?? null,
     recurrence: created.recurrence ?? null,
+    estimate_hours: created.estimate_hours ?? null,
+    actual_hours: created.actual_hours ?? null,
     assignee_id: created.assignee_id ?? null,
     cli_assignee: created.cli_assignee ?? null,
     created_by: created.created_by,
@@ -194,6 +204,116 @@ export function applyTaskSectionOrderToBundle(
   };
 }
 
+export function isOptimisticSectionId(sectionId: string) {
+  return sectionId.startsWith(OPTIMISTIC_SECTION_ID_PREFIX);
+}
+
+export function createOptimisticTaskSection(input: {
+  workspaceId: string;
+  listKey: string;
+  name: string;
+  position: number;
+  createdBy: string;
+  sectionId?: string;
+}): TaskSection {
+  return {
+    id: input.sectionId ?? `${OPTIMISTIC_SECTION_ID_PREFIX}${crypto.randomUUID()}`,
+    workspace_id: input.workspaceId,
+    list_key: input.listKey,
+    name: input.name,
+    position: input.position,
+    created_by: input.createdBy,
+  };
+}
+
+export function applyTaskSectionInsertToBundle(
+  bundle: WorkspaceBundle,
+  input: {
+    listKey: string;
+    section: TaskSection;
+    index?: number;
+  },
+): WorkspaceBundle {
+  const ordered = orderedTaskSections(
+    bundle.taskSections.filter((section) => section.list_key === input.listKey),
+  ).filter((section) => section.id !== input.section.id);
+  const position = Math.max(0, Math.min(input.index ?? ordered.length, ordered.length));
+  const nextIds = taskSectionOrderAfterInsert(ordered, input.section.id, position);
+  const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
+  return {
+    ...bundle,
+    taskSections: [
+      ...bundle.taskSections
+        .filter((section) => section.id !== input.section.id)
+        .map((section) =>
+          section.list_key === input.listKey && positionById.has(section.id)
+            ? { ...section, position: positionById.get(section.id)! }
+            : section),
+      { ...input.section, position },
+    ],
+  };
+}
+
+export function replaceOptimisticTaskSection(
+  bundle: WorkspaceBundle,
+  optimisticId: string,
+  section: TaskSection,
+): WorkspaceBundle {
+  if (optimisticId === section.id) {
+    return {
+      ...bundle,
+      taskSections: bundle.taskSections.map((item) =>
+        item.id === optimisticId ? section : item),
+    };
+  }
+  return {
+    ...bundle,
+    taskSections: bundle.taskSections.map((item) =>
+      item.id === optimisticId ? section : item),
+    taskPlacements: bundle.taskPlacements.map((placement) =>
+      placement.section_id === optimisticId
+        ? { ...placement, section_id: section.id }
+        : placement),
+  };
+}
+
+export function patchTaskSectionInBundle(
+  bundle: WorkspaceBundle,
+  sectionId: string,
+  patch: Partial<Pick<TaskSection, "name" | "position">>,
+): WorkspaceBundle {
+  return {
+    ...bundle,
+    taskSections: bundle.taskSections.map((section) =>
+      section.id === sectionId ? { ...section, ...patch } : section),
+  };
+}
+
+export function removeTaskSectionFromBundle(
+  bundle: WorkspaceBundle,
+  sectionId: string,
+): WorkspaceBundle {
+  return {
+    ...bundle,
+    taskSections: bundle.taskSections.filter((section) => section.id !== sectionId),
+    taskPlacements: bundle.taskPlacements.map((placement) =>
+      placement.section_id === sectionId
+        ? { ...placement, section_id: null }
+        : placement),
+  };
+}
+
+export function sectionIdFromRealtimeChange(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const change = payload as {
+    new?: Record<string, unknown>;
+    old?: Record<string, unknown>;
+  };
+  const record = change.new && Object.keys(change.new).length > 0 ? change.new : change.old;
+  const value = record?.id;
+  return typeof value === "string" ? value : null;
+}
+
 export function taskIdFromRealtimeChange(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const change = payload as {
@@ -249,6 +369,51 @@ export function findTaskIdForSubtask(
   return bundle.tasks.find((task) =>
     task.subtasks.some((subtask) => subtask.id === subtaskId),
   )?.id ?? null;
+}
+
+export type OptimisticSubtaskInput = {
+  taskId: string;
+  userId: string;
+  title: string;
+  position: number;
+  dueAt?: string | null;
+  assigneeId?: string | null;
+  cliAssignee?: AiCliTool | null;
+  optimisticId?: string;
+};
+
+export function isOptimisticSubtaskId(subtaskId: string) {
+  return subtaskId.startsWith(OPTIMISTIC_SUBTASK_ID_PREFIX);
+}
+
+export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask {
+  return {
+    id: input.optimisticId ?? `${OPTIMISTIC_SUBTASK_ID_PREFIX}${crypto.randomUUID()}`,
+    task_id: input.taskId,
+    title: input.title,
+    completed: false,
+    position: input.position,
+    due_at: input.dueAt ?? null,
+    assignee_id: input.assigneeId ?? null,
+    cli_assignee: input.cliAssignee ?? null,
+    created_by: input.userId,
+  };
+}
+
+export function replaceOptimisticSubtask(
+  bundle: WorkspaceBundle,
+  taskId: string,
+  optimisticId: string,
+  created: Subtask,
+): WorkspaceBundle {
+  return patchTaskInBundle(bundle, taskId, (task) => {
+    const withoutCreated = task.subtasks.filter((item) => item.id !== created.id);
+    const optimisticIndex = withoutCreated.findIndex((item) => item.id === optimisticId);
+    const subtasks = optimisticIndex >= 0
+      ? withoutCreated.map((item, index) => index === optimisticIndex ? created : item)
+      : [...withoutCreated, created];
+    return { ...task, subtasks };
+  });
 }
 
 export function appendSubtaskInBundle(
