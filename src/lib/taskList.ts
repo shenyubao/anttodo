@@ -164,6 +164,9 @@ export function filterTasksForView(input: {
   if (smartView === "assigned") {
     return result.filter((task) => task.assignee_id === currentUserId);
   }
+  if (smartView === "watching") {
+    return result.filter((task) => task.participant_ids.includes(currentUserId));
+  }
   if (smartView === "inbox") {
     return result.filter((task) => task.label_ids.length === 0);
   }

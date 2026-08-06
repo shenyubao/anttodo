@@ -22,9 +22,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  ArrowDown,
-  ArrowDownUp,
-  ArrowUp,
   Archive,
   Building2,
   Camera,
@@ -70,6 +67,7 @@ import {
   Trash2,
   UserRound,
   Users,
+  Eye,
   Workflow,
   X,
 } from "lucide-react";
@@ -130,7 +128,6 @@ import {
   purgeTrashedTask as purgeTrashedTaskApi,
   loadDateTimePreferences,
   loadAiWorkSettings,
-  listTaskAssigneeIds,
   listTaskCommentCandidateIds,
   loadNotificationPreferences,
   loadNotifications,
@@ -204,10 +201,7 @@ import {
 } from "./lib/taskCache";
 import {
   DEFAULT_TASK_LIST_PREFERENCE,
-  TASK_GROUPING_OPTIONS,
-  TASK_SORT_OPTIONS,
   countTasksForLabelSubtree,
-  defaultSortDirection,
   filterTasksForView,
   groupTasks,
   isActiveTask,
@@ -220,6 +214,9 @@ import {
   taskSectionOrderAfterMove,
   taskListKey,
 } from "./lib/taskList";
+import { TaskViewMenu } from "./TaskViewMenu";
+import { isTrayHash } from "./lib/traySurface";
+import { TrayApp } from "./TrayApp";
 import {
   buildKanbanColumns,
   kanbanDropAction,
@@ -350,9 +347,7 @@ import type {
   TaskActivityPage,
   TaskComment,
   TaskKind,
-  TaskListGrouping,
   TaskListPreference,
-  TaskListSort,
   TaskSection,
   TaskPriority,
   TaskViewMode,
@@ -366,7 +361,7 @@ import type {
   WorkspaceRole,
 } from "./types";
 
-type SmartView = "all" | "today" | "assigned" | "inbox" | "trash";
+type SmartView = "all" | "today" | "assigned" | "watching" | "inbox" | "trash";
 type AppSection = "tasks" | "calendar" | "mindmap";
 type SettingsTab =
   | "account"
@@ -398,7 +393,7 @@ function currentTaskReturnRoute(workspaceId: string): AppRoute | null {
   const value = window.history.state?.taskReturnRoute as AppRoute | undefined;
   if (!value || value.workspaceId !== workspaceId) return null;
   if (value.kind === "view") {
-    if (!["all", "today", "assigned", "inbox", "trash"].includes(value.view)) return null;
+    if (!["all", "today", "assigned", "watching", "inbox", "trash"].includes(value.view)) return null;
     if (value.mode !== "list" && value.mode !== "kanban") return null;
     return value.view === "trash" ? { ...value, mode: "list" } : value;
   }
@@ -486,6 +481,19 @@ export default function App() {
   }, [demoMode]);
 
   useEffect(() => {
+    window.anttodoDesktop?.tray.setAuthenticated(Boolean(session));
+  }, [session]);
+
+  const traySurface = isTrayHash();
+
+  useEffect(() => {
+    if (!traySurface) return;
+    if (session) return;
+    window.anttodoDesktop?.tray.showMainWindow();
+    window.anttodoDesktop?.tray.hide();
+  }, [traySurface, session]);
+
+  useEffect(() => {
     const desktopAuth = window.anttodoDesktop?.auth;
     if (!desktopAuth || !supabase || demoMode) return;
     const desktopAuthBridge = desktopAuth;
@@ -552,6 +560,12 @@ export default function App() {
   if (demoMode) return <DemoApplication />;
   if (!hasSupabaseConfig || !supabase) return <MissingConfig />;
   if (!authReady) return <Splash label="正在恢复工作区…" />;
+  if (traySurface) {
+    if (!session) {
+      return <Splash label="请先在主窗口登录…" />;
+    }
+    return <TrayApp userId={session.user.id} />;
+  }
   if (sessionBridge) {
     return <SessionBridgeScreen authenticated={Boolean(session)} />;
   }
@@ -2691,7 +2705,6 @@ function RemoteApplication({
       onSaveTaskSchedule={saveTaskSchedule}
       onToggleTaskLabel={toggleTaskLabel}
       onToggleTaskParticipant={toggleTaskParticipant}
-      onLoadTaskAssignees={(taskId) => listTaskAssigneeIds(client, taskId)}
       onAssignTask={assignTask}
       onAssignSubtask={assignSubtask}
       onCreateSubtask={createSubtask}
@@ -3124,14 +3137,6 @@ function DemoApplication() {
             display_name: member?.profile?.display_name ?? "团队成员",
           },
         );
-      }}
-      onLoadTaskAssignees={async (taskId) => {
-        const task = bundle.tasks.find((item) => item.id === taskId);
-        return task
-          ? getAssignableMembers(bundle, task, "demo-user").map(
-              (member) => member.user_id,
-            )
-          : [];
       }}
       onAssignTask={async (taskId, target) => {
         const previous = bundle.tasks.find((item) => item.id === taskId);
@@ -3770,7 +3775,6 @@ type WorkspaceAppProps = {
     userId: string,
     selected: boolean,
   ) => Promise<void>;
-  onLoadTaskAssignees: (taskId: string) => Promise<string[]>;
   onAssignTask: (taskId: string, target: AssigneeTarget) => Promise<void>;
   onAssignSubtask: (subtaskId: string, target: AssigneeTarget) => Promise<void>;
   onCreateSubtask: (
@@ -4258,6 +4262,36 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setSettingsDialogOpen(true);
   }
 
+  useEffect(() => {
+    const tray = window.anttodoDesktop?.tray;
+    if (!tray) return;
+    const unsubscribeSettings = tray.onOpenSettings(() => {
+      openSettings("account");
+    });
+    const unsubscribeTask = tray.onOpenTask((target) => {
+      if (target.workspaceId !== props.workspaceId) {
+        writePendingWorkspace(target.workspaceId);
+        props.onWorkspaceChange(target.workspaceId);
+        return;
+      }
+      const task = props.bundle.tasks.find((item) => item.id === target.taskId);
+      if (!task) return;
+      setAppSection("tasks");
+      writeRoute({
+        workspaceId: target.workspaceId,
+        kind: "task",
+        taskId: target.taskId,
+        itemKind: task.kind === "note" ? "note" : "task",
+      }, false, { taskReturnRoute: sectionRoute() });
+      setSelectedTaskId(target.taskId);
+      setSelectedSubtaskId(null);
+    });
+    return () => {
+      unsubscribeSettings();
+      unsubscribeTask();
+    };
+  }, [props.bundle.tasks, props.onWorkspaceChange, props.workspaceId]);
+
   const shortcutScope = appSection === "calendar"
     ? "calendar" as const
     : appSection === "mindmap"
@@ -4579,7 +4613,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
             onSaveSchedule={(patch, schedule) =>
               props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
-            onLoadAssignees={() => props.onLoadTaskAssignees(selectedTask.id)}
             onAssign={(assigneeId) =>
               props.onAssignTask(selectedTask.id, assigneeId)}
             onAssignSubtask={props.onAssignSubtask}
@@ -4620,7 +4653,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
           onSaveSchedule={(patch, schedule) =>
             props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
-          onLoadAssignees={() => props.onLoadTaskAssignees(selectedTask.id)}
           onAssign={(assigneeId) => props.onAssignTask(selectedTask.id, assigneeId)}
           onAssignSubtask={props.onAssignSubtask}
           onToggleLabel={props.onToggleTaskLabel}
@@ -5372,6 +5404,12 @@ function MobileAppSidebar({
                   onClick={() => onSmartView("assigned")}
                 />
                 <SidebarItem
+                  active={!selectedLabelId && smartView === "watching"}
+                  icon={<Eye />}
+                  label="我关注的"
+                  onClick={() => onSmartView("watching")}
+                />
+                <SidebarItem
                   active={!selectedLabelId && smartView === "inbox"}
                   icon={<Inbox />}
                   label="收集箱"
@@ -5981,6 +6019,12 @@ function Sidebar({
             icon={<UserRound />}
             label="指派给我"
             onClick={() => onSmartView("assigned")}
+          />
+          <SidebarItem
+            active={!selectedLabelId && smartView === "watching"}
+            icon={<Eye />}
+            label="我关注的"
+            onClick={() => onSmartView("watching")}
           />
           <SidebarItem
             active={!selectedLabelId && smartView === "inbox"}
@@ -7275,6 +7319,13 @@ function TaskWorkspace({
     () => readCollapsedTaskSubtasks(workspaceId),
   );
   const selectedLabel = bundle.labels.find((label) => label.id === selectedLabelId);
+  const assigneeMembers = selectedLabelId
+    ? getAssignableMembers(
+      bundle,
+      { workspace_id: workspaceId, label_ids: [selectedLabelId] },
+      currentUserId,
+    )
+    : bundle.members;
   const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
   const canManageSelectedLabel = !selectedLabel
     || currentLabelPermissionLevel(bundle, selectedLabel.id) >= 2;
@@ -7285,6 +7336,7 @@ function TaskWorkspace({
     all: "所有",
     today: "今天",
     assigned: "指派给我",
+    watching: "我关注的",
     inbox: "收集箱",
     trash: "回收站",
   }[smartView];
@@ -7570,8 +7622,7 @@ function TaskWorkspace({
     ]);
     const kind: TaskKind = "todo";
     let priority = quickPriority;
-    let assigneeId: string | null = payload.assigneeId
-      ?? (!selectedLabelId && smartView === "assigned" ? currentUserId : null);
+    let assigneeId: string | null = payload.assigneeId;
     let cliAssignee: AiCliTool | null = null;
     let dueAt: string | null = null;
     if (column.target.kind === "label" && column.target.labelId) {
@@ -7751,8 +7802,7 @@ function TaskWorkspace({
     if (!title || !online || busy) return;
     setBusy(true);
     try {
-      const assigneeId = payload.assigneeId
-        ?? (!selectedLabelId && smartView === "assigned" ? currentUserId : null);
+      const assigneeId = payload.assigneeId;
       const created = await onCreateTask({
         title,
         labelIds: payload.labelIds,
@@ -7922,12 +7972,13 @@ function TaskWorkspace({
         now={now}
         dateTimePreferences={dateTimePreferences}
         leadingIcon={quickKind === "note" ? <NotebookPen /> : <Plus />}
-        members={bundle.members}
+        members={assigneeMembers}
         labels={bundle.labels}
         labelPermissionLevels={bundle.labelPermissionLevels}
         userLabelOrder={bundle.userLabelOrder}
         currentUserId={currentUserId}
         defaultLabelIds={selectedLabelId ? [selectedLabelId] : []}
+        defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
         settings={(
           <QuickAddSettings
             online={online && !busy}
@@ -7951,11 +8002,12 @@ function TaskWorkspace({
           <TaskKanban
             columns={kanbanColumns}
             labels={bundle.labels}
-            members={bundle.members}
+            members={assigneeMembers}
             labelPermissionLevels={bundle.labelPermissionLevels}
             userLabelOrder={bundle.userLabelOrder}
             workspaceId={workspaceId}
             currentUserId={currentUserId}
+            defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
             selectedTaskId={selectedTaskId}
             online={online}
             now={now}
@@ -8336,133 +8388,6 @@ function LabelActionsMenu({
             <span>显示已完成</span>
             {showCompleted && <Check />}
           </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TaskViewMenu({
-  preference,
-  online,
-  onChange,
-}: {
-  preference: Pick<TaskListPreference, "grouping" | "sort" | "direction">;
-  online: boolean;
-  onChange: (
-    patch: Partial<Pick<TaskListPreference, "grouping" | "sort" | "direction">>,
-  ) => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [submenu, setSubmenu] = useState<"grouping" | "sort" | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const groupingLabel = TASK_GROUPING_OPTIONS.find(
-    (option) => option.value === preference.grouping,
-  )?.label;
-  const sortLabel = TASK_SORT_OPTIONS.find((option) => option.value === preference.sort)?.label;
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-        setSubmenu(null);
-      }
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-
-  async function selectGrouping(grouping: TaskListGrouping) {
-    await onChange({ grouping });
-    setOpen(false);
-    setSubmenu(null);
-  }
-
-  async function selectSort(sort: TaskListSort) {
-    await onChange({ sort, direction: defaultSortDirection(sort) });
-    setOpen(false);
-    setSubmenu(null);
-  }
-
-  return (
-    <div className="task-view-menu-anchor" ref={menuRef}>
-      <button
-        className="icon-button"
-        aria-label="分组与排序"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => {
-          setOpen((value) => !value);
-          setSubmenu(null);
-        }}
-      >
-        <ArrowDownUp />
-      </button>
-      {open && (
-        <div className="task-view-menu" role="menu" aria-label="分组与排序">
-          <button
-            role="menuitem"
-            aria-expanded={submenu === "grouping"}
-            onClick={() => setSubmenu((value) => value === "grouping" ? null : "grouping")}
-          >
-            <span>分组</span>
-            <em>{groupingLabel}</em>
-            <ChevronRight />
-          </button>
-          <button
-            role="menuitem"
-            aria-expanded={submenu === "sort"}
-            onClick={() => setSubmenu((value) => value === "sort" ? null : "sort")}
-          >
-            <span>排序</span>
-            <em>{sortLabel}</em>
-            <ChevronRight />
-          </button>
-          {preference.sort !== "custom" && (
-            <button
-              role="menuitem"
-              disabled={!online}
-              onClick={() => void onChange({
-                direction: preference.direction === "asc" ? "desc" : "asc",
-              })}
-            >
-              {preference.direction === "asc" ? <ArrowUp /> : <ArrowDown />}
-              <span>{preference.direction === "asc" ? "升序" : "降序"}</span>
-            </button>
-          )}
-          {submenu === "grouping" && (
-            <div className="task-view-submenu" role="menu" aria-label="分组方式">
-              {TASK_GROUPING_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  role="menuitemradio"
-                  aria-checked={preference.grouping === option.value}
-                  disabled={!online}
-                  onClick={() => void selectGrouping(option.value)}
-                >
-                  <span>{option.label}</span>
-                  {preference.grouping === option.value && <Check />}
-                </button>
-              ))}
-            </div>
-          )}
-          {submenu === "sort" && (
-            <div className="task-view-submenu" role="menu" aria-label="排序方式">
-              {TASK_SORT_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  role="menuitemradio"
-                  aria-checked={preference.sort === option.value}
-                  disabled={!online}
-                  onClick={() => void selectSort(option.value)}
-                >
-                  <span>{option.label}</span>
-                  {preference.sort === option.value && <Check />}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       )}
     </div>

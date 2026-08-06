@@ -15,12 +15,18 @@ import {
 } from "./update-checker.mjs";
 import { createDesktopAutoUpdater } from "./auto-updater.mjs";
 import { createAiTerminalManager } from "./ai-terminal.mjs";
+import { createTrayController } from "./tray.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const authCallbackQueue = createAuthCallbackQueue(5);
 let mainWindow = null;
 let isQuitting = false;
+const trayController = createTrayController({
+  isDev,
+  restoreMainWindow: () => restoreMainWindow(),
+  getMainWindow: () => mainWindow,
+});
 
 const desktopAutoUpdater = createDesktopAutoUpdater({
   isPackaged: app.isPackaged,
@@ -254,9 +260,14 @@ function createWindow() {
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     createWindow();
+    trayController.start();
     powerMonitor.on("resume", () => reminderScheduler.resume());
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow();
+        return;
+      }
+      restoreMainWindow();
     });
   });
 }
@@ -267,6 +278,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  trayController.dispose();
   for (const window of BrowserWindow.getAllWindows()) {
     aiTerminalManager.stopOwner(window.webContents.id);
   }

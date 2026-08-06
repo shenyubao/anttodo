@@ -90,7 +90,6 @@ export type TaskDetailProps = {
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
-  onLoadAssignees: () => Promise<string[]>;
   onAssign: (target: AssigneeTarget) => Promise<void>;
   onAssignSubtask: (subtaskId: string, target: AssigneeTarget) => Promise<void>;
   onToggleLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
@@ -123,7 +122,6 @@ function TaskAssigneeControl({
   currentUserId,
   aiWorkSettings,
   online,
-  onLoad,
   onAssign,
   target = taskAssigneeTarget(task),
   compact = false,
@@ -133,59 +131,29 @@ function TaskAssigneeControl({
   currentUserId: string;
   aiWorkSettings: AiWorkSettings;
   online: boolean;
-  onLoad: () => Promise<string[]>;
   onAssign: (target: AssigneeTarget) => Promise<void>;
   target?: AssigneeTarget;
   compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [candidateIds, setCandidateIds] = useState<string[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const onLoadRef = useRef(onLoad);
   const assignee = target.kind === "user"
     ? bundle.members.find((member) => member.user_id === target.userId)
     : undefined;
   const cliTools = window.anttodoDesktop?.aiWork ? aiWorkSettings.cli_tools : [];
+  // Local member cache filtered by the task's current label ACLs / groups.
   const candidates = useMemo(
-    () => getAssignableMembers(bundle, task, currentUserId, candidateIds ?? []),
-    [bundle, candidateIds, currentUserId, task],
+    () => getAssignableMembers(bundle, task, currentUserId),
+    [bundle, currentUserId, task],
   );
 
   useEffect(() => {
-    onLoadRef.current = onLoad;
-  }, [onLoad]);
-
-  useEffect(() => {
     setOpen(false);
-    setCandidateIds(null);
     setError("");
   }, [task.id]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-    void onLoadRef.current()
-      .then((ids) => {
-        if (!cancelled) setCandidateIds(ids);
-      })
-      .catch((cause) => {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : "负责人列表加载失败，请重试");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, task.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -307,8 +275,7 @@ function TaskAssigneeControl({
             </button>
           ))}
           {cliTools.length > 0 && <div className="task-assignee-divider" aria-hidden="true" />}
-          {loading && <p className="task-assignee-status" role="status">正在读取成员…</p>}
-          {!loading && candidates.map((member) => (
+          {candidates.map((member) => (
             <button
               key={member.user_id}
               type="button"
@@ -322,7 +289,7 @@ function TaskAssigneeControl({
               <Check className="assignee-selected-icon" />
             </button>
           ))}
-          {!loading && candidateIds && candidates.length === 0 && (
+          {candidates.length === 0 && (
             <p className="task-assignee-status">暂无可指派成员</p>
           )}
           {error && <p className="task-assignee-error" role="alert">{error}</p>}
@@ -337,31 +304,22 @@ function TaskParticipantsControl({
   bundle,
   currentUserId,
   online,
-  onLoadAssignees,
   onToggleParticipant,
 }: {
   task: Task;
   bundle: WorkspaceBundle;
   currentUserId: string;
   online: boolean;
-  onLoadAssignees: () => Promise<string[]>;
   onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [candidateIds, setCandidateIds] = useState<string[] | null>(null);
   const [draftParticipantIds, setDraftParticipantIds] = useState(
     () => new Set(task.participant_ids),
   );
-  const [loading, setLoading] = useState(false);
   const [savingUserId, setSavingUserId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const onLoadRef = useRef(onLoadAssignees);
-
-  useEffect(() => {
-    onLoadRef.current = onLoadAssignees;
-  }, [onLoadAssignees]);
 
   useEffect(() => {
     setDraftParticipantIds(new Set(task.participant_ids));
@@ -369,31 +327,8 @@ function TaskParticipantsControl({
 
   useEffect(() => {
     setOpen(false);
-    setCandidateIds(null);
     setError("");
   }, [task.id]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-    void onLoadRef.current()
-      .then((ids) => {
-        if (!cancelled) setCandidateIds(ids);
-      })
-      .catch((cause) => {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : "参与者列表加载失败，请重试");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, task.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -415,8 +350,8 @@ function TaskParticipantsControl({
   }, [open]);
 
   const candidates = useMemo(
-    () => getAssignableMembers(bundle, task, currentUserId, candidateIds ?? []),
-    [bundle, candidateIds, currentUserId, task],
+    () => getAssignableMembers(bundle, task, currentUserId),
+    [bundle, currentUserId, task],
   );
 
   const menuMembers = useMemo(() => {
@@ -478,8 +413,7 @@ function TaskParticipantsControl({
       </button>
       {open && (
         <div className="task-participants-menu" role="menu" aria-label="管理参与者">
-          {loading && <p className="task-participants-status" role="status">正在读取成员…</p>}
-          {!loading && menuMembers.map((member) => {
+          {menuMembers.map((member) => {
             const selected = draftParticipantIds.has(member.user_id);
             return (
               <button
@@ -500,7 +434,7 @@ function TaskParticipantsControl({
               </button>
             );
           })}
-          {!loading && candidateIds && menuMembers.length === 0 && (
+          {menuMembers.length === 0 && (
             <p className="task-participants-status">暂无可选成员</p>
           )}
           {error && <p className="task-participants-error" role="alert">{error}</p>}
@@ -942,7 +876,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onClose,
   onUpdate,
   onSaveSchedule,
-  onLoadAssignees,
   onAssign,
   onAssignSubtask,
   onToggleLabel,
@@ -1333,7 +1266,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             currentUserId={currentUserId}
             aiWorkSettings={aiWorkSettings}
             online={writable}
-            onLoad={onLoadAssignees}
             onAssign={(target) => onAssignSubtask(focusedSubtask.id, target)}
             target={subtaskAssigneeTarget(focusedSubtask)}
           />
@@ -1436,7 +1368,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             currentUserId={currentUserId}
             aiWorkSettings={aiWorkSettings}
             online={writable}
-            onLoad={onLoadAssignees}
             onAssign={handleAssign}
           />
         )}
@@ -1606,7 +1537,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                       currentUserId={currentUserId}
                       aiWorkSettings={aiWorkSettings}
                       online={writable}
-                      onLoad={onLoadAssignees}
                       onAssign={(target) => handleAssignSubtask(subtask.id, target)}
                       target={subtaskAssigneeTarget(subtask)}
                       compact
@@ -1706,7 +1636,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     currentUserId={currentUserId}
                     aiWorkSettings={aiWorkSettings}
                     online={writable}
-                    onLoad={onLoadAssignees}
                     onAssign={async (target) => {
                       if (target.kind === "cli") {
                         setDraftSubtaskCli(target.tool);
@@ -1786,7 +1715,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           bundle={bundle}
           currentUserId={currentUserId}
           online={writable}
-          onLoadAssignees={onLoadAssignees}
           onToggleParticipant={onToggleParticipant}
         />
         {!activeTerminal && (

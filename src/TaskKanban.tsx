@@ -83,6 +83,7 @@ export function TaskKanban({
   userLabelOrder,
   workspaceId,
   currentUserId,
+  defaultAssigneeId = null,
   selectedTaskId,
   online,
   now,
@@ -124,6 +125,7 @@ export function TaskKanban({
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
   workspaceId: string;
   currentUserId: string;
+  defaultAssigneeId?: string | null;
   selectedTaskId: string | null;
   online: boolean;
   now: Date;
@@ -267,6 +269,7 @@ export function TaskKanban({
       labelPermissionLevels={labelPermissionLevels}
       userLabelOrder={userLabelOrder}
       currentUserId={currentUserId}
+      defaultAssigneeId={defaultAssigneeId}
       selectedTaskId={selectedTaskId}
       online={online}
       now={now}
@@ -400,6 +403,7 @@ function KanbanColumnView({
   labelPermissionLevels,
   userLabelOrder,
   currentUserId,
+  defaultAssigneeId = null,
   selectedTaskId,
   online,
   now,
@@ -426,6 +430,7 @@ function KanbanColumnView({
   labelPermissionLevels: Record<string, LabelPermissionLevel | undefined>;
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
   currentUserId: string;
+  defaultAssigneeId?: string | null;
   selectedTaskId: string | null;
   online: boolean;
   now: Date;
@@ -470,6 +475,7 @@ function KanbanColumnView({
     labelPermissionLevels,
     userLabelOrder,
     currentUserId,
+    defaultAssigneeId,
     features: { assignee: true, labels: true },
     inputRef,
   });
@@ -663,7 +669,10 @@ function KanbanColumnView({
                 }
               }}
               onBlur={() => {
-                if (!tokens.title.trim() && !tokens.assigneeId && tokens.labelIds.length === 0 && !busy) {
+                const onlyDefaultAssignee = !tokens.assigneeId
+                  || tokens.assigneeId === (defaultAssigneeId ?? null);
+                if (!tokens.title.trim() && onlyDefaultAssignee && tokens.labelIds.length === 0 && !busy) {
+                  tokens.reset();
                   setAdding(false);
                 }
               }}

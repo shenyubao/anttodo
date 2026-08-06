@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDemoBundle } from "./demo";
 import {
+  canMemberBeAssignedToTask,
   canMemberViewTask,
   getAssignableMembers,
 } from "./taskAssignment";
@@ -25,6 +26,43 @@ describe("task assignment candidates", () => {
         (member) => member.user_id,
       ),
     ).toEqual(["demo-user", "demo-another", "demo-member"]);
+  });
+
+  it("limits candidates to the manage user group when view stays open", () => {
+    const bundle = createDemoBundle();
+    const task = bundle.tasks.find((item) => item.id === "task-1")!;
+    const label = bundle.labels.find((item) => item.id === "product")!;
+    label.view_scope = "all";
+    label.manage_scope = "groups";
+    bundle.labelUserAcls = [];
+    bundle.labelGroupAcls = [{
+      label_id: "product",
+      workspace_id: "workspace-team",
+      group_id: "group-client",
+      permission: "edit",
+    }];
+    // urgent also uses manage users with open view; keep it from restricting.
+    const urgent = bundle.labels.find((item) => item.id === "urgent")!;
+    urgent.manage_scope = "all";
+    bundle.members.push({
+      workspace_id: task.workspace_id,
+      user_id: "demo-outsider",
+      role: "member",
+      profile: {
+        id: "demo-outsider",
+        display_name: "路人",
+        avatar_url: null,
+      },
+    });
+
+    const outsider = bundle.members.find((item) => item.user_id === "demo-outsider")!;
+    const member = bundle.members.find((item) => item.user_id === "demo-member")!;
+    expect(canMemberViewTask(outsider, task, bundle)).toBe(true);
+    expect(canMemberBeAssignedToTask(outsider, task, bundle)).toBe(false);
+    expect(canMemberBeAssignedToTask(member, task, bundle)).toBe(true);
+    expect(
+      getAssignableMembers(bundle, task, "demo-user").map((item) => item.user_id),
+    ).toEqual(["demo-user", "demo-member"]);
   });
 
   it("uses the strict intersection of inherited label permissions", () => {

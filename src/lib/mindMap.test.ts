@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildMindMapTree,
   classifyTaskSchedule,
+  defaultCollapsedMindMapNodeIds,
+  mindMapFocusPathIds,
   moveTaskToDate,
   moveTaskToSchedule,
   resolveMindMapDropAssignment,
@@ -125,6 +127,37 @@ describe("mind map tree", () => {
     expect(julyWeek.children[2].children).toEqual([]);
     expect(root.children.at(-2)?.children[0].id).toBe("task:inbox:none:none");
     expect(root.children.at(-1)?.children).toEqual([]);
+  });
+
+  it("defaults collapse to the focus month/week/day path", () => {
+    const root = buildMindMapTree({
+      tasks: [
+        task({ id: "july", due_at: "2026-07-28T08:00:00.000Z" }),
+        task({ id: "today", due_at: "2026-08-05T08:00:00.000Z", label_ids: ["tag"] }),
+        task({ id: "other-day", due_at: "2026-08-06T08:00:00.000Z" }),
+        task({ id: "inbox-task" }),
+        task({ id: "loose", label_ids: ["tag"] }),
+      ],
+      labels: [label("tag", 0, null, "标签")],
+      preferences: DEFAULT_DATE_TIME_PREFERENCES,
+      focusDateKey: "2026-08-05",
+    });
+
+    expect([...mindMapFocusPathIds("2026-08-05", 1)]).toEqual([
+      "month:2026-08",
+      "week:2026-08:2026-08-03",
+      "day:2026-08-05",
+    ]);
+
+    const collapsed = defaultCollapsedMindMapNodeIds(root, "2026-08-05", 1);
+    expect(collapsed.has("month:2026-08")).toBe(false);
+    expect(collapsed.has("week:2026-08:2026-08-03")).toBe(false);
+    expect(collapsed.has("day:2026-08-05")).toBe(false);
+    expect(collapsed.has("month:2026-07")).toBe(true);
+    expect(collapsed.has("day:2026-08-06")).toBe(true);
+    expect(collapsed.has("inbox")).toBe(true);
+    expect(collapsed.has("unscheduled")).toBe(true);
+    expect(collapsed.has("label:2026-08-05:tag")).toBe(true);
   });
 
   it("keeps a cross-month week only under the earlier month", () => {

@@ -388,6 +388,23 @@ describe("task list grouping and sorting", () => {
     expect(result.map((item) => item.id)).toEqual(["mine"]);
   });
 
+  it("filters the watching view to tasks where the current user is a participant", () => {
+    const result = filterTasksForView({
+      tasks: [
+        task("watching", { participant_ids: ["u"] }),
+        task("watching-with-others", { participant_ids: ["other", "u"] }),
+        task("assigned-only", { assignee_id: "u" }),
+        task("other-participant", { participant_ids: ["other"] }),
+        task("none"),
+      ],
+      labels,
+      smartView: "watching",
+      selectedLabelId: null,
+      currentUserId: "u",
+    });
+    expect(result.map((item) => item.id)).toEqual(["watching", "watching-with-others"]);
+  });
+
   it("filters trash tasks by deleted_at and excludes them from other views", () => {
     const tasks = [
       task("alive"),

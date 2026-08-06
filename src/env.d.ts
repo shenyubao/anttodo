@@ -108,5 +108,17 @@ interface Window {
         ) => () => void;
       };
     };
+    tray: {
+      setAuthenticated: (value: boolean) => void;
+      hide: () => void;
+      setIgnoreBlur: (value: boolean) => void;
+      showMainWindow: () => void;
+      openSettings: () => void;
+      openTask: (target: { workspaceId: string; taskId: string }) => void;
+      onOpenSettings: (listener: () => void) => () => void;
+      onOpenTask: (
+        listener: (target: { workspaceId: string; taskId: string }) => void,
+      ) => () => void;
+    };
   };
 }

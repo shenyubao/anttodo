@@ -57,6 +57,8 @@ import {
   buildMindMapTree,
   classifyTaskSchedule,
   DEFAULT_MIND_MAP_LABEL_DISPLAY_MODE,
+  defaultCollapsedMindMapNodeIds,
+  isCollapsibleMindMapNode,
   MIND_MAP_LABEL_DISPLAY_OPTIONS,
   moveTaskToSchedule,
   resolveMindMapDropAssignment,
@@ -450,11 +452,7 @@ function layoutTree(
 
   const visit = (item: MindMapTreeNode, parentId?: string) => {
     const size = NODE_SIZES[item.kind];
-    const collapsible = (item.kind === "month"
-      || item.kind === "week"
-      || item.kind === "day"
-      || item.kind === "label")
-      && item.children.length > 0;
+    const collapsible = isCollapsibleMindMapNode(item);
     const collapsed = collapsible && collapsedNodeIds.has(item.id);
     nodes.push({
       id: item.id,
@@ -676,17 +674,6 @@ function storedViewport(workspaceId: string): Viewport | null {
 
 function collapsedStorageKey(workspaceId: string) {
   return `anttodo:mind-map-collapsed:${workspaceId}`;
-}
-
-function storedCollapsedNodes(workspaceId: string) {
-  try {
-    const value: unknown = JSON.parse(
-      window.localStorage.getItem(collapsedStorageKey(workspaceId)) ?? "[]",
-    );
-    return new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
-  } catch {
-    return new Set<string>();
-  }
 }
 
 function storeCollapsedNodes(workspaceId: string, collapsedNodeIds: ReadonlySet<string>) {
@@ -1043,25 +1030,12 @@ function MindMapCanvas({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [displaySettingsOpen, setDisplaySettingsOpen] = useState(false);
-  const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(
-    () => storedCollapsedNodes(workspaceId),
-  );
   const [hiddenLabelIds, setHiddenLabelIds] = useState<Set<string>>(
     () => storedHiddenLabelIds(workspaceId),
   );
   const [labelDisplayMode, setLabelDisplayMode] = useState<MindMapLabelDisplayMode>(
     () => storedLabelDisplayMode(workspaceId),
   );
-
-  const toggleNodeCollapse = useCallback((nodeId: string) => {
-    setCollapsedNodeIds((current) => {
-      const next = new Set(current);
-      if (next.has(nodeId)) next.delete(nodeId);
-      else next.add(nodeId);
-      storeCollapsedNodes(workspaceId, next);
-      return next;
-    });
-  }, [workspaceId]);
 
   const toggleLabelVisible = useCallback((labelId: string) => {
     setHiddenLabelIds((current) => {
@@ -1114,6 +1088,39 @@ function MindMapCanvas({
     labelDisplayMode,
     visibleLabels,
   ]);
+
+  const collapseOpenKey = `${workspaceId}:${focusDateKey}`;
+  const defaultCollapsedRef = useRef<{ openKey: string; ids: Set<string> } | null>(null);
+  if (!defaultCollapsedRef.current || defaultCollapsedRef.current.openKey !== collapseOpenKey) {
+    defaultCollapsedRef.current = {
+      openKey: collapseOpenKey,
+      ids: defaultCollapsedMindMapNodeIds(
+        tree,
+        focusDateKey,
+        dateTimePreferences.weekStartsOn,
+      ),
+    };
+  }
+  const [collapsedOverride, setCollapsedOverride] = useState<{
+    openKey: string;
+    ids: Set<string>;
+  } | null>(null);
+  const collapsedNodeIds = collapsedOverride?.openKey === collapseOpenKey
+    ? collapsedOverride.ids
+    : defaultCollapsedRef.current.ids;
+
+  const toggleNodeCollapse = useCallback((nodeId: string) => {
+    setCollapsedOverride((current) => {
+      const base = current?.openKey === collapseOpenKey
+        ? current.ids
+        : defaultCollapsedRef.current?.ids ?? new Set<string>();
+      const next = new Set(base);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      storeCollapsedNodes(workspaceId, next);
+      return { openKey: collapseOpenKey, ids: next };
+    });
+  }, [collapseOpenKey, workspaceId]);
 
   const toggleTask = useCallback(async (task: Task) => {
     if (!online || task.kind === "note") return;
@@ -1305,7 +1312,7 @@ function MindMapCanvas({
     setFocusDateKey(nextKey);
     setSelectedNodeId(null);
     setDraft(null);
-    setCollapsedNodeIds(storedCollapsedNodes(workspaceId));
+    setCollapsedOverride(null);
     setHiddenLabelIds(storedHiddenLabelIds(workspaceId));
     setLabelDisplayMode(storedLabelDisplayMode(workspaceId));
     setDisplaySettingsOpen(false);

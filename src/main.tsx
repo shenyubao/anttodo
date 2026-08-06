@@ -29,6 +29,13 @@ if (window.anttodoDesktop) {
   }
 }
 
+const isTraySurface = window.location.hash.replace(/^#/, "").split("?")[0] === "/tray"
+  || window.location.hash.replace(/^#/, "").split("?")[0] === "tray";
+
+if (isTraySurface) {
+  document.body.classList.add("is-tray");
+}
+
 if (Capacitor.isNativePlatform()) {
   document.body.classList.add("is-capacitor", `is-${Capacitor.getPlatform()}`);
 }
@@ -66,7 +73,7 @@ createRoot(document.getElementById("root")!, {
         },
       }}
     >
-      {window.anttodoDesktop?.platform === "darwin" && (
+      {window.anttodoDesktop?.platform === "darwin" && !isTraySurface && (
         <div className="window-traffic-lights" aria-label="窗口控制">
           <button
             className="traffic-light close"
@@ -85,7 +92,7 @@ createRoot(document.getElementById("root")!, {
           />
         </div>
       )}
-      <div className="window-drag-strip" aria-hidden="true" />
+      {!isTraySurface && <div className="window-drag-strip" aria-hidden="true" />}
       <App />
     </PersistQueryClientProvider>
   </StrictMode>,

@@ -1,6 +1,6 @@
 import type { TaskViewMode } from "../types";
 
-export type AppSmartView = "all" | "today" | "assigned" | "inbox" | "trash";
+export type AppSmartView = "all" | "today" | "assigned" | "watching" | "inbox" | "trash";
 
 export const DEFAULT_SMART_VIEW: AppSmartView = "assigned";
 
@@ -11,7 +11,7 @@ export type AppRoute =
   | { workspaceId: string; kind: "calendar" }
   | { workspaceId: string; kind: "mindmap" };
 
-const SMART_VIEWS = new Set<AppSmartView>(["all", "today", "assigned", "inbox", "trash"]);
+const SMART_VIEWS = new Set<AppSmartView>(["all", "today", "assigned", "watching", "inbox", "trash"]);
 
 function decodeSegment(value: string | undefined) {
   if (!value) return null;

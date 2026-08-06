@@ -37,22 +37,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import {
-  addDays,
-  addMonths,
-  format,
-  isSameDay,
-  isSameMonth,
-  startOfMonth,
-  startOfWeek,
-} from "date-fns";
-import { zhCN } from "date-fns/locale";
 import { useShortcutHandler } from "./ShortcutProvider";
 import {
   chineseCalendarDetail,
   systemTimeZone,
-  weekdayLabels,
 } from "./lib/dateTimePreferences";
+import { MiniCalendar } from "./MiniCalendar";
 import {
   buildScheduleTaskGroups,
   canRescheduleTask,
@@ -180,107 +170,6 @@ function HolidayBadge({
     >
       {detail.holidayLabel}
     </span>
-  );
-}
-
-function MiniCalendar({
-  bundle,
-  visibleCalendarIds,
-  visibleAssigneeIds,
-  visibleDate,
-  dateTimePreferences,
-  onSelectDate,
-}: {
-  bundle: WorkspaceBundle;
-  visibleCalendarIds: Set<string>;
-  visibleAssigneeIds: Set<string>;
-  visibleDate: Date;
-  dateTimePreferences: DateTimePreferences;
-  onSelectDate: (date: Date) => void;
-}) {
-  const [displayMonth, setDisplayMonth] = useState(() => startOfMonth(visibleDate));
-
-  useEffect(() => {
-    setDisplayMonth(startOfMonth(visibleDate));
-  }, [visibleDate]);
-
-  const days = useMemo(() => {
-    const first = startOfWeek(startOfMonth(displayMonth), {
-      weekStartsOn: dateTimePreferences.weekStartsOn,
-    });
-    return Array.from({ length: 42 }, (_, index) => addDays(first, index));
-  }, [dateTimePreferences.weekStartsOn, displayMonth]);
-
-  const taskDates = useMemo(() => new Set(
-    bundle.tasks
-      .filter((task) => task.due_at && !task.deleted_at
-        && taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds))
-      .map((task) => format(new Date(task.due_at!), "yyyy-MM-dd")),
-  ), [bundle.tasks, visibleAssigneeIds, visibleCalendarIds]);
-
-  return (
-    <section className="mini-calendar" aria-label="日期导航">
-      <header className="mini-calendar-header">
-        <strong>{format(displayMonth, "yyyy年M月", { locale: zhCN })}</strong>
-        <div>
-          <button
-            aria-label="上一个月"
-            onClick={() => setDisplayMonth((current) => addMonths(current, -1))}
-          >
-            <ChevronLeft />
-          </button>
-          <button
-            className="mini-calendar-today"
-            aria-label="回到本月"
-            onClick={() => {
-              const today = new Date();
-              setDisplayMonth(startOfMonth(today));
-              onSelectDate(today);
-            }}
-          >
-            <span />
-          </button>
-          <button
-            aria-label="下一个月"
-            onClick={() => setDisplayMonth((current) => addMonths(current, 1))}
-          >
-            <ChevronRight />
-          </button>
-        </div>
-      </header>
-      <div className="mini-calendar-weekdays" aria-hidden="true">
-        {weekdayLabels(dateTimePreferences.weekStartsOn).map((weekday) => (
-          <span key={weekday}>{weekday}</span>
-        ))}
-      </div>
-      <div className="mini-calendar-grid">
-        {days.map((day) => {
-          const inMonth = isSameMonth(day, displayMonth);
-          const hasTask = taskDates.has(format(day, "yyyy-MM-dd"));
-          return (
-            <button
-              key={day.toISOString()}
-              className={clsx(
-                !inMonth && "outside",
-                isSameDay(day, new Date()) && "today",
-              )}
-              aria-label={format(day, "yyyy年M月d日", { locale: zhCN })}
-              onClick={() => {
-                setDisplayMonth(startOfMonth(day));
-                onSelectDate(day);
-              }}
-            >
-              <span>{day.getDate()}</span>
-              <HolidayBadge
-                date={day}
-                enabled={dateTimePreferences.showHolidayAdjustments}
-              />
-              {hasTask && <i aria-label="有任务" />}
-            </button>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 

@@ -86,6 +86,7 @@ export function QuickAddForm({
   userLabelOrder,
   currentUserId,
   defaultLabelIds = [],
+  defaultAssigneeId = null,
   onSubmit,
 }: {
   online: boolean;
@@ -103,6 +104,7 @@ export function QuickAddForm({
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
   currentUserId: string;
   defaultLabelIds?: string[];
+  defaultAssigneeId?: string | null;
   onSubmit: (payload: QuickAddSubmitPayload) => Promise<void>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -112,6 +114,7 @@ export function QuickAddForm({
     labelPermissionLevels,
     userLabelOrder,
     currentUserId,
+    defaultAssigneeId,
     features: { assignee: true, labels: true },
     inputRef,
   });
@@ -224,7 +227,8 @@ export function QuickAddForm({
       });
     } catch {
       tokens.setTitle((current) => current || previous.title);
-      tokens.setAssigneeId((current) => current ?? previous.assigneeId);
+      tokens.setAssigneeId((current) =>
+        current === (defaultAssigneeId ?? null) ? previous.assigneeId : current);
       tokens.setLabelIds((current) => (current.length > 0 ? current : previous.labelIds));
     }
   }

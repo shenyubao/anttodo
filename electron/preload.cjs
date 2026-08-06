@@ -69,5 +69,23 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
         return () => ipcRenderer.removeListener("anttodo:ai-terminal-exit", handler);
       }
     })
+  }),
+  tray: Object.freeze({
+    setAuthenticated: (value) => ipcRenderer.send("anttodo:tray-set-authenticated", value),
+    hide: () => ipcRenderer.send("anttodo:tray-hide"),
+    setIgnoreBlur: (value) => ipcRenderer.send("anttodo:tray-ignore-blur", value),
+    showMainWindow: () => ipcRenderer.send("anttodo:tray-show-main"),
+    openSettings: () => ipcRenderer.send("anttodo:tray-open-settings"),
+    openTask: (target) => ipcRenderer.send("anttodo:tray-open-task", target),
+    onOpenSettings: (listener) => {
+      const handler = () => listener();
+      ipcRenderer.on("anttodo:open-settings", handler);
+      return () => ipcRenderer.removeListener("anttodo:open-settings", handler);
+    },
+    onOpenTask: (listener) => {
+      const handler = (_event, target) => listener(target);
+      ipcRenderer.on("anttodo:open-task", handler);
+      return () => ipcRenderer.removeListener("anttodo:open-task", handler);
+    }
   })
 });

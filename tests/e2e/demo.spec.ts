@@ -8,6 +8,15 @@ async function openDemoTask(page: Page) {
   return page.getByRole("textbox", { name: "editable markdown" });
 }
 
+/** Expand collapsed mind-map branches so nested labels/tasks are visible for assertions. */
+async function expandAllMindMapBranches(page: Page) {
+  for (let step = 0; step < 40; step += 1) {
+    const collapsed = page.getByRole("button", { name: /，已收起$/ });
+    if (await collapsed.count() === 0) return;
+    await collapsed.first().click();
+  }
+}
+
 test("demo task flow and details drawer", async ({ page }) => {
   await page.goto("/?demo=1");
   await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
@@ -355,6 +364,8 @@ test("mind map is full width and supports creation, details, and date dragging",
   const unscheduledBranch = page.locator(".react-flow__node-unscheduled");
   await expect(inboxBranch).toContainText("收集箱");
   await expect(unscheduledBranch).toContainText("未排期");
+  await expect(page.getByRole("button", { name: "收集箱，已收起" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "未排期，已收起" })).toBeVisible();
   const inboxBox = await inboxBranch.boundingBox();
   const unscheduledBox = await unscheduledBranch.boundingBox();
   expect(inboxBox).not.toBeNull();
@@ -375,6 +386,9 @@ test("mind map is full width and supports creation, details, and date dragging",
     ),
   ));
   expect(new Set(dateNodeBackgrounds).size).toBe(1);
+
+  await expandAllMindMapBranches(page);
+  await page.getByRole("button", { name: "一览全部" }).click();
   const labelNodes = page.locator(".react-flow__node-label");
   const labelNode = labelNodes.first();
   const taskNode = page.locator(".react-flow__node-task").first();
@@ -394,8 +408,10 @@ test("mind map is full width and supports creation, details, and date dragging",
     hasText: demoTaskTitle,
   })).toHaveCount(2);
 
-  const targetDay = page.locator(".react-flow__node-day").first();
-  await targetDay.click();
+  // Prefer an empty (non-collapsible) day so the click selects without toggling collapse.
+  const targetDay = page.locator(".react-flow__node-day").filter({
+    has: page.locator(".mind-map-node:not(.mind-map-node-collapsible)"),
+  }).first();
   await targetDay.click();
   await page.keyboard.press("Enter");
   const draft = page.getByRole("textbox", { name: "新待办标题" });
@@ -458,6 +474,8 @@ test("mind map creates labels, inherits labels, and exposes context deletion", a
   await page.getByRole("button", { name: "思维导图" }).click();
 
   await page.getByRole("button", { name: "一览全部" }).click();
+  await expandAllMindMapBranches(page);
+  await page.getByRole("button", { name: "一览全部" }).click();
   const productLabel = page.locator(".react-flow__node-label").filter({
     hasText: "产品研发",
   }).first();
@@ -475,6 +493,7 @@ test("mind map creates labels, inherits labels, and exposes context deletion", a
   const taskInput = page.getByRole("textbox", { name: "新待办标题" });
   await taskInput.fill("导图标签任务");
   await taskInput.press("Enter");
+  await expandAllMindMapBranches(page);
   await page.getByRole("button", { name: "一览全部" }).click();
 
   const createdTask = page.locator(".react-flow__node-task").filter({
@@ -501,6 +520,7 @@ test("mind map creates labels, inherits labels, and exposes context deletion", a
   await expect(page.getByText("导图子标签", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "思维导图" }).click();
+  await expandAllMindMapBranches(page);
   await page.getByRole("button", { name: "一览全部" }).click();
   const inheritedTask = page.locator(".react-flow__node-task").filter({
     hasText: "导图标签任务",
@@ -602,6 +622,8 @@ test("mind map dragging adds labels and moving to inbox clears them", async ({ p
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "思维导图" }).click();
   await page.getByRole("button", { name: "一览全部" }).click();
+  await expandAllMindMapBranches(page);
+  await page.getByRole("button", { name: "一览全部" }).click();
   await page.waitForTimeout(300);
 
   const taskTitle = "记录下一轮产品想法";
@@ -628,6 +650,7 @@ test("mind map dragging adds labels and moving to inbox clears them", async ({ p
   ).toBeVisible();
 
   await page.getByRole("button", { name: "思维导图" }).click();
+  await expandAllMindMapBranches(page);
   await page.getByRole("button", { name: "一览全部" }).click();
   await page.waitForTimeout(300);
   const labeledTask = page.locator(".react-flow__node-task").filter({ hasText: taskTitle });

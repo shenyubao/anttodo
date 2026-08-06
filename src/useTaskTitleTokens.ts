@@ -34,6 +34,7 @@ export function useTaskTitleTokens({
   labelPermissionLevels,
   userLabelOrder,
   currentUserId,
+  defaultAssigneeId = null,
   features,
   inputRef,
 }: {
@@ -42,14 +43,19 @@ export function useTaskTitleTokens({
   labelPermissionLevels: Record<string, LabelPermissionLevel | undefined>;
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
   currentUserId: string;
+  defaultAssigneeId?: string | null;
   features: TitleTokenFeatures;
   inputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
 }) {
   const [title, setTitle] = useState("");
-  const [assigneeId, setAssigneeId] = useState<string | null>(null);
+  const [assigneeId, setAssigneeId] = useState<string | null>(defaultAssigneeId ?? null);
   const [labelIds, setLabelIds] = useState<string[]>([]);
   const [token, setToken] = useState<DetectedTitleToken | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+
+  useEffect(() => {
+    setAssigneeId(defaultAssigneeId ?? null);
+  }, [defaultAssigneeId]);
 
   const assignee = useMemo(
     () => (assigneeId ? members.find((member) => member.user_id === assigneeId) ?? null : null),
@@ -178,7 +184,7 @@ export function useTaskTitleTokens({
 
   function reset() {
     setTitle("");
-    setAssigneeId(null);
+    setAssigneeId(defaultAssigneeId ?? null);
     setLabelIds([]);
     setToken(null);
     setActiveIndex(0);

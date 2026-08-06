@@ -12,6 +12,8 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "view", view: "all", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "assigned", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "assigned", mode: "kanban" },
+    { workspaceId: "workspace-1", kind: "view", view: "watching", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "watching", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },

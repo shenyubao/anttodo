@@ -12,6 +12,10 @@ const submitRetryDelayMs = Math.max(
   5_000,
   Number(process.env.NOTARIZATION_SUBMIT_RETRY_DELAY_MS || 20_000),
 );
+const recentSubmissionSkewMs = Math.max(
+  30_000,
+  Number(process.env.NOTARIZATION_RECENT_SUBMISSION_SKEW_MS || 10 * 60_000),
+);
 
 function isTransientSubmitError(message) {
   return /deadlineExceeded|abortedUpload|timed?\s*out|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|Broken pipe|Connection reset/i.test(
@@ -36,6 +40,33 @@ function authorizationArgs() {
   );
 }
 
+function tryParseJsonObject(text) {
+  if (typeof text !== "string") return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // notarytool sometimes prints a banner line before JSON.
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function submissionFromOutput(...chunks) {
+  for (const chunk of chunks) {
+    const parsed = tryParseJsonObject(chunk);
+    if (parsed?.id) return parsed;
+  }
+  return null;
+}
+
 async function notarytool(args) {
   try {
     const { stdout, stderr } = await execFileAsync("xcrun", ["notarytool", ...args], {
@@ -44,15 +75,41 @@ async function notarytool(args) {
     });
     const output = `${stdout || ""}${stderr || ""}`.trim();
     if (!output) throw new Error(`notarytool 返回了空结果：${args[0]}`);
-    return JSON.parse(output);
+    const parsed = tryParseJsonObject(output);
+    if (!parsed) throw new SyntaxError(`notarytool 返回了非 JSON：${output}`);
+    return parsed;
   } catch (error) {
     if (error instanceof SyntaxError) throw error;
+    // Apple may accept the upload while the local client still exits non-zero.
+    // Prefer any submission id already present in stdout/stderr over failing hard.
+    const recovered = submissionFromOutput(error.stdout, error.stderr);
+    if (recovered) {
+      console.warn(
+        `notarytool ${args[0]} 退出码非零，但已解析到提交 ID ${recovered.id}，继续轮询。`,
+      );
+      return recovered;
+    }
     const details = [error.stderr, error.stdout, error.message]
       .filter((value) => typeof value === "string" && value.trim())
       .join("\n")
       .trim();
     throw new Error(`notarytool ${args[0]} 失败：${details || "未知错误"}`);
   }
+}
+
+async function findRecentSubmission(auth, archiveName, submittedAfterMs) {
+  const history = await notarytool(["history", ...auth, "--output-format", "json"]);
+  const entries = Array.isArray(history?.history)
+    ? history.history
+    : Array.isArray(history)
+      ? history
+      : [];
+  const match = entries.find((entry) => {
+    if (!entry?.id || entry.name !== archiveName) return false;
+    const created = Date.parse(entry.createdDate || "");
+    return Number.isFinite(created) && created >= submittedAfterMs;
+  });
+  return match || null;
 }
 
 function delay(ms) {
@@ -67,7 +124,8 @@ export default async function notarizeMac(context) {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "anttodo-notarize-"));
   // Prefer an ASCII archive name; Chinese product filenames have tripped notarytool
   // client failures after Apple already accepted the upload.
-  const archivePath = join(temporaryDirectory, "AntTodo.app.zip");
+  const archiveName = "AntTodo.app.zip";
+  const archivePath = join(temporaryDirectory, archiveName);
   const auth = authorizationArgs();
 
   try {
@@ -79,6 +137,7 @@ export default async function notarizeMac(context) {
     );
 
     let submission;
+    const submittedAfterMs = Date.now() - recentSubmissionSkewMs;
     for (let attempt = 1; attempt <= submitRetries; attempt += 1) {
       try {
         console.log(
@@ -95,6 +154,21 @@ export default async function notarizeMac(context) {
         break;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        try {
+          const recent = await findRecentSubmission(auth, archiveName, submittedAfterMs);
+          if (recent?.id) {
+            console.warn(
+              `notarytool submit 本地失败，但 Apple 历史中已有近期提交 ${recent.id}（${recent.status || "未知状态"}），改为继续轮询。`,
+            );
+            submission = recent;
+            break;
+          }
+        } catch (historyError) {
+          console.warn(
+            `查询 Apple 公证历史失败：${historyError instanceof Error ? historyError.message : historyError}`,
+          );
+        }
+
         const canRetry = attempt < submitRetries && isTransientSubmitError(message);
         if (!canRetry) throw error;
         console.warn(

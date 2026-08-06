@@ -472,6 +472,55 @@ function weekOwnerMonthKey(week: Pick<ReturnType<typeof weekBounds>, "startKey">
   return week.startKey.slice(0, 7);
 }
 
+const COLLAPSIBLE_MIND_MAP_KINDS = new Set<MindMapNodeKind>([
+  "month",
+  "week",
+  "day",
+  "inbox",
+  "unscheduled",
+  "label",
+]);
+
+export function isCollapsibleMindMapNode(node: Pick<MindMapTreeNode, "kind" | "children">) {
+  return COLLAPSIBLE_MIND_MAP_KINDS.has(node.kind) && node.children.length > 0;
+}
+
+/** Month → week → day ids that should stay expanded for the focus date. */
+export function mindMapFocusPathIds(
+  focusDateKey: string,
+  weekStartsOn: DateTimePreferences["weekStartsOn"],
+) {
+  const week = weekBounds(dateFromKey(focusDateKey), weekStartsOn);
+  const monthKey = weekOwnerMonthKey(week);
+  return [
+    `month:${monthKey}`,
+    `week:${monthKey}:${week.startKey}`,
+    `day:${focusDateKey}`,
+  ] as const;
+}
+
+export function collectCollapsibleMindMapNodeIds(tree: MindMapTreeNode) {
+  const ids: string[] = [];
+  const visit = (node: MindMapTreeNode) => {
+    if (isCollapsibleMindMapNode(node)) ids.push(node.id);
+    node.children.forEach(visit);
+  };
+  visit(tree);
+  return ids;
+}
+
+/** Collapse every collapsible node except the focus date path (month/week/day). */
+export function defaultCollapsedMindMapNodeIds(
+  tree: MindMapTreeNode,
+  focusDateKey: string,
+  weekStartsOn: DateTimePreferences["weekStartsOn"],
+) {
+  const keepExpanded = new Set<string>(mindMapFocusPathIds(focusDateKey, weekStartsOn));
+  return new Set(
+    collectCollapsibleMindMapNodeIds(tree).filter((id) => !keepExpanded.has(id)),
+  );
+}
+
 function ensureWeek(
   months: Map<string, Map<string, WeekBucket>>,
   monthKey: string,
