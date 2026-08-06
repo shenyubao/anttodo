@@ -2304,7 +2304,7 @@ function RemoteApplication({
 
   async function updateSubtask(
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -2532,9 +2532,18 @@ function RemoteApplication({
     void queryClient.invalidateQueries({ queryKey });
   }
 
-  async function createComment(taskId: string, input: CreateCommentInput) {
+  async function createComment(
+    taskId: string,
+    input: CreateCommentInput & { subtaskId?: string | null },
+  ) {
     try {
-      await createTaskCommentApi(client, { taskId, ...input });
+      await createTaskCommentApi(client, {
+        taskId,
+        body: input.body,
+        imageUris: input.imageUris,
+        mentionedUserIds: input.mentionedUserIds,
+        subtaskId: input.subtaskId,
+      });
     } catch (error) {
       await Promise.allSettled(input.imageUris.map((uri) => attachmentService.remove(uri)));
       throw error;
@@ -2816,7 +2825,7 @@ function RemoteApplication({
       onUpdateSubtask={updateSubtask}
       onDeleteSubtask={deleteSubtask}
       onPurgeTask={purgeTrashedTask}
-      onLoadTaskComments={(taskId) => loadTaskComments(client, taskId)}
+      onLoadTaskComments={(taskId, options) => loadTaskComments(client, taskId, options)}
       onLoadTaskActivity={(taskId, cursor) => loadTaskActivity(client, taskId, cursor)}
       onLoadCommentCandidates={(taskId) => listTaskCommentCandidateIds(client, taskId)}
       onCreateComment={createComment}
@@ -2897,6 +2906,7 @@ function DemoApplication() {
       id: "demo-comment-mention",
       workspace_id: "workspace-team",
       task_id: "task-2",
+      subtask_id: null,
       author_id: "demo-member",
       body: "@沈宇宝 请确认一下详情面板的评论交互",
       image_uris: [],
@@ -3285,9 +3295,12 @@ function DemoApplication() {
                       id: subtaskId,
                       task_id: taskId,
                       title,
+                      description: "",
                       completed: false,
                       position: task.subtasks.length,
                       due_at: extras?.due_at ?? null,
+                      estimate_hours: null,
+                      actual_hours: null,
                       assignee_id: extras?.assignee_id ?? null,
                       cli_assignee: extras?.cli_assignee ?? null,
                       created_by: "demo-user",
@@ -3335,7 +3348,7 @@ function DemoApplication() {
         }));
         if (ownerTask && subtask) {
           const changes = Object.fromEntries(Object.entries(patch).flatMap(([field, after]) => {
-            const key = field as "due_at" | "title";
+            const key = field as keyof typeof patch;
             return subtask[key] !== after
               ? [[field, { before: subtask[key], after }]]
               : [];
@@ -3370,8 +3383,12 @@ function DemoApplication() {
         }
         setBundle((current) => removeTaskFromBundle(current, taskId));
       }}
-      onLoadTaskComments={async (taskId) =>
-        demoCommentsRef.current.filter((comment) => comment.task_id === taskId)}
+      onLoadTaskComments={async (taskId, options) =>
+        demoCommentsRef.current.filter((comment) =>
+          comment.task_id === taskId
+          && (options?.subtaskId
+            ? comment.subtask_id === options.subtaskId
+            : comment.subtask_id == null))}
       onLoadTaskActivity={async (taskId, cursor) => {
         const task = bundle.tasks.find((item) => item.id === taskId);
         const taskEvents = demoActivities.filter((event) => event.task_id === taskId);
@@ -3414,6 +3431,7 @@ function DemoApplication() {
           id: commentId,
           workspace_id: workspaceId,
           task_id: taskId,
+          subtask_id: input.subtaskId ?? null,
           author_id: "demo-user",
           body: input.body,
           image_uris: input.imageUris,
@@ -3892,17 +3910,23 @@ type WorkspaceAppProps = {
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
-  onLoadTaskComments: (taskId: string) => Promise<TaskComment[]>;
+  onLoadTaskComments: (
+    taskId: string,
+    options?: { subtaskId?: string | null },
+  ) => Promise<TaskComment[]>;
   onLoadTaskActivity: (
     taskId: string,
     cursor?: TaskActivityPage["nextCursor"],
   ) => Promise<TaskActivityPage>;
   onLoadCommentCandidates: (taskId: string) => Promise<string[]>;
-  onCreateComment: (taskId: string, input: CreateCommentInput) => Promise<void>;
+  onCreateComment: (
+    taskId: string,
+    input: CreateCommentInput & { subtaskId?: string | null },
+  ) => Promise<void>;
   onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
   onDeleteComment: (comment: TaskComment) => Promise<void>;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
@@ -4733,9 +4757,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             commentsRevision={props.commentsRevision}
             activityRevision={props.activityRevision}
             onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
-            onLoadComments={() => props.onLoadTaskComments(selectedTask.id)}
+            onLoadComments={(scope) => props.onLoadTaskComments(selectedTask.id, scope)}
             onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
-            onCreateComment={(input) => props.onCreateComment(selectedTask.id, input)}
+            onCreateComment={(input, scope) => props.onCreateComment(selectedTask.id, {
+              ...input,
+              subtaskId: scope?.subtaskId,
+            })}
             onUpdateComment={props.onUpdateComment}
             onDeleteComment={props.onDeleteComment}
           />
@@ -4772,9 +4799,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           commentsRevision={props.commentsRevision}
           activityRevision={props.activityRevision}
           onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
-          onLoadComments={() => props.onLoadTaskComments(selectedTask.id)}
+          onLoadComments={(scope) => props.onLoadTaskComments(selectedTask.id, scope)}
           onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
-          onCreateComment={(input) => props.onCreateComment(selectedTask.id, input)}
+          onCreateComment={(input, scope) => props.onCreateComment(selectedTask.id, {
+            ...input,
+            subtaskId: scope?.subtaskId,
+          })}
           onUpdateComment={props.onUpdateComment}
           onDeleteComment={props.onDeleteComment}
         />
@@ -9081,6 +9111,9 @@ function TaskRow({
             const subtaskDueStatus = subtask.completed
               ? null
               : getDueStatus(subtask.due_at, now);
+            const subtaskHoursLabel = showHours
+              ? formatHoursList(subtask.estimate_hours, subtask.actual_hours)
+              : null;
             return (
               <article
                 key={subtask.id}
@@ -9123,6 +9156,9 @@ function TaskRow({
                         <time className={subtaskDueStatus.overdue ? "overdue" : ""}>
                           {subtaskDueStatus.label}
                         </time>
+                      )}
+                      {subtaskHoursLabel && (
+                        <span className="task-hours">{subtaskHoursLabel}</span>
                       )}
                       {subtaskAssignee && (
                         <MemberAvatar

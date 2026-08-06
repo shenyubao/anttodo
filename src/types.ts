@@ -161,9 +161,12 @@ export type Subtask = {
   id: string;
   task_id: string;
   title: string;
+  description: string;
   completed: boolean;
   position: number;
   due_at: string | null;
+  estimate_hours: number | null;
+  actual_hours: number | null;
   assignee_id: string | null;
   cli_assignee: AiCliTool | null;
   created_by: string | null;
@@ -239,6 +242,7 @@ export type TaskComment = {
   id: string;
   workspace_id: string;
   task_id: string;
+  subtask_id: string | null;
   author_id: string;
   body: string;
   image_uris: string[];

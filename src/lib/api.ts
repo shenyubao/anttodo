@@ -101,12 +101,19 @@ export async function updateLabelWithAccess(
 export async function loadTaskComments(
   client: SupabaseClient,
   taskId: string,
+  options?: { subtaskId?: string | null },
 ): Promise<TaskComment[]> {
-  const { data, error } = await client
+  let query = client
     .from("task_comments")
     .select("*, mentions:task_comment_mentions(user_id, display_name_snapshot)")
     .eq("task_id", taskId)
     .order("created_at", { ascending: true });
+  if (options?.subtaskId) {
+    query = query.eq("subtask_id", options.subtaskId);
+  } else {
+    query = query.is("subtask_id", null);
+  }
+  const { data, error } = await query;
   assertNoError(error);
 
   const rows = (data ?? []) as Array<Omit<TaskComment, "author">>;
@@ -123,6 +130,7 @@ export async function loadTaskComments(
   );
   return rows.map((comment) => ({
     ...comment,
+    subtask_id: comment.subtask_id ?? null,
     mentions: comment.mentions ?? [],
     author: profiles.get(comment.author_id),
   }));
@@ -181,6 +189,7 @@ export async function createTaskComment(
     body: string;
     imageUris: string[];
     mentionedUserIds: string[];
+    subtaskId?: string | null;
   },
 ) {
   const { data, error } = await client.rpc("create_task_comment", {
@@ -188,6 +197,7 @@ export async function createTaskComment(
     p_body: input.body,
     p_image_uris: input.imageUris,
     p_mentioned_user_ids: input.mentionedUserIds,
+    p_subtask_id: input.subtaskId ?? null,
   });
   assertNoError(error);
   return data as TaskComment;
@@ -598,7 +608,14 @@ export async function loadWorkspaceBundle(
         actual_hours: coerceHours(row.actual_hours),
         label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
         participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
-        subtasks: [...(row.subtasks ?? [])].sort((a, b) => a.position - b.position),
+        subtasks: [...(row.subtasks ?? [])]
+          .sort((a, b) => a.position - b.position)
+          .map((subtask) => ({
+            ...subtask,
+            description: subtask.description ?? "",
+            estimate_hours: coerceHours(subtask.estimate_hours),
+            actual_hours: coerceHours(subtask.actual_hours),
+          })),
         reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
         reminder_persistent: settings?.persistent ?? false,
       };

@@ -8003,16 +8003,26 @@ html.dark .task-detail {
 }
 
 .detail-hours {
-  margin: 4px 0 10px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 20px;
   color: rgb(25 25 25 / 55%);
   font-size: 13px;
   line-height: 18px;
+}
+
+.task-detail-dialog .detail-hours {
+  padding-inline: 16px;
 }
 
 .task-detail-subtask .detail-caption {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+}
+
+.task-detail-subtask .detail-footer {
+  justify-content: flex-end;
 }
 
 .detail-parent-task {

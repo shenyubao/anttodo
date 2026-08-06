@@ -108,7 +108,7 @@ export type TaskDetailProps = {
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
   ) => Promise<void>;
   focusedSubtaskId?: string | null;
   onClearFocusedSubtask?: () => void;
@@ -116,9 +116,12 @@ export type TaskDetailProps = {
   commentsRevision: number;
   activityRevision: number;
   onLoadActivity: (cursor?: TaskActivityPage["nextCursor"]) => Promise<TaskActivityPage>;
-  onLoadComments: () => Promise<TaskComment[]>;
+  onLoadComments: (scope?: { subtaskId?: string | null }) => Promise<TaskComment[]>;
   onLoadCommentCandidates: () => Promise<string[]>;
-  onCreateComment: (input: CreateCommentInput) => Promise<void>;
+  onCreateComment: (
+    input: CreateCommentInput,
+    scope?: { subtaskId?: string | null },
+  ) => Promise<void>;
   onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
   onDeleteComment: (comment: TaskComment) => Promise<void>;
 };
@@ -727,16 +730,23 @@ type ActiveCliTerminal = {
 
 function TaskHoursDialog({
   open,
-  task,
+  estimateHours,
+  actualHours,
+  resetKey,
   online,
   onOpenChange,
   onUpdate,
 }: {
   open: boolean;
-  task: Task;
+  estimateHours: number | null;
+  actualHours: number | null;
+  resetKey: string;
   online: boolean;
   onOpenChange: (open: boolean) => void;
-  onUpdate: (patch: Partial<Task>) => Promise<void>;
+  onUpdate: (patch: {
+    estimate_hours: number | null;
+    actual_hours: number | null;
+  }) => Promise<void>;
 }) {
   const [estimate, setEstimate] = useState("");
   const [actual, setActual] = useState("");
@@ -745,22 +755,22 @@ function TaskHoursDialog({
 
   useEffect(() => {
     if (!open) return;
-    setEstimate(task.estimate_hours == null ? "" : formatHoursValue(task.estimate_hours));
-    setActual(task.actual_hours == null ? "" : formatHoursValue(task.actual_hours));
+    setEstimate(estimateHours == null ? "" : formatHoursValue(estimateHours));
+    setActual(actualHours == null ? "" : formatHoursValue(actualHours));
     setSaving(false);
     setError("");
-  }, [open, task.actual_hours, task.estimate_hours, task.id]);
+  }, [open, actualHours, estimateHours, resetKey]);
 
   async function save() {
     if (!online || saving) return;
     setSaving(true);
     setError("");
     try {
-      const estimateHours = normalizeHoursInput(estimate);
-      const actualHours = normalizeHoursInput(actual);
+      const nextEstimate = normalizeHoursInput(estimate);
+      const nextActual = normalizeHoursInput(actual);
       await onUpdate({
-        estimate_hours: estimateHours,
-        actual_hours: actualHours,
+        estimate_hours: nextEstimate,
+        actual_hours: nextActual,
       });
       onOpenChange(false);
     } catch (cause) {
@@ -998,7 +1008,132 @@ function TaskMoreMenu({
       )}
       <TaskHoursDialog
         open={hoursOpen}
-        task={task}
+        estimateHours={task.estimate_hours}
+        actualHours={task.actual_hours}
+        resetKey={task.id}
+        online={online}
+        onOpenChange={setHoursOpen}
+        onUpdate={onUpdate}
+      />
+    </div>
+  );
+}
+
+function SubtaskMoreMenu({
+  subtask,
+  online,
+  onUpdate,
+}: {
+  subtask: Subtask;
+  online: boolean;
+  onUpdate: (patch: Partial<Pick<Subtask, "estimate_hours" | "actual_hours">>) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hoursOpen, setHoursOpen] = useState(false);
+  const [position, setPosition] = useState<CSSProperties>({});
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setOpen(false);
+    setHoursOpen(false);
+  }, [subtask.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !menuRef.current) return;
+
+    const positionMenu = () => {
+      const trigger = triggerRef.current!.getBoundingClientRect();
+      const menu = menuRef.current!;
+      const gap = 8;
+      const inset = 12;
+      const width = Math.min(164, window.innerWidth - inset * 2);
+      const height = menu.offsetHeight;
+      const left = Math.min(
+        Math.max(trigger.right - width, inset),
+        Math.max(inset, window.innerWidth - width - inset),
+      );
+      const preferredTop = trigger.bottom + gap;
+      const top = preferredTop + height <= window.innerHeight - inset
+        ? preferredTop
+        : Math.max(inset, trigger.top - height - gap);
+      setPosition({ width, left, top });
+    };
+
+    positionMenu();
+    menuRef.current.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("scroll", positionMenu, true);
+    return () => {
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("scroll", positionMenu, true);
+    };
+  }, [open]);
+
+  return (
+    <div className="task-more-control" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="更多子任务操作"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Ellipsis />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="task-more-menu"
+          role="menu"
+          aria-label="更多操作"
+          style={position}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!online}
+            onClick={() => {
+              setOpen(false);
+              setHoursOpen(true);
+            }}
+          >
+            <Clock />
+            <span>登记工时</span>
+          </button>
+        </div>,
+        document.body,
+      )}
+      <TaskHoursDialog
+        open={hoursOpen}
+        estimateHours={subtask.estimate_hours}
+        actualHours={subtask.actual_hours}
+        resetKey={subtask.id}
         online={online}
         onOpenChange={setHoursOpen}
         onUpdate={onUpdate}
@@ -1100,7 +1235,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
   const cliPickerRef = useRef<HTMLDivElement>(null);
   const writable = online && editable;
-  const hoursLabel = formatHoursDetail(task.estimate_hours, task.actual_hours);
+  const hoursLabel = formatHoursDetail(
+    focusedSubtask ? focusedSubtask.estimate_hours : task.estimate_hours,
+    focusedSubtask ? focusedSubtask.actual_hours : task.actual_hours,
+  );
   const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
   activeTerminalRef.current = activeTerminal;
 
@@ -1238,12 +1376,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
 
   useEffect(() => {
     let cancelled = false;
-    void onLoadComments()
+    void onLoadComments(focusedSubtask ? { subtaskId: focusedSubtask.id } : undefined)
       .then((items) => {
         if (!cancelled) setComments(items);
       });
     return () => { cancelled = true; };
-  }, [commentsRevision, onLoadComments, task.id]);
+  }, [commentsRevision, focusedSubtask?.id, onLoadComments, task.id]);
 
   function scheduleSave(patch: Partial<Task>) {
     window.clearTimeout(saveTimer.current);
@@ -1252,7 +1390,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     }, 500);
   }
 
-  function scheduleSubtaskSave(subtaskId: string, patch: Partial<Pick<Subtask, "due_at" | "title">>) {
+  function scheduleSubtaskSave(
+    subtaskId: string,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
+  ) {
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       if (writable) void onUpdateSubtask(subtaskId, patch);
@@ -1486,6 +1627,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             onAssign={(target) => onAssignSubtask(focusedSubtask.id, target)}
             target={subtaskAssigneeTarget(focusedSubtask)}
           />
+          <SubtaskMoreMenu
+            subtask={focusedSubtask}
+            online={writable}
+            onUpdate={(patch) => onUpdateSubtask(focusedSubtask.id, patch)}
+          />
         </header>
         <div className="detail-body">
           <div className="detail-caption">
@@ -1537,7 +1683,76 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               所属任务：{task.title}
             </button>
           </div>
+          <TaskRichTextEditor
+            key={focusedSubtask.id}
+            ref={editorRef}
+            attachmentContext={{ workspaceId: task.workspace_id, taskId: task.id }}
+            attachmentService={attachmentService}
+            immersive={immersive}
+            initialMarkdown={focusedSubtask.description}
+            online={writable}
+            onImmersiveChange={setImmersive}
+            onSave={(description) => onUpdateSubtask(focusedSubtask.id, { description })}
+            toolbarHost={toolbarHost}
+            toolbarOpen={toolbarOpen}
+          />
         </div>
+        {!immersive && (comments.length > 0 || commentComposerOpen) && (
+          <TaskComments
+            task={task}
+            comments={comments}
+            members={bundle.members}
+            currentUserId={currentUserId}
+            online={writable}
+            attachmentService={attachmentService}
+            showComposer={commentComposerOpen}
+            onLoadCandidates={onLoadCommentCandidates}
+            onCreate={async (input) => {
+              await onCreateComment(input, { subtaskId: focusedSubtask.id });
+              setComments(await onLoadComments({ subtaskId: focusedSubtask.id }));
+            }}
+            onUpdate={async (comment, input) => {
+              await onUpdateComment(comment, input);
+              setComments(await onLoadComments({ subtaskId: focusedSubtask.id }));
+            }}
+            onDelete={async (comment) => {
+              await onDeleteComment(comment);
+              setComments((current) => current.filter((item) => item.id !== comment.id));
+            }}
+          />
+        )}
+        <div
+          ref={setToolbarHost}
+          className={clsx("detail-editor-toolbar-dock", toolbarOpen && "open")}
+        />
+        {!immersive && hoursLabel && (
+          <p className="detail-hours">{hoursLabel}</p>
+        )}
+        <footer className="detail-footer">
+          <button
+            className={clsx("detail-text-style-trigger", toolbarOpen && "active")}
+            type="button"
+            title="文本样式"
+            aria-label="文本样式"
+            aria-expanded={toolbarOpen}
+            onClick={() => setToolbarOpen((open) => !open)}
+          >
+            <Type />
+          </button>
+          <button
+            className={clsx("detail-comment-trigger", commentComposerOpen && "active")}
+            type="button"
+            title="评论"
+            aria-label="评论"
+            aria-expanded={commentComposerOpen}
+            onClick={() => {
+              setToolbarOpen(false);
+              setCommentComposerOpen((open) => !open);
+            }}
+          >
+            <MessageCircle />
+          </button>
+        </footer>
       </div>
     );
   }
@@ -1704,9 +1919,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               rows={1}
             />
           </div>
-        )}
-        {!activeTerminal && hoursLabel && (
-          <p className="detail-hours">{hoursLabel}</p>
         )}
         {activeTerminal ? (
           <TaskCliTerminal
@@ -1940,6 +2152,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         ref={setToolbarHost}
         className={clsx("detail-editor-toolbar-dock", !activeTerminal && toolbarOpen && "open")}
       />
+      {!activeTerminal && !immersive && !activityOpen && hoursLabel && (
+        <p className="detail-hours">{hoursLabel}</p>
+      )}
       <footer className="detail-footer">
         <TaskLabelControl
           task={task}
