@@ -47,11 +47,14 @@ import {
 } from "./TaskRichTextEditor";
 import type { AttachmentService } from "./lib/attachments";
 import {
+  buildFormattedDescription,
   buildSubtaskExtrasFromSuggestion,
   formatAiSuggestedDueAt,
+  isMidnightLocalDueAt,
+  type AiFormatSuggestion,
   type AiSuggestedSubtask,
 } from "./lib/aiSubtaskDecompose";
-import { decomposeSubtasks } from "./lib/api";
+import { decomposeSubtasks, formatTaskWithAi } from "./lib/api";
 import { systemTimeZone } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
@@ -1175,21 +1178,36 @@ function memberDisplayName(member: Member | undefined) {
 }
 
 type AiSuggestListItem = AiSuggestedSubtask & { clientKey: string };
+type AiSmartPanel = "menu" | "decompose" | "format" | null;
 
-function AiSubtaskDecomposeControl({
+function scheduleFromTask(task: Task): ReminderSchedule {
+  return {
+    reminders: task.reminders.map((reminder) => ({
+      anchor: reminder.anchor,
+      offset_value: reminder.offset_value,
+      offset_unit: reminder.offset_unit,
+      local_time: reminder.local_time,
+    })),
+    persistent: task.reminder_persistent,
+    recurrence: task.recurrence ?? null,
+  };
+}
+
+function AiSmartProcessControl({
   task,
   bundle,
   currentUserId,
-  now,
   online,
   editable,
   onCreateSubtask,
   onEnsureSubtasksVisible,
+  onUpdate,
+  onSaveSchedule,
+  onFormatApplied,
 }: {
   task: Task;
   bundle: WorkspaceBundle;
   currentUserId: string;
-  now: Date;
   online: boolean;
   editable: boolean;
   onCreateSubtask: (
@@ -1197,13 +1215,21 @@ function AiSubtaskDecomposeControl({
     extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
   ) => Promise<void>;
   onEnsureSubtasksVisible?: () => void;
+  onUpdate: (patch: Partial<Task>) => Promise<void>;
+  onSaveSchedule: (
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
+  onFormatApplied: (title: string, description: string) => void;
 }) {
   const writable = online && editable;
-  const [open, setOpen] = useState(false);
+  const [panel, setPanel] = useState<AiSmartPanel>(null);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
   const [items, setItems] = useState<AiSuggestListItem[]>([]);
+  const [formatSuggestion, setFormatSuggestion] = useState<AiFormatSuggestion | null>(null);
   const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -1226,12 +1252,22 @@ function AiSubtaskDecomposeControl({
     return map;
   }, [bundle.members]);
 
-  useEffect(() => {
-    setOpen(false);
+  const busy = loading || adding || applying;
+  const open = panel !== null;
+
+  function closePanel() {
+    setPanel(null);
     setLoading(false);
     setAdding(false);
+    setApplying(false);
     setError("");
     setItems([]);
+    setFormatSuggestion(null);
+  }
+
+  useEffect(() => {
+    closePanel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when switching tasks
   }, [task.id]);
 
   useEffect(() => {
@@ -1241,14 +1277,14 @@ function AiSubtaskDecomposeControl({
       if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) {
         return;
       }
-      if (loading || adding) return;
-      setOpen(false);
+      if (busy) return;
+      closePanel();
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (loading || adding) return;
+      if (busy) return;
       event.stopPropagation();
-      setOpen(false);
+      closePanel();
       triggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", closeOnOutside);
@@ -1257,19 +1293,24 @@ function AiSubtaskDecomposeControl({
       document.removeEventListener("pointerdown", closeOnOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open, loading, adding]);
+  }, [open, busy]);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current || !panelRef.current) return;
 
     const positionPanel = () => {
       const trigger = triggerRef.current!.getBoundingClientRect();
-      const panel = panelRef.current!;
+      const panelEl = panelRef.current!;
       const gap = 8;
       const inset = 12;
-      const width = Math.min(410, window.innerWidth - inset * 2);
-      const maxHeight = Math.min(574, window.innerHeight - inset * 2);
-      const height = Math.min(panel.scrollHeight || maxHeight, maxHeight);
+      const isMenu = panel === "menu";
+      const width = isMenu
+        ? Math.min(164, window.innerWidth - inset * 2)
+        : Math.min(410, window.innerWidth - inset * 2);
+      const maxHeight = isMenu
+        ? Math.min(200, window.innerHeight - inset * 2)
+        : Math.min(574, window.innerHeight - inset * 2);
+      const height = Math.min(panelEl.scrollHeight || maxHeight, maxHeight);
       let left = trigger.right - width;
       left = Math.min(
         Math.max(left, inset),
@@ -1282,13 +1323,17 @@ function AiSubtaskDecomposeControl({
       if (top + height > window.innerHeight - inset) {
         top = Math.max(inset, window.innerHeight - height - inset);
       }
-      setPosition({
-        width,
-        height: maxHeight,
-        maxHeight,
-        left,
-        top,
-      });
+      setPosition(
+        isMenu
+          ? { width, left, top }
+          : {
+              width,
+              height: maxHeight,
+              maxHeight,
+              left,
+              top,
+            },
+      );
     };
 
     positionPanel();
@@ -1298,23 +1343,22 @@ function AiSubtaskDecomposeControl({
       window.removeEventListener("resize", positionPanel);
       window.removeEventListener("scroll", positionPanel, true);
     };
-  }, [open, items, loading, error]);
+  }, [open, panel, items, formatSuggestion, loading, error]);
 
   async function requestDecompose() {
     if (!writable || adding) return;
-    if (!supabase) {
-      setOpen(true);
-      setError("服务未配置，无法分解任务。");
-      setItems([]);
-      return;
-    }
-
-    // Every click re-requests the model (including when the panel is already open).
     const requestId = ++requestIdRef.current;
-    setOpen(true);
+    setPanel("decompose");
     setLoading(true);
     setError("");
     setItems([]);
+    setFormatSuggestion(null);
+
+    if (!supabase) {
+      setError("服务未配置，无法分解任务。");
+      setLoading(false);
+      return;
+    }
 
     try {
       const result = await decomposeSubtasks(supabase, {
@@ -1339,6 +1383,38 @@ function AiSubtaskDecomposeControl({
     }
   }
 
+  async function requestFormat() {
+    if (!writable || applying) return;
+    const requestId = ++requestIdRef.current;
+    setPanel("format");
+    setLoading(true);
+    setError("");
+    setItems([]);
+    setFormatSuggestion(null);
+
+    if (!supabase) {
+      setError("服务未配置，无法格式化任务。");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const suggestion = await formatTaskWithAi(supabase, {
+        workspaceId: task.workspace_id,
+        taskId: task.id,
+        nowIso: new Date().toISOString(),
+        timeZone: systemTimeZone(),
+      });
+      if (requestId !== requestIdRef.current) return;
+      setFormatSuggestion(suggestion);
+    } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      setError(err instanceof Error ? err.message : "智能格式化失败，请稍后重试。");
+    } finally {
+      if (requestId === requestIdRef.current) setLoading(false);
+    }
+  }
+
   async function addOne(item: AiSuggestListItem) {
     if (!writable || adding || loading) return;
     setAdding(true);
@@ -1349,7 +1425,7 @@ function AiSubtaskDecomposeControl({
       await onCreateSubtask(item.title, extras);
       const remaining = items.filter((row) => row.clientKey !== item.clientKey);
       setItems(remaining);
-      if (remaining.length === 0) setOpen(false);
+      if (remaining.length === 0) closePanel();
     } catch (err) {
       setError(err instanceof Error ? err.message : "添加子任务失败");
     } finally {
@@ -1367,12 +1443,39 @@ function AiSubtaskDecomposeControl({
         const extras = buildSubtaskExtrasFromSuggestion(item, assignableIds);
         await onCreateSubtask(item.title, extras);
       }
-      setItems([]);
-      setOpen(false);
+      closePanel();
     } catch (err) {
       setError(err instanceof Error ? err.message : "添加子任务失败");
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function adoptFormat() {
+    if (!writable || loading || applying || !formatSuggestion) return;
+    setApplying(true);
+    setError("");
+    try {
+      const description = buildFormattedDescription(formatSuggestion);
+      await onUpdate({ title: formatSuggestion.title, description });
+      if (formatSuggestion.due_at) {
+        const timeZone = systemTimeZone();
+        await onSaveSchedule(
+          {
+            due_at: formatSuggestion.due_at,
+            due_start_at: null,
+            due_is_all_day: isMidnightLocalDueAt(formatSuggestion.due_at, timeZone),
+            due_timezone: timeZone,
+          },
+          scheduleFromTask(task),
+        );
+      }
+      onFormatApplied(formatSuggestion.title, description);
+      closePanel();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "采纳失败，请稍后重试");
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -1386,24 +1489,70 @@ function AiSubtaskDecomposeControl({
     return parts.join(" · ");
   }
 
+  const formatDueLabel = formatSuggestion
+    ? formatAiSuggestedDueAt(formatSuggestion.due_at)
+    : null;
+
   return (
-    <div className="ai-subtask-decompose" ref={rootRef}>
+    <div className="ai-smart-process" ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
         className={clsx("switch-mode", (open || loading) && "active")}
-        title="AI 分解子任务"
-        aria-label="AI 分解子任务"
-        aria-haspopup="dialog"
+        title="智能处理"
+        aria-label="智能处理"
+        aria-haspopup="menu"
         aria-expanded={open}
-        disabled={!writable || adding}
+        disabled={!writable || adding || applying}
         onClick={() => {
-          void requestDecompose();
+          if (!writable) return;
+          if (panel === "menu") {
+            closePanel();
+            return;
+          }
+          if (busy && panel !== null) return;
+          requestIdRef.current += 1;
+          setError("");
+          setItems([]);
+          setFormatSuggestion(null);
+          setLoading(false);
+          setPanel("menu");
         }}
       >
         <Sparkles />
       </button>
-      {open && createPortal(
+      {panel === "menu" && createPortal(
+        <div
+          ref={panelRef}
+          className="ai-smart-process-menu"
+          role="menu"
+          aria-label="智能处理"
+          style={position}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!writable}
+            onClick={() => {
+              void requestDecompose();
+            }}
+          >
+            智能分解子任务
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!writable}
+            onClick={() => {
+              void requestFormat();
+            }}
+          >
+            智能格式化
+          </button>
+        </div>,
+        document.body,
+      )}
+      {panel === "decompose" && createPortal(
         <div
           ref={panelRef}
           className="ai-subtask-suggest-panel"
@@ -1466,6 +1615,73 @@ function AiSubtaskDecomposeControl({
         </div>,
         document.body,
       )}
+      {panel === "format" && createPortal(
+        <div
+          ref={panelRef}
+          className="ai-format-suggest-panel"
+          role="dialog"
+          aria-label="格式化推荐"
+          style={position}
+        >
+          <div className="ai-subtask-suggest-header">
+            <strong>格式化推荐</strong>
+            <button
+              type="button"
+              className="ai-subtask-suggest-add-all"
+              disabled={!writable || loading || applying || !formatSuggestion}
+              onClick={() => {
+                void adoptFormat();
+              }}
+            >
+              采纳
+            </button>
+          </div>
+          <div className="ai-format-suggest-body">
+            {loading && (
+              <p className="ai-subtask-suggest-status">正在格式化…</p>
+            )}
+            {!loading && error && (
+              <p className="ai-subtask-suggest-error">{error}</p>
+            )}
+            {!loading && !error && !formatSuggestion && (
+              <p className="ai-subtask-suggest-status">暂无推荐</p>
+            )}
+            {!loading && formatSuggestion && (
+              <div className="ai-format-suggest-content">
+                <section className="ai-format-suggest-field">
+                  <span className="ai-format-suggest-label">标题</span>
+                  <p className="ai-format-suggest-title">{formatSuggestion.title}</p>
+                </section>
+                {formatDueLabel && (
+                  <section className="ai-format-suggest-field">
+                    <span className="ai-format-suggest-label">截止时间</span>
+                    <p className="ai-format-suggest-meta">{formatDueLabel}</p>
+                  </section>
+                )}
+                {formatSuggestion.description && (
+                  <section className="ai-format-suggest-field">
+                    <span className="ai-format-suggest-label">描述</span>
+                    <p className="ai-format-suggest-text">{formatSuggestion.description}</p>
+                  </section>
+                )}
+                {formatSuggestion.acceptance_criteria && (
+                  <section className="ai-format-suggest-field">
+                    <span className="ai-format-suggest-label">验收标准</span>
+                    <p className="ai-format-suggest-text">{formatSuggestion.acceptance_criteria}</p>
+                  </section>
+                )}
+                {formatSuggestion.references && (
+                  <section className="ai-format-suggest-field">
+                    <span className="ai-format-suggest-label">参考资料</span>
+                    <p className="ai-format-suggest-text">{formatSuggestion.references}</p>
+                  </section>
+                )}
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -1512,6 +1728,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [draftTitle, setDraftTitle] = useState(
     focusedSubtask?.title ?? task.title,
   );
+  const [descriptionRevision, setDescriptionRevision] = useState(0);
+  const [descriptionSeed, setDescriptionSeed] = useState<string | null>(null);
   const [activeTerminal, setActiveTerminal] = useState<ActiveCliTerminal | null>(null);
   const subtaskInputRef = useRef<HTMLInputElement>(null);
   const focusedSubtaskTitleRef = useRef<HTMLTextAreaElement>(null);
@@ -1574,6 +1792,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   useEffect(() => {
     setDraftTitle(focusedSubtask?.title ?? task.title);
   }, [focusedSubtask?.id, focusedSubtask?.title, task.id, task.title]);
+  useEffect(() => {
+    setDescriptionSeed(null);
+    setDescriptionRevision(0);
+  }, [task.id]);
   useLayoutEffect(() => {
     if (focusedSubtask) return;
     const title = titleRef.current;
@@ -2265,17 +2487,23 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 >
                   <ListTodo />
                 </button>
-                <AiSubtaskDecomposeControl
+                <AiSmartProcessControl
                   task={task}
                   bundle={bundle}
                   currentUserId={currentUserId}
-                  now={now}
                   online={online}
                   editable={editable}
                   onCreateSubtask={onCreateSubtask}
                   onEnsureSubtasksVisible={() => {
                     setShowSubtasks(true);
                     storeDetailSubtasksVisible(true);
+                  }}
+                  onUpdate={onUpdate}
+                  onSaveSchedule={onSaveSchedule}
+                  onFormatApplied={(title, description) => {
+                    setDraftTitle(title);
+                    setDescriptionSeed(description);
+                    setDescriptionRevision((value) => value + 1);
                   }}
                 />
               </>
@@ -2294,12 +2522,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         ) : (
           <>
         <TaskRichTextEditor
-          key={task.id}
+          key={`${task.id}:${descriptionRevision}`}
           ref={editorRef}
           attachmentContext={{ workspaceId: task.workspace_id, taskId: task.id }}
           attachmentService={attachmentService}
           immersive={immersive}
-          initialMarkdown={task.description}
+          initialMarkdown={descriptionSeed ?? task.description}
           online={writable}
           onImmersiveChange={setImmersive}
           onSave={(description) => onUpdate({ description })}
@@ -2591,13 +2819,13 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             if (document.querySelector(
-              ".due-popover, .priority-menu, .task-more-menu, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
+              ".due-popover, .priority-menu, .task-more-menu, .ai-smart-process-menu, .ai-subtask-suggest-panel, .ai-format-suggest-panel, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
             )) return;
             void contentRef.current?.close();
           }}
           onPointerDownOutside={(event) => {
             const target = event.target as HTMLElement | null;
-            if (target?.closest(".due-popover, .priority-menu, .task-more-menu")) {
+            if (target?.closest(".due-popover, .priority-menu, .task-more-menu, .ai-smart-process-menu, .ai-subtask-suggest-panel, .ai-format-suggest-panel")) {
               event.preventDefault();
               return;
             }
@@ -2606,13 +2834,13 @@ export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
           }}
           onFocusOutside={(event) => {
             const target = event.target as HTMLElement | null;
-            if (target?.closest(".due-popover, .priority-menu, .task-more-menu")) {
+            if (target?.closest(".due-popover, .priority-menu, .task-more-menu, .ai-smart-process-menu, .ai-subtask-suggest-panel, .ai-format-suggest-panel")) {
               event.preventDefault();
             }
           }}
           onInteractOutside={(event) => {
             const target = event.target as HTMLElement | null;
-            if (target?.closest(".due-popover, .priority-menu, .task-more-menu")) {
+            if (target?.closest(".due-popover, .priority-menu, .task-more-menu, .ai-smart-process-menu, .ai-subtask-suggest-panel, .ai-format-suggest-panel")) {
               event.preventDefault();
             }
           }}

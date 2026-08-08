@@ -5,6 +5,7 @@ import type {
   SortDirection,
   Task,
   TaskListFilterAssignee,
+  TaskListFilterCreator,
   TaskListFilterDue,
   TaskListFilterWatching,
   TaskListGrouping,
@@ -31,6 +32,7 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   direction: "asc",
   filter_assignee: "all",
   filter_watching: "all",
+  filter_creator: "all",
   filter_due: "all",
   show_labels: false,
   show_completed: false,
@@ -115,6 +117,14 @@ export const TASK_FILTER_WATCHING_OPTIONS: Array<{
   { value: "watching", label: "我关注的" },
 ];
 
+export const TASK_FILTER_CREATOR_OPTIONS: Array<{
+  value: TaskListFilterCreator;
+  label: string;
+}> = [
+  { value: "all", label: "不限" },
+  { value: "created_by_me", label: "我创建的" },
+];
+
 export const TASK_FILTER_DUE_OPTIONS: Array<{
   value: TaskListFilterDue;
   label: string;
@@ -130,6 +140,7 @@ export const TASK_FILTER_DUE_OPTIONS: Array<{
 export type TaskListFilterFields = {
   filter_assignee: TaskListFilterAssignee;
   filter_watching: TaskListFilterWatching;
+  filter_creator: TaskListFilterCreator;
   filter_due: TaskListFilterDue;
 };
 
@@ -139,16 +150,25 @@ export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
     filter_due: "today",
     filter_assignee: "assigned_to_me",
     filter_watching: "all",
+    filter_creator: "all",
   },
   assigned: {
     filter_due: "all",
     filter_assignee: "assigned_to_me",
     filter_watching: "all",
+    filter_creator: "all",
   },
   watching: {
     filter_due: "all",
     filter_assignee: "all",
     filter_watching: "watching",
+    filter_creator: "all",
+  },
+  inbox: {
+    filter_due: "all",
+    filter_assignee: "all",
+    filter_watching: "all",
+    filter_creator: "created_by_me",
   },
 };
 
@@ -159,6 +179,7 @@ export function resolveTaskListFilters(
   return SMART_VIEW_FILTER_PRESETS[listKey] ?? {
     filter_assignee: preference.filter_assignee,
     filter_watching: preference.filter_watching,
+    filter_creator: preference.filter_creator,
     filter_due: preference.filter_due,
   };
 }
@@ -253,7 +274,7 @@ export function filterTasksForView(input: {
     const scope = labelSubtreeIds(labels, selectedLabelId);
     return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
   }
-  // today / assigned / watching are filter presets applied via resolveTaskListFilters.
+  // today / assigned / watching / inbox creator filter are applied via resolveTaskListFilters.
   if (smartView === "inbox") {
     return result.filter((task) => task.label_ids.length === 0);
   }
@@ -264,6 +285,7 @@ export function applyTaskListFilters(input: {
   tasks: Task[];
   filterAssignee?: TaskListFilterAssignee;
   filterWatching?: TaskListFilterWatching;
+  filterCreator?: TaskListFilterCreator;
   filterDue?: TaskListFilterDue;
   currentUserId: string;
   now?: Date;
@@ -272,6 +294,7 @@ export function applyTaskListFilters(input: {
     currentUserId,
     filterAssignee = "all",
     filterWatching = "all",
+    filterCreator = "all",
     filterDue = "all",
   } = input;
   const now = input.now ?? new Date();
@@ -282,6 +305,9 @@ export function applyTaskListFilters(input: {
   }
   if (filterWatching === "watching") {
     result = result.filter((task) => task.participant_ids.includes(currentUserId));
+  }
+  if (filterCreator === "created_by_me") {
+    result = result.filter((task) => task.created_by === currentUserId);
   }
 
   if (filterDue === "all") return result;
@@ -332,6 +358,7 @@ export function resolveTaskListPreference(
   const filterDefaults = SMART_VIEW_FILTER_PRESETS[listKey] ?? {
     filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
     filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
+    filter_creator: DEFAULT_TASK_LIST_PREFERENCE.filter_creator,
     filter_due: DEFAULT_TASK_LIST_PREFERENCE.filter_due,
   };
   if (!found) {
@@ -353,6 +380,7 @@ export function resolveTaskListPreference(
   const filters = resolveTaskListFilters(listKey, {
     filter_assignee: found.filter_assignee ?? filterDefaults.filter_assignee,
     filter_watching: found.filter_watching ?? filterDefaults.filter_watching,
+    filter_creator: found.filter_creator ?? filterDefaults.filter_creator,
     filter_due: found.filter_due ?? filterDefaults.filter_due,
   });
   return {

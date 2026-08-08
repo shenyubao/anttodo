@@ -8628,13 +8628,57 @@ html.dark .task-detail {
   height: 16px;
 }
 
+.ai-smart-process,
 .ai-subtask-decompose {
   flex: none;
   display: flex;
   align-items: flex-start;
 }
 
-.ai-subtask-suggest-panel {
+.ai-smart-process-menu {
+  position: fixed;
+  z-index: 1300;
+  display: flex;
+  flex-direction: column;
+  width: 164px;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 12px;
+  color: #191919;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  pointer-events: auto;
+}
+
+.ai-smart-process-menu > button {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  color: #191919;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: left;
+}
+
+.ai-smart-process-menu > button:hover:not(:disabled),
+.ai-smart-process-menu > button:focus-visible {
+  background: rgb(25 25 25 / 5%);
+  outline: none;
+}
+
+.ai-smart-process-menu > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.ai-subtask-suggest-panel,
+.ai-format-suggest-panel {
   position: fixed;
   z-index: 1300;
   display: flex;
@@ -8695,7 +8739,8 @@ html.dark .task-detail {
   border-radius: 4px;
 }
 
-.ai-subtask-suggest-body {
+.ai-subtask-suggest-body,
+.ai-format-suggest-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
@@ -8793,6 +8838,51 @@ html.dark .task-detail {
   line-height: 17px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ai-format-suggest-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 16px 12px;
+}
+
+.ai-format-suggest-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-format-suggest-label {
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 17px;
+}
+
+.ai-format-suggest-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 21px;
+  word-break: break-word;
+}
+
+.ai-format-suggest-meta {
+  margin: 0;
+  color: #191919;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.ai-format-suggest-text {
+  margin: 0;
+  color: #666c76;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .detail-title,

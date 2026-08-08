@@ -1109,7 +1109,7 @@ function MindMapCanvas({
   async function savePreference(
     patch: Partial<Pick<
       TaskListPreference,
-      "filter_assignee" | "filter_due" | "filter_watching"
+      "filter_assignee" | "filter_creator" | "filter_due" | "filter_watching"
     >>,
   ) {
     if (!online) return;
@@ -1122,6 +1122,7 @@ function MindMapCanvas({
       direction: preference.direction,
       filter_assignee: preference.filter_assignee,
       filter_watching: preference.filter_watching,
+      filter_creator: preference.filter_creator,
       filter_due: preference.filter_due,
       show_labels: preference.show_labels,
       show_completed: preference.show_completed,
@@ -1141,6 +1142,7 @@ function MindMapCanvas({
       tasks: bundle.tasks,
       filterAssignee: preference.filter_assignee,
       filterWatching: preference.filter_watching,
+      filterCreator: preference.filter_creator,
       filterDue: preference.filter_due,
       currentUserId,
       now,
@@ -1150,6 +1152,7 @@ function MindMapCanvas({
       currentUserId,
       now,
       preference.filter_assignee,
+      preference.filter_creator,
       preference.filter_due,
       preference.filter_watching,
     ],

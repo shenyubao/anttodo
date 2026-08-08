@@ -2,21 +2,26 @@ import { Check, ChevronRight, ListFilter } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   TASK_FILTER_ASSIGNEE_OPTIONS,
+  TASK_FILTER_CREATOR_OPTIONS,
   TASK_FILTER_DUE_OPTIONS,
   TASK_FILTER_WATCHING_OPTIONS,
 } from "./lib/taskList";
 import type {
   TaskListFilterAssignee,
+  TaskListFilterCreator,
   TaskListFilterDue,
   TaskListFilterWatching,
   TaskListPreference,
 } from "./types";
 
 type PreferencePatch = Partial<
-  Pick<TaskListPreference, "filter_assignee" | "filter_due" | "filter_watching">
+  Pick<
+    TaskListPreference,
+    "filter_assignee" | "filter_creator" | "filter_due" | "filter_watching"
+  >
 >;
 
-type Submenu = "due" | "assignee" | "watching" | null;
+type Submenu = "due" | "assignee" | "watching" | "creator" | null;
 
 export function TaskFilterMenu({
   preference,
@@ -26,7 +31,7 @@ export function TaskFilterMenu({
 }: {
   preference: Pick<
     TaskListPreference,
-    "filter_assignee" | "filter_due" | "filter_watching"
+    "filter_assignee" | "filter_creator" | "filter_due" | "filter_watching"
   >;
   online: boolean;
   locked?: boolean;
@@ -44,9 +49,13 @@ export function TaskFilterMenu({
   const watchingLabel = TASK_FILTER_WATCHING_OPTIONS.find(
     (option) => option.value === preference.filter_watching,
   )?.label;
+  const creatorLabel = TASK_FILTER_CREATOR_OPTIONS.find(
+    (option) => option.value === preference.filter_creator,
+  )?.label;
   const active = preference.filter_due !== "all"
     || preference.filter_assignee !== "all"
-    || preference.filter_watching !== "all";
+    || preference.filter_watching !== "all"
+    || preference.filter_creator !== "all";
   const canEdit = online && !locked;
 
   useEffect(() => {
@@ -76,6 +85,12 @@ export function TaskFilterMenu({
   async function selectWatching(filter_watching: TaskListFilterWatching) {
     if (!canEdit) return;
     await onChange({ filter_watching });
+    setSubmenu(null);
+  }
+
+  async function selectCreator(filter_creator: TaskListFilterCreator) {
+    if (!canEdit) return;
+    await onChange({ filter_creator });
     setSubmenu(null);
   }
 
@@ -123,6 +138,15 @@ export function TaskFilterMenu({
             <em>{watchingLabel}</em>
             <ChevronRight />
           </button>
+          <button
+            role="menuitem"
+            aria-expanded={submenu === "creator"}
+            onClick={() => setSubmenu((value) => value === "creator" ? null : "creator")}
+          >
+            <span>创建人</span>
+            <em>{creatorLabel}</em>
+            <ChevronRight />
+          </button>
           {submenu === "due" && (
             <div className="task-view-submenu" role="menu" aria-label="过滤时间">
               {TASK_FILTER_DUE_OPTIONS.map((option) => (
@@ -167,6 +191,22 @@ export function TaskFilterMenu({
                 >
                   <span>{option.label}</span>
                   {preference.filter_watching === option.value && <Check />}
+                </button>
+              ))}
+            </div>
+          )}
+          {submenu === "creator" && (
+            <div className="task-view-submenu" role="menu" aria-label="过滤创建人">
+              {TASK_FILTER_CREATOR_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  role="menuitemradio"
+                  aria-checked={preference.filter_creator === option.value}
+                  disabled={!canEdit}
+                  onClick={() => void selectCreator(option.value)}
+                >
+                  <span>{option.label}</span>
+                  {preference.filter_creator === option.value && <Check />}
                 </button>
               ))}
             </div>

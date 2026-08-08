@@ -37,6 +37,7 @@ export type TaskListSort =
   | "assignee";
 export type TaskListFilterAssignee = "all" | "assigned_to_me";
 export type TaskListFilterWatching = "all" | "watching";
+export type TaskListFilterCreator = "all" | "created_by_me";
 export type TaskListFilterDue =
   | "all"
   | "overdue"
@@ -371,6 +372,7 @@ export type TaskListPreference = {
   direction: SortDirection;
   filter_assignee: TaskListFilterAssignee;
   filter_watching: TaskListFilterWatching;
+  filter_creator: TaskListFilterCreator;
   filter_due: TaskListFilterDue;
   show_labels: boolean;
   show_completed: boolean;

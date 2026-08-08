@@ -31,7 +31,9 @@ import type {
   WorkspaceBundle,
 } from "../types";
 import {
+  normalizeAiFormatSuggestion,
   normalizeAiSuggestedSubtasks,
+  type AiFormatSuggestion,
   type AiSuggestedSubtask,
 } from "./aiSubtaskDecompose";
 import {
@@ -1123,4 +1125,62 @@ export async function decomposeSubtasks(
     throw new Error("未能生成可用的子任务建议，请完善任务描述后重试。");
   }
   return { subtasks };
+}
+
+export async function formatTaskWithAi(
+  client: SupabaseClient,
+  input: {
+    workspaceId: string;
+    taskId: string;
+    nowIso: string;
+    timeZone: string;
+  },
+): Promise<AiFormatSuggestion> {
+  const {
+    data: { session },
+  } = await client.auth.getSession();
+  const accessToken = session?.access_token?.trim();
+  if (!accessToken) {
+    throw new Error("请先登录后再使用智能格式化。");
+  }
+
+  const { data, error } = await client.functions.invoke("ai-subtask-decompose", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Cache-Control": "no-store",
+    },
+    body: {
+      action: "format",
+      workspaceId: input.workspaceId,
+      taskId: input.taskId,
+      nowIso: input.nowIso,
+      timeZone: input.timeZone,
+      clientRequestId: crypto.randomUUID(),
+    },
+  });
+  if (error) {
+    const message = await edgeFunctionErrorMessage(
+      error,
+      data,
+      "智能格式化失败，请稍后重试。",
+    );
+    if (/authentication required/i.test(message)) {
+      throw new Error("登录已失效，请重新登录后再使用智能格式化。");
+    }
+    throw new Error(message);
+  }
+  if (data && typeof data === "object" && data !== null && "error" in data) {
+    const message = (data as { error?: unknown }).error;
+    if (typeof message === "string" && message.trim()) {
+      if (/authentication required/i.test(message)) {
+        throw new Error("登录已失效，请重新登录后再使用智能格式化。");
+      }
+      throw new Error(message.trim());
+    }
+  }
+  const suggestion = normalizeAiFormatSuggestion(data);
+  if (!suggestion) {
+    throw new Error("未能生成可用的格式化建议，请完善任务内容后重试。");
+  }
+  return suggestion;
 }

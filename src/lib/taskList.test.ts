@@ -77,6 +77,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "all",
       show_labels: false,
       show_completed: false,
@@ -97,6 +98,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "all",
       show_labels: false,
       show_completed: false,
@@ -116,6 +118,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "all",
       show_labels: false,
       show_completed: true,
@@ -135,6 +138,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "all",
       show_labels: false,
       show_completed: false,
@@ -156,6 +160,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "all",
       show_labels: false,
       show_completed: false,
@@ -196,6 +201,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "all",
       show_labels: false,
       show_completed: false,
@@ -495,10 +501,11 @@ describe("task list preference filters", () => {
     const preference = resolveTaskListPreference([], "all");
     expect(preference.filter_assignee).toBe("all");
     expect(preference.filter_watching).toBe("all");
+    expect(preference.filter_creator).toBe("all");
     expect(preference.filter_due).toBe("all");
   });
 
-  it("uses fixed filter presets for today, assigned, and watching smart views", () => {
+  it("uses fixed filter presets for today, assigned, watching, and inbox smart views", () => {
     expect(resolveTaskListPreference([], "today")).toMatchObject(SMART_VIEW_FILTER_PRESETS.today);
     expect(resolveTaskListPreference([], "assigned")).toMatchObject(
       SMART_VIEW_FILTER_PRESETS.assigned,
@@ -506,9 +513,13 @@ describe("task list preference filters", () => {
     expect(resolveTaskListPreference([], "watching")).toMatchObject(
       SMART_VIEW_FILTER_PRESETS.watching,
     );
+    expect(resolveTaskListPreference([], "inbox")).toMatchObject(
+      SMART_VIEW_FILTER_PRESETS.inbox,
+    );
     expect(resolveTaskListFilters("assigned", {
       filter_assignee: "all",
       filter_watching: "all",
+      filter_creator: "all",
       filter_due: "today",
     })).toEqual(SMART_VIEW_FILTER_PRESETS.assigned);
 
@@ -525,6 +536,7 @@ describe("task list preference filters", () => {
       }),
       task("watching-only", { participant_ids: ["u"] }),
       task("other"),
+      task("created-by-other", { created_by: "other" }),
     ];
     const today = SMART_VIEW_FILTER_PRESETS.today;
     expect(
@@ -532,6 +544,7 @@ describe("task list preference filters", () => {
         tasks,
         filterAssignee: today.filter_assignee,
         filterWatching: today.filter_watching,
+        filterCreator: today.filter_creator,
         filterDue: today.filter_due,
         currentUserId: "u",
         now,
@@ -543,6 +556,7 @@ describe("task list preference filters", () => {
         tasks,
         filterAssignee: assigned.filter_assignee,
         filterWatching: assigned.filter_watching,
+        filterCreator: assigned.filter_creator,
         filterDue: assigned.filter_due,
         currentUserId: "u",
         now,
@@ -554,19 +568,33 @@ describe("task list preference filters", () => {
         tasks,
         filterAssignee: watching.filter_assignee,
         filterWatching: watching.filter_watching,
+        filterCreator: watching.filter_creator,
         filterDue: watching.filter_due,
         currentUserId: "u",
         now,
       }).map((item) => item.id),
     ).toEqual(["watching-only"]);
+    const inbox = SMART_VIEW_FILTER_PRESETS.inbox;
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: inbox.filter_assignee,
+        filterWatching: inbox.filter_watching,
+        filterCreator: inbox.filter_creator,
+        filterDue: inbox.filter_due,
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["mine-today", "mine-later", "watching-only", "other"]);
   });
 
-  it("filters by assignee and watching independently", () => {
+  it("filters by assignee, watching, and creator independently", () => {
     const tasks = [
       task("mine", { assignee_id: "u" }),
       task("watching", { participant_ids: ["u"] }),
       task("both", { assignee_id: "u", participant_ids: ["u"] }),
-      task("other", { assignee_id: "other", participant_ids: ["other"] }),
+      task("created-by-other", { created_by: "other", assignee_id: "u" }),
+      task("other", { assignee_id: "other", participant_ids: ["other"], created_by: "other" }),
     ];
     expect(
       applyTaskListFilters({
@@ -575,7 +603,7 @@ describe("task list preference filters", () => {
         currentUserId: "u",
         now,
       }).map((item) => item.id),
-    ).toEqual(["mine", "both"]);
+    ).toEqual(["mine", "both", "created-by-other"]);
     expect(
       applyTaskListFilters({
         tasks,
@@ -584,6 +612,14 @@ describe("task list preference filters", () => {
         now,
       }).map((item) => item.id),
     ).toEqual(["watching", "both"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterCreator: "created_by_me",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["mine", "watching", "both"]);
     expect(
       applyTaskListFilters({
         tasks,

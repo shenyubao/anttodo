@@ -6,8 +6,8 @@ import {
 } from "../_shared/deepseek.ts";
 import { resolveUser } from "../_shared/resolveUser.ts";
 
-type DecomposeRequest = {
-  action: "decompose";
+type AiTaskRequest = {
+  action: "decompose" | "format";
   workspaceId: string;
   taskId: string;
   nowIso?: string;
@@ -25,6 +25,14 @@ type SuggestedSubtask = {
   due_at: string | null;
 };
 
+type FormatSuggestion = {
+  title: string;
+  description: string | null;
+  due_at: string | null;
+  acceptance_criteria: string | null;
+  references: string | null;
+};
+
 function jsonError(message: string, status = 400) {
   return Response.json({ error: message }, { status });
 }
@@ -40,6 +48,13 @@ function normalizeDueAt(value: unknown): string | null {
   const date = new Date(trimmed);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString();
+}
+
+function normalizeOptionalText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 }
 
 function normalizeSuggestions(
@@ -86,7 +101,20 @@ function normalizeSuggestions(
   return result;
 }
 
-function buildPrompt(input: {
+function normalizeFormatSuggestion(raw: unknown): FormatSuggestion | null {
+  if (!isRecord(raw)) return null;
+  const title = typeof raw.title === "string" ? raw.title.trim() : "";
+  if (!title || title.length > 200) return null;
+  return {
+    title,
+    description: normalizeOptionalText(raw.description, 8000),
+    due_at: normalizeDueAt(raw.due_at),
+    acceptance_criteria: normalizeOptionalText(raw.acceptance_criteria, 4000),
+    references: normalizeOptionalText(raw.references, 4000),
+  };
+}
+
+function buildDecomposePrompt(input: {
   title: string;
   description: string;
   existingSubtasks: string[];
@@ -129,6 +157,35 @@ ${existing}
 ${contactLines}`;
 }
 
+function buildFormatPrompt(input: {
+  title: string;
+  description: string;
+  nowIso: string;
+  timeZone: string;
+}) {
+  return `你是团队待办助手。请把下面的任务整理为更规范的结构化建议，供用户确认后再采纳。
+
+规则：
+1. 只输出 JSON（不要 markdown 代码块），格式为：
+{"title":"...","description":"...","due_at":null,"acceptance_criteria":null,"references":null}
+2. title 必填，简明扼要，中文优先，不超过 60 字。
+3. description 为正文说明（不含单独的「验收标准」「参考资料」小节），可为空字符串。
+4. 若原文能识别截止时间，due_at 使用 ISO 8601 字符串；不确定则 null。若只有日期，用该日本地上午 09:00 再转 ISO。
+5. 若原文含验收标准，抽到 acceptance_criteria；没有则 null。不要捏造。
+6. 若原文含参考资料/链接/文档，抽到 references；没有则 null。不要捏造。
+7. 结合当前时间与时区理解「今天/明天/下周」等表述。
+8. 不要添加原文没有的事实与需求。
+
+当前时间：${input.nowIso}
+时区：${input.timeZone}
+
+任务标题：
+${input.title}
+
+任务描述：
+${input.description || "(无描述)"}`;
+}
+
 export default {
   fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
@@ -136,15 +193,16 @@ export default {
     const user = await resolveUser(req, ctx.supabaseAdmin);
     if (!user) return jsonError("Authentication required", 401);
 
-    const body = await req.json().catch(() => null) as DecomposeRequest | null;
+    const body = await req.json().catch(() => null) as AiTaskRequest | null;
     if (
-      body?.action !== "decompose" ||
-      typeof body.workspaceId !== "string" ||
-      typeof body.taskId !== "string"
+      (body?.action !== "decompose" && body?.action !== "format")
+      || typeof body.workspaceId !== "string"
+      || typeof body.taskId !== "string"
     ) {
       return jsonError("Invalid request");
     }
 
+    const action = body.action;
     const workspaceId = body.workspaceId.trim();
     const taskId = body.taskId.trim();
     if (!workspaceId || !taskId) return jsonError("Invalid request");
@@ -170,10 +228,70 @@ export default {
     if (task.workspace_id !== workspaceId) {
       return jsonError("Task not found", 404);
     }
-    if (task.kind === "note") {
+
+    if (action === "decompose" && task.kind === "note") {
       return jsonError("Notes cannot have subtasks", 400);
     }
 
+    const nowIso =
+      typeof body.nowIso === "string" && body.nowIso.trim()
+        ? body.nowIso.trim()
+        : new Date().toISOString();
+    const timeZone =
+      typeof body.timeZone === "string" && body.timeZone.trim()
+        ? body.timeZone.trim()
+        : "UTC";
+
+    const taskTitle = String(task.title ?? "");
+    const taskDescription = String(task.description ?? "");
+
+    if (action === "format") {
+      let modelText: string;
+      try {
+        modelText = await deepseekChatCompletion({
+          messages: [
+            {
+              role: "system",
+              content:
+                "你是精准的任务格式化助手。只输出合法 JSON 对象，键为 title、description、due_at、acceptance_criteria、references。",
+            },
+            {
+              role: "user",
+              content: buildFormatPrompt({
+                title: taskTitle,
+                description: taskDescription,
+                nowIso,
+                timeZone,
+              }),
+            },
+          ],
+          responseFormat: { type: "json_object" },
+          temperature: 0.25,
+          maxTokens: 2048,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "AI 格式化失败";
+        if (message.includes("not configured")) {
+          return jsonError("AI 格式化尚未配置，请联系管理员。", 503);
+        }
+        return jsonError(message || "AI 格式化失败，请稍后重试。", 502);
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(extractJsonText(modelText));
+      } catch {
+        return jsonError("AI 返回格式无法解析，请重试。", 502);
+      }
+
+      const suggestion = normalizeFormatSuggestion(parsed);
+      if (!suggestion) {
+        return jsonError("未能生成可用的格式化建议，请完善任务内容后重试。", 422);
+      }
+      return Response.json(suggestion);
+    }
+
+    // action === "decompose"
     const [{ data: members }, { data: existingSubtasks }] = await Promise.all([
       ctx.supabaseAdmin
         .from("workspace_members")
@@ -207,15 +325,6 @@ export default {
     });
     const contactIds = new Set(contacts.map((contact) => contact.user_id));
 
-    const nowIso =
-      typeof body.nowIso === "string" && body.nowIso.trim()
-        ? body.nowIso.trim()
-        : new Date().toISOString();
-    const timeZone =
-      typeof body.timeZone === "string" && body.timeZone.trim()
-        ? body.timeZone.trim()
-        : "UTC";
-
     let modelText: string;
     try {
       modelText = await deepseekChatCompletion({
@@ -227,9 +336,9 @@ export default {
           },
           {
             role: "user",
-            content: buildPrompt({
-              title: String(task.title ?? ""),
-              description: String(task.description ?? ""),
+            content: buildDecomposePrompt({
+              title: taskTitle,
+              description: taskDescription,
               existingSubtasks: (existingSubtasks ?? [])
                 .map((item) => String(item.title ?? "").trim())
                 .filter(Boolean),

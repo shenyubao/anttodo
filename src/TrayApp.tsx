@@ -275,6 +275,7 @@ export function TrayApp({
       }),
       filterAssignee: preference.filter_assignee,
       filterWatching: preference.filter_watching,
+      filterCreator: preference.filter_creator,
       filterDue: preference.filter_due,
       currentUserId: userId,
       now,
@@ -283,6 +284,7 @@ export function TrayApp({
     bundle,
     now,
     preference.filter_assignee,
+    preference.filter_creator,
     preference.filter_due,
     preference.filter_watching,
     userId,
@@ -357,6 +359,7 @@ export function TrayApp({
       | "direction"
       | "filter_assignee"
       | "filter_watching"
+      | "filter_creator"
       | "filter_due"
     >>,
   ) {

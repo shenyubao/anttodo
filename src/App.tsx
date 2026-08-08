@@ -4605,6 +4605,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         activeSection={appSection}
         online={props.online}
         userName={props.currentUserName}
+        currentUserId={props.currentUserId}
         avatarUrl={
           props.bundle.members.find((member) => member.user_id === props.currentUserId)
             ?.profile?.avatar_url ?? null
@@ -5261,6 +5262,7 @@ function MobileAppSidebar({
   activeSection,
   online,
   userName,
+  currentUserId,
   avatarUrl,
   workspaces,
   workspaceId,
@@ -5296,6 +5298,7 @@ function MobileAppSidebar({
   activeSection: AppSection;
   online: boolean;
   userName: string;
+  currentUserId: string;
   avatarUrl: string | null;
   workspaces: Workspace[];
   workspaceId: string;
@@ -5690,7 +5693,8 @@ function MobileAppSidebar({
                   active={!selectedLabelId && smartView === "inbox"}
                   icon={<Inbox />}
                   label="收集箱"
-                  count={openTasks.filter((task) => task.label_ids.length === 0).length}
+                  count={openTasks.filter((task) =>
+                    task.label_ids.length === 0 && task.created_by === currentUserId).length}
                   onClick={() => onSmartView("inbox")}
                 />
                 <SidebarItem
@@ -6310,7 +6314,8 @@ function Sidebar({
             active={!selectedLabelId && smartView === "inbox"}
             icon={<Inbox />}
             label="收集箱"
-            count={openTasks.filter((task) => task.label_ids.length === 0).length}
+            count={openTasks.filter((task) =>
+              task.label_ids.length === 0 && task.created_by === currentUserId).length}
             onClick={() => onSmartView("inbox")}
           />
           <SidebarItem
@@ -7722,6 +7727,7 @@ function TaskWorkspace({
       }),
       filterAssignee: preference.filter_assignee,
       filterWatching: preference.filter_watching,
+      filterCreator: preference.filter_creator,
       filterDue: preference.filter_due,
       currentUserId,
       now,
@@ -7732,6 +7738,7 @@ function TaskWorkspace({
       currentUserId,
       now,
       preference.filter_assignee,
+      preference.filter_creator,
       preference.filter_due,
       preference.filter_watching,
       selectedLabelId,
@@ -7836,6 +7843,7 @@ function TaskWorkspace({
       | "direction"
       | "filter_assignee"
       | "filter_watching"
+      | "filter_creator"
       | "filter_due"
       | "show_labels"
       | "show_completed"
@@ -7853,6 +7861,7 @@ function TaskWorkspace({
       direction: preference.direction,
       filter_assignee: preference.filter_assignee,
       filter_watching: preference.filter_watching,
+      filter_creator: preference.filter_creator,
       filter_due: preference.filter_due,
       show_labels: preference.show_labels,
       show_completed: preference.show_completed,

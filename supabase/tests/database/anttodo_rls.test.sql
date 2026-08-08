@@ -919,6 +919,17 @@ select is(
   'all',
   'filter_watching defaults to all for a newly saved preference'
 );
+select is(
+  (
+    select filter_creator::text
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'all',
+  'filter_creator defaults to all for a newly saved preference'
+);
 select lives_ok(
   $$
     update public.task_list_preferences
@@ -1020,6 +1031,7 @@ select lives_ok(
     update public.task_list_preferences
     set filter_assignee = 'assigned_to_me',
         filter_watching = 'watching',
+        filter_creator = 'created_by_me',
         filter_due = 'next_7_days'
     where user_id = '10000000-0000-0000-0000-000000000001'
       and workspace_id = '20000000-0000-0000-0000-000000000001'
@@ -1029,13 +1041,13 @@ select lives_ok(
 );
 select is(
   (
-    select filter_assignee::text || '/' || filter_watching::text || '/' || filter_due::text
+    select filter_assignee::text || '/' || filter_watching::text || '/' || filter_creator::text || '/' || filter_due::text
     from public.task_list_preferences
     where user_id = '10000000-0000-0000-0000-000000000001'
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
   ),
-  'assigned_to_me/watching/next_7_days',
+  'assigned_to_me/watching/created_by_me/next_7_days',
   'task list filters persist after update'
 );
 select lives_ok(
