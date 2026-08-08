@@ -23,6 +23,16 @@ function decodeSegment(value: string | undefined) {
   }
 }
 
+function parseModeSegment(segment: string | undefined): TaskViewMode | null {
+  if (!segment) return "list";
+  if (segment === "kanban" || segment === "timeline") return segment;
+  return null;
+}
+
+function modePathSegment(mode: TaskViewMode | undefined) {
+  return mode && mode !== "list" ? `/${mode}` : "";
+}
+
 export function parseAppRoute(pathname: string): AppRoute | null {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] !== "workspaces" || segments.length < 2) return null;
@@ -35,24 +45,25 @@ export function parseAppRoute(pathname: string): AppRoute | null {
   if (segments.length === 3 && segments[2] === "tasks") {
     return { workspaceId, kind: "view", view: "all", mode: "list" };
   }
-  if (segments.length === 4 && segments[2] === "tasks" && segments[3] === "kanban") {
-    return { workspaceId, kind: "view", view: "all", mode: "kanban" };
-  }
-  if (segments.length === 4 && segments[2] === "tasks" && segments[3] === "timeline") {
-    return null;
+  if (
+    segments.length === 4
+    && segments[2] === "tasks"
+    && (segments[3] === "kanban" || segments[3] === "timeline")
+  ) {
+    return { workspaceId, kind: "view", view: "all", mode: segments[3] };
   }
   if ((segments.length === 4 || segments.length === 5) && segments[2] === "views") {
     const view = decodeSegment(segments[3]) as AppSmartView | null;
-    const mode = segments.length === 5 && segments[4] === "kanban" ? "kanban" : "list";
-    if (segments.length === 5 && segments[4] !== "kanban") return null;
+    const mode = parseModeSegment(segments.length === 5 ? segments[4] : undefined);
+    if (!mode) return null;
     return view && SMART_VIEWS.has(view)
       ? { workspaceId, kind: "view", view, mode: view === "trash" ? "list" : mode }
       : null;
   }
   if ((segments.length === 4 || segments.length === 5) && segments[2] === "tags") {
     const tagId = decodeSegment(segments[3]);
-    const mode = segments.length === 5 && segments[4] === "kanban" ? "kanban" : "list";
-    if (segments.length === 5 && segments[4] !== "kanban") return null;
+    const mode = parseModeSegment(segments.length === 5 ? segments[4] : undefined);
+    if (!mode) return null;
     return tagId ? { workspaceId, kind: "tag", tagId, mode } : null;
   }
   if (segments.length === 4 && (segments[2] === "tasks" || segments[2] === "notes")) {
@@ -77,11 +88,12 @@ export function appRoutePath(route: AppRoute) {
   const base = `/workspaces/${encodeURIComponent(route.workspaceId)}`;
   if (route.kind === "view") {
     const path = route.view === "all" ? `${base}/tasks` : `${base}/views/${route.view}`;
-    return route.mode === "kanban" && route.view !== "trash" ? `${path}/kanban` : path;
+    if (route.view === "trash") return path;
+    return `${path}${modePathSegment(route.mode)}`;
   }
   if (route.kind === "tag") {
     const path = `${base}/tags/${encodeURIComponent(route.tagId)}`;
-    return route.mode === "kanban" ? `${path}/kanban` : path;
+    return `${path}${modePathSegment(route.mode)}`;
   }
   if (route.kind === "task") {
     return `${base}/${route.itemKind === "note" ? "notes" : "tasks"}/${encodeURIComponent(route.taskId)}`;

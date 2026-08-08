@@ -4578,6 +4578,534 @@ html.dark .mind-map-date-content > svg {
   margin: 0 20px 8px;
 }
 
+.timeline-workspace {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.timeline-workspace > .offline-banner {
+  flex: 0 0 auto;
+  margin: 0 20px 8px;
+}
+
+.timeline-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 20px 8px;
+}
+
+.timeline-zoom {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(25, 25, 25, 0.05);
+}
+
+.timeline-zoom > button {
+  min-width: 40px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(25, 25, 25, 0.7);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.timeline-zoom > button.selected {
+  background: #fff;
+  color: #191919;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.timeline-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(25, 25, 25, 0.1);
+  border-radius: 8px;
+  background: #fff;
+  color: rgba(25, 25, 25, 0.8);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.timeline-toolbar-button:hover,
+.timeline-toolbar-button:focus-visible {
+  background: rgba(25, 25, 25, 0.04);
+}
+
+.timeline-toolbar-button.selected {
+  border-color: rgba(71, 114, 250, 0.35);
+  color: #4772fa;
+  background: rgba(71, 114, 250, 0.08);
+}
+
+.timeline-toolbar-button svg {
+  flex: 0 0 auto;
+}
+
+.timeline-body {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.timeline-main {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  border-top: 1px solid rgba(25, 25, 25, 0.05);
+}
+
+.timeline-labels {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  border-right: 1px solid rgba(25, 25, 25, 0.08);
+  background: linear-gradient(
+    to right,
+    #fff 0%,
+    #fff 78%,
+    rgba(255, 255, 255, 0.92) 90%,
+    rgba(255, 255, 255, 0.72) 100%
+  );
+  box-shadow: 4px 0 12px rgba(0, 0, 0, 0.04);
+  pointer-events: auto;
+}
+
+.timeline-label-resize-handle {
+  left: auto;
+  right: -2px;
+  width: 6px;
+  z-index: 5;
+}
+
+.timeline-labels-header {
+  display: none;
+}
+
+.timeline-labels-rows {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.timeline-labels-rows::-webkit-scrollbar {
+  display: none;
+}
+
+.timeline-label-row,
+.timeline-empty-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 14px;
+  border-bottom: 1px solid rgba(25, 25, 25, 0.04);
+}
+
+.timeline-label-row.is-group {
+  align-items: flex-start;
+  padding-top: 10px;
+}
+
+.timeline-group-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #191919;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 21px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-group-count {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: rgba(25, 25, 25, 0.35);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 18px;
+}
+
+.timeline-group-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-bottom: 1px solid rgba(25, 25, 25, 0.04);
+  pointer-events: none;
+}
+
+.timeline-label-row.selected {
+  background: rgba(71, 114, 250, 0.06);
+}
+
+.timeline-label-row.completed .timeline-label-title {
+  color: rgba(25, 25, 25, 0.4);
+  text-decoration: line-through;
+}
+
+.timeline-complete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(25, 25, 25, 0.35);
+  cursor: pointer;
+}
+
+.timeline-complete:hover:not(:disabled),
+.timeline-complete:focus-visible:not(:disabled) {
+  background: rgba(25, 25, 25, 0.05);
+  color: #191919;
+}
+
+.timeline-complete:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.timeline-label-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: #191919;
+  font-size: 14px;
+  line-height: 21px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.timeline-empty-row {
+  color: rgba(25, 25, 25, 0.4);
+  font-size: 13px;
+}
+
+.timeline-scroller {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  width: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: #fff;
+}
+
+.timeline-canvas {
+  position: relative;
+}
+
+.timeline-header {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.timeline-month-axis {
+  position: relative;
+  flex: 0 0 22px;
+  height: 22px;
+  border-bottom: 0;
+}
+
+.timeline-month-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: rgba(25, 25, 25, 0.45);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.timeline-header-days {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 40px;
+  height: 40px;
+  background: #fff;
+  border-bottom: 1px solid rgba(25, 25, 25, 0.12);
+}
+
+.timeline-header-day {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border-right: 1px solid rgba(25, 25, 25, 0.04);
+  color: rgba(25, 25, 25, 0.75);
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+.timeline-header-weekday {
+  color: rgba(25, 25, 25, 0.45);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.timeline-header-date {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25em;
+  color: rgba(25, 25, 25, 0.78);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.timeline-holiday-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #35c88a;
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1;
+  transform: scale(0.9);
+}
+
+.timeline-holiday-badge.workday {
+  background: #ff7085;
+}
+
+.timeline-header-day.is-rest {
+  background: transparent;
+}
+
+.timeline-header-day.is-rest,
+.timeline-header-day.is-rest .timeline-header-weekday,
+.timeline-header-day.is-rest .timeline-header-date {
+  color: rgba(25, 25, 25, 0.35);
+}
+
+.timeline-header-day.is-today .timeline-header-weekday,
+.timeline-header-day.is-today .timeline-header-date {
+  color: #4772fa;
+  font-weight: 600;
+}
+
+.timeline-header-day.is-rest.is-today {
+  background: transparent;
+}
+
+.timeline-grid {
+  position: relative;
+  display: flex;
+}
+
+.timeline-grid-col {
+  flex: 0 0 auto;
+  height: 100%;
+  border-right: 1px solid rgba(25, 25, 25, 0.04);
+}
+
+.timeline-grid-col.is-rest {
+  background: #f5f5f5;
+}
+
+.timeline-grid-col.is-today {
+  background: rgba(71, 114, 250, 0.04);
+}
+
+.timeline-grid-col.is-rest.is-today {
+  background: color-mix(in srgb, #f5f5f5 70%, rgba(71, 114, 250, 0.12));
+}
+
+/* 月视图：日列无分隔线，仅在周界（周一左侧）画实线 */
+.timeline-workspace.zoom-month .timeline-header-day,
+.timeline-workspace.zoom-month .timeline-grid-col {
+  border-right: 0;
+}
+
+.timeline-workspace.zoom-month .timeline-header-day.is-week-start,
+.timeline-workspace.zoom-month .timeline-grid-col.is-week-start {
+  border-left: 1px solid rgba(25, 25, 25, 0.12);
+}
+
+.timeline-workspace.zoom-month .timeline-header-day.is-week-start:first-child,
+.timeline-workspace.zoom-month .timeline-grid-col.is-week-start:first-child {
+  border-left: 0;
+}
+
+.timeline-bar {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: #191919;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  cursor: default;
+  user-select: none;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.timeline-bar.editable {
+  cursor: grab;
+}
+
+.timeline-bar.editable:active {
+  cursor: grabbing;
+}
+
+.timeline-bar.selected {
+  outline: 2px solid #4772fa;
+  outline-offset: 1px;
+  z-index: 2;
+}
+
+.timeline-bar.completed {
+  opacity: 0.55;
+}
+
+.timeline-bar.pending {
+  opacity: 0.7;
+}
+
+.timeline-bar.title-outside {
+  overflow: visible;
+  padding: 0 4px;
+  z-index: 2;
+}
+
+.timeline-bar.title-outside.selected {
+  z-index: 3;
+}
+
+.timeline-bar-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-bar-title-outside {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  margin-left: 6px;
+  transform: translateY(-50%);
+  max-width: 220px;
+  overflow: hidden;
+  color: #191919;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.timeline-bar.completed .timeline-bar-title-outside {
+  color: rgba(25, 25, 25, 0.45);
+  text-decoration: line-through;
+}
+
+.timeline-bar-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.timeline-bar-handle.start {
+  left: 0;
+}
+
+.timeline-bar-handle.end {
+  right: 0;
+}
+
+.timeline-schedule-panel {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  height: auto;
+  max-height: none;
+  border-left: 1px solid rgba(25, 25, 25, 0.05);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.timeline-body.has-panel .timeline-schedule-panel {
+  flex: 0 0 260px;
+  width: 260px;
+}
+
+@media (max-width: 900px) {
+  .timeline-body.has-panel .timeline-schedule-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    width: min(280px, 80vw);
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  }
+}
+
 .kanban-scroll {
   min-width: 0;
   min-height: 0;

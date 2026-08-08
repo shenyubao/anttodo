@@ -10,19 +10,23 @@ import {
   TASK_GROUPING_OPTIONS,
   TASK_SORT_OPTIONS,
   defaultSortDirection,
+  groupingOptionsForViewMode,
 } from "./lib/taskList";
 import type {
   TaskListGrouping,
   TaskListPreference,
   TaskListSort,
+  TaskViewMode,
 } from "./types";
 
 export function TaskViewMenu({
   preference,
+  viewMode = "list",
   online,
   onChange,
 }: {
   preference: Pick<TaskListPreference, "grouping" | "sort" | "direction">;
+  viewMode?: TaskViewMode;
   online: boolean;
   onChange: (
     patch: Partial<Pick<TaskListPreference, "grouping" | "sort" | "direction">>,
@@ -31,9 +35,10 @@ export function TaskViewMenu({
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<"grouping" | "sort" | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const groupingLabel = TASK_GROUPING_OPTIONS.find(
-    (option) => option.value === preference.grouping,
-  )?.label;
+  const groupingOptions = groupingOptionsForViewMode(viewMode);
+  const groupingLabel = (groupingOptions.length > 0 ? groupingOptions : TASK_GROUPING_OPTIONS)
+    .find((option) => option.value === preference.grouping)?.label
+    ?? TASK_GROUPING_OPTIONS.find((option) => option.value === preference.grouping)?.label;
   const sortLabel = TASK_SORT_OPTIONS.find((option) => option.value === preference.sort)?.label;
 
   useEffect(() => {
@@ -108,7 +113,7 @@ export function TaskViewMenu({
           )}
           {submenu === "grouping" && (
             <div className="task-view-submenu" role="menu" aria-label="分组方式">
-              {TASK_GROUPING_OPTIONS.map((option) => (
+              {groupingOptions.map((option) => (
                 <button
                   key={option.value}
                   role="menuitemradio"

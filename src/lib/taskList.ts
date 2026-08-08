@@ -60,6 +60,34 @@ export const TASK_GROUPING_OPTIONS: Array<{ value: TaskListGrouping; label: stri
   { value: "none", label: "无" },
 ];
 
+/** Groupings available in timeline view (轻量甘特). */
+export const TIMELINE_GROUPING_VALUES = [
+  "custom",
+  "label",
+  "priority",
+  "none",
+] as const satisfies readonly TaskListGrouping[];
+
+export const TIMELINE_GROUPING_OPTIONS = TASK_GROUPING_OPTIONS.filter((option) =>
+  (TIMELINE_GROUPING_VALUES as readonly string[]).includes(option.value));
+
+export function isTimelineGrouping(grouping: TaskListGrouping) {
+  return (TIMELINE_GROUPING_VALUES as readonly string[]).includes(grouping);
+}
+
+export function groupingOptionsForViewMode(viewMode: TaskViewMode) {
+  return viewMode === "timeline" ? TIMELINE_GROUPING_OPTIONS : TASK_GROUPING_OPTIONS;
+}
+
+export function clampGroupingForViewMode(
+  grouping: TaskListGrouping,
+  viewMode: TaskViewMode,
+): TaskListGrouping {
+  if (viewMode === "timeline" && !isTimelineGrouping(grouping)) return "none";
+  if (viewMode === "kanban" && grouping === "none") return "custom";
+  return grouping;
+}
+
 export const TASK_SORT_OPTIONS: Array<{ value: TaskListSort; label: string }> = [
   { value: "custom", label: "自定义" },
   { value: "due", label: "时间" },

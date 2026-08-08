@@ -2,16 +2,20 @@ import { describe, expect, it } from "vitest";
 import type { Label, Member, Task } from "../types";
 import {
   applyTaskListFilters,
+  clampGroupingForViewMode,
   filterTasksForView,
+  groupingOptionsForViewMode,
   groupTasks,
   orderedTaskSections,
   resolveTaskListFilters,
   resolveTaskListPreference,
   SMART_VIEW_FILTER_PRESETS,
   sortTasks,
+  TASK_GROUPING_OPTIONS,
   taskOrdersAfterCrossSectionMove,
   taskSectionOrderAfterInsert,
   taskSectionOrderAfterMove,
+  TIMELINE_GROUPING_OPTIONS,
 } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
@@ -158,6 +162,27 @@ describe("task list grouping and sorting", () => {
       show_hours: false,
       view_mode: "kanban",
     }], "all", [], "kanban").grouping).toBe("priority");
+  });
+
+  it("limits timeline grouping to custom, label, priority, and none", () => {
+    expect(TIMELINE_GROUPING_OPTIONS.map((option) => option.value)).toEqual([
+      "custom",
+      "label",
+      "priority",
+      "none",
+    ]);
+    expect(groupingOptionsForViewMode("timeline").map((option) => option.value))
+      .toEqual(["custom", "label", "priority", "none"]);
+    expect(groupingOptionsForViewMode("list")).toEqual(TASK_GROUPING_OPTIONS);
+    expect(clampGroupingForViewMode("due", "timeline")).toBe("none");
+    expect(clampGroupingForViewMode("assignee", "timeline")).toBe("none");
+    expect(clampGroupingForViewMode("created", "timeline")).toBe("none");
+    expect(clampGroupingForViewMode("label", "timeline")).toBe("label");
+    expect(clampGroupingForViewMode("priority", "timeline")).toBe("priority");
+    expect(clampGroupingForViewMode("custom", "timeline")).toBe("custom");
+    expect(clampGroupingForViewMode("none", "timeline")).toBe("none");
+    expect(clampGroupingForViewMode("none", "kanban")).toBe("custom");
+    expect(clampGroupingForViewMode("due", "list")).toBe("due");
   });
 
   it("defaults show_hours to false and preserves a saved value", () => {

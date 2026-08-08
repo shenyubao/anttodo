@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(146);
+select plan(148);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -982,7 +982,7 @@ select is(
   'kanban',
   'view_mode persists after update'
 );
-select throws_ok(
+select lives_ok(
   $$
     update public.task_list_preferences
     set view_mode = 'timeline'
@@ -990,9 +990,30 @@ select throws_ok(
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
   $$,
+  'a user can update view_mode to timeline'
+);
+select is(
+  (
+    select view_mode
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'timeline',
+  'view_mode persists timeline after update'
+);
+select throws_ok(
+  $$
+    update public.task_list_preferences
+    set view_mode = 'gantt'
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
   '23514',
   null,
-  'view_mode rejects unopened modes'
+  'view_mode rejects unknown modes'
 );
 select lives_ok(
   $$

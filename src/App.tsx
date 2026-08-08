@@ -105,6 +105,7 @@ import { ShortcutProvider } from "./ShortcutProvider";
 import { ShortcutsSettingsPanel } from "./ShortcutsSettingsPanel";
 import { TaskContextMenu } from "./TaskContextMenu";
 import { TaskKanban } from "./TaskKanban";
+import { TaskTimeline } from "./TaskTimeline";
 import { TaskSectionComposer } from "./TaskSectionComposer";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
 import type { CreateCommentInput } from "./TaskComments";
@@ -223,6 +224,7 @@ import {
 import {
   DEFAULT_TASK_LIST_PREFERENCE,
   applyTaskListFilters,
+  clampGroupingForViewMode,
   countTasksForLabelSubtree,
   filterTasksForView,
   groupTasks,
@@ -247,6 +249,7 @@ import {
   kanbanDueDate,
   type KanbanColumn,
 } from "./lib/taskKanban";
+import { schedulePatchForTimelineDrop } from "./lib/taskTimeline";
 import {
   DATE_FORMAT_OPTIONS,
   DEFAULT_DATE_TIME_PREFERENCES,
@@ -4461,7 +4464,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }, [props.workspaceId]);
 
   const calendarSection = appSection === "calendar";
-  const dialogSection = appSection === "calendar" || appSection === "mindmap";
+  const dialogSection = appSection === "calendar"
+    || appSection === "mindmap"
+    || (appSection === "tasks" && viewMode === "timeline");
+  const detailPanelOpen = appSection === "tasks"
+    && !!selectedTask
+    && viewMode !== "timeline";
 
   function changeSection(section: AppSection) {
     writeRoute({
@@ -4557,7 +4565,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         appSection === "mindmap" && "mind-map-section",
         appSection === "focus" && "focus-section",
         calendarSection && calendarSidebarCollapsed && "calendar-sidebar-collapsed",
-        appSection === "tasks" && selectedTask && "detail-open",
+        appSection === "tasks" && selectedTask && viewMode !== "timeline" && "detail-open",
       )}
       style={{
         "--sidebar-width": `${calendarSection ? calendarSidebarWidth : sidebarWidth}px`,
@@ -4830,7 +4838,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onSaveTaskListPreference={props.onSaveTaskListPreference}
         />}
       </section>
-      {appSection === "tasks" && selectedTask && (
+      {detailPanelOpen && selectedTask && (
         <>
           <PanelResizeHandle
             label="调整详情面板宽度"
@@ -7859,8 +7867,9 @@ function TaskWorkspace({
     const previousMode = viewMode;
     onViewModeChange(mode);
     try {
-      if (mode === "kanban" && preference.grouping === "none") {
-        await savePreference({ view_mode: mode, grouping: "custom" });
+      const nextGrouping = clampGroupingForViewMode(preference.grouping, mode);
+      if (nextGrouping !== preference.grouping) {
+        await savePreference({ view_mode: mode, grouping: nextGrouping });
       } else {
         await savePreference({ view_mode: mode });
       }
@@ -8253,6 +8262,7 @@ function TaskWorkspace({
             <>
               <TaskViewMenu
                 preference={preference}
+                viewMode={viewMode}
                 online={online}
                 onChange={savePreference}
               />
@@ -8378,6 +8388,47 @@ function TaskWorkspace({
             onNotice={onNotice}
           />
         </div>
+      ) : viewMode === "timeline" && !isTrashView ? (
+        <TaskTimeline
+          tasks={tasks}
+          groups={groups}
+          bundle={bundle}
+          currentUserId={currentUserId}
+          online={online}
+          now={now}
+          selectedTaskId={selectedTaskId}
+          showCompleted={preference.show_completed}
+          onSelectTask={onSelectTask}
+          onSaveTaskSchedule={onSaveTaskSchedule}
+          onCreateOnDay={async (day) => {
+            if (!online || !canManageSelectedLabel) {
+              throw new Error(online ? "没有创建任务的权限" : "离线模式下不可新增任务");
+            }
+            const timeZone = systemTimeZone();
+            const patch = schedulePatchForTimelineDrop(day, timeZone);
+            const created = await onCreateTask({
+              title: "新任务",
+              labelIds: selectedLabelId ? [selectedLabelId] : [],
+              kind: "todo",
+              priority: quickPriority,
+              assigneeId: !selectedLabelId && smartView === "assigned" ? currentUserId : null,
+              dueAt: patch.due_at,
+              dueTimezone: timeZone,
+            });
+            const createdId = typeof created === "object" && created && "id" in created
+              ? String(created.id)
+              : null;
+            if (createdId) {
+              await onSaveTaskSchedule(createdId, patch, {
+                reminders: [],
+                persistent: false,
+                recurrence: null,
+              });
+              onSelectTask(createdId);
+            }
+          }}
+          onNotice={onNotice}
+        />
       ) : (
       <div className="task-scroll">
         {!online && (
@@ -8654,10 +8705,14 @@ function LabelActionsMenu({
               </button>
               <button
                 type="button"
-                role="menuitem"
-                aria-label="时间线，暂未开放"
-                title="暂未开放"
-                disabled
+                role="menuitemradio"
+                aria-label="时间线"
+                aria-checked={viewMode === "timeline"}
+                disabled={!online}
+                onClick={() => {
+                  setOpen(false);
+                  onChangeViewMode("timeline");
+                }}
               >
                 <GanttChart />
               </button>

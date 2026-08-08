@@ -12,7 +12,7 @@ export type AssigneeTarget =
   | { kind: "none" }
   | { kind: "user"; userId: string }
   | { kind: "cli"; tool: AiCliTool };
-export type TaskViewMode = "list" | "kanban";
+export type TaskViewMode = "list" | "kanban" | "timeline";
 export type ReminderAnchor = "start" | "end";
 export type ReminderUnit = "minute" | "hour" | "day" | "week";
 export type ConnectorType = "mock" | "yunxiao" | "dingtalk";
