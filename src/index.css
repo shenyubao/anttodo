@@ -8578,11 +8578,13 @@ html.dark .task-detail {
 }
 
 .switch-mode {
+  position: relative;
   flex: none;
   width: 18px;
   height: 26px;
   margin-top: 3px;
-  margin-left: 1px;
+  margin-right: 1px;
+  margin-left: 4px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -8593,8 +8595,20 @@ html.dark .task-detail {
   cursor: pointer;
 }
 
+.switch-mode::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: -1px -5px;
+  border-radius: 8px;
+  background: transparent;
+}
+
 .switch-mode:hover {
   color: rgb(25 25 25 / 55%);
+}
+
+.switch-mode:hover::before {
   background: rgb(25 25 25 / 5%);
 }
 
@@ -8608,6 +8622,8 @@ html.dark .task-detail {
 }
 
 .switch-mode svg {
+  position: relative;
+  z-index: 1;
   width: 16px;
   height: 16px;
 }

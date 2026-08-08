@@ -80,6 +80,24 @@ import type {
   WorkspaceBundle,
 } from "./types";
 
+const DETAIL_SUBTASKS_VISIBLE_KEY = "anttodo:detail-subtasks-visible";
+
+function readDetailSubtasksVisible() {
+  try {
+    return window.localStorage.getItem(DETAIL_SUBTASKS_VISIBLE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function storeDetailSubtasksVisible(visible: boolean) {
+  try {
+    window.localStorage.setItem(DETAIL_SUBTASKS_VISIBLE_KEY, visible ? "1" : "0");
+  } catch {
+    // A disabled or full local storage should not block detail interaction.
+  }
+}
+
 export type TaskDetailProps = {
   task: Task;
   bundle: WorkspaceBundle;
@@ -1223,6 +1241,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [immersive, setImmersive] = useState(false);
+  const [showSubtasks, setShowSubtasks] = useState(readDetailSubtasksVisible);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [commentComposerOpen, setCommentComposerOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -1918,6 +1937,24 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               }}
               rows={1}
             />
+            {task.kind !== "note" && (
+              <button
+                type="button"
+                className={clsx("switch-mode", showSubtasks && "active")}
+                title={showSubtasks ? "收起子任务" : "展开子任务"}
+                aria-label={showSubtasks ? "收起子任务" : "展开子任务"}
+                aria-pressed={showSubtasks}
+                onClick={() => {
+                  setShowSubtasks((current) => {
+                    const next = !current;
+                    storeDetailSubtasksVisible(next);
+                    return next;
+                  });
+                }}
+              >
+                <ListTodo />
+              </button>
+            )}
           </div>
         )}
         {activeTerminal ? (
@@ -1944,7 +1981,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           toolbarHost={toolbarHost}
           toolbarOpen={toolbarOpen}
         />
-        {task.kind !== "note" && (
+        {task.kind !== "note" && showSubtasks && (
           <section className="detail-section">
             <div className="detail-section-title">
               <span>子任务</span>
