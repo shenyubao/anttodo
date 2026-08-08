@@ -12,6 +12,7 @@ import {
   MessageCircle,
   NotebookPen,
   RotateCcw,
+  Sparkles,
   SquareTerminal,
   Trash2,
   Type,
@@ -45,6 +46,14 @@ import {
   type TaskRichTextEditorHandle,
 } from "./TaskRichTextEditor";
 import type { AttachmentService } from "./lib/attachments";
+import {
+  buildSubtaskExtrasFromSuggestion,
+  formatAiSuggestedDueAt,
+  type AiSuggestedSubtask,
+} from "./lib/aiSubtaskDecompose";
+import { decomposeSubtasks } from "./lib/api";
+import { systemTimeZone } from "./lib/dateTimePreferences";
+import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
 import { TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
@@ -72,6 +81,7 @@ import type {
   AiWorkSettings,
   AssigneeTarget,
   DateTimePreferences,
+  Member,
   ReminderSchedule,
   Subtask,
   Task,
@@ -1160,6 +1170,306 @@ function SubtaskMoreMenu({
   );
 }
 
+function memberDisplayName(member: Member | undefined) {
+  return member?.profile?.display_name?.trim() || "团队成员";
+}
+
+type AiSuggestListItem = AiSuggestedSubtask & { clientKey: string };
+
+function AiSubtaskDecomposeControl({
+  task,
+  bundle,
+  currentUserId,
+  now,
+  online,
+  editable,
+  onCreateSubtask,
+  onEnsureSubtasksVisible,
+}: {
+  task: Task;
+  bundle: WorkspaceBundle;
+  currentUserId: string;
+  now: Date;
+  online: boolean;
+  editable: boolean;
+  onCreateSubtask: (
+    title: string,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+  ) => Promise<void>;
+  onEnsureSubtasksVisible?: () => void;
+}) {
+  const writable = online && editable;
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const [items, setItems] = useState<AiSuggestListItem[]>([]);
+  const [position, setPosition] = useState<CSSProperties>({});
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const requestIdRef = useRef(0);
+
+  const assignableMembers = useMemo(
+    () => getAssignableMembers(bundle, task, currentUserId),
+    [bundle, currentUserId, task],
+  );
+  const assignableIds = useMemo(
+    () => assignableMembers.map((member) => member.user_id),
+    [assignableMembers],
+  );
+  const membersById = useMemo(() => {
+    const map = new Map<string, Member>();
+    for (const member of bundle.members) {
+      map.set(member.user_id, member);
+    }
+    return map;
+  }, [bundle.members]);
+
+  useEffect(() => {
+    setOpen(false);
+    setLoading(false);
+    setAdding(false);
+    setError("");
+    setItems([]);
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) {
+        return;
+      }
+      if (loading || adding) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (loading || adding) return;
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open, loading, adding]);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !panelRef.current) return;
+
+    const positionPanel = () => {
+      const trigger = triggerRef.current!.getBoundingClientRect();
+      const panel = panelRef.current!;
+      const gap = 8;
+      const inset = 12;
+      const width = Math.min(410, window.innerWidth - inset * 2);
+      const maxHeight = Math.min(574, window.innerHeight - inset * 2);
+      const height = Math.min(panel.scrollHeight || maxHeight, maxHeight);
+      let left = trigger.right - width;
+      left = Math.min(
+        Math.max(left, inset),
+        Math.max(inset, window.innerWidth - width - inset),
+      );
+      let top = trigger.bottom + gap;
+      if (top + height > window.innerHeight - inset) {
+        top = Math.max(inset, trigger.top - height - gap);
+      }
+      if (top + height > window.innerHeight - inset) {
+        top = Math.max(inset, window.innerHeight - height - inset);
+      }
+      setPosition({
+        width,
+        height: maxHeight,
+        maxHeight,
+        left,
+        top,
+      });
+    };
+
+    positionPanel();
+    window.addEventListener("resize", positionPanel);
+    window.addEventListener("scroll", positionPanel, true);
+    return () => {
+      window.removeEventListener("resize", positionPanel);
+      window.removeEventListener("scroll", positionPanel, true);
+    };
+  }, [open, items, loading, error]);
+
+  async function requestDecompose() {
+    if (!writable || adding) return;
+    if (!supabase) {
+      setOpen(true);
+      setError("服务未配置，无法分解任务。");
+      setItems([]);
+      return;
+    }
+
+    // Every click re-requests the model (including when the panel is already open).
+    const requestId = ++requestIdRef.current;
+    setOpen(true);
+    setLoading(true);
+    setError("");
+    setItems([]);
+
+    try {
+      const result = await decomposeSubtasks(supabase, {
+        workspaceId: task.workspace_id,
+        taskId: task.id,
+        nowIso: new Date().toISOString(),
+        timeZone: systemTimeZone(),
+        assignableUserIds: assignableIds,
+      });
+      if (requestId !== requestIdRef.current) return;
+      setItems(
+        result.subtasks.map((item, index) => ({
+          ...item,
+          clientKey: `${Date.now()}-${index}-${item.title}`,
+        })),
+      );
+    } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      setError(err instanceof Error ? err.message : "AI 分解失败，请稍后重试。");
+    } finally {
+      if (requestId === requestIdRef.current) setLoading(false);
+    }
+  }
+
+  async function addOne(item: AiSuggestListItem) {
+    if (!writable || adding || loading) return;
+    setAdding(true);
+    setError("");
+    try {
+      const extras = buildSubtaskExtrasFromSuggestion(item, assignableIds);
+      onEnsureSubtasksVisible?.();
+      await onCreateSubtask(item.title, extras);
+      const remaining = items.filter((row) => row.clientKey !== item.clientKey);
+      setItems(remaining);
+      if (remaining.length === 0) setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "添加子任务失败");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function addAll() {
+    if (!writable || adding || loading || items.length === 0) return;
+    setAdding(true);
+    setError("");
+    try {
+      onEnsureSubtasksVisible?.();
+      for (const item of items) {
+        const extras = buildSubtaskExtrasFromSuggestion(item, assignableIds);
+        await onCreateSubtask(item.title, extras);
+      }
+      setItems([]);
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "添加子任务失败");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  function suggestionMeta(item: AiSuggestedSubtask) {
+    const parts: string[] = [];
+    if (item.assignee_user_id) {
+      parts.push(memberDisplayName(membersById.get(item.assignee_user_id)));
+    }
+    const dueLabel = formatAiSuggestedDueAt(item.due_at);
+    if (dueLabel) parts.push(dueLabel);
+    return parts.join(" · ");
+  }
+
+  return (
+    <div className="ai-subtask-decompose" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={clsx("switch-mode", (open || loading) && "active")}
+        title="AI 分解子任务"
+        aria-label="AI 分解子任务"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={!writable || adding}
+        onClick={() => {
+          void requestDecompose();
+        }}
+      >
+        <Sparkles />
+      </button>
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          className="ai-subtask-suggest-panel"
+          role="dialog"
+          aria-label="推荐子任务"
+          style={position}
+        >
+          <div className="ai-subtask-suggest-header">
+            <strong>推荐子任务</strong>
+            <button
+              type="button"
+              className="ai-subtask-suggest-add-all"
+              disabled={!writable || loading || adding || items.length === 0}
+              onClick={() => {
+                void addAll();
+              }}
+            >
+              全部添加
+            </button>
+          </div>
+          <div className="ai-subtask-suggest-body">
+            {loading && (
+              <p className="ai-subtask-suggest-status">正在分解…</p>
+            )}
+            {!loading && error && (
+              <p className="ai-subtask-suggest-error">{error}</p>
+            )}
+            {!loading && !error && items.length === 0 && (
+              <p className="ai-subtask-suggest-status">暂无推荐</p>
+            )}
+            {!loading && items.length > 0 && (
+              <ul className="ai-subtask-suggest-list">
+                {items.map((item) => {
+                  const meta = suggestionMeta(item);
+                  return (
+                    <li key={item.clientKey} className="ai-subtask-suggest-row">
+                      <div className="ai-subtask-suggest-main">
+                        <span className="ai-subtask-suggest-title">{item.title}</span>
+                        {meta && (
+                          <span className="ai-subtask-suggest-meta">{meta}</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="ai-subtask-suggest-add"
+                        disabled={!writable || adding}
+                        aria-label={`添加子任务：${item.title}`}
+                        onClick={() => {
+                          void addOne(item);
+                        }}
+                      >
+                        添加
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & {
   presentation: "panel" | "dialog";
 }>(function TaskDetailContent({
@@ -1938,22 +2248,37 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               rows={1}
             />
             {task.kind !== "note" && (
-              <button
-                type="button"
-                className={clsx("switch-mode", showSubtasks && "active")}
-                title={showSubtasks ? "收起子任务" : "展开子任务"}
-                aria-label={showSubtasks ? "收起子任务" : "展开子任务"}
-                aria-pressed={showSubtasks}
-                onClick={() => {
-                  setShowSubtasks((current) => {
-                    const next = !current;
-                    storeDetailSubtasksVisible(next);
-                    return next;
-                  });
-                }}
-              >
-                <ListTodo />
-              </button>
+              <>
+                <button
+                  type="button"
+                  className={clsx("switch-mode", showSubtasks && "active")}
+                  title={showSubtasks ? "收起子任务" : "展开子任务"}
+                  aria-label={showSubtasks ? "收起子任务" : "展开子任务"}
+                  aria-pressed={showSubtasks}
+                  onClick={() => {
+                    setShowSubtasks((current) => {
+                      const next = !current;
+                      storeDetailSubtasksVisible(next);
+                      return next;
+                    });
+                  }}
+                >
+                  <ListTodo />
+                </button>
+                <AiSubtaskDecomposeControl
+                  task={task}
+                  bundle={bundle}
+                  currentUserId={currentUserId}
+                  now={now}
+                  online={online}
+                  editable={editable}
+                  onCreateSubtask={onCreateSubtask}
+                  onEnsureSubtasksVisible={() => {
+                    setShowSubtasks(true);
+                    storeDetailSubtasksVisible(true);
+                  }}
+                />
+              </>
             )}
           </div>
         )}

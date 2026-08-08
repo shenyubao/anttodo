@@ -31,6 +31,10 @@ import type {
   WorkspaceBundle,
 } from "../types";
 import {
+  normalizeAiSuggestedSubtasks,
+  type AiSuggestedSubtask,
+} from "./aiSubtaskDecompose";
+import {
   DEFAULT_DATE_TIME_PREFERENCES,
   preferenceModelToRow,
   preferenceRowToModel,
@@ -38,11 +42,14 @@ import {
 import { createDefaultFocusSettings } from "./focusSession";
 import { mergeNotificationPreferenceRows } from "./notificationPreferences";
 import { coerceHours } from "./taskHours";
+import { edgeFunctionErrorMessage } from "./sso";
 import {
   isValidWorkspaceSlug,
   normalizeWorkspaceSlug,
   suggestWorkspaceSlug,
 } from "./workspaceSlug";
+
+export type { AiSuggestedSubtask };
 
 type TaskRow = Omit<
   Task,
@@ -1050,4 +1057,70 @@ export async function toggleTaskParticipant(
         .eq("task_id", taskId)
         .eq("user_id", userId);
   assertNoError(error);
+}
+
+export async function decomposeSubtasks(
+  client: SupabaseClient,
+  input: {
+    workspaceId: string;
+    taskId: string;
+    nowIso: string;
+    timeZone: string;
+    assignableUserIds?: Iterable<string>;
+  },
+): Promise<{ subtasks: AiSuggestedSubtask[] }> {
+  const {
+    data: { session },
+  } = await client.auth.getSession();
+  const accessToken = session?.access_token?.trim();
+  if (!accessToken) {
+    throw new Error("请先登录后再使用 AI 分解。");
+  }
+
+  // Always hit the edge function (no client cache / demo short-circuit).
+  // Nonce forces a unique payload so intermediate proxies won't reuse a response.
+  const { data, error } = await client.functions.invoke("ai-subtask-decompose", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Cache-Control": "no-store",
+    },
+    body: {
+      action: "decompose",
+      workspaceId: input.workspaceId,
+      taskId: input.taskId,
+      nowIso: input.nowIso,
+      timeZone: input.timeZone,
+      clientRequestId: crypto.randomUUID(),
+    },
+  });
+  if (error) {
+    const message = await edgeFunctionErrorMessage(
+      error,
+      data,
+      "AI 分解失败，请稍后重试。",
+    );
+    if (/authentication required/i.test(message)) {
+      throw new Error("登录已失效，请重新登录后再使用 AI 分解。");
+    }
+    throw new Error(message);
+  }
+  if (data && typeof data === "object" && data !== null && "error" in data) {
+    const message = (data as { error?: unknown }).error;
+    if (typeof message === "string" && message.trim()) {
+      if (/authentication required/i.test(message)) {
+        throw new Error("登录已失效，请重新登录后再使用 AI 分解。");
+      }
+      throw new Error(message.trim());
+    }
+  }
+  const subtasks = normalizeAiSuggestedSubtasks(
+    data && typeof data === "object" && data !== null
+      ? (data as { subtasks?: unknown }).subtasks
+      : null,
+    { assignableUserIds: input.assignableUserIds },
+  );
+  if (!subtasks.length) {
+    throw new Error("未能生成可用的子任务建议，请完善任务描述后重试。");
+  }
+  return { subtasks };
 }

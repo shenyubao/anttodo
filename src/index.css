@@ -8628,6 +8628,173 @@ html.dark .task-detail {
   height: 16px;
 }
 
+.ai-subtask-decompose {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+}
+
+.ai-subtask-suggest-panel {
+  position: fixed;
+  z-index: 1300;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 4px 0;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 14px;
+  color: #191919;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  /* Portaled outside Dialog.Content; override body scroll-lock pointer-events: none. */
+  pointer-events: auto;
+}
+
+.ai-subtask-suggest-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 8px 16px 4px;
+}
+
+.ai-subtask-suggest-header > strong {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.ai-subtask-suggest-add-all {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: #4772fa;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.ai-subtask-suggest-add-all:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.ai-subtask-suggest-add-all:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.ai-subtask-suggest-add-all:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 45%);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.ai-subtask-suggest-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0 4px;
+}
+
+.ai-subtask-suggest-status,
+.ai-subtask-suggest-error {
+  margin: 12px 16px;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.ai-subtask-suggest-status {
+  color: rgb(25 25 25 / 45%);
+}
+
+.ai-subtask-suggest-error {
+  color: var(--danger, #e5484d);
+}
+
+.ai-subtask-suggest-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ai-subtask-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 12px 8px 16px;
+}
+
+.ai-subtask-suggest-row:hover {
+  background: rgb(25 25 25 / 5%);
+}
+
+.ai-subtask-suggest-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+}
+
+.ai-subtask-suggest-add {
+  flex: none;
+  margin: 0;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #4772fa;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.ai-subtask-suggest-add:hover:not(:disabled) {
+  background: rgb(71 114 250 / 10%);
+}
+
+.ai-subtask-suggest-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.ai-subtask-suggest-add:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 45%);
+  outline-offset: 1px;
+}
+
+.ai-subtask-suggest-title {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 21px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-subtask-suggest-meta {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: rgb(25 25 25 / 45%);
+  font-size: 12px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .detail-title,
 .detail-description {
   width: 100%;

@@ -525,3 +525,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/cli-device-auth/deno.json"
 entrypoint = "./functions/cli-device-auth/index.ts"
+
+[functions.ai-subtask-decompose]
+enabled = true
+verify_jwt = true
+import_map = "./functions/ai-subtask-decompose/deno.json"
+entrypoint = "./functions/ai-subtask-decompose/index.ts"
