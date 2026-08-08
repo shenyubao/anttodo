@@ -9,7 +9,8 @@ export type AppRoute =
   | { workspaceId: string; kind: "tag"; tagId: string; mode?: TaskViewMode }
   | { workspaceId: string; kind: "task"; taskId: string; itemKind: "task" | "note" }
   | { workspaceId: string; kind: "calendar" }
-  | { workspaceId: string; kind: "mindmap" };
+  | { workspaceId: string; kind: "mindmap" }
+  | { workspaceId: string; kind: "focus" };
 
 const SMART_VIEWS = new Set<AppSmartView>(["all", "today", "assigned", "watching", "inbox", "trash"]);
 
@@ -65,6 +66,9 @@ export function parseAppRoute(pathname: string): AppRoute | null {
   }
   if (segments.length === 3 && segments[2] === "mindmap") {
     return { workspaceId, kind: "mindmap" };
+  }
+  if (segments.length === 3 && segments[2] === "focus") {
+    return { workspaceId, kind: "focus" };
   }
   return null;
 }

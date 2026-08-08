@@ -13,6 +13,7 @@ const SCENARIO_BY_TYPE: Record<string, string> = {
   task_assigned: "task_assigned",
   task_new_comment: "task_new_comment",
   note_mentioned: "note_mentioned",
+  participant_added: "participant_added",
   participant_title_changed: "participant_title_changed",
   participant_status_changed: "participant_status_changed",
   participant_new_comment: "participant_new_comment",
@@ -42,6 +43,8 @@ function notificationCopy(input: {
         title: input.taskKind === "note" ? "笔记提及" : "待办提及",
         body: `${actor} 在${input.taskKind === "note" ? "笔记" : "待办"}「${title}」中引用了你`,
       };
+    case "participant_added":
+      return { title: "添加参与者", body: `${actor} 将你添加为「${title}」的参与者` };
     case "participant_title_changed":
       return { title: "标题变更", body: `${actor} 更新了「${title}」的标题` };
     case "participant_status_changed": {

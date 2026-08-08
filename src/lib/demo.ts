@@ -1,6 +1,7 @@
 import { addDays, subDays } from "date-fns";
 import type {
   Connector,
+  FocusSession,
   Label,
   Member,
   SyncConflict,
@@ -297,4 +298,39 @@ export function createDemoBundle(): WorkspaceBundle {
     taskSections: [],
     taskPlacements: [],
   };
+}
+
+export function createDemoFocusSessions(workspaceId = "workspace-team"): FocusSession[] {
+  const ended = now.toISOString();
+  const started = new Date(now.getTime() - 25 * 60_000).toISOString();
+  return [
+    {
+      id: "focus-demo-1",
+      user_id: userId,
+      workspace_id: workspaceId,
+      task_id: "task-2",
+      mode: "pomodoro",
+      kind: "focus",
+      planned_seconds: 1500,
+      elapsed_seconds: 1500,
+      notes: "完成详情面板交互核对",
+      started_at: started,
+      ended_at: ended,
+      created_at: ended,
+    },
+    {
+      id: "focus-demo-2",
+      user_id: userId,
+      workspace_id: workspaceId,
+      task_id: null,
+      mode: "stopwatch",
+      kind: "focus",
+      planned_seconds: 0,
+      elapsed_seconds: 900,
+      notes: null,
+      started_at: subDays(now, 1).toISOString(),
+      ended_at: subDays(now, 1).toISOString(),
+      created_at: subDays(now, 1).toISOString(),
+    },
+  ];
 }

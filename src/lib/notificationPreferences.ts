@@ -8,6 +8,7 @@ export const NOTIFICATION_SCENARIOS: Array<{
   { id: "task_due_reminder", label: "待办-到期提醒" },
   { id: "task_new_comment", label: "待办-有新的评论" },
   { id: "note_mentioned", label: "笔记-被提及" },
+  { id: "participant_added", label: "待办参与者-被添加到待办" },
   { id: "participant_title_changed", label: "待办参与者-标题变更" },
   { id: "participant_status_changed", label: "待办参与者-状态变更" },
   { id: "participant_new_comment", label: "待办参与者-有新的评论" },

@@ -161,6 +161,8 @@ function eventCopy(input: {
       return { heading: "@ 笔记提及", summary: `${actor} 在此笔记中提及了你` };
     case "comment_mention":
       return { heading: `@ ${object}提及`, summary: `${actor} 在此${object}的评论中提及了你` };
+    case "participant_added":
+      return { heading: "👀 添加参与者", summary: `${actor} 将你添加为此${object}的参与者` };
     case "participant_title_changed":
       return { heading: "✏️ 标题变更", summary: `${actor} 更新了此${object}的标题` };
     case "participant_status_changed": {

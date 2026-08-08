@@ -23,6 +23,7 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "task", taskId: "note-1", itemKind: "note" },
     { workspaceId: "workspace-1", kind: "calendar" },
     { workspaceId: "workspace-1", kind: "mindmap" },
+    { workspaceId: "workspace-1", kind: "focus" },
   ];
 
   it.each(routes)("round-trips $kind routes", (route) => {

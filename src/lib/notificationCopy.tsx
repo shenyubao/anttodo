@@ -29,6 +29,12 @@ export function notificationHeadline(item: AppNotification) {
           <strong>{actor}</strong> 在{kindLabel}中引用了你
         </>
       );
+    case "participant_added":
+      return (
+        <>
+          <strong>{actor}</strong> 将你添加为参与者
+        </>
+      );
     case "participant_title_changed":
       return (
         <>

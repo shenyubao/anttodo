@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ const releaseDir = path.join(root, "release");
 const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const productName = packageJson.build?.productName;
 const publishVersion = typeof packageJson.version === "string" ? packageJson.version.trim() : "";
+const appBundleName = `${productName}.app`;
 
 if (architectures.length === 0) {
   console.error("Usage: node scripts/verify-macos-package.mjs <arch> [...arch]");
@@ -32,6 +34,19 @@ function loadAsar() {
     paths: [root],
   });
   return createRequire(electronBuilderPackage)("@electron/asar");
+}
+
+function assertValidAppBundle(appPath, label) {
+  if (!existsSync(appPath)) {
+    fail(`${label} 不存在：${appPath}`);
+  }
+  if (!existsSync(path.join(appPath, "Contents", "Info.plist"))) {
+    fail(`${label} 缺少 Contents/Info.plist：${appPath}`);
+  }
+  const nestedApp = path.join(appPath, path.basename(appPath));
+  if (existsSync(nestedApp)) {
+    fail(`${label} 出现嵌套 .app（${nestedApp}），安装包不可用。`);
+  }
 }
 
 function assertNoSourceMaps(appPath, arch) {
@@ -69,12 +84,142 @@ function assertNoSourceMaps(appPath, arch) {
   }
 }
 
+/**
+ * electron-builder 写入的 ZIP 常把 UTF-8 文件名存成未设置 language encoding bit，
+ * Info-ZIP `unzip -Z1` / Python zipfile 会按 CP437 误读成乱码。
+ * macOS 自带的 bsdtar/libarchive 能正确还原。
+ */
+function listZipEntries(zipPath) {
+  const attempts = [
+    ["bsdtar", ["-tf", zipPath]],
+    ["tar", ["-tf", zipPath]],
+  ];
+  const errors = [];
+  for (const [command, args] of attempts) {
+    try {
+      return execFileSync(command, args, { encoding: "utf8" })
+        .split("\n")
+        .map((line) => line.trim().replace(/^\.\//, ""))
+        .filter(Boolean);
+    } catch (error) {
+      const output = [error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim();
+      errors.push(`${command}: ${output || "failed"}`);
+    }
+  }
+
+  // 最后回退 unzip，并把 CP437 误读的 UTF-8 字节序列还原回来。
+  try {
+    const raw = execFileSync("unzip", ["-Z1", zipPath]);
+    return raw
+      .toString("latin1")
+      .split("\n")
+      .map((line) => {
+        const trimmed = line.trim().replace(/^\.\//, "");
+        if (!trimmed) return "";
+        try {
+          return Buffer.from(trimmed, "binary").toString("utf8");
+        } catch {
+          return trimmed;
+        }
+      })
+      .filter(Boolean);
+  } catch (error) {
+    const output = [error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim();
+    errors.push(`unzip: ${output || "failed"}`);
+    fail(`无法读取 ZIP 内容。\n${errors.join("\n")}`);
+  }
+}
+
+function assertZipLayout(arch) {
+  const zipPath = path.join(releaseDir, `AntTodo-${publishVersion}-${arch}.zip`);
+  if (!existsSync(zipPath)) {
+    fail(`${arch} 缺少 ZIP：${zipPath}`);
+  }
+
+  const entries = listZipEntries(zipPath);
+  const topLevels = new Set(
+    entries
+      .map((entry) => entry.split("/")[0])
+      .filter(Boolean),
+  );
+  if (topLevels.size !== 1 || !topLevels.has(appBundleName)) {
+    fail(
+      `${arch} ZIP 顶层必须是 ${appBundleName}，实际为：${[...topLevels].join(", ") || "(空)"}`,
+    );
+  }
+  if (!entries.some((entry) => entry === `${appBundleName}/Contents/` || entry.startsWith(`${appBundleName}/Contents/`))) {
+    fail(`${arch} ZIP 缺少 ${appBundleName}/Contents/`);
+  }
+  if (entries.some((entry) => entry.startsWith(`${appBundleName}/${appBundleName}/`))) {
+    fail(`${arch} ZIP 出现嵌套 ${appBundleName}/${appBundleName}/，安装包不可用。`);
+  }
+}
+
+function detachMount(mountPoint) {
+  if (!mountPoint) return;
+  try {
+    execFileSync("hdiutil", ["detach", mountPoint], { stdio: "pipe" });
+  } catch {
+    try {
+      execFileSync("hdiutil", ["detach", mountPoint, "-force"], { stdio: "pipe" });
+    } catch {
+      // ignore detach failures after validation
+    }
+  }
+}
+
+function assertDmgLayout(arch) {
+  const dmgPath = path.join(releaseDir, `AntTodo-${publishVersion}-${arch}.dmg`);
+  if (!existsSync(dmgPath)) {
+    fail(`${arch} 缺少 DMG：${dmgPath}`);
+  }
+
+  const mountRoot = mkdtempSync(path.join(tmpdir(), "anttodo-dmg-verify-"));
+  let mountPoint = null;
+  let validationError = null;
+  try {
+    const attachOutput = execFileSync(
+      "hdiutil",
+      ["attach", dmgPath, "-nobrowse", "-readonly", "-mountroot", mountRoot],
+      { encoding: "utf8" },
+    );
+    const kids = execFileSync("ls", ["-1", mountRoot], { encoding: "utf8" })
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (kids.length === 0) {
+      validationError = `${arch} DMG 挂载后为空。\n${attachOutput}`;
+    } else {
+      mountPoint = path.join(mountRoot, kids[0]);
+      const appPath = path.join(mountPoint, appBundleName);
+      if (!existsSync(appPath)) {
+        validationError = `${arch} DMG 内缺少 ${appBundleName}：${appPath}`;
+      } else if (!existsSync(path.join(appPath, "Contents", "Info.plist"))) {
+        validationError = `${arch} DMG 内应用缺少 Contents/Info.plist：${appPath}`;
+      } else if (existsSync(path.join(appPath, appBundleName))) {
+        validationError =
+          `${arch} DMG 内出现嵌套 ${appBundleName}/${appBundleName}，安装包不可用。`;
+      }
+    }
+  } catch (error) {
+    const output = [error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim();
+    validationError = `${arch} 无法校验 DMG。${output ? `\n${output}` : ""}`;
+  } finally {
+    detachMount(mountPoint);
+    rmSync(mountRoot, { recursive: true, force: true });
+  }
+
+  if (validationError) fail(validationError);
+}
+
+if (!publishVersion) {
+  fail("package.json 缺少 version，无法校验发布产物文件名。");
+}
+
 for (const arch of architectures) {
   const outputDirectory = arch === "x64" ? "mac" : `mac-${arch}`;
-  const appPath = path.join(root, "release", outputDirectory, `${productName}.app`);
-  if (!existsSync(appPath)) {
-    fail(`找不到 ${arch} 应用：${appPath}`);
-  }
+  const appPath = path.join(root, "release", outputDirectory, appBundleName);
+  assertValidAppBundle(appPath, `${arch} 预打包应用`);
 
   try {
     execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath], {
@@ -93,10 +238,9 @@ for (const arch of architectures) {
   }
 
   assertNoSourceMaps(appPath, arch);
+  assertZipLayout(arch);
+  assertDmgLayout(arch);
 }
 
-if (!publishVersion) {
-  fail("package.json 缺少 version，无法写入发布版本戳。");
-}
 writeFileSync(path.join(releaseDir, "macos-publish-version"), `${publishVersion}\n`, "utf8");
 console.log(`macOS 产物验证通过：${architectures.join(", ")}（版本 ${publishVersion}）`);

@@ -1,6 +1,6 @@
-export type ShortcutScope = "global" | "tasks" | "calendar" | "mindmap";
+export type ShortcutScope = "global" | "tasks" | "calendar" | "mindmap" | "focus";
 
-export type ShortcutGroup = "general" | "tasks" | "calendar" | "mindmap";
+export type ShortcutGroup = "general" | "tasks" | "calendar" | "mindmap" | "focus";
 
 export type ShortcutActionId =
   | "general.flushSave"
@@ -9,6 +9,7 @@ export type ShortcutActionId =
   | "general.shortcutsHelp"
   | "general.goTasks"
   | "general.goCalendar"
+  | "general.goFocus"
   | "general.goMindmap"
   | "task.focusQuickAdd"
   | "task.addSubtask"
@@ -51,6 +52,7 @@ export const SHORTCUT_GROUP_LABELS: Record<ShortcutGroup, string> = {
   tasks: "任务",
   calendar: "日历",
   mindmap: "思维导图",
+  focus: "番茄专注",
 };
 
 export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
@@ -109,10 +111,19 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     scopes: ["global"],
   },
   {
+    id: "general.goFocus",
+    group: "general",
+    label: "切换到番茄专注",
+    defaultBinding: { key: "3", mod: true },
+    remappable: true,
+    allowInInput: false,
+    scopes: ["global"],
+  },
+  {
     id: "general.goMindmap",
     group: "general",
     label: "切换到思维导图",
-    defaultBinding: { key: "3", mod: true },
+    defaultBinding: { key: "4", mod: true },
     remappable: true,
     allowInInput: false,
     scopes: ["global"],
@@ -493,7 +504,7 @@ export function actionsByGroup(): Array<{
   label: string;
   actions: ShortcutActionDefinition[];
 }> {
-  const groups: ShortcutGroup[] = ["general", "tasks", "calendar", "mindmap"];
+  const groups: ShortcutGroup[] = ["general", "tasks", "calendar", "mindmap", "focus"];
   return groups.map((group) => ({
     group,
     label: SHORTCUT_GROUP_LABELS[group],

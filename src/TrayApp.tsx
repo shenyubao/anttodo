@@ -37,6 +37,7 @@ import {
 } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import {
+  applyTaskListFilters,
   filterTasksForView,
   groupTasks,
   isCompletedTask,
@@ -50,6 +51,7 @@ import {
 } from "./lib/workspaceInvites";
 import { MiniCalendar } from "./MiniCalendar";
 import { QuickAddForm } from "./QuickAddForm";
+import { TaskFilterMenu } from "./TaskFilterMenu";
 import { TaskViewMenu } from "./TaskViewMenu";
 import type {
   DateTimePreferences,
@@ -264,14 +266,27 @@ export function TrayApp({
 
   const inboxTasks = useMemo(() => {
     if (!bundle) return [];
-    return filterTasksForView({
-      tasks: bundle.tasks,
-      labels: bundle.labels,
-      smartView: "inbox",
-      selectedLabelId: null,
+    return applyTaskListFilters({
+      tasks: filterTasksForView({
+        tasks: bundle.tasks,
+        labels: bundle.labels,
+        smartView: "inbox",
+        selectedLabelId: null,
+      }),
+      filterAssignee: preference.filter_assignee,
+      filterWatching: preference.filter_watching,
+      filterDue: preference.filter_due,
       currentUserId: userId,
+      now,
     });
-  }, [bundle, userId]);
+  }, [
+    bundle,
+    now,
+    preference.filter_assignee,
+    preference.filter_due,
+    preference.filter_watching,
+    userId,
+  ]);
 
   const inboxGroups = useMemo(() => {
     if (!bundle) return [];
@@ -335,7 +350,15 @@ export function TrayApp({
   );
 
   async function savePreference(
-    patch: Partial<Pick<TaskListPreference, "grouping" | "sort" | "direction">>,
+    patch: Partial<Pick<
+      TaskListPreference,
+      | "grouping"
+      | "sort"
+      | "direction"
+      | "filter_assignee"
+      | "filter_watching"
+      | "filter_due"
+    >>,
   ) {
     if (!workspaceId || !bundle) return;
     const next: TaskListPreference = {
@@ -481,11 +504,18 @@ export function TrayApp({
           <section className="tray-panel tray-inbox" aria-label="收集箱">
             <header className="tray-header">
               <h1>收集箱</h1>
-              <TaskViewMenu
-                preference={preference}
-                online={online}
-                onChange={savePreference}
-              />
+              <div className="header-actions">
+                <TaskViewMenu
+                  preference={preference}
+                  online={online}
+                  onChange={savePreference}
+                />
+                <TaskFilterMenu
+                  preference={preference}
+                  online={online}
+                  onChange={savePreference}
+                />
+              </div>
             </header>
             <QuickAddForm
               online={online}

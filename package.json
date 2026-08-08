@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608061553",
+  "version": "1.0.202608071658",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",

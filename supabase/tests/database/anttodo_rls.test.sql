@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(141);
+select plan(146);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -886,6 +886,39 @@ select is(
   'list',
   'view_mode defaults to list for a newly saved preference'
 );
+select is(
+  (
+    select filter_assignee::text
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'all',
+  'filter_assignee defaults to all for a newly saved preference'
+);
+select is(
+  (
+    select filter_due::text
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'all',
+  'filter_due defaults to all for a newly saved preference'
+);
+select is(
+  (
+    select filter_watching::text
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'all',
+  'filter_watching defaults to all for a newly saved preference'
+);
 select lives_ok(
   $$
     update public.task_list_preferences
@@ -960,6 +993,29 @@ select throws_ok(
   '23514',
   null,
   'view_mode rejects unopened modes'
+);
+select lives_ok(
+  $$
+    update public.task_list_preferences
+    set filter_assignee = 'assigned_to_me',
+        filter_watching = 'watching',
+        filter_due = 'next_7_days'
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  'a user can update task list filters on their preference'
+);
+select is(
+  (
+    select filter_assignee::text || '/' || filter_watching::text || '/' || filter_due::text
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'assigned_to_me/watching/next_7_days',
+  'task list filters persist after update'
 );
 select lives_ok(
   $$

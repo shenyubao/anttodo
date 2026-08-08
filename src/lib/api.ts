@@ -5,6 +5,8 @@ import type {
   AppNotification,
   Connector,
   DateTimePreferences,
+  FocusSession,
+  FocusSettings,
   Label,
   LabelAccessDraft,
   Member,
@@ -33,6 +35,7 @@ import {
   preferenceModelToRow,
   preferenceRowToModel,
 } from "./dateTimePreferences";
+import { createDefaultFocusSettings } from "./focusSession";
 import { mergeNotificationPreferenceRows } from "./notificationPreferences";
 import { coerceHours } from "./taskHours";
 import {
@@ -429,6 +432,88 @@ export async function saveAiWorkSettings(
     .single();
   assertNoError(error);
   return data as AiWorkSettings;
+}
+
+export async function loadFocusSettings(
+  client: SupabaseClient,
+  userId: string,
+  workspaceId: string,
+): Promise<FocusSettings> {
+  const { data, error } = await client
+    .from("user_focus_settings")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  assertNoError(error);
+  return (data as FocusSettings | null) ?? createDefaultFocusSettings(userId, workspaceId);
+}
+
+export async function saveFocusSettings(
+  client: SupabaseClient,
+  settings: FocusSettings,
+) {
+  const { data, error } = await client
+    .from("user_focus_settings")
+    .upsert({
+      user_id: settings.user_id,
+      workspace_id: settings.workspace_id,
+      pomodoro_minutes: settings.pomodoro_minutes,
+      short_break_minutes: settings.short_break_minutes,
+      long_break_minutes: settings.long_break_minutes,
+      long_break_interval: settings.long_break_interval,
+      auto_start_pomodoro: settings.auto_start_pomodoro,
+      auto_start_break: settings.auto_start_break,
+      show_tab_title: settings.show_tab_title,
+      sound_enabled: settings.sound_enabled,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id,workspace_id" })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as FocusSettings;
+}
+
+export async function loadFocusSessions(
+  client: SupabaseClient,
+  userId: string,
+  workspaceId: string,
+  limit = 100,
+): Promise<FocusSession[]> {
+  const { data, error } = await client
+    .from("focus_sessions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("workspace_id", workspaceId)
+    .order("started_at", { ascending: false })
+    .limit(limit);
+  assertNoError(error);
+  return (data ?? []) as FocusSession[];
+}
+
+export async function createFocusSession(
+  client: SupabaseClient,
+  input: Omit<FocusSession, "id" | "created_at"> & { id?: string; created_at?: string },
+) {
+  const { data, error } = await client
+    .from("focus_sessions")
+    .insert({
+      id: input.id,
+      user_id: input.user_id,
+      workspace_id: input.workspace_id,
+      task_id: input.task_id,
+      mode: input.mode,
+      kind: input.kind,
+      planned_seconds: input.planned_seconds,
+      elapsed_seconds: input.elapsed_seconds,
+      notes: input.notes,
+      started_at: input.started_at,
+      ended_at: input.ended_at,
+    })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as FocusSession;
 }
 
 export async function saveDateTimePreferences(

@@ -1,11 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendActualHours,
   formatHoursDetail,
   formatHoursList,
   formatHoursValue,
+  hoursFromFocusSeconds,
   normalizeHoursInput,
   parseEstimateHoursText,
 } from "./taskHours";
+
+describe("hoursFromFocusSeconds", () => {
+  it("rounds focus seconds to one-decimal hours", () => {
+    expect(hoursFromFocusSeconds(1500)).toBe(0.4); // 25m
+    expect(hoursFromFocusSeconds(1800)).toBe(0.5); // 30m
+    expect(hoursFromFocusSeconds(3600)).toBe(1);
+  });
+
+  it("returns null for empty or too-small durations", () => {
+    expect(hoursFromFocusSeconds(0)).toBeNull();
+    expect(hoursFromFocusSeconds(-60)).toBeNull();
+    expect(hoursFromFocusSeconds(60)).toBeNull(); // 1m → 0.0h
+  });
+});
+
+describe("appendActualHours", () => {
+  it("appends onto null or existing actual hours", () => {
+    expect(appendActualHours(null, 0.4)).toBe(0.4);
+    expect(appendActualHours(1.2, 0.4)).toBe(1.6);
+    expect(appendActualHours(0.1, 0.1)).toBe(0.2);
+  });
+});
 
 describe("normalizeHoursInput", () => {
   it("returns null for empty input", () => {

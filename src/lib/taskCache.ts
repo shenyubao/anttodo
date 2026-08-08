@@ -35,6 +35,14 @@ export function isOptimisticTaskId(taskId: string) {
   return taskId.startsWith(OPTIMISTIC_TASK_ID_PREFIX);
 }
 
+/** Creator auto-watches unless self-assigned (mirrors create_task_with_labels). */
+export function defaultCreatorParticipantIds(
+  creatorId: string,
+  assigneeId?: string | null,
+): string[] {
+  return assigneeId === creatorId ? [] : [creatorId];
+}
+
 export function createOptimisticTask(input: OptimisticTaskInput): Task {
   const timestamp = input.now ?? new Date().toISOString();
   const kind = input.kind ?? "todo";
@@ -62,7 +70,7 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
     created_at: timestamp,
     updated_at: timestamp,
     label_ids: input.labelIds,
-    participant_ids: [],
+    participant_ids: defaultCreatorParticipantIds(input.userId, input.assigneeId),
     subtasks: [],
     reminders: [],
     reminder_persistent: false,
@@ -100,7 +108,10 @@ function taskFromCreatedRow(
     created_at: created.created_at,
     updated_at: created.updated_at,
     label_ids: labelIds,
-    participant_ids: [],
+    participant_ids: defaultCreatorParticipantIds(
+      created.created_by,
+      created.assignee_id ?? null,
+    ),
     subtasks: [],
     reminders: [],
     reminder_persistent: false,

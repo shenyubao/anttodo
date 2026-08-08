@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   NOTARIZE_STATE_PATH,
@@ -11,6 +11,8 @@ import {
 } from "./notarize-macos.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const productName = packageJson.build?.productName;
 
 function run(command, args, env = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -27,13 +29,30 @@ function run(command, args, env = {}) {
   });
 }
 
-function prepackagedDirForArch(arch) {
-  if (arch === "arm64") return join(root, "release", "mac-arm64");
-  if (arch === "x64") return join(root, "release", "mac");
-  throw new Error(`不支持的架构：${arch}`);
+/**
+ * electron-builder --prepackaged 必须指向 .app 本身，不能指向包含它的目录。
+ * 传目录会导致 DMG 出现 蚂蚁清单.app/蚂蚁清单.app，ZIP 顶层变成 mac-arm64/。
+ */
+function assertPrepackagedApp(appPath) {
+  if (!existsSync(appPath)) {
+    throw new Error(`找不到预打包应用：${appPath}`);
+  }
+  if (!existsSync(join(appPath, "Contents", "Info.plist"))) {
+    throw new Error(`预打包应用结构无效（缺少 Contents/Info.plist）：${appPath}`);
+  }
+  const nestedApp = join(appPath, basename(appPath));
+  if (existsSync(nestedApp)) {
+    throw new Error(
+      `预打包应用出现嵌套 .app（${nestedApp}）。请清理 release 后重新 package:mac。`,
+    );
+  }
 }
 
 async function main() {
+  if (!productName) {
+    throw new Error("package.json 缺少 build.productName。");
+  }
+
   if (!process.env.APPLE_KEYCHAIN_PROFILE && !process.env.APPLE_API_KEY) {
     process.env.APPLE_KEYCHAIN_PROFILE = "anttodo-notarization";
   }
@@ -50,9 +69,7 @@ async function main() {
   );
 
   for (const app of state.apps) {
-    if (!existsSync(app.appPath)) {
-      throw new Error(`找不到已打包应用：${app.appPath}`);
-    }
+    assertPrepackagedApp(app.appPath);
     console.log(`等待公证完成：${app.arch} ${app.submissionId}`);
     await waitForNotarization(app.submissionId);
     console.log(`装订公证票据：${app.appPath}`);
@@ -60,13 +77,9 @@ async function main() {
     console.log(`公证完成：${app.arch} ${app.submissionId}`);
   }
 
-  const arches = state.apps.map((app) => app.arch);
-  for (const arch of arches) {
-    const prepackaged = prepackagedDirForArch(arch);
-    if (!existsSync(prepackaged)) {
-      throw new Error(`找不到预打包目录：${prepackaged}`);
-    }
-    console.log(`生成 ${arch} DMG/ZIP…`);
+  for (const app of state.apps) {
+    assertPrepackagedApp(app.appPath);
+    console.log(`生成 ${app.arch} DMG/ZIP（--prepackaged ${app.appPath}）…`);
     await run(
       "pnpm",
       [
@@ -75,14 +88,15 @@ async function main() {
         "--mac",
         "dmg",
         "zip",
-        `--${arch}`,
+        `--${app.arch}`,
         "--prepackaged",
-        prepackaged,
+        app.appPath,
       ],
       { NOTARIZE_MODE: "skip" },
     );
   }
 
+  const arches = state.apps.map((app) => app.arch);
   console.log("验证产物…");
   await run("node", ["scripts/verify-macos-package.mjs", ...arches]);
 

@@ -4,6 +4,9 @@ import type {
   Member,
   SortDirection,
   Task,
+  TaskListFilterAssignee,
+  TaskListFilterDue,
+  TaskListFilterWatching,
   TaskListGrouping,
   TaskListPreference,
   TaskListSort,
@@ -12,7 +15,6 @@ import type {
   TaskViewMode,
   UserLabelOrder,
 } from "../types";
-import { isSameDay } from "date-fns";
 import { aiCliLabel } from "./aiWork";
 import { compareSiblingLabels, userLabelOrderMap } from "./labels";
 
@@ -27,6 +29,9 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   grouping: "none",
   sort: "custom",
   direction: "asc",
+  filter_assignee: "all",
+  filter_watching: "all",
+  filter_due: "all",
   show_labels: false,
   show_completed: false,
   show_hours: false,
@@ -65,6 +70,70 @@ export const TASK_SORT_OPTIONS: Array<{ value: TaskListSort; label: string }> = 
   { value: "priority", label: "优先级" },
   { value: "assignee", label: "指派人" },
 ];
+
+export const TASK_FILTER_ASSIGNEE_OPTIONS: Array<{
+  value: TaskListFilterAssignee;
+  label: string;
+}> = [
+  { value: "all", label: "不限" },
+  { value: "assigned_to_me", label: "指派给我" },
+];
+
+export const TASK_FILTER_WATCHING_OPTIONS: Array<{
+  value: TaskListFilterWatching;
+  label: string;
+}> = [
+  { value: "all", label: "不限" },
+  { value: "watching", label: "我关注的" },
+];
+
+export const TASK_FILTER_DUE_OPTIONS: Array<{
+  value: TaskListFilterDue;
+  label: string;
+}> = [
+  { value: "all", label: "不限" },
+  { value: "overdue", label: "已过期" },
+  { value: "today", label: "今天" },
+  { value: "tomorrow", label: "明天" },
+  { value: "next_7_days", label: "7天内" },
+  { value: "next_30_days", label: "30天内" },
+];
+
+export type TaskListFilterFields = {
+  filter_assignee: TaskListFilterAssignee;
+  filter_watching: TaskListFilterWatching;
+  filter_due: TaskListFilterDue;
+};
+
+/** Smart views that are just fixed filter presets over the full task list. */
+export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
+  today: {
+    filter_due: "today",
+    filter_assignee: "assigned_to_me",
+    filter_watching: "all",
+  },
+  assigned: {
+    filter_due: "all",
+    filter_assignee: "assigned_to_me",
+    filter_watching: "all",
+  },
+  watching: {
+    filter_due: "all",
+    filter_assignee: "all",
+    filter_watching: "watching",
+  },
+};
+
+export function resolveTaskListFilters(
+  listKey: string,
+  preference: TaskListFilterFields,
+): TaskListFilterFields {
+  return SMART_VIEW_FILTER_PRESETS[listKey] ?? {
+    filter_assignee: preference.filter_assignee,
+    filter_watching: preference.filter_watching,
+    filter_due: preference.filter_due,
+  };
+}
 
 export function taskListKey(smartView: string, selectedLabelId: string | null) {
   return selectedLabelId ? `label:${selectedLabelId}` : smartView;
@@ -144,11 +213,8 @@ export function filterTasksForView(input: {
   labels: Label[];
   smartView: string;
   selectedLabelId: string | null;
-  currentUserId: string;
-  now?: Date;
 }) {
-  const { tasks, labels, smartView, selectedLabelId, currentUserId } = input;
-  const now = input.now ?? new Date();
+  const { tasks, labels, smartView, selectedLabelId } = input;
   if (!selectedLabelId && smartView === "trash") {
     return tasks
       .filter((task) => Boolean(task.deleted_at))
@@ -159,19 +225,69 @@ export function filterTasksForView(input: {
     const scope = labelSubtreeIds(labels, selectedLabelId);
     return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
   }
-  if (smartView === "today") {
-    return result.filter((task) => task.due_at && isSameDay(new Date(task.due_at), now));
-  }
-  if (smartView === "assigned") {
-    return result.filter((task) => task.assignee_id === currentUserId);
-  }
-  if (smartView === "watching") {
-    return result.filter((task) => task.participant_ids.includes(currentUserId));
-  }
+  // today / assigned / watching are filter presets applied via resolveTaskListFilters.
   if (smartView === "inbox") {
     return result.filter((task) => task.label_ids.length === 0);
   }
   return result;
+}
+
+export function applyTaskListFilters(input: {
+  tasks: Task[];
+  filterAssignee?: TaskListFilterAssignee;
+  filterWatching?: TaskListFilterWatching;
+  filterDue?: TaskListFilterDue;
+  currentUserId: string;
+  now?: Date;
+}) {
+  const {
+    currentUserId,
+    filterAssignee = "all",
+    filterWatching = "all",
+    filterDue = "all",
+  } = input;
+  const now = input.now ?? new Date();
+  let result = input.tasks;
+
+  if (filterAssignee === "assigned_to_me") {
+    result = result.filter((task) => task.assignee_id === currentUserId);
+  }
+  if (filterWatching === "watching") {
+    result = result.filter((task) => task.participant_ids.includes(currentUserId));
+  }
+
+  if (filterDue === "all") return result;
+
+  const today = startOfLocalDay(now);
+  const tomorrow = addLocalDays(today, 1);
+  const afterTomorrow = addLocalDays(today, 2);
+  const dueTime = (task: Task) => task.due_at ? new Date(task.due_at).getTime() : null;
+  const overdue = (task: Task) => isTaskOverdue(task, now, today);
+
+  if (filterDue === "overdue") {
+    return result.filter(overdue);
+  }
+  if (filterDue === "today") {
+    return result.filter((task) => {
+      const due = dueTime(task);
+      return due != null
+        && !overdue(task)
+        && due >= today.getTime()
+        && due < tomorrow.getTime();
+    });
+  }
+  if (filterDue === "tomorrow") {
+    return result.filter((task) => {
+      const due = dueTime(task);
+      return due != null && due >= tomorrow.getTime() && due < afterTomorrow.getTime();
+    });
+  }
+  const windowDays = filterDue === "next_7_days" ? 7 : 30;
+  const windowEnd = addLocalDays(today, windowDays);
+  return result.filter((task) => {
+    const due = dueTime(task);
+    return due != null && due >= today.getTime() && due < windowEnd.getTime();
+  });
 }
 
 export function defaultSortDirection(sort: TaskListSort): SortDirection {
@@ -185,6 +301,11 @@ export function resolveTaskListPreference(
   viewMode?: TaskViewMode,
 ) {
   const found = preferences.find((item) => item.list_key === listKey);
+  const filterDefaults = SMART_VIEW_FILTER_PRESETS[listKey] ?? {
+    filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
+    filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
+    filter_due: DEFAULT_TASK_LIST_PREFERENCE.filter_due,
+  };
   if (!found) {
     const labelId = listKey.startsWith("label:") ? listKey.slice("label:".length) : null;
     const mode = viewMode ?? DEFAULT_TASK_LIST_PREFERENCE.view_mode;
@@ -195,14 +316,21 @@ export function resolveTaskListPreference(
         : DEFAULT_TASK_LIST_PREFERENCE.grouping;
     return {
       ...DEFAULT_TASK_LIST_PREFERENCE,
+      ...filterDefaults,
       list_key: listKey,
       grouping,
       view_mode: mode,
     };
   }
+  const filters = resolveTaskListFilters(listKey, {
+    filter_assignee: found.filter_assignee ?? filterDefaults.filter_assignee,
+    filter_watching: found.filter_watching ?? filterDefaults.filter_watching,
+    filter_due: found.filter_due ?? filterDefaults.filter_due,
+  });
   return {
     ...DEFAULT_TASK_LIST_PREFERENCE,
     ...found,
+    ...filters,
     show_labels: found.show_labels ?? false,
     show_completed: found.show_completed ?? false,
     show_hours: found.show_hours ?? false,
@@ -265,6 +393,12 @@ function addLocalDays(value: Date, days: number) {
   const result = new Date(value);
   result.setDate(result.getDate() + days);
   return result;
+}
+
+function isTaskOverdue(task: Task, now: Date, today = startOfLocalDay(now)) {
+  if (!task.due_at) return false;
+  const due = new Date(task.due_at).getTime();
+  return task.due_is_all_day ? due < today.getTime() : due < now.getTime();
 }
 
 function startOfWeek(value: Date, weekStartsOn: number) {
@@ -413,11 +547,7 @@ export function groupTasks(input: {
     const afterTomorrow = addLocalDays(today, 2);
     const nextWeek = addLocalDays(startOfWeek(now, preferences.weekStartsOn), 7);
     const dueTime = (task: Task) => task.due_at ? new Date(task.due_at).getTime() : null;
-    const overdue = (task: Task) => {
-      const due = dueTime(task);
-      if (due == null) return false;
-      return task.due_is_all_day ? due < today.getTime() : due < now.getTime();
-    };
+    const overdue = (task: Task) => isTaskOverdue(task, now, today);
     add("due:overdue", "已过期", tasks.filter(overdue));
     add("due:today", "今天", tasks.filter((task) => {
       const due = dueTime(task);

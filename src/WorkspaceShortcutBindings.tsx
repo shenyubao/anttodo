@@ -30,7 +30,7 @@ export function WorkspaceShortcutBindings({
   onOpenSearch: () => void;
   onOpenSettings: () => void;
   onOpenShortcutsSettings: () => void;
-  onChangeSection: (section: "tasks" | "calendar" | "mindmap") => void;
+  onChangeSection: (section: "tasks" | "calendar" | "mindmap" | "focus") => void;
   onCreateSubtask: (taskId: string, title: string) => Promise<void>;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
   onCloseTask: () => void;
@@ -68,6 +68,10 @@ export function WorkspaceShortcutBindings({
 
   useShortcutHandler("general.goCalendar", () => {
     onChangeSection("calendar");
+  });
+
+  useShortcutHandler("general.goFocus", () => {
+    onChangeSection("focus");
   });
 
   useShortcutHandler("general.goMindmap", () => {

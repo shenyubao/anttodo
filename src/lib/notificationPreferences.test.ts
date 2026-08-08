@@ -4,7 +4,7 @@ import { mergeNotificationPreferenceRows, defaultNotificationPreferences, NOTIFI
 describe("notificationPreferences", () => {
   it("defaults every scenario to both channels on", () => {
     const prefs = defaultNotificationPreferences();
-    expect(NOTIFICATION_SCENARIOS.length).toBe(10);
+    expect(NOTIFICATION_SCENARIOS.length).toBe(11);
     for (const scenario of NOTIFICATION_SCENARIOS) {
       expect(prefs[scenario.id]).toEqual({ systemEnabled: true, dingtalkEnabled: true });
     }

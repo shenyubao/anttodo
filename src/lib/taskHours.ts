@@ -5,6 +5,21 @@ export function coerceHours(value: unknown): number | null {
   return Math.round(number * 10) / 10;
 }
 
+/** Convert focus elapsed seconds to hours at 0.1 precision; null if too small to register. */
+export function hoursFromFocusSeconds(elapsedSeconds: number): number | null {
+  if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) return null;
+  const delta = coerceHours(elapsedSeconds / 3600);
+  if (delta == null || delta === 0) return null;
+  return delta;
+}
+
+export function appendActualHours(
+  current: number | null | undefined,
+  delta: number,
+): number {
+  return coerceHours((current ?? 0) + delta) ?? delta;
+}
+
 export type ParsedEstimateHoursMatch = {
   start: number;
   end: number;

@@ -65,6 +65,7 @@ import {
   SquareTerminal,
   Tag,
   Timer,
+  Target,
   Trash2,
   UserRound,
   Users,
@@ -129,6 +130,9 @@ import {
   purgeTrashedTask as purgeTrashedTaskApi,
   loadDateTimePreferences,
   loadAiWorkSettings,
+  loadFocusSessions,
+  loadFocusSettings,
+  createFocusSession as createFocusSessionApi,
   listTaskCommentCandidateIds,
   loadNotificationPreferences,
   loadNotifications,
@@ -141,6 +145,7 @@ import {
   markNotificationRead,
   saveDateTimePreferences,
   saveAiWorkSettings,
+  saveFocusSettings,
   saveNotificationPreference,
   saveTaskSchedule as saveTaskScheduleApi,
   saveTaskListPreference,
@@ -159,9 +164,15 @@ import {
   createSupabaseAttachmentService,
   type AttachmentService,
 } from "./lib/attachments";
-import { createDemoBundle, demoWorkspaces } from "./lib/demo";
+import { createDemoBundle, createDemoFocusSessions, demoWorkspaces } from "./lib/demo";
+import { createDefaultFocusSettings } from "./lib/focusSession";
+import { FocusWorkspace } from "./FocusWorkspace";
 import { getDueStatus } from "./lib/dueTime";
-import { formatHoursList } from "./lib/taskHours";
+import {
+  appendActualHours,
+  formatHoursList,
+  hoursFromFocusSeconds,
+} from "./lib/taskHours";
 import { reminderTriggerAt } from "./lib/reminders";
 import { nextOccurrenceFields } from "./lib/recurrence";
 import {
@@ -211,6 +222,7 @@ import {
 } from "./lib/taskCache";
 import {
   DEFAULT_TASK_LIST_PREFERENCE,
+  applyTaskListFilters,
   countTasksForLabelSubtree,
   filterTasksForView,
   groupTasks,
@@ -218,12 +230,14 @@ import {
   isCompletedTask,
   orderedTaskSections,
   resolveTaskListPreference,
+  SMART_VIEW_FILTER_PRESETS,
   sortTasks,
   taskOrdersAfterCrossSectionMove,
   taskSectionOrderAfterInsert,
   taskSectionOrderAfterMove,
   taskListKey,
 } from "./lib/taskList";
+import { TaskFilterMenu } from "./TaskFilterMenu";
 import { TaskViewMenu } from "./TaskViewMenu";
 import { isTrayHash } from "./lib/traySurface";
 import { TrayApp } from "./TrayApp";
@@ -343,6 +357,8 @@ import type {
   AssigneeTarget,
   AppNotification,
   DateTimePreferences,
+  FocusSession,
+  FocusSettings,
   Label,
   LabelAccessDraft,
   LabelAccessScope,
@@ -372,7 +388,7 @@ import type {
 } from "./types";
 
 type SmartView = "all" | "today" | "assigned" | "watching" | "inbox" | "trash";
-type AppSection = "tasks" | "calendar" | "mindmap";
+type AppSection = "tasks" | "calendar" | "mindmap" | "focus";
 type SettingsTab =
   | "account"
   | "date"
@@ -1740,6 +1756,16 @@ function RemoteApplication({
     queryFn: () => loadAiWorkSettings(client, userId, workspaceId!),
     enabled: Boolean(workspaceId && window.anttodoDesktop?.aiWork),
   });
+  const focusSettingsQuery = useQuery({
+    queryKey: ["focus-settings", userId, workspaceId],
+    queryFn: () => loadFocusSettings(client, userId, workspaceId!),
+    enabled: Boolean(workspaceId),
+  });
+  const focusSessionsQuery = useQuery({
+    queryKey: ["focus-sessions", userId, workspaceId],
+    queryFn: () => loadFocusSessions(client, userId, workspaceId!),
+    enabled: Boolean(workspaceId),
+  });
   const dateTimePreferencesQuery = useQuery({
     queryKey: ["date-time-preferences", userId],
     queryFn: () => loadDateTimePreferences(client, userId),
@@ -2509,6 +2535,40 @@ function RemoteApplication({
     }
   }
 
+  async function updateFocusSettings(next: FocusSettings) {
+    const queryKey = ["focus-settings", userId, activeWorkspaceId];
+    const previous = queryClient.getQueryData<FocusSettings>(queryKey);
+    queryClient.setQueryData(queryKey, next);
+    try {
+      const saved = await saveFocusSettings(client, next);
+      queryClient.setQueryData(queryKey, saved);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
+  async function addFocusSession(input: Omit<FocusSession, "id" | "created_at">) {
+    const created = await createFocusSessionApi(client, input);
+    queryClient.setQueryData<FocusSession[]>(
+      ["focus-sessions", userId, activeWorkspaceId],
+      (current) => [created, ...(current ?? [])],
+    );
+    if (created.kind === "focus" && created.task_id) {
+      const delta = hoursFromFocusSeconds(created.elapsed_seconds);
+      if (delta != null) {
+        const currentHours = queryClient
+          .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
+          ?.tasks.find((task) => task.id === created.task_id)
+          ?.actual_hours ?? null;
+        await updateTask(created.task_id, {
+          actual_hours: appendActualHours(currentHours, delta),
+        });
+      }
+    }
+    return created;
+  }
+
   async function updateTaskListPreference(next: TaskListPreference) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -2733,6 +2793,8 @@ function RemoteApplication({
         cli_tools: [],
         default_working_path: null,
       }}
+      focusSettings={focusSettingsQuery.data ?? createDefaultFocusSettings(userId, activeWorkspaceId)}
+      focusSessions={focusSessionsQuery.data ?? []}
       commentsRevision={commentsRevision}
       activityRevision={activityRevision}
       notifications={notificationsQuery.data ?? []}
@@ -2862,6 +2924,8 @@ function RemoteApplication({
       onUpdateDateTimePreferences={updateDateTimePreferences}
       onUpdateNotificationPreference={updateNotificationPreference}
       onSaveAiWorkSettings={updateAiWorkSettings}
+      onSaveFocusSettings={updateFocusSettings}
+      onCreateFocusSession={addFocusSession}
       onSaveTaskListPreference={updateTaskListPreference}
       onCreateTaskSection={addTaskSection}
       onReorderTaskSections={reorderTaskSections}
@@ -2888,8 +2952,15 @@ function DemoApplication() {
     cli_tools: [],
     default_working_path: null,
   });
+  const [focusSettings, setFocusSettings] = useState<FocusSettings>(() =>
+    createDefaultFocusSettings("demo-user", workspaceId),
+  );
+  const [focusSessions, setFocusSessions] = useState<FocusSession[]>(() =>
+    createDemoFocusSessions(workspaceId),
+  );
   useEffect(() => {
     setAiWorkSettings((current) => ({ ...current, workspace_id: workspaceId }));
+    setFocusSettings((current) => ({ ...current, workspace_id: workspaceId }));
   }, [workspaceId]);
   const [bundle, setBundle] = useState(createDemoBundle);
   const [notice, setNotice] = useState("你正在浏览演示空间，所有改动只保存在当前页面");
@@ -3070,6 +3141,8 @@ function DemoApplication() {
       notificationPreferences={notificationPreferences}
       attachmentService={attachmentService}
       aiWorkSettings={aiWorkSettings}
+      focusSettings={focusSettings}
+      focusSessions={focusSessions}
       commentsRevision={commentsRevision}
       activityRevision={activityRevision}
       notifications={demoNotifications.filter((item) =>
@@ -3158,7 +3231,8 @@ function DemoApplication() {
               created_at: createdAt,
               updated_at: createdAt,
               label_ids: input.labelIds,
-              participant_ids: [],
+              participant_ids:
+                input.assigneeId === "demo-user" ? [] : ["demo-user"],
               subtasks: [],
               reminders: [],
               reminder_persistent: false,
@@ -3751,6 +3825,26 @@ function DemoApplication() {
         setNotificationPreferences((current) => ({ ...current, [scenario]: next }));
       }}
       onSaveAiWorkSettings={async (settings) => setAiWorkSettings(settings)}
+      onSaveFocusSettings={async (settings) => setFocusSettings(settings)}
+      onCreateFocusSession={async (input) => {
+        const created: FocusSession = {
+          ...input,
+          id: crypto.randomUUID(),
+          created_at: new Date().toISOString(),
+        };
+        setFocusSessions((current) => [created, ...current]);
+        if (created.kind === "focus" && created.task_id) {
+          const delta = hoursFromFocusSeconds(created.elapsed_seconds);
+          if (delta != null) {
+            const currentHours = bundle.tasks.find((task) => task.id === created.task_id)
+              ?.actual_hours ?? null;
+            patchTask(created.task_id, {
+              actual_hours: appendActualHours(currentHours, delta),
+            });
+          }
+        }
+        return created;
+      }}
       onSaveTaskListPreference={async (next) => {
         setBundle((current) => ({
           ...current,
@@ -3853,6 +3947,8 @@ type WorkspaceAppProps = {
   notificationPreferences: NotificationPreferences;
   attachmentService: AttachmentService;
   aiWorkSettings: AiWorkSettings;
+  focusSettings: FocusSettings;
+  focusSessions: FocusSession[];
   commentsRevision: number;
   activityRevision: number;
   notifications: AppNotification[];
@@ -3963,6 +4059,8 @@ type WorkspaceAppProps = {
     preferences: NotificationChannelPreferences,
   ) => Promise<void>;
   onSaveAiWorkSettings: (settings: AiWorkSettings) => Promise<void>;
+  onSaveFocusSettings: (settings: FocusSettings) => Promise<void>;
+  onCreateFocusSession: (input: Omit<FocusSession, "id" | "created_at">) => Promise<FocusSession>;
   onSaveTaskListPreference: (preference: TaskListPreference) => Promise<void>;
   onCreateTaskSection: (listKey: string, name: string, index?: number) => Promise<void>;
   onReorderTaskSections: (listKey: string, sectionIds: string[]) => Promise<void>;
@@ -4064,7 +4162,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     initialListRoute?.kind === "view" ? initialListRoute.view : DEFAULT_SMART_VIEW,
   );
   const [appSection, setAppSection] = useState<AppSection>(
-    workspaceInitialRoute?.kind === "calendar" || workspaceInitialRoute?.kind === "mindmap"
+    workspaceInitialRoute?.kind === "calendar"
+      || workspaceInitialRoute?.kind === "mindmap"
+      || workspaceInitialRoute?.kind === "focus"
       ? workspaceInitialRoute.kind
       : "tasks",
   );
@@ -4139,6 +4239,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   function sectionRoute(): AppRoute {
     if (appSection === "calendar") return { workspaceId: props.workspaceId, kind: "calendar" };
     if (appSection === "mindmap") return { workspaceId: props.workspaceId, kind: "mindmap" };
+    if (appSection === "focus") return { workspaceId: props.workspaceId, kind: "focus" };
     if (selectedLabelId) {
       return { workspaceId: props.workspaceId, kind: "tag", tagId: selectedLabelId, mode: viewMode };
     }
@@ -4266,7 +4367,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setMindMapCreateLabel(null);
       setMobileSidebar(false);
       setMobileAppSidebar(false);
-      if (route.kind === "calendar" || route.kind === "mindmap") {
+      if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
         setAppSection(route.kind);
         setSelectedTaskId(null);
         setSelectedSubtaskId(null);
@@ -4300,7 +4401,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSelectedSubtaskId(null);
       return;
     }
-    if (route.kind === "calendar" || route.kind === "mindmap") {
+    if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
       setAppSection(route.kind);
       setSelectedTaskId(null);
       setSelectedSubtaskId(null);
@@ -4427,6 +4528,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     ? "calendar" as const
     : appSection === "mindmap"
     ? "mindmap" as const
+    : appSection === "focus"
+    ? "focus" as const
     : "tasks" as const;
 
   return (
@@ -4452,6 +4555,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         "task-section",
         appSection === "calendar" && "calendar-section",
         appSection === "mindmap" && "mind-map-section",
+        appSection === "focus" && "focus-section",
         calendarSection && calendarSidebarCollapsed && "calendar-sidebar-collapsed",
         appSection === "tasks" && selectedTask && "detail-open",
       )}
@@ -4699,6 +4803,17 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           navigationDate={calendarNavigationDate}
           onVisibleDateChange={(date) => setCalendarVisibleDate((current) =>
             current.getTime() === date.getTime() ? current : new Date(date))}
+        /> : appSection === "focus" ? <FocusWorkspace
+          workspaceId={props.workspaceId}
+          userId={props.currentUserId}
+          online={props.online}
+          tasks={props.bundle.tasks}
+          settings={props.focusSettings}
+          sessions={props.focusSessions}
+          onSaveSettings={props.onSaveFocusSettings}
+          onCreateSession={props.onCreateFocusSession}
+          onNotice={props.onNotice}
+          onMenu={openMobileNavigation}
         /> : <MindMapWorkspace
           workspaceId={props.workspaceId}
           bundle={props.bundle}
@@ -4712,6 +4827,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onToggleTaskLabel={props.onToggleTaskLabel}
           onDeleteLabel={props.onDeleteLabel}
           onRequestCreateLabel={(parentId) => setMindMapCreateLabel({ parentId })}
+          onSaveTaskListPreference={props.onSaveTaskListPreference}
         />}
       </section>
       {appSection === "tasks" && selectedTask && (
@@ -5088,6 +5204,14 @@ function NavigationRail({
         onClick={() => onSectionChange("calendar")}
       >
         <CalendarDays />
+      </button>
+      <button
+        className={clsx("rail-button", activeSection === "focus" && "active")}
+        aria-label="番茄专注"
+        aria-pressed={activeSection === "focus"}
+        onClick={() => onSectionChange("focus")}
+      >
+        <Target />
       </button>
       <button
         className={clsx("rail-button", activeSection === "mindmap" && "active")}
@@ -5507,6 +5631,14 @@ function MobileAppSidebar({
           </button>
           <button
             type="button"
+            className={clsx(activeSection === "focus" && "active")}
+            aria-pressed={activeSection === "focus"}
+            onClick={() => onSectionChange("focus")}
+          >
+            <Target /><span>番茄专注</span>
+          </button>
+          <button
+            type="button"
             className={clsx(activeSection === "mindmap" && "active")}
             aria-pressed={activeSection === "mindmap"}
             onClick={() => onSectionChange("mindmap")}
@@ -5684,6 +5816,9 @@ function MobileAppSidebar({
 
           {activeSection === "mindmap" && (
             <p className="mobile-mindmap-hint">拖动画布查看任务关系，或使用底部操作栏新增任务和标签。</p>
+          )}
+          {activeSection === "focus" && (
+            <p className="mobile-mindmap-hint">选择任务开始番茄或正计时，完成后会写入专注记录。</p>
           )}
         </div>
 
@@ -7570,15 +7705,32 @@ function TaskWorkspace({
   }
 
   const tasks = useMemo(
-    () => filterTasksForView({
-      tasks: bundle.tasks,
-      labels: bundle.labels,
-      smartView,
-      selectedLabelId,
+    () => applyTaskListFilters({
+      tasks: filterTasksForView({
+        tasks: bundle.tasks,
+        labels: bundle.labels,
+        smartView,
+        selectedLabelId,
+      }),
+      filterAssignee: preference.filter_assignee,
+      filterWatching: preference.filter_watching,
+      filterDue: preference.filter_due,
       currentUserId,
+      now,
     }),
-    [bundle.labels, bundle.tasks, currentUserId, selectedLabelId, smartView],
+    [
+      bundle.labels,
+      bundle.tasks,
+      currentUserId,
+      now,
+      preference.filter_assignee,
+      preference.filter_due,
+      preference.filter_watching,
+      selectedLabelId,
+      smartView,
+    ],
   );
+  const filtersLocked = !selectedLabelId && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
 
   const groups = useMemo(() => {
     if (isTrashView) {
@@ -7671,7 +7823,16 @@ function TaskWorkspace({
   async function savePreference(
     patch: Partial<Pick<
       TaskListPreference,
-      "grouping" | "sort" | "direction" | "show_labels" | "show_completed" | "show_hours" | "view_mode"
+      | "grouping"
+      | "sort"
+      | "direction"
+      | "filter_assignee"
+      | "filter_watching"
+      | "filter_due"
+      | "show_labels"
+      | "show_completed"
+      | "show_hours"
+      | "view_mode"
     >>,
   ) {
     if (!online) return;
@@ -7682,6 +7843,9 @@ function TaskWorkspace({
       grouping: preference.grouping,
       sort: preference.sort,
       direction: preference.direction,
+      filter_assignee: preference.filter_assignee,
+      filter_watching: preference.filter_watching,
+      filter_due: preference.filter_due,
       show_labels: preference.show_labels,
       show_completed: preference.show_completed,
       show_hours: preference.show_hours,
@@ -8090,6 +8254,12 @@ function TaskWorkspace({
               <TaskViewMenu
                 preference={preference}
                 online={online}
+                onChange={savePreference}
+              />
+              <TaskFilterMenu
+                preference={preference}
+                online={online}
+                locked={filtersLocked}
                 onChange={savePreference}
               />
               <LabelActionsMenu

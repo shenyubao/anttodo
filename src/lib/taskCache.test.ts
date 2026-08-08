@@ -10,6 +10,7 @@ import {
   createOptimisticSubtask,
   createOptimisticTask,
   createOptimisticTaskSection,
+  defaultCreatorParticipantIds,
   findTaskIdForSubtask,
   isOptimisticSubtaskId,
   patchSubtaskInBundle,
@@ -42,6 +43,92 @@ const emptyBundle = (): WorkspaceBundle => ({
 });
 
 describe("task cache updates", () => {
+  it("auto-watches creator unless self-assigned", () => {
+    expect(defaultCreatorParticipantIds("user", null)).toEqual(["user"]);
+    expect(defaultCreatorParticipantIds("user", undefined)).toEqual(["user"]);
+    expect(defaultCreatorParticipantIds("user", "other")).toEqual(["user"]);
+    expect(defaultCreatorParticipantIds("user", "user")).toEqual([]);
+
+    const unassigned = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "未指派",
+      labelIds: [],
+    });
+    expect(unassigned.participant_ids).toEqual(["user"]);
+
+    const assignedOther = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "指派他人",
+      labelIds: [],
+      assigneeId: "other",
+    });
+    expect(assignedOther.participant_ids).toEqual(["user"]);
+
+    const selfAssigned = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "指派自己",
+      labelIds: [],
+      assigneeId: "user",
+    });
+    expect(selfAssigned.participant_ids).toEqual([]);
+  });
+
+  it("keeps auto-watch participant when replacing optimistic create", () => {
+    const optimistic = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "新增待办",
+      labelIds: [],
+      optimisticId: "optimistic-task:watch",
+      now: "2026-08-03T00:00:00.000Z",
+    });
+    let bundle = appendTaskToBundle(emptyBundle(), optimistic);
+    bundle = replaceOptimisticTask(
+      bundle,
+      optimistic.id,
+      {
+        id: "server-task",
+        workspace_id: "workspace",
+        title: "新增待办",
+        created_by: "user",
+        assignee_id: null,
+        created_at: "2026-08-03T00:00:01.000Z",
+        updated_at: "2026-08-03T00:00:01.000Z",
+      },
+      [],
+    );
+    expect(bundle.tasks[0]?.participant_ids).toEqual(["user"]);
+
+    const selfOptimistic = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "自我指派",
+      labelIds: [],
+      assigneeId: "user",
+      optimisticId: "optimistic-task:self",
+      now: "2026-08-03T00:00:00.000Z",
+    });
+    bundle = appendTaskToBundle(emptyBundle(), selfOptimistic);
+    bundle = replaceOptimisticTask(
+      bundle,
+      selfOptimistic.id,
+      {
+        id: "server-self",
+        workspace_id: "workspace",
+        title: "自我指派",
+        created_by: "user",
+        assignee_id: "user",
+        created_at: "2026-08-03T00:00:01.000Z",
+        updated_at: "2026-08-03T00:00:01.000Z",
+      },
+      [],
+    );
+    expect(bundle.tasks[0]?.participant_ids).toEqual([]);
+  });
+
   it("applies a custom section order without touching other lists", () => {
     const bundle = emptyBundle();
     bundle.taskSections = [

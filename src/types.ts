@@ -35,6 +35,15 @@ export type TaskListSort =
   | "label"
   | "priority"
   | "assignee";
+export type TaskListFilterAssignee = "all" | "assigned_to_me";
+export type TaskListFilterWatching = "all" | "watching";
+export type TaskListFilterDue =
+  | "all"
+  | "overdue"
+  | "today"
+  | "tomorrow"
+  | "next_7_days"
+  | "next_30_days";
 export type SortDirection = "asc" | "desc";
 
 export type DateTimePreferences = {
@@ -52,6 +61,39 @@ export type AiWorkSettings = {
   workspace_id: string;
   cli_tools: AiCliTool[];
   default_working_path: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type FocusSessionMode = "pomodoro" | "stopwatch";
+export type FocusSessionKind = "focus" | "short_break" | "long_break";
+
+export type FocusSession = {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  task_id: string | null;
+  mode: FocusSessionMode;
+  kind: FocusSessionKind;
+  planned_seconds: number;
+  elapsed_seconds: number;
+  notes: string | null;
+  started_at: string;
+  ended_at: string;
+  created_at: string;
+};
+
+export type FocusSettings = {
+  user_id: string;
+  workspace_id: string;
+  pomodoro_minutes: number;
+  short_break_minutes: number;
+  long_break_minutes: number;
+  long_break_interval: number;
+  auto_start_pomodoro: boolean;
+  auto_start_break: boolean;
+  show_tab_title: boolean;
+  sound_enabled: boolean;
   created_at?: string;
   updated_at?: string;
 };
@@ -273,6 +315,7 @@ export type NotificationScenario =
   | "task_due_reminder"
   | "task_new_comment"
   | "note_mentioned"
+  | "participant_added"
   | "participant_title_changed"
   | "participant_status_changed"
   | "participant_new_comment"
@@ -295,6 +338,7 @@ export type NotificationType =
   | "task_assigned"
   | "task_new_comment"
   | "note_mentioned"
+  | "participant_added"
   | "participant_title_changed"
   | "participant_status_changed"
   | "participant_new_comment"
@@ -325,6 +369,9 @@ export type TaskListPreference = {
   grouping: TaskListGrouping;
   sort: TaskListSort;
   direction: SortDirection;
+  filter_assignee: TaskListFilterAssignee;
+  filter_watching: TaskListFilterWatching;
+  filter_due: TaskListFilterDue;
   show_labels: boolean;
   show_completed: boolean;
   show_hours: boolean;

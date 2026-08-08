@@ -69,11 +69,40 @@ import {
   type MindMapScheduleLevel,
   type MindMapTreeNode,
 } from "./lib/mindMap";
-import type { DateTimePreferences, Label, LabelPermissionLevel, Member, Task, UserLabelOrder, WorkspaceBundle } from "./types";
+import { applyTaskListFilters, resolveTaskListPreference } from "./lib/taskList";
+import type {
+  DateTimePreferences,
+  Label,
+  LabelPermissionLevel,
+  Member,
+  Task,
+  TaskListPreference,
+  UserLabelOrder,
+  WorkspaceBundle,
+} from "./types";
 import { mergeLabelIds } from "./lib/taskTitleTokens";
 import { useShortcutHandler } from "./ShortcutProvider";
+import { TaskFilterMenu } from "./TaskFilterMenu";
 import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
 import { useTaskTitleTokens, type TaskTitleTokenSubmit } from "./useTaskTitleTokens";
+
+const MIND_MAP_FILTER_LIST_KEY = "all";
+
+function useMinuteNow() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    let interval: number | undefined;
+    const timeout = window.setTimeout(() => {
+      setNow(new Date());
+      interval = window.setInterval(() => setNow(new Date()), 60_000);
+    }, 60_050 - (Date.now() % 60_000));
+    return () => {
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+    };
+  }, []);
+  return now;
+}
 
 type CreateTaskInput = {
   title: string;
@@ -991,6 +1020,7 @@ type MindMapCanvasProps = {
   onToggleTaskLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
   onDeleteLabel: (labelId: string) => Promise<void>;
   onRequestCreateLabel: (parentId: string | null) => void;
+  onSaveTaskListPreference: (preference: TaskListPreference) => Promise<void>;
 };
 
 function MindMapCanvas({
@@ -1006,11 +1036,13 @@ function MindMapCanvas({
   onToggleTaskLabel,
   onDeleteLabel,
   onRequestCreateLabel,
+  onSaveTaskListPreference,
 }: MindMapCanvasProps) {
   const flow = useReactFlow<MindMapFlowNode, MindMapFlowEdge>();
   const canvasRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
   const workspaceRef = useRef(workspaceId);
+  const now = useMinuteNow();
   const [focusDateKey, setFocusDateKey] = useState(() => format(new Date(), "yyyy-MM-dd"));
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [draft, setDraft] = useState<{
@@ -1035,6 +1067,12 @@ function MindMapCanvas({
   );
   const [labelDisplayMode, setLabelDisplayMode] = useState<MindMapLabelDisplayMode>(
     () => storedLabelDisplayMode(workspaceId),
+  );
+
+  const preference = resolveTaskListPreference(
+    bundle.taskListPreferences,
+    MIND_MAP_FILTER_LIST_KEY,
+    bundle.labels,
   );
 
   const toggleLabelVisible = useCallback((labelId: string) => {
@@ -1068,22 +1106,66 @@ function MindMapCanvas({
     storeLabelDisplayMode(workspaceId, mode);
   }, [workspaceId]);
 
+  async function savePreference(
+    patch: Partial<Pick<
+      TaskListPreference,
+      "filter_assignee" | "filter_due" | "filter_watching"
+    >>,
+  ) {
+    if (!online) return;
+    await onSaveTaskListPreference({
+      user_id: currentUserId,
+      workspace_id: workspaceId,
+      list_key: MIND_MAP_FILTER_LIST_KEY,
+      grouping: preference.grouping,
+      sort: preference.sort,
+      direction: preference.direction,
+      filter_assignee: preference.filter_assignee,
+      filter_watching: preference.filter_watching,
+      filter_due: preference.filter_due,
+      show_labels: preference.show_labels,
+      show_completed: preference.show_completed,
+      show_hours: preference.show_hours,
+      view_mode: preference.view_mode,
+      ...patch,
+    });
+  }
+
   const visibleLabels = useMemo(
     () => bundle.labels.filter((label) => !hiddenLabelIds.has(label.id)),
     [bundle.labels, hiddenLabelIds],
   );
 
+  const filteredTasks = useMemo(
+    () => applyTaskListFilters({
+      tasks: bundle.tasks,
+      filterAssignee: preference.filter_assignee,
+      filterWatching: preference.filter_watching,
+      filterDue: preference.filter_due,
+      currentUserId,
+      now,
+    }),
+    [
+      bundle.tasks,
+      currentUserId,
+      now,
+      preference.filter_assignee,
+      preference.filter_due,
+      preference.filter_watching,
+    ],
+  );
+
   const tree = useMemo(() => buildMindMapTree({
-    tasks: bundle.tasks,
+    tasks: filteredTasks,
     labels: visibleLabels,
     preferences: dateTimePreferences,
     focusDateKey,
     labelDisplayMode,
     userLabelOrder: bundle.userLabelOrder,
   }), [
-    bundle.tasks,
     bundle.userLabelOrder,
     dateTimePreferences,
+    filteredTasks,
     focusDateKey,
     labelDisplayMode,
     visibleLabels,
@@ -1531,6 +1613,11 @@ function MindMapCanvas({
           {error && <span className="mind-map-error" role="status">{error}</span>}
         </div>
         <div className="mind-map-toolbar-actions">
+          <TaskFilterMenu
+            preference={preference}
+            online={online}
+            onChange={savePreference}
+          />
           <button
             type="button"
             aria-label="显示设置"

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Label, Member, Task } from "../types";
 import {
+  applyTaskListFilters,
   filterTasksForView,
   groupTasks,
   orderedTaskSections,
+  resolveTaskListFilters,
   resolveTaskListPreference,
+  SMART_VIEW_FILTER_PRESETS,
   sortTasks,
   taskOrdersAfterCrossSectionMove,
   taskSectionOrderAfterInsert,
@@ -68,6 +71,9 @@ describe("task list grouping and sorting", () => {
       grouping: "custom",
       sort: "custom",
       direction: "asc",
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "all",
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -85,6 +91,9 @@ describe("task list grouping and sorting", () => {
       grouping: "priority",
       sort: "custom",
       direction: "asc",
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "all",
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -101,6 +110,9 @@ describe("task list grouping and sorting", () => {
       grouping: "none",
       sort: "custom",
       direction: "asc",
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "all",
       show_labels: false,
       show_completed: true,
       show_hours: false,
@@ -117,6 +129,9 @@ describe("task list grouping and sorting", () => {
       grouping: "none",
       sort: "custom",
       direction: "asc",
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "all",
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -135,6 +150,9 @@ describe("task list grouping and sorting", () => {
       grouping: "priority",
       sort: "custom",
       direction: "asc",
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "all",
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -151,6 +169,9 @@ describe("task list grouping and sorting", () => {
       grouping: "none",
       sort: "custom",
       direction: "asc",
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "all",
       show_labels: false,
       show_completed: false,
       show_hours: true,
@@ -231,7 +252,6 @@ describe("task list grouping and sorting", () => {
         labels: treeLabels,
         smartView: "all",
         selectedLabelId: "work",
-        currentUserId: "u",
       }).map((item) => item.id),
     ).toEqual(["react", "front", "work"]);
     expect(
@@ -240,7 +260,6 @@ describe("task list grouping and sorting", () => {
         labels: treeLabels,
         smartView: "all",
         selectedLabelId: "front",
-        currentUserId: "u",
       }).map((item) => item.id),
     ).toEqual(["react", "front"]);
   });
@@ -396,38 +415,6 @@ describe("task list grouping and sorting", () => {
       ]);
   });
 
-  it("keeps the assigned-to-me view limited to real users", () => {
-    const result = filterTasksForView({
-      tasks: [
-        task("mine", { assignee_id: "u" }),
-        task("cli", { cli_assignee: "codex" }),
-        task("none"),
-      ],
-      labels,
-      smartView: "assigned",
-      selectedLabelId: null,
-      currentUserId: "u",
-    });
-    expect(result.map((item) => item.id)).toEqual(["mine"]);
-  });
-
-  it("filters the watching view to tasks where the current user is a participant", () => {
-    const result = filterTasksForView({
-      tasks: [
-        task("watching", { participant_ids: ["u"] }),
-        task("watching-with-others", { participant_ids: ["other", "u"] }),
-        task("assigned-only", { assignee_id: "u" }),
-        task("other-participant", { participant_ids: ["other"] }),
-        task("none"),
-      ],
-      labels,
-      smartView: "watching",
-      selectedLabelId: null,
-      currentUserId: "u",
-    });
-    expect(result.map((item) => item.id)).toEqual(["watching", "watching-with-others"]);
-  });
-
   it("filters trash tasks by deleted_at and excludes them from other views", () => {
     const tasks = [
       task("alive"),
@@ -442,7 +429,6 @@ describe("task list grouping and sorting", () => {
         labels,
         smartView: "trash",
         selectedLabelId: null,
-        currentUserId: "u",
       }).map((item) => item.id),
     ).toEqual(["recent-trash", "older-trash"]);
     expect(
@@ -451,7 +437,6 @@ describe("task list grouping and sorting", () => {
         labels,
         smartView: "all",
         selectedLabelId: null,
-        currentUserId: "u",
       }).map((item) => item.id),
     ).toEqual(["alive", "inbox", "labeled"]);
     expect(
@@ -460,8 +445,234 @@ describe("task list grouping and sorting", () => {
         labels,
         smartView: "inbox",
         selectedLabelId: null,
-        currentUserId: "u",
       }).map((item) => item.id),
     ).toEqual(["alive", "inbox"]);
+  });
+
+  it("leaves smart filter views unfiltered before applyTaskListFilters", () => {
+    const tasks = [
+      task("mine", { assignee_id: "u" }),
+      task("other"),
+    ];
+    expect(
+      filterTasksForView({
+        tasks,
+        labels,
+        smartView: "assigned",
+        selectedLabelId: null,
+      }).map((item) => item.id),
+    ).toEqual(["mine", "other"]);
+  });
+});
+
+describe("task list preference filters", () => {
+  it("defaults filter fields when preference rows omit them", () => {
+    const preference = resolveTaskListPreference([], "all");
+    expect(preference.filter_assignee).toBe("all");
+    expect(preference.filter_watching).toBe("all");
+    expect(preference.filter_due).toBe("all");
+  });
+
+  it("uses fixed filter presets for today, assigned, and watching smart views", () => {
+    expect(resolveTaskListPreference([], "today")).toMatchObject(SMART_VIEW_FILTER_PRESETS.today);
+    expect(resolveTaskListPreference([], "assigned")).toMatchObject(
+      SMART_VIEW_FILTER_PRESETS.assigned,
+    );
+    expect(resolveTaskListPreference([], "watching")).toMatchObject(
+      SMART_VIEW_FILTER_PRESETS.watching,
+    );
+    expect(resolveTaskListFilters("assigned", {
+      filter_assignee: "all",
+      filter_watching: "all",
+      filter_due: "today",
+    })).toEqual(SMART_VIEW_FILTER_PRESETS.assigned);
+
+    const tasks = [
+      task("mine-today", {
+        assignee_id: "u",
+        due_at: "2026-07-30T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("mine-later", {
+        assignee_id: "u",
+        due_at: "2026-08-10T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("watching-only", { participant_ids: ["u"] }),
+      task("other"),
+    ];
+    const today = SMART_VIEW_FILTER_PRESETS.today;
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: today.filter_assignee,
+        filterWatching: today.filter_watching,
+        filterDue: today.filter_due,
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["mine-today"]);
+    const assigned = SMART_VIEW_FILTER_PRESETS.assigned;
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: assigned.filter_assignee,
+        filterWatching: assigned.filter_watching,
+        filterDue: assigned.filter_due,
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["mine-today", "mine-later"]);
+    const watching = SMART_VIEW_FILTER_PRESETS.watching;
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: watching.filter_assignee,
+        filterWatching: watching.filter_watching,
+        filterDue: watching.filter_due,
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["watching-only"]);
+  });
+
+  it("filters by assignee and watching independently", () => {
+    const tasks = [
+      task("mine", { assignee_id: "u" }),
+      task("watching", { participant_ids: ["u"] }),
+      task("both", { assignee_id: "u", participant_ids: ["u"] }),
+      task("other", { assignee_id: "other", participant_ids: ["other"] }),
+    ];
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: "assigned_to_me",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["mine", "both"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterWatching: "watching",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["watching", "both"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: "assigned_to_me",
+        filterWatching: "watching",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["both"]);
+  });
+
+  it("filters due windows and treats timed overdue separately from today", () => {
+    const tasks = [
+      task("overdue-day", {
+        due_at: "2026-07-29T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("overdue-timed", {
+        due_at: "2026-07-30T02:00:00.000Z",
+        due_is_all_day: false,
+      }),
+      task("today", {
+        due_at: "2026-07-30T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("tomorrow", {
+        due_at: "2026-07-31T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("day6", {
+        due_at: "2026-08-05T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("day7", {
+        due_at: "2026-08-06T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("day29", {
+        due_at: "2026-08-28T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("day30", {
+        due_at: "2026-08-29T15:59:59.999Z",
+        due_is_all_day: true,
+      }),
+      task("none"),
+    ];
+
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterDue: "overdue",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["overdue-day", "overdue-timed"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterDue: "today",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["today"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterDue: "tomorrow",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["tomorrow"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterDue: "next_7_days",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["overdue-timed", "today", "tomorrow", "day6"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterDue: "next_30_days",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["overdue-timed", "today", "tomorrow", "day6", "day7", "day29"]);
+  });
+
+  it("applies assignee and due filters together", () => {
+    const result = applyTaskListFilters({
+      tasks: [
+        task("mine-today", {
+          assignee_id: "u",
+          due_at: "2026-07-30T15:59:59.999Z",
+          due_is_all_day: true,
+        }),
+        task("mine-later", {
+          assignee_id: "u",
+          due_at: "2026-08-10T15:59:59.999Z",
+          due_is_all_day: true,
+        }),
+        task("other-today", {
+          assignee_id: "other",
+          due_at: "2026-07-30T15:59:59.999Z",
+          due_is_all_day: true,
+        }),
+      ],
+      filterAssignee: "assigned_to_me",
+      filterDue: "today",
+      currentUserId: "u",
+      now,
+    });
+    expect(result.map((item) => item.id)).toEqual(["mine-today"]);
   });
 });

@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(13);
+select plan(22);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -83,6 +83,36 @@ select is(
   1,
   'adding a participant records an activity event'
 );
+
+reset role;
+
+select is(
+  (
+    select notification_type
+    from public.notifications
+    where task_id = '43100000-0000-0000-0000-000000000001'
+      and recipient_id = '13100000-0000-0000-0000-000000000002'
+      and notification_type = 'participant_added'
+    limit 1
+  ),
+  'participant_added',
+  'adding a participant notifies the newly added user'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.notifications
+    where task_id = '43100000-0000-0000-0000-000000000001'
+      and recipient_id = '13100000-0000-0000-0000-000000000001'
+      and notification_type = 'participant_added'
+  ),
+  0,
+  'adding a participant does not notify the actor'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"13100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
 
 select throws_ok(
   $$
@@ -192,6 +222,96 @@ select lives_ok(
     values ('43100000-0000-0000-0000-000000000001', '13100000-0000-0000-0000-000000000003')
   $$,
   'edit-capable member can add another viewable participant'
+);
+
+select set_config('request.jwt.claims', '{"sub":"13100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+
+select lives_ok(
+  $$
+    select public.create_task_with_labels(
+      p_workspace_id => '23100000-0000-0000-0000-000000000001',
+      p_title => 'Unassigned auto-watch',
+      p_label_ids => array['33100000-0000-0000-0000-000000000001'::uuid]
+    )
+  $$,
+  'create task without assignee succeeds'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.task_participants tp
+    join public.tasks t on t.id = tp.task_id
+    where t.title = 'Unassigned auto-watch'
+      and tp.user_id = '13100000-0000-0000-0000-000000000001'
+  ),
+  1,
+  'unassigned create adds creator as participant'
+);
+
+reset role;
+
+select is(
+  (
+    select count(*)::integer
+    from public.notifications n
+    join public.tasks t on t.id = n.task_id
+    where t.title = 'Unassigned auto-watch'
+      and n.notification_type = 'participant_added'
+  ),
+  0,
+  'auto-watch creator does not notify self as participant_added'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"13100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+
+select lives_ok(
+  $$
+    select public.create_task_with_labels(
+      p_workspace_id => '23100000-0000-0000-0000-000000000001',
+      p_title => 'Assigned to other auto-watch',
+      p_label_ids => array['33100000-0000-0000-0000-000000000001'::uuid],
+      p_assignee_id => '13100000-0000-0000-0000-000000000002'
+    )
+  $$,
+  'create task assigned to another member succeeds'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.task_participants tp
+    join public.tasks t on t.id = tp.task_id
+    where t.title = 'Assigned to other auto-watch'
+      and tp.user_id = '13100000-0000-0000-0000-000000000001'
+  ),
+  1,
+  'assign-to-other create adds creator as participant'
+);
+
+select lives_ok(
+  $$
+    select public.create_task_with_labels(
+      p_workspace_id => '23100000-0000-0000-0000-000000000001',
+      p_title => 'Self-assigned no auto-watch',
+      p_label_ids => array['33100000-0000-0000-0000-000000000001'::uuid],
+      p_assignee_id => '13100000-0000-0000-0000-000000000001'
+    )
+  $$,
+  'create task assigned to self succeeds'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.task_participants tp
+    join public.tasks t on t.id = tp.task_id
+    where t.title = 'Self-assigned no auto-watch'
+      and tp.user_id = '13100000-0000-0000-0000-000000000001'
+  ),
+  0,
+  'self-assigned create does not add creator as participant'
 );
 
 select * from finish();
