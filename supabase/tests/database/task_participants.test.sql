@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(22);
+select plan(24);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -85,6 +85,11 @@ select is(
 );
 
 reset role;
+
+select ok(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
+  'flush participant_added buffer after insert'
+);
 
 select is(
   (
@@ -250,6 +255,11 @@ select is(
 );
 
 reset role;
+
+select ok(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
+  'flush auto-watch participant_added buffer'
+);
 
 select is(
   (

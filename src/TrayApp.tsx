@@ -11,6 +11,7 @@ import {
   Plus,
   Settings,
   SquareCheck,
+  Timer,
 } from "lucide-react";
 import {
   useEffect,
@@ -23,7 +24,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import {
   createTask,
+  createFocusSession,
   loadDateTimePreferences,
+  loadFocusSessions,
+  loadFocusSettings,
   loadWorkspaceBundle,
   loadWorkspaces,
   saveTaskListPreference,
@@ -53,14 +57,17 @@ import { MiniCalendar } from "./MiniCalendar";
 import { QuickAddForm } from "./QuickAddForm";
 import { TaskFilterMenu } from "./TaskFilterMenu";
 import { TaskViewMenu } from "./TaskViewMenu";
+import { TrayFocusPanel } from "./TrayFocusPanel";
 import type {
   DateTimePreferences,
+  FocusSession,
+  FocusSettings,
   Task,
   TaskListPreference,
   WorkspaceBundle,
 } from "./types";
 
-type TrayTab = "inbox" | "calendar";
+type TrayTab = "inbox" | "calendar" | "pomodoro";
 
 function useOnline() {
   const [online, setOnline] = useState(navigator.onLine);
@@ -254,6 +261,16 @@ export function TrayApp({
     queryKey: ["date-time-preferences", userId],
     queryFn: () => loadDateTimePreferences(client, userId),
   });
+  const focusSettingsQuery = useQuery({
+    queryKey: ["focus-settings", userId, workspaceId],
+    queryFn: () => loadFocusSettings(client, userId, workspaceId!),
+    enabled: Boolean(workspaceId),
+  });
+  const focusSessionsQuery = useQuery({
+    queryKey: ["focus-sessions", userId, workspaceId],
+    queryFn: () => loadFocusSessions(client, userId, workspaceId!),
+    enabled: Boolean(workspaceId),
+  });
 
   const bundle = bundleQuery.data;
   const dateTimePreferences = dateTimePreferencesQuery.data ?? DEFAULT_DATE_TIME_PREFERENCES;
@@ -274,6 +291,7 @@ export function TrayApp({
         selectedLabelId: null,
       }),
       filterAssignee: preference.filter_assignee,
+      filterAssigneeIds: preference.filter_assignee_ids,
       filterWatching: preference.filter_watching,
       filterCreator: preference.filter_creator,
       filterDue: preference.filter_due,
@@ -285,6 +303,7 @@ export function TrayApp({
     bundle,
     now,
     preference.filter_assignee,
+    preference.filter_assignee_ids,
     preference.filter_creator,
     preference.filter_due,
     preference.filter_watching,
@@ -360,6 +379,7 @@ export function TrayApp({
       | "sort"
       | "direction"
       | "filter_assignee"
+      | "filter_assignee_ids"
       | "filter_watching"
       | "filter_creator"
       | "filter_due"
@@ -480,6 +500,17 @@ export function TrayApp({
     setTab(next);
   }
 
+  async function createTrayFocusSession(
+    input: Omit<FocusSession, "id" | "created_at">,
+  ) {
+    const created = await createFocusSession(client, input);
+    queryClient.setQueryData<FocusSession[]>(
+      ["focus-sessions", userId, workspaceId],
+      (current) => [created, ...(current ?? [])].slice(0, 100),
+    );
+    return created;
+  }
+
   function toggleSettings(event?: MouseEvent<HTMLButtonElement>) {
     event?.preventDefault();
     setSettingsOpen((value) => !value);
@@ -517,6 +548,7 @@ export function TrayApp({
                 />
                 <TaskFilterMenu
                   preference={preference}
+                  members={bundle.members}
                   online={online}
                   onChange={savePreference}
                 />
@@ -647,6 +679,30 @@ export function TrayApp({
             </div>
           </section>
         )}
+
+        {tab === "pomodoro" && workspaceId && (
+          <TrayFocusPanel
+            workspaceId={workspaceId}
+            userId={userId}
+            online={online}
+            tasks={bundle.tasks}
+            settings={focusSettingsQuery.data ?? {
+              user_id: userId,
+              workspace_id: workspaceId,
+              pomodoro_minutes: 25,
+              short_break_minutes: 5,
+              long_break_minutes: 15,
+              long_break_interval: 4,
+              auto_start_pomodoro: false,
+              auto_start_break: false,
+              show_tab_title: true,
+              sound_enabled: true,
+            } satisfies FocusSettings}
+            sessions={focusSessionsQuery.data ?? []}
+            onCreateSession={createTrayFocusSession}
+            onNotice={() => undefined}
+          />
+        )}
       </div>
 
       <nav className="tray-tabbar" aria-label="迷你导航">
@@ -680,6 +736,15 @@ export function TrayApp({
           onClick={() => selectTab("calendar")}
         >
           <CalendarDays />
+        </button>
+        <button
+          type="button"
+          className={clsx(tab === "pomodoro" && !settingsActive && "active")}
+          aria-label="番茄"
+          aria-current={tab === "pomodoro" && !settingsActive ? "page" : undefined}
+          onClick={() => selectTab("pomodoro")}
+        >
+          <Timer />
         </button>
         <button
           type="button"

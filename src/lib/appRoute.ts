@@ -1,6 +1,7 @@
 import type { TaskViewMode } from "../types";
 
-export type AppSmartView = "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
+export type SystemSmartView = "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
+export type AppSmartView = SystemSmartView | `custom:${string}`;
 
 export const DEFAULT_SMART_VIEW: AppSmartView = "assigned";
 
@@ -12,7 +13,8 @@ export type AppRoute =
   | { workspaceId: string; kind: "mindmap" }
   | { workspaceId: string; kind: "focus" };
 
-const SMART_VIEWS = new Set<AppSmartView>(["all", "today", "week", "assigned", "watching", "inbox", "trash"]);
+const SMART_VIEWS = new Set<SystemSmartView>(["all", "today", "week", "assigned", "watching", "inbox", "trash"]);
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function decodeSegment(value: string | undefined) {
   if (!value) return null;
@@ -52,13 +54,19 @@ export function parseAppRoute(pathname: string): AppRoute | null {
   ) {
     return { workspaceId, kind: "view", view: "all", mode: segments[3] };
   }
-  if ((segments.length === 4 || segments.length === 5) && segments[2] === "views") {
-    const view = decodeSegment(segments[3]) as AppSmartView | null;
+  if ((segments.length === 4 || segments.length === 5) && segments[2] === "views" && segments[3] !== "custom") {
+    const view = decodeSegment(segments[3]) as SystemSmartView | null;
     const mode = parseModeSegment(segments.length === 5 ? segments[4] : undefined);
     if (!mode) return null;
     return view && SMART_VIEWS.has(view)
       ? { workspaceId, kind: "view", view, mode: view === "trash" ? "list" : mode }
       : null;
+  }
+  if ((segments.length === 5 || segments.length === 6) && segments[2] === "views" && segments[3] === "custom") {
+    const customViewId = decodeSegment(segments[4]);
+    const mode = parseModeSegment(segments.length === 6 ? segments[5] : undefined);
+    if (!customViewId || !UUID_SEGMENT.test(customViewId) || !mode) return null;
+    return { workspaceId, kind: "view", view: `custom:${customViewId}`, mode };
   }
   if ((segments.length === 4 || segments.length === 5) && segments[2] === "tags") {
     const tagId = decodeSegment(segments[3]);
@@ -87,7 +95,11 @@ export function parseAppRoute(pathname: string): AppRoute | null {
 export function appRoutePath(route: AppRoute) {
   const base = `/workspaces/${encodeURIComponent(route.workspaceId)}`;
   if (route.kind === "view") {
-    const path = route.view === "all" ? `${base}/tasks` : `${base}/views/${route.view}`;
+    const path = route.view === "all"
+      ? `${base}/tasks`
+      : route.view.startsWith("custom:")
+        ? `${base}/views/custom/${encodeURIComponent(route.view.slice("custom:".length))}`
+        : `${base}/views/${route.view}`;
     if (route.view === "trash") return path;
     return `${path}${modePathSegment(route.mode)}`;
   }

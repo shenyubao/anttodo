@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
-import type { Label, Member, Task } from "../types";
+import type { Label, Member, Task, TaskSystemViewPreference } from "../types";
+import type { CustomTaskView } from "../types";
 import {
+  applyCustomTaskViewOrder,
+  applySystemSmartViewOrder,
   applyTaskListFilters,
+  assigneeFilterLabel,
+  buildCustomViewSnapshotFromSmartView,
+  canHideSmartView,
   clampGroupingForViewMode,
+  customTaskViewKey,
+  DEFAULT_SYSTEM_SMART_VIEW_ORDER,
+  exclusiveAssigneeFilter,
   filterTasksForView,
   groupingOptionsForViewMode,
   groupTasks,
+  isHideableSystemSmartView,
+  normalizeAssigneeFilter,
   orderedTaskSections,
+  resolveSystemSmartViewOrder,
   resolveTaskListFilters,
   resolveTaskListPreference,
   SMART_VIEW_FILTER_PRESETS,
@@ -16,6 +28,7 @@ import {
   taskSectionOrderAfterInsert,
   taskSectionOrderAfterMove,
   TIMELINE_GROUPING_OPTIONS,
+  toggleAssigneeUserFilter,
 } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
@@ -67,6 +80,60 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
 });
 
 describe("task list grouping and sorting", () => {
+  it("filters a custom view using its saved label scope and filters", () => {
+    const view: CustomTaskView = {
+      id: "view-1",
+      workspace_id: "w",
+      user_id: "u",
+      name: "工作视图",
+      visible: true,
+      position: 0,
+      created_at: "2026-07-30T00:00:00.000Z",
+      updated_at: "2026-07-30T00:00:00.000Z",
+      definition: {
+        scope: "label",
+        label_ids: ["work", "front"],
+        filter_assignee: "all",
+        filter_assignee_ids: [],
+        filter_watching: "all",
+        filter_creator: "all",
+        filter_due: "all",
+      },
+    };
+    expect(filterTasksForView({
+      tasks: [task("work-task", { label_ids: ["front"] }), task("other-task", { label_ids: ["life"] })],
+      labels: treeLabels,
+      smartView: "custom:view-1",
+      selectedLabelId: null,
+      customView: view,
+    }).map((item) => item.id)).toEqual(["work-task"]);
+    expect(resolveTaskListFilters("custom:view-1", {
+      filter_assignee: "assigned_to_me",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: "today",
+    }, view)).toEqual({
+      filter_assignee: "assigned_to_me",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: "today",
+    });
+    expect(resolveTaskListFilters("custom:view-1", {
+      filter_assignee: "all",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: "all",
+    }, view)).toEqual({
+      filter_assignee: "all",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: "all",
+    });
+  });
   it("keeps the default ungrouped view and restores a saved custom preference", () => {
     expect(resolveTaskListPreference([], "all").grouping).toBe("none");
     expect(resolveTaskListPreference([{
@@ -77,6 +144,7 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "all",
@@ -98,6 +166,7 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "all",
@@ -118,6 +187,7 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "all",
@@ -138,6 +208,7 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "all",
@@ -160,6 +231,7 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "all",
@@ -201,6 +273,7 @@ describe("task list grouping and sorting", () => {
       sort: "custom",
       direction: "asc",
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "all",
@@ -501,6 +574,7 @@ describe("task list preference filters", () => {
   it("defaults filter fields when preference rows omit them", () => {
     const preference = resolveTaskListPreference([], "all");
     expect(preference.filter_assignee).toBe("all");
+    expect(preference.filter_assignee_ids).toEqual([]);
     expect(preference.filter_watching).toBe("all");
     expect(preference.filter_creator).toBe("all");
     expect(preference.filter_due).toBe("all");
@@ -520,6 +594,7 @@ describe("task list preference filters", () => {
     );
     expect(resolveTaskListFilters("assigned", {
       filter_assignee: "all",
+      filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
       filter_due: "today",
@@ -530,6 +605,11 @@ describe("task list preference filters", () => {
         assignee_id: "u",
         due_at: "2026-07-30T15:59:59.999Z",
         due_is_all_day: true,
+      }),
+      task("other-today", {
+        assignee_id: "other",
+        due_at: "2026-07-30T02:00:00.000Z",
+        due_is_all_day: false,
       }),
       task("mine-later", {
         assignee_id: "u",
@@ -619,7 +699,7 @@ describe("task list preference filters", () => {
         currentUserId: "u",
         now,
       }).map((item) => item.id),
-    ).toEqual(["mine-today", "mine-later", "watching-only", "other"]);
+    ).toEqual(["mine-today", "other-today", "mine-later", "watching-only", "other"]);
   });
 
   it("filters by assignee, watching, and creator independently", () => {
@@ -665,7 +745,7 @@ describe("task list preference filters", () => {
     ).toEqual(["both"]);
   });
 
-  it("filters due windows and treats timed overdue separately from today", () => {
+  it("filters due windows and includes timed overdue tasks in today", () => {
     const tasks = [
       task("overdue-day", {
         due_at: "2026-07-29T15:59:59.999Z",
@@ -717,7 +797,7 @@ describe("task list preference filters", () => {
         currentUserId: "u",
         now,
       }).map((item) => item.id),
-    ).toEqual(["today"]);
+    ).toEqual(["overdue-timed", "today"]);
     expect(
       applyTaskListFilters({
         tasks,
@@ -769,5 +849,226 @@ describe("task list preference filters", () => {
       now,
     });
     expect(result.map((item) => item.id)).toEqual(["mine-today"]);
+  });
+
+  it("filters unassigned tasks and multi-selected assignees", () => {
+    const tasks = [
+      task("none"),
+      task("mine", { assignee_id: "u" }),
+      task("alice", { assignee_id: "a" }),
+      task("bob", { assignee_id: "b" }),
+    ];
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: "unassigned",
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["none"]);
+    expect(
+      applyTaskListFilters({
+        tasks,
+        filterAssignee: "users",
+        filterAssigneeIds: ["a", "b"],
+        currentUserId: "u",
+        now,
+      }).map((item) => item.id),
+    ).toEqual(["alice", "bob"]);
+  });
+
+  it("normalizes and toggles multi-select assignee filters", () => {
+    expect(normalizeAssigneeFilter({
+      filter_assignee: "users",
+      filter_assignee_ids: [],
+    })).toEqual({ filter_assignee: "all", filter_assignee_ids: [] });
+    expect(normalizeAssigneeFilter({
+      filter_assignee: "users",
+      filter_assignee_ids: ["b", "a", "a"],
+    })).toEqual({ filter_assignee: "users", filter_assignee_ids: ["a", "b"] });
+    expect(exclusiveAssigneeFilter("unassigned")).toEqual({
+      filter_assignee: "unassigned",
+      filter_assignee_ids: [],
+    });
+
+    let current = exclusiveAssigneeFilter("all");
+    current = toggleAssigneeUserFilter(current, "a");
+    expect(current).toEqual({ filter_assignee: "users", filter_assignee_ids: ["a"] });
+    current = toggleAssigneeUserFilter(current, "b");
+    expect(current).toEqual({ filter_assignee: "users", filter_assignee_ids: ["a", "b"] });
+    current = toggleAssigneeUserFilter(current, "a");
+    expect(current).toEqual({ filter_assignee: "users", filter_assignee_ids: ["b"] });
+    current = toggleAssigneeUserFilter(current, "b");
+    expect(current).toEqual({ filter_assignee: "all", filter_assignee_ids: [] });
+
+    expect(assigneeFilterLabel(
+      { filter_assignee: "all", filter_assignee_ids: [] },
+      members,
+    )).toBe("不限");
+    expect(assigneeFilterLabel(
+      { filter_assignee: "unassigned", filter_assignee_ids: [] },
+      members,
+    )).toBe("无指派人");
+    expect(assigneeFilterLabel(
+      { filter_assignee: "users", filter_assignee_ids: ["u"] },
+      members,
+    )).toBe("张三");
+    expect(assigneeFilterLabel(
+      { filter_assignee: "users", filter_assignee_ids: ["u", "x"] },
+      members,
+    )).toBe("张三等2人");
+  });
+});
+
+describe("smart view order helpers", () => {
+  it("uses the default system order when preferences are empty", () => {
+    expect(resolveSystemSmartViewOrder([])).toEqual([...DEFAULT_SYSTEM_SMART_VIEW_ORDER]);
+  });
+
+  it("sorts system views by position and fills missing keys from defaults", () => {
+    const preferences: Array<Pick<TaskSystemViewPreference, "view_key" | "position">> = [
+      { view_key: "today", position: 0 },
+      { view_key: "all", position: 2 },
+      { view_key: "trash", position: 1 },
+    ];
+    expect(resolveSystemSmartViewOrder(preferences)).toEqual([
+      "today",
+      "trash",
+      "all",
+      "week",
+      "assigned",
+      "watching",
+      "inbox",
+    ]);
+  });
+
+  it("applies a new system order while preserving visibility", () => {
+    const next = applySystemSmartViewOrder(
+      [
+        { view_key: "today", visible: false, position: 1 },
+        { view_key: "inbox", visible: false, position: 5 },
+      ],
+      ["trash", "today", "all", "week", "assigned", "watching", "inbox"],
+      { userId: "user-1", workspaceId: "workspace-1" },
+    );
+    expect(next.map((item) => [item.view_key, item.position, item.visible])).toEqual([
+      ["trash", 0, true],
+      ["today", 1, false],
+      ["all", 2, true],
+      ["week", 3, true],
+      ["assigned", 4, true],
+      ["watching", 5, true],
+      ["inbox", 6, false],
+    ]);
+    expect(next.every((item) => item.user_id === "user-1" && item.workspace_id === "workspace-1")).toBe(true);
+  });
+
+  it("reorders custom views by id list", () => {
+    const views: CustomTaskView[] = [
+      {
+        id: "a",
+        workspace_id: "w",
+        user_id: "u",
+        name: "A",
+        definition: {
+          scope: "all",
+          label_ids: [],
+          filter_assignee: "all",
+          filter_assignee_ids: [],
+          filter_watching: "all",
+          filter_creator: "all",
+          filter_due: "all",
+        },
+        visible: true,
+        position: 0,
+        created_at: "2026-08-10T00:00:00.000Z",
+        updated_at: "2026-08-10T00:00:00.000Z",
+      },
+      {
+        id: "b",
+        workspace_id: "w",
+        user_id: "u",
+        name: "B",
+        definition: {
+          scope: "all",
+          label_ids: [],
+          filter_assignee: "all",
+          filter_assignee_ids: [],
+          filter_watching: "all",
+          filter_creator: "all",
+          filter_due: "all",
+        },
+        visible: false,
+        position: 1,
+        created_at: "2026-08-10T00:00:00.000Z",
+        updated_at: "2026-08-10T00:00:00.000Z",
+      },
+    ];
+    expect(applyCustomTaskViewOrder(views, ["b", "a"]).map((view) => [view.id, view.position, view.visible])).toEqual([
+      ["b", 0, false],
+      ["a", 1, true],
+    ]);
+  });
+});
+
+describe("smart view hide rules and create snapshots", () => {
+  it("marks all system smart views and custom views as hideable", () => {
+    expect(isHideableSystemSmartView("today")).toBe(true);
+    expect(isHideableSystemSmartView("all")).toBe(true);
+    expect(canHideSmartView("inbox")).toBe(true);
+    expect(canHideSmartView("trash")).toBe(true);
+    expect(canHideSmartView(customTaskViewKey("view-1"))).toBe(true);
+  });
+
+  it("builds a definition from the today preset", () => {
+    const snapshot = buildCustomViewSnapshotFromSmartView([], "today");
+    expect(snapshot.definition).toEqual({
+      scope: "all",
+      label_ids: [],
+      ...SMART_VIEW_FILTER_PRESETS.today,
+    });
+    expect(snapshot.presentation).toMatchObject(SMART_VIEW_FILTER_PRESETS.today);
+  });
+
+  it("uses inbox/trash scopes for those smart views", () => {
+    expect(buildCustomViewSnapshotFromSmartView([], "inbox").definition.scope).toBe("inbox");
+    expect(buildCustomViewSnapshotFromSmartView([], "trash").definition.scope).toBe("trash");
+    expect(buildCustomViewSnapshotFromSmartView([], "all").definition).toEqual({
+      scope: "all",
+      label_ids: [],
+      filter_assignee: "all",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: "all",
+    });
+  });
+
+  it("copies an existing custom view definition when cloning", () => {
+    const view: CustomTaskView = {
+      id: "view-1",
+      workspace_id: "w",
+      user_id: "u",
+      name: "本月",
+      definition: {
+        scope: "label",
+        label_ids: ["a"],
+        filter_assignee: "assigned_to_me",
+        filter_assignee_ids: [],
+        filter_watching: "all",
+        filter_creator: "created_by_me",
+        filter_due: "next_30_days",
+      },
+      visible: true,
+      position: 0,
+      created_at: "2026-08-10T00:00:00.000Z",
+      updated_at: "2026-08-10T00:00:00.000Z",
+    };
+    const snapshot = buildCustomViewSnapshotFromSmartView(
+      [],
+      customTaskViewKey(view.id),
+      [view],
+    );
+    expect(snapshot.definition).toEqual(view.definition);
   });
 });

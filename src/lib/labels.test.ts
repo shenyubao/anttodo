@@ -55,8 +55,10 @@ const emptyBundle = (): WorkspaceBundle => ({
   connectors: [],
   syncRuns: [],
   conflicts: [],
-  taskListPreferences: [],
-  taskSections: [],
+    taskListPreferences: [],
+    customTaskViews: [],
+    taskSystemViewPreferences: [],
+    taskSections: [],
   taskPlacements: [],
 });
 

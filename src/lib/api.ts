@@ -5,6 +5,8 @@ import type {
   AssigneeTarget,
   AppNotification,
   Connector,
+  CustomTaskView,
+  CustomTaskViewDefinition,
   DateTimePreferences,
   FocusSession,
   FocusSettings,
@@ -24,6 +26,7 @@ import type {
   TaskComment,
   TaskKind,
   TaskListPreference,
+  TaskSystemViewPreference,
   TaskSection,
   TaskPriority,
   UserLabelOrder,
@@ -654,6 +657,8 @@ export async function loadWorkspaceBundle(
     preferencesResult,
     sectionsResult,
     placementsResult,
+    customTaskViewsResult,
+    taskSystemViewPreferencesResult,
     userGroupsResult,
     userGroupMembersResult,
     labelPermissionLevelsResult,
@@ -692,6 +697,17 @@ export async function loadWorkspaceBundle(
       .eq("workspace_id", workspaceId)
       .order("position", { ascending: true }),
     client
+      .from("custom_task_views")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true }),
+    client
+      .from("task_system_view_preferences")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .order("position", { ascending: true }),
+    client
       .from("user_groups")
       .select("*")
       .eq("workspace_id", workspaceId)
@@ -714,6 +730,8 @@ export async function loadWorkspaceBundle(
   assertNoError(preferencesResult.error);
   assertNoError(sectionsResult.error);
   assertNoError(placementsResult.error);
+  assertNoError(customTaskViewsResult.error);
+  assertNoError(taskSystemViewPreferencesResult.error);
   assertNoError(userGroupsResult.error);
   assertNoError(userGroupMembersResult.error);
   assertNoError(labelPermissionLevelsResult.error);
@@ -799,6 +817,8 @@ export async function loadWorkspaceBundle(
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
     userLabelOrder: (userLabelOrderResult.data ?? []) as UserLabelOrder[],
     taskListPreferences: (preferencesResult.data ?? []) as WorkspaceBundle["taskListPreferences"],
+    customTaskViews: (customTaskViewsResult.data ?? []) as CustomTaskView[],
+    taskSystemViewPreferences: (taskSystemViewPreferencesResult.data ?? []) as TaskSystemViewPreference[],
     taskSections: (sectionsResult.data ?? []) as WorkspaceBundle["taskSections"],
     taskPlacements: (placementsResult.data ?? []) as WorkspaceBundle["taskPlacements"],
   };
@@ -880,6 +900,76 @@ export async function saveTaskListPreference(
     .single();
   assertNoError(error);
   return data as TaskListPreference;
+}
+
+export async function createCustomTaskView(
+  client: SupabaseClient,
+  input: {
+    workspace_id: string;
+    user_id: string;
+    name: string;
+    definition: CustomTaskViewDefinition;
+    position?: number;
+  },
+) {
+  const { data, error } = await client
+    .from("custom_task_views")
+    .insert({ ...input, name: input.name.trim() })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as CustomTaskView;
+}
+
+export async function deleteCustomTaskView(
+  client: SupabaseClient,
+  viewId: string,
+) {
+  const { error } = await client
+    .from("custom_task_views")
+    .delete()
+    .eq("id", viewId);
+  assertNoError(error);
+}
+
+export async function saveTaskSystemViewPreference(
+  client: SupabaseClient,
+  preference: TaskSystemViewPreference,
+) {
+  const { data, error } = await client
+    .from("task_system_view_preferences")
+    .upsert(preference, { onConflict: "user_id,workspace_id,view_key" })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as TaskSystemViewPreference;
+}
+
+export async function reorderSystemSmartViews(
+  client: SupabaseClient,
+  preferences: TaskSystemViewPreference[],
+) {
+  if (preferences.length === 0) return [] as TaskSystemViewPreference[];
+  const { data, error } = await client
+    .from("task_system_view_preferences")
+    .upsert(preferences, { onConflict: "user_id,workspace_id,view_key" })
+    .select("*");
+  assertNoError(error);
+  return (data ?? []) as TaskSystemViewPreference[];
+}
+
+export async function reorderCustomTaskViews(
+  client: SupabaseClient,
+  orderedIds: string[],
+) {
+  await Promise.all(orderedIds.map((id, position) =>
+    client
+      .from("custom_task_views")
+      .update({ position })
+      .eq("id", id)
+      .then(({ error }) => {
+        assertNoError(error);
+      })));
 }
 
 export async function createTaskSection(

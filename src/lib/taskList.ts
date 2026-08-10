@@ -1,5 +1,7 @@
 import type {
   DateTimePreferences,
+  CustomTaskView,
+  CustomTaskViewDefinition,
   Label,
   Member,
   SortDirection,
@@ -13,6 +15,7 @@ import type {
   TaskListSort,
   TaskPlacement,
   TaskSection,
+  TaskSystemViewPreference,
   TaskViewMode,
   UserLabelOrder,
 } from "../types";
@@ -30,7 +33,8 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   grouping: "none",
   sort: "custom",
   direction: "asc",
-  filter_assignee: "all",
+  filter_assignee: "all" as TaskListFilterAssignee,
+  filter_assignee_ids: [] as string[],
   filter_watching: "all",
   filter_creator: "all",
   filter_due: "all",
@@ -101,11 +105,13 @@ export const TASK_SORT_OPTIONS: Array<{ value: TaskListSort; label: string }> = 
   { value: "assignee", label: "指派人" },
 ];
 
+/** Exclusive assignee modes shown above the team member multi-select list. */
 export const TASK_FILTER_ASSIGNEE_OPTIONS: Array<{
-  value: TaskListFilterAssignee;
+  value: Exclude<TaskListFilterAssignee, "users">;
   label: string;
 }> = [
   { value: "all", label: "不限" },
+  { value: "unassigned", label: "无指派人" },
   { value: "assigned_to_me", label: "指派给我" },
 ];
 
@@ -140,51 +146,344 @@ export const TASK_FILTER_DUE_OPTIONS: Array<{
 
 export type TaskListFilterFields = {
   filter_assignee: TaskListFilterAssignee;
+  filter_assignee_ids: string[];
   filter_watching: TaskListFilterWatching;
   filter_creator: TaskListFilterCreator;
   filter_due: TaskListFilterDue;
 };
+
+export function normalizeAssigneeFilter(input: {
+  filter_assignee?: TaskListFilterAssignee | null;
+  filter_assignee_ids?: string[] | null;
+}): Pick<TaskListFilterFields, "filter_assignee" | "filter_assignee_ids"> {
+  const mode = input.filter_assignee ?? "all";
+  const uniqueIds = Array.from(
+    new Set((input.filter_assignee_ids ?? []).filter(Boolean)),
+  ).sort((left, right) => left.localeCompare(right));
+
+  if (mode === "users") {
+    if (uniqueIds.length === 0) {
+      return { filter_assignee: "all", filter_assignee_ids: [] };
+    }
+    return { filter_assignee: "users", filter_assignee_ids: uniqueIds };
+  }
+  return { filter_assignee: mode, filter_assignee_ids: [] };
+}
+
+export function toggleAssigneeUserFilter(
+  current: Pick<TaskListFilterFields, "filter_assignee" | "filter_assignee_ids">,
+  userId: string,
+): Pick<TaskListFilterFields, "filter_assignee" | "filter_assignee_ids"> {
+  const existing = current.filter_assignee === "users"
+    ? current.filter_assignee_ids
+    : [];
+  const next = new Set(existing);
+  if (next.has(userId)) next.delete(userId);
+  else next.add(userId);
+  return normalizeAssigneeFilter({
+    filter_assignee: next.size > 0 ? "users" : "all",
+    filter_assignee_ids: Array.from(next),
+  });
+}
+
+export function exclusiveAssigneeFilter(
+  mode: Exclude<TaskListFilterAssignee, "users">,
+): Pick<TaskListFilterFields, "filter_assignee" | "filter_assignee_ids"> {
+  return normalizeAssigneeFilter({ filter_assignee: mode, filter_assignee_ids: [] });
+}
+
+export function assigneeFilterLabel(
+  filter: Pick<TaskListFilterFields, "filter_assignee" | "filter_assignee_ids">,
+  members: Iterable<Pick<Member, "user_id" | "profile">>,
+): string {
+  if (filter.filter_assignee !== "users") {
+    return TASK_FILTER_ASSIGNEE_OPTIONS.find((option) => option.value === filter.filter_assignee)
+      ?.label
+      ?? "不限";
+  }
+  const ids = filter.filter_assignee_ids ?? [];
+  if (ids.length === 0) return "不限";
+  const byId = new Map(
+    Array.from(members, (member) => [member.user_id, member]),
+  );
+  const names = ids.map((id) => {
+    const member = byId.get(id);
+    return member?.profile?.display_name?.trim() || "团队成员";
+  });
+  if (names.length === 1) return names[0]!;
+  return `${names[0]}等${names.length}人`;
+}
 
 /** Smart views that are just fixed filter presets over the full task list. */
 export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
   today: {
     filter_due: "today",
     filter_assignee: "assigned_to_me",
+    filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "all",
   },
   week: {
     filter_due: "this_week",
     filter_assignee: "assigned_to_me",
+    filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "all",
   },
   assigned: {
     filter_due: "all",
     filter_assignee: "assigned_to_me",
+    filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "all",
   },
   watching: {
     filter_due: "all",
     filter_assignee: "all",
+    filter_assignee_ids: [],
     filter_watching: "watching",
     filter_creator: "all",
   },
   inbox: {
     filter_due: "all",
     filter_assignee: "all",
+    filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "created_by_me",
   },
 };
 
+export function customTaskViewKey(viewId: string): `custom:${string}` {
+  return `custom:${viewId}`;
+}
+
+export function customTaskViewId(smartView: string) {
+  return smartView.startsWith("custom:") ? smartView.slice("custom:".length) : null;
+}
+
+export function isCustomTaskView(smartView: string) {
+  return customTaskViewId(smartView) !== null;
+}
+
+/** System smart views that users may hide from the sidebar. */
+export type HideableSystemSmartView =
+  | "all"
+  | "today"
+  | "week"
+  | "assigned"
+  | "watching"
+  | "inbox"
+  | "trash";
+
+export type SystemSmartViewKey = HideableSystemSmartView;
+
+export const DEFAULT_SYSTEM_SMART_VIEW_ORDER: readonly SystemSmartViewKey[] = [
+  "all",
+  "today",
+  "week",
+  "assigned",
+  "watching",
+  "inbox",
+  "trash",
+];
+
+const HIDEABLE_SYSTEM_SMART_VIEWS: readonly HideableSystemSmartView[] = DEFAULT_SYSTEM_SMART_VIEW_ORDER;
+
+const DEFAULT_SYSTEM_SMART_VIEW_POSITION = new Map(
+  DEFAULT_SYSTEM_SMART_VIEW_ORDER.map((key, index) => [key, index]),
+);
+
+export function isHideableSystemSmartView(view: string): view is HideableSystemSmartView {
+  return (HIDEABLE_SYSTEM_SMART_VIEWS as readonly string[]).includes(view);
+}
+
+export function canHideSmartView(viewKey: string) {
+  return isHideableSystemSmartView(viewKey) || isCustomTaskView(viewKey);
+}
+
+export function defaultSystemSmartViewPosition(viewKey: SystemSmartViewKey) {
+  return DEFAULT_SYSTEM_SMART_VIEW_POSITION.get(viewKey) ?? 0;
+}
+
+/** Resolve the ordered system smart-view keys, filling missing prefs with defaults. */
+export function resolveSystemSmartViewOrder(
+  preferences: Iterable<Pick<TaskSystemViewPreference, "view_key" | "position">>,
+): SystemSmartViewKey[] {
+  const positionByKey = new Map<SystemSmartViewKey, number>();
+  for (const preference of preferences) {
+    if (!isHideableSystemSmartView(preference.view_key)) continue;
+    positionByKey.set(preference.view_key, preference.position);
+  }
+  return [...DEFAULT_SYSTEM_SMART_VIEW_ORDER].sort((left, right) => {
+    const leftPosition = positionByKey.get(left) ?? defaultSystemSmartViewPosition(left);
+    const rightPosition = positionByKey.get(right) ?? defaultSystemSmartViewPosition(right);
+    if (leftPosition !== rightPosition) return leftPosition - rightPosition;
+    return defaultSystemSmartViewPosition(left) - defaultSystemSmartViewPosition(right);
+  });
+}
+
+/** Build a complete preference list for a new system smart-view order. */
+export function applySystemSmartViewOrder(
+  preferences: Iterable<Pick<TaskSystemViewPreference, "view_key" | "visible" | "position">>,
+  orderedKeys: readonly SystemSmartViewKey[],
+  context: { userId: string; workspaceId: string },
+): TaskSystemViewPreference[] {
+  const byKey = new Map<SystemSmartViewKey, Pick<TaskSystemViewPreference, "view_key" | "visible" | "position">>();
+  for (const item of preferences) {
+    if (isHideableSystemSmartView(item.view_key)) {
+      byKey.set(item.view_key, item);
+    }
+  }
+  return orderedKeys.map((viewKey, position) => ({
+    user_id: context.userId,
+    workspace_id: context.workspaceId,
+    view_key: viewKey,
+    visible: byKey.get(viewKey)?.visible ?? true,
+    position,
+  }));
+}
+
+/** Apply a new custom-view id order, keeping unspecified views after ordered ones. */
+export function applyCustomTaskViewOrder(
+  views: CustomTaskView[],
+  orderedIds: readonly string[],
+): CustomTaskView[] {
+  const byId = new Map(views.map((view) => [view.id, view]));
+  const ordered: CustomTaskView[] = [];
+  const seen = new Set<string>();
+  for (const id of orderedIds) {
+    const view = byId.get(id);
+    if (!view || seen.has(id)) continue;
+    ordered.push({ ...view, position: ordered.length });
+    seen.add(id);
+  }
+  for (const view of views) {
+    if (seen.has(view.id)) continue;
+    ordered.push({ ...view, position: ordered.length });
+  }
+  return ordered;
+}
+
+export type CustomViewSnapshotPresentation = Pick<
+  TaskListPreference,
+  | "grouping"
+  | "sort"
+  | "direction"
+  | "filter_assignee"
+  | "filter_assignee_ids"
+  | "filter_watching"
+  | "filter_creator"
+  | "filter_due"
+  | "show_labels"
+  | "show_completed"
+  | "show_hours"
+  | "view_mode"
+>;
+
+export type CustomViewSnapshot = {
+  definition: CustomTaskViewDefinition;
+  presentation: CustomViewSnapshotPresentation;
+};
+
+/** Snapshot used when creating a custom view from a sidebar smart list. */
+export function buildCustomViewSnapshotFromSmartView(
+  preferences: TaskListPreference[],
+  smartViewKey: string,
+  customViews: CustomTaskView[] = [],
+  labels: Label[] = [],
+): CustomViewSnapshot {
+  const viewId = customTaskViewId(smartViewKey);
+  const customView = viewId
+    ? customViews.find((view) => view.id === viewId) ?? null
+    : null;
+  const preference = resolveTaskListPreference(preferences, smartViewKey, labels);
+
+  if (customView) {
+    const filters = customTaskViewFilters(customView);
+    return {
+      definition: { ...customView.definition },
+      presentation: {
+        grouping: preference.grouping,
+        sort: preference.sort,
+        direction: preference.direction,
+        ...filters,
+        show_labels: preference.show_labels,
+        show_completed: preference.show_completed,
+        show_hours: preference.show_hours,
+        view_mode: preference.view_mode,
+      },
+    };
+  }
+
+  const scope: CustomTaskViewDefinition["scope"] = smartViewKey === "inbox"
+    ? "inbox"
+    : smartViewKey === "trash"
+      ? "trash"
+      : "all";
+  const filters = SMART_VIEW_FILTER_PRESETS[smartViewKey] ?? {
+    filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
+    filter_assignee_ids: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee_ids,
+    filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
+    filter_creator: DEFAULT_TASK_LIST_PREFERENCE.filter_creator,
+    filter_due: DEFAULT_TASK_LIST_PREFERENCE.filter_due,
+  };
+
+  return {
+    definition: {
+      scope,
+      label_ids: [],
+      ...filters,
+    },
+    presentation: {
+      grouping: preference.grouping,
+      sort: preference.sort,
+      direction: preference.direction,
+      ...filters,
+      show_labels: preference.show_labels,
+      show_completed: preference.show_completed,
+      show_hours: preference.show_hours,
+      view_mode: preference.view_mode,
+    },
+  };
+}
+
+export function customTaskViewFilters(view: CustomTaskView | CustomTaskViewDefinition): TaskListFilterFields {
+  const definition = "definition" in view ? view.definition : view;
+  return {
+    ...normalizeAssigneeFilter({
+      filter_assignee: definition.filter_assignee,
+      filter_assignee_ids: definition.filter_assignee_ids,
+    }),
+    filter_watching: definition.filter_watching,
+    filter_creator: definition.filter_creator,
+    filter_due: definition.filter_due,
+  };
+}
+
 export function resolveTaskListFilters(
   listKey: string,
   preference: TaskListFilterFields,
+  customView?: CustomTaskView | null,
 ): TaskListFilterFields {
-  return SMART_VIEW_FILTER_PRESETS[listKey] ?? {
-    filter_assignee: preference.filter_assignee,
+  // Smart system views keep fixed presets. Custom views (and free lists) use the
+  // live preference so filters can be edited and auto-saved for reuse.
+  if (SMART_VIEW_FILTER_PRESETS[listKey]) {
+    return SMART_VIEW_FILTER_PRESETS[listKey];
+  }
+  if (customView) {
+    const seed = customTaskViewFilters(customView);
+    return {
+      ...normalizeAssigneeFilter({
+        filter_assignee: preference.filter_assignee ?? seed.filter_assignee,
+        filter_assignee_ids: preference.filter_assignee_ids ?? seed.filter_assignee_ids,
+      }),
+      filter_watching: preference.filter_watching ?? seed.filter_watching,
+      filter_creator: preference.filter_creator ?? seed.filter_creator,
+      filter_due: preference.filter_due ?? seed.filter_due,
+    };
+  }
+  return {
+    ...normalizeAssigneeFilter(preference),
     filter_watching: preference.filter_watching,
     filter_creator: preference.filter_creator,
     filter_due: preference.filter_due,
@@ -269,14 +568,23 @@ export function filterTasksForView(input: {
   labels: Label[];
   smartView: string;
   selectedLabelId: string | null;
+  customView?: CustomTaskView | null;
 }) {
-  const { tasks, labels, smartView, selectedLabelId } = input;
-  if (!selectedLabelId && smartView === "trash") {
+  const { tasks, labels, smartView, selectedLabelId, customView } = input;
+  const customScope = customView?.definition.scope;
+  if (!selectedLabelId && (smartView === "trash" || customScope === "trash")) {
     return tasks
       .filter((task) => Boolean(task.deleted_at))
       .sort((left, right) => String(right.deleted_at).localeCompare(String(left.deleted_at)));
   }
   let result = tasks.filter((task) => !task.deleted_at);
+  if (customView?.definition.scope === "inbox") {
+    return result.filter((task) => task.label_ids.length === 0);
+  }
+  if (customView?.definition.scope === "label") {
+    const scope = new Set(customView.definition.label_ids);
+    return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
+  }
   if (selectedLabelId) {
     const scope = labelSubtreeIds(labels, selectedLabelId);
     return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
@@ -291,6 +599,7 @@ export function filterTasksForView(input: {
 export function applyTaskListFilters(input: {
   tasks: Task[];
   filterAssignee?: TaskListFilterAssignee;
+  filterAssigneeIds?: string[];
   filterWatching?: TaskListFilterWatching;
   filterCreator?: TaskListFilterCreator;
   filterDue?: TaskListFilterDue;
@@ -301,16 +610,26 @@ export function applyTaskListFilters(input: {
   const {
     currentUserId,
     filterAssignee = "all",
+    filterAssigneeIds = [],
     filterWatching = "all",
     filterCreator = "all",
     filterDue = "all",
   } = input;
+  const assigneeFilter = normalizeAssigneeFilter({
+    filter_assignee: filterAssignee,
+    filter_assignee_ids: filterAssigneeIds,
+  });
   const now = input.now ?? new Date();
   const weekStartsOn = input.weekStartsOn ?? 1;
   let result = input.tasks;
 
-  if (filterAssignee === "assigned_to_me") {
+  if (assigneeFilter.filter_assignee === "unassigned") {
+    result = result.filter((task) => !task.assignee_id);
+  } else if (assigneeFilter.filter_assignee === "assigned_to_me") {
     result = result.filter((task) => task.assignee_id === currentUserId);
+  } else if (assigneeFilter.filter_assignee === "users") {
+    const ids = new Set(assigneeFilter.filter_assignee_ids);
+    result = result.filter((task) => task.assignee_id != null && ids.has(task.assignee_id));
   }
   if (filterWatching === "watching") {
     result = result.filter((task) => task.participant_ids.includes(currentUserId));
@@ -334,7 +653,6 @@ export function applyTaskListFilters(input: {
     return result.filter((task) => {
       const due = dueTime(task);
       return due != null
-        && !overdue(task)
         && due >= today.getTime()
         && due < tomorrow.getTime();
     });
@@ -374,6 +692,7 @@ export function resolveTaskListPreference(
   const found = preferences.find((item) => item.list_key === listKey);
   const filterDefaults = SMART_VIEW_FILTER_PRESETS[listKey] ?? {
     filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
+    filter_assignee_ids: [...DEFAULT_TASK_LIST_PREFERENCE.filter_assignee_ids],
     filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
     filter_creator: DEFAULT_TASK_LIST_PREFERENCE.filter_creator,
     filter_due: DEFAULT_TASK_LIST_PREFERENCE.filter_due,
@@ -396,6 +715,7 @@ export function resolveTaskListPreference(
   }
   const filters = resolveTaskListFilters(listKey, {
     filter_assignee: found.filter_assignee ?? filterDefaults.filter_assignee,
+    filter_assignee_ids: found.filter_assignee_ids ?? filterDefaults.filter_assignee_ids,
     filter_watching: found.filter_watching ?? filterDefaults.filter_watching,
     filter_creator: found.filter_creator ?? filterDefaults.filter_creator,
     filter_due: found.filter_due ?? filterDefaults.filter_due,

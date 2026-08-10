@@ -15,6 +15,7 @@ export type ShortcutActionId =
   | "task.addSubtask"
   | "task.complete"
   | "task.delete"
+  | "task.logHours"
   | "calendar.viewDay"
   | "calendar.viewWeek"
   | "calendar.viewMonth"
@@ -24,7 +25,9 @@ export type ShortcutActionId =
   | "calendar.prev"
   | "calendar.next"
   | "mindmap.newTask"
-  | "mindmap.fitView";
+  | "mindmap.fitView"
+  | "focus.startPomodoro"
+  | "focus.pausePomodoro";
 
 export type KeyBinding = {
   key: string;
@@ -165,6 +168,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     scopes: ["tasks"],
   },
   {
+    id: "task.logHours",
+    group: "tasks",
+    label: "登记工时",
+    defaultBinding: { key: "h", mod: true, shift: true },
+    remappable: true,
+    allowInInput: false,
+    scopes: ["tasks"],
+  },
+  {
     id: "calendar.viewDay",
     group: "calendar",
     label: "日视图",
@@ -253,6 +265,24 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     remappable: true,
     allowInInput: false,
     scopes: ["mindmap"],
+  },
+  {
+    id: "focus.startPomodoro",
+    group: "focus",
+    label: "开启番茄闹钟",
+    defaultBinding: { key: "p", mod: true, shift: true },
+    remappable: true,
+    allowInInput: false,
+    scopes: ["focus"],
+  },
+  {
+    id: "focus.pausePomodoro",
+    group: "focus",
+    label: "暂停番茄闹钟",
+    defaultBinding: { key: "Space", mod: true, shift: true },
+    remappable: true,
+    allowInInput: false,
+    scopes: ["focus"],
   },
 ];
 

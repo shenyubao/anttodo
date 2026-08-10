@@ -226,6 +226,10 @@ export function createTrayController({ isDev, restoreMainWindow, getMainWindow }
     ipcMain.on("anttodo:tray-set-authenticated", (_event, value) => {
       authenticated = Boolean(value);
     });
+    ipcMain.on("anttodo:tray-set-title", (_event, value) => {
+      if (!tray || typeof value !== "string") return;
+      tray.setTitle(value);
+    });
     ipcMain.on("anttodo:tray-hide", () => {
       hideTrayWindow();
     });

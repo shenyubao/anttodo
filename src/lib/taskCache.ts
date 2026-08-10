@@ -35,6 +35,21 @@ export function isOptimisticTaskId(taskId: string) {
   return taskId.startsWith(OPTIMISTIC_TASK_ID_PREFIX);
 }
 
+/** Fill fields added after older persisted query caches were written. */
+export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBundle {
+  if (
+    Array.isArray(bundle.customTaskViews)
+    && Array.isArray(bundle.taskSystemViewPreferences)
+  ) {
+    return bundle;
+  }
+  return {
+    ...bundle,
+    customTaskViews: bundle.customTaskViews ?? [],
+    taskSystemViewPreferences: bundle.taskSystemViewPreferences ?? [],
+  };
+}
+
 /** Creator auto-watches unless self-assigned (mirrors create_task_with_labels). */
 export function defaultCreatorParticipantIds(
   creatorId: string,

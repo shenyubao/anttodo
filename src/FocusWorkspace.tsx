@@ -6,8 +6,10 @@ import { FocusNotes } from "./FocusNotes";
 import { FocusSettingsDialog } from "./FocusSettingsDialog";
 import { FocusTaskPicker } from "./FocusTaskPicker";
 import { FocusTimer } from "./FocusTimer";
+import { useShortcutHandler } from "./ShortcutProvider";
 import {
   breakSeconds,
+  applyFocusSettingsToRuntime,
   clearFocusRuntimeState,
   createIdleRuntimeState,
   displayedSeconds,
@@ -22,6 +24,8 @@ import {
   remainingSeconds,
   saveFocusRuntimeState,
   summarizeFocusSessions,
+  switchFocusTask,
+  totalElapsedSeconds,
   type FocusRuntimeState,
 } from "./lib/focusSession";
 import type { FocusSession, FocusSettings, Task } from "./types";
@@ -63,7 +67,23 @@ export function FocusWorkspace({
   const titleBaseRef = useRef(typeof document === "undefined" ? "AntTodo" : document.title);
   const completionHandledRef = useRef(false);
   const runtimeRef = useRef(runtime);
+  const skipRuntimeSaveRef = useRef(false);
   runtimeRef.current = runtime;
+
+  useShortcutHandler("focus.startPomodoro", () => {
+    if (!online || runtime.mode !== "pomodoro" || runtime.phase !== "idle") return false;
+    startTimer();
+  });
+
+  useShortcutHandler("focus.pausePomodoro", () => {
+    if (
+      runtime.mode !== "pomodoro"
+      || runtime.phase !== "focusing"
+      || runtime.pausedAt
+      || !runtime.startedAt
+    ) return false;
+    pauseTimer();
+  });
 
   useEffect(() => {
     const restored = loadFocusRuntimeState(userId, workspaceId);
@@ -71,8 +91,27 @@ export function FocusWorkspace({
   }, [userId, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps -- reset only on workspace/user change
 
   useEffect(() => {
+    setRuntime((current) => applyFocusSettingsToRuntime(current, settings));
+  }, [settings]);
+
+  useEffect(() => {
+    if (skipRuntimeSaveRef.current) {
+      skipRuntimeSaveRef.current = false;
+      return;
+    }
     saveFocusRuntimeState(userId, workspaceId, runtime);
   }, [runtime, userId, workspaceId]);
+
+  useEffect(() => {
+    const key = `anttodo:focus-runtime:${userId}:${workspaceId}`;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== key) return;
+      skipRuntimeSaveRef.current = true;
+      setRuntime(loadFocusRuntimeState(userId, workspaceId) ?? createIdleRuntimeState(settings));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [settings, userId, workspaceId]);
 
   useEffect(() => {
     const active = runtime.phase === "focusing"
@@ -296,14 +335,9 @@ export function FocusWorkspace({
 
   async function stopTimer() {
     const current = runtimeRef.current;
-    const endedAt = new Date().toISOString();
-    let elapsed = current.elapsedSeconds;
-    if (current.startedAt && !current.pausedAt) {
-      elapsed += Math.max(
-        0,
-        Math.floor((Date.now() - new Date(current.startedAt).getTime()) / 1000),
-      );
-    }
+    const nowMs = Date.now();
+    const endedAt = new Date(nowMs).toISOString();
+    const elapsed = totalElapsedSeconds(current, nowMs);
 
     if (current.phase === "focusing" || current.phase === "stopwatch") {
       if (elapsed >= 60) {
@@ -314,7 +348,7 @@ export function FocusWorkspace({
           elapsedSeconds: elapsed,
           startedAt: current.startedAt
             ?? current.pausedAt
-            ?? new Date(Date.now() - elapsed * 1000).toISOString(),
+            ?? new Date(nowMs - elapsed * 1000).toISOString(),
           endedAt,
           notes: current.notes,
           taskId: current.taskId,
@@ -328,7 +362,7 @@ export function FocusWorkspace({
         elapsedSeconds: elapsed,
         startedAt: current.startedAt
           ?? current.pausedAt
-          ?? new Date(Date.now() - elapsed * 1000).toISOString(),
+          ?? new Date(nowMs - elapsed * 1000).toISOString(),
         endedAt,
         notes: "",
         taskId: current.taskId,
@@ -343,6 +377,16 @@ export function FocusWorkspace({
       completedPomodoros: current.completedPomodoros,
     });
     clearFocusRuntimeState(userId, workspaceId);
+  }
+
+  async function selectFocusTask(taskId: string | null) {
+    const current = runtimeRef.current;
+    const { sessionToPersist, nextRuntime } = switchFocusTask(current, taskId);
+    if (nextRuntime === current) return;
+    setRuntime(nextRuntime);
+    if (sessionToPersist) {
+      await persistFocusSession(sessionToPersist);
+    }
   }
 
   function startBreak() {
@@ -485,7 +529,7 @@ export function FocusWorkspace({
                 sessions={sessions}
                 selectedTaskId={runtime.taskId}
                 onOpenChange={setPickerOpen}
-                onSelect={(taskId) => setRuntime((current) => ({ ...current, taskId }))}
+                onSelect={(taskId) => void selectFocusTask(taskId)}
               />
             )}
           </div>

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  SHORTCUT_ACTIONS,
   SHORTCUT_STORAGE_KEY,
+  actionsByGroup,
   bindingsEqual,
   bindingFromKeyboardEvent,
   detectShortcutPlatform,
@@ -17,6 +19,31 @@ import {
 } from "./keyboardShortcuts";
 
 describe("keyboardShortcuts", () => {
+  it("includes work hours and pomodoro controls with non-conflicting defaults", () => {
+    expect(SHORTCUT_ACTIONS.find((action) => action.id === "task.logHours")).toMatchObject({
+      group: "tasks",
+      label: "登记工时",
+      defaultBinding: { key: "h", mod: true, shift: true },
+      scopes: ["tasks"],
+    });
+    expect(SHORTCUT_ACTIONS.find((action) => action.id === "focus.startPomodoro")).toMatchObject({
+      group: "focus",
+      label: "开启番茄闹钟",
+      defaultBinding: { key: "p", mod: true, shift: true },
+      scopes: ["focus"],
+    });
+    expect(SHORTCUT_ACTIONS.find((action) => action.id === "focus.pausePomodoro")).toMatchObject({
+      group: "focus",
+      label: "暂停番茄闹钟",
+      defaultBinding: { key: "Space", mod: true, shift: true },
+      scopes: ["focus"],
+    });
+    expect(actionsByGroup().find((group) => group.group === "tasks")?.actions
+      .some((action) => action.id === "task.logHours")).toBe(true);
+    expect(actionsByGroup().find((group) => group.group === "focus")?.actions
+      .map((action) => action.id)).toEqual(["focus.startPomodoro", "focus.pausePomodoro"]);
+  });
+
   it("normalizes and compares bindings", () => {
     expect(normalizeBinding({ key: "S", mod: true })).toEqual({ key: "s", mod: true });
     expect(bindingsEqual({ key: "S", mod: true }, { key: "s", mod: true })).toBe(true);

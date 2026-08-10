@@ -978,8 +978,14 @@ a {
   position: relative;
   width: 100%;
   height: 100%;
+  min-height: 0;
   display: grid;
+  /* Keep the single row inside the viewport so overflow scrolls inside panes
+     (task-scroll / label-tree). Auto rows otherwise grow with content while
+     body { overflow: hidden } clips with nowhere to scroll. */
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns: var(--navigation-rail-width) var(--sidebar-width) minmax(440px, 1fr);
+  overflow: hidden;
   background: var(--surface);
 }
 
@@ -1040,24 +1046,35 @@ body.is-panel-resizing {
   display: none;
 }
 
+/*
+ * TickTick macOS chrome (matched to original desktop clone / Dida rail):
+ * - rail width 65px so the cluster sits fully in the menu bar
+ * - buttons 14px, gap 4px (tighter than system ~8px)
+ * - insets top 9 / left 7
+ */
 body.is-electron.is-macos {
-  /* Wide enough for the traffic-light cluster (≈57px) to sit fully on the rail. */
   --navigation-rail-width: 65px;
 }
 
 body.is-electron.is-macos .window-traffic-lights {
   position: fixed;
-  z-index: 1100;
+  z-index: 10000;
   top: 9px;
   left: 7px;
   display: flex;
+  align-items: center;
   gap: 4px;
+  /* Expand hit target without changing visual spacing. */
+  padding: 6px;
+  margin: -6px;
+  pointer-events: auto;
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
 
 .traffic-light {
   position: relative;
+  box-sizing: border-box;
   width: 14px;
   height: 14px;
   flex: 0 0 14px;
@@ -1066,6 +1083,9 @@ body.is-electron.is-macos .window-traffic-lights {
   border-radius: 50%;
   box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 18%);
   cursor: default;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .traffic-light.close {
@@ -1085,6 +1105,7 @@ body.is-electron.is-macos .window-traffic-lights {
   content: "";
   position: absolute;
   display: block;
+  pointer-events: none;
 }
 
 .window-traffic-lights:hover .traffic-light.close::before,
@@ -1136,6 +1157,7 @@ body.is-electron.is-macos .window-traffic-lights {
   display: none;
 }
 
+/* Starts after the rail so it never covers traffic lights. */
 body.is-electron.is-macos .window-drag-strip {
   position: fixed;
   z-index: 1000;
@@ -1150,7 +1172,6 @@ body.is-electron.is-macos .window-drag-strip {
 }
 
 body.is-electron.is-macos :where(
-  .rail-drag-space,
   .workspace-switcher,
   .content-header,
   .calendar-toolbar,
@@ -1180,6 +1201,7 @@ body.is-electron.is-macos :where(
   position: relative;
   z-index: 40;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1193,10 +1215,18 @@ body.is-electron.is-macos :where(
   display: none;
 }
 
+/*
+ * Spacer under traffic lights. no-drag + pointer-events none so custom controls
+ * remain clickable and nothing steals the top-left hit targets.
+ */
 body.is-electron.is-macos .rail-drag-space {
   display: block;
   width: 100%;
   height: 24px;
+  flex: 0 0 24px;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 body.is-electron.is-macos .rail-avatar {
@@ -1672,6 +1702,7 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .sidebar {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--sidebar);
@@ -1732,11 +1763,39 @@ body.is-electron.is-macos .rail-button.active svg {
   text-align: left;
 }
 
+.sidebar-item {
+  position: relative;
+  padding: 0;
+  cursor: default;
+}
+
+.sidebar-item-button {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.sidebar-item.has-more-menu .sidebar-item-button {
+  padding-right: 32px;
+}
+
 .sidebar-item svg,
 .label-row > svg {
   width: 17px;
   height: 17px;
   stroke-width: 1.75;
+  flex: none;
 }
 
 .sidebar-item:hover,
@@ -1751,8 +1810,61 @@ body.is-electron.is-macos .rail-button.active svg {
   font-weight: 400;
 }
 
-.sidebar-item > span:nth-of-type(1) {
+.sidebar-item-label {
+  min-width: 0;
   flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-item .item-count {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.sidebar-item-more {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: rgb(25 25 25 / 40%);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%);
+}
+
+.sidebar-item-more svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+
+.sidebar-item.has-more-menu:hover .sidebar-item-more,
+.sidebar-item-more:focus-visible {
+  opacity: 1;
+}
+
+.sidebar-item-more:hover,
+.sidebar-item-more:focus-visible {
+  color: var(--text);
+  background: rgb(25 25 25 / 5%);
+  outline: none;
+}
+
+.sidebar-item.has-more-menu:hover .sidebar-item-count-with-more,
+.sidebar-item.has-more-menu:focus-within .sidebar-item-count-with-more {
+  opacity: 0;
 }
 
 .sidebar-section-header {
@@ -1814,7 +1926,9 @@ body.is-electron.is-macos .rail-button.active svg {
 .label-tree {
   position: relative;
   min-height: 0;
+  flex: 1 1 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 10px 12px;
 }
 
@@ -2004,8 +2118,11 @@ body.is-electron.is-macos .rail-button.active svg {
 
 .workspace-main {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Constrain the flex column so .task-scroll / kanban / timeline can scroll. */
+  overflow: hidden;
   background: var(--surface);
 }
 
@@ -4111,6 +4228,17 @@ html.dark .mind-map-date-content > svg {
   width: 176px;
 }
 
+.task-view-submenu.task-view-submenu-scrollable {
+  max-height: min(320px, calc(100vh - 80px));
+  overflow-y: auto;
+}
+
+.task-view-submenu .task-assignee-divider {
+  height: 1px;
+  margin: 4px 10px;
+  background: rgb(25 25 25 / 9%);
+}
+
 .task-view-menu > button,
 .task-view-submenu > button,
 .task-section-menu > button {
@@ -4159,6 +4287,277 @@ html.dark .mind-map-date-content > svg {
   width: 15px;
   height: 15px;
   flex: 0 0 auto;
+}
+
+.save-task-view-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.save-task-view-dialog > form > header,
+.save-task-view-dialog > form > footer {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.save-task-view-dialog > form > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.save-task-view-dialog > form > header h2 {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 21px;
+}
+
+.dialog-close-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.dialog-close-button:hover,
+.dialog-close-button:focus-visible {
+  outline: 0;
+  color: var(--text);
+  background: var(--hover);
+}
+
+.dialog-close-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.save-task-view-body {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.save-task-view-body input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: 14px;
+}
+
+.save-task-view-body input:focus {
+  outline: 0;
+  border-color: #4772fa;
+  box-shadow: 0 0 0 2px rgb(71 114 250 / 12%);
+}
+
+.save-task-view-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.save-task-view-dialog > form > footer {
+  justify-content: flex-end;
+  padding-top: 8px;
+  padding-bottom: 12px;
+}
+
+.smart-views-settings {
+  min-height: 100%;
+  color: var(--text);
+}
+
+.smart-views-settings > h1 {
+  height: 25px;
+  margin: 0 18px 6px;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 25px;
+}
+
+.smart-views-settings-description {
+  margin: 0 18px var(--settings-page-title-gap, 16px);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.smart-views-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--settings-section-title-gap, 20px);
+  margin: 0 18px 24px;
+}
+
+.smart-views-settings-group > h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.smart-views-settings-list {
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--hover);
+}
+
+.smart-view-setting-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 10px;
+  color: var(--text);
+  font-size: 14px;
+  background: transparent;
+}
+
+.smart-view-setting-row + .smart-view-setting-row {
+  border-top: 1px solid var(--line);
+}
+
+.smart-view-setting-row.is-dragging {
+  z-index: 1;
+  opacity: 0.72;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 12%);
+}
+
+.smart-view-drag-handle {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: rgba(25, 25, 25, 0.35);
+  background: transparent;
+  cursor: grab;
+}
+
+.smart-view-drag-handle:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--selected);
+}
+
+.smart-view-drag-handle:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.smart-view-drag-handle:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 45%);
+  outline-offset: 1px;
+}
+
+.smart-view-drag-handle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.smart-view-setting-row > span:first-of-type {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smart-view-setting-control,
+.smart-view-setting-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.smart-view-setting-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.smart-view-setting-control i,
+.smart-view-visibility-button,
+.smart-view-delete-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.smart-view-setting-control i {
+  cursor: pointer;
+}
+
+.smart-view-setting-control input:focus-visible + i,
+.smart-view-visibility-button:focus-visible,
+.smart-view-delete-button:focus-visible {
+  outline: 2px solid rgb(71 114 250 / 45%);
+  outline-offset: 1px;
+}
+
+.smart-view-setting-control input:not(:disabled) + i:hover,
+.smart-view-visibility-button:not(:disabled):hover,
+.smart-view-delete-button:not(:disabled):hover {
+  color: var(--text);
+  background: var(--selected);
+}
+
+.smart-view-setting-control input:disabled + i,
+.smart-view-visibility-button:disabled,
+.smart-view-delete-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.smart-view-setting-control svg,
+.smart-view-visibility-button svg,
+.smart-view-delete-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.smart-view-delete-button {
+  color: var(--danger);
+}
+
+.smart-views-settings-empty {
+  margin: 0;
+  padding: 16px;
+  border-radius: 10px;
+  color: var(--muted);
+  background: var(--hover);
+  font-size: 13px;
+  line-height: 19px;
 }
 
 .icon-button,
@@ -4601,8 +5000,11 @@ html.dark .mind-map-date-content > svg {
 
 .task-scroll {
   min-height: 0;
-  flex: 1;
-  overflow: auto;
+  flex: 1 1 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 16px 0 70px;
 }
 
@@ -11666,6 +12068,9 @@ html.dark .task-detail {
   padding: 50px 20px 40px;
   background: var(--surface);
   color: var(--text);
+  /* Settings dialog spacing standard */
+  --settings-page-title-gap: 16px;
+  --settings-section-title-gap: 20px;
 }
 
 .ai-feature-settings {
@@ -11675,18 +12080,21 @@ html.dark .task-detail {
 
 .ai-feature-settings > h1 {
   height: 25px;
-  margin: 0 18px 18px;
+  margin: 0 18px var(--settings-page-title-gap, 16px);
   font-size: 16px;
   font-weight: 500;
   line-height: 25px;
 }
 
 .ai-feature-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--settings-section-title-gap, 20px);
   margin-bottom: 24px;
 }
 
 .ai-feature-settings-section > h2 {
-  margin: 0 18px 8px;
+  margin: 0 18px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -11951,7 +12359,7 @@ html.dark .task-detail {
 
 .date-time-settings > h1 {
   height: 25px;
-  margin: 0 18px 13px;
+  margin: 0 18px var(--settings-page-title-gap, 16px);
   font-size: 16px;
   font-weight: 500;
   line-height: 25px;
@@ -11971,7 +12379,7 @@ html.dark .task-detail {
 }
 
 .notification-settings-lead {
-  margin: 0 18px 16px;
+  margin: 0 18px var(--settings-page-title-gap, 16px);
   color: var(--muted);
   font-size: 13px;
   line-height: 18px;
@@ -12166,7 +12574,7 @@ html.dark .task-detail {
 
 .appearance-settings > h1 {
   height: 25px;
-  margin: 0 18px 13px;
+  margin: 0 18px var(--settings-page-title-gap, 16px);
   font-size: 16px;
   font-weight: 500;
   line-height: 25px;
@@ -12193,10 +12601,14 @@ html.dark .task-detail {
 
 .appearance-theme-section {
   margin: 0 2px;
+  display: flex;
+  flex-direction: column;
+  /* Prefer gap over margin so title/content spacing cannot collapse. */
+  gap: var(--settings-section-title-gap, 20px);
 }
 
 .appearance-theme-section-title {
-  margin: 0 16px 12px;
+  margin: 0 16px;
   color: var(--muted);
   font-size: 13px;
   font-weight: 500;
@@ -12761,13 +13173,16 @@ html.dark .task-detail {
 
 .shortcuts-settings > h1 {
   height: 25px;
-  margin: 0 18px 8px;
+  margin: 0 18px var(--settings-page-title-gap, 16px);
   font-size: 16px;
   font-weight: 500;
   line-height: 25px;
 }
 
 .shortcuts-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--settings-section-title-gap, 20px);
   margin-top: 10px;
 }
 
@@ -12776,10 +13191,10 @@ html.dark .task-detail {
 }
 
 .shortcuts-settings-group-title {
-  height: 30px;
   margin: 0 18px;
   display: flex;
   align-items: center;
+  min-height: 18px;
   color: rgb(25 25 25 / 30%);
   font-size: 12px;
   font-weight: 700;
@@ -13028,7 +13443,7 @@ body.is-electron.is-macos .desktop-update-banner {
 }
 
 .team-settings-header {
-  margin-bottom: 22px;
+  margin-bottom: var(--settings-page-title-gap, 16px);
 }
 
 .team-settings-header h2 {
@@ -13511,7 +13926,7 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .connector-settings-panel h2 {
   height: 25px;
-  margin: 0 0 12px;
+  margin: 0 0 var(--settings-page-title-gap, 16px);
   padding-left: 18px;
   color: #191919;
   font-size: 15px;
@@ -15267,6 +15682,9 @@ body.is-electron.is-macos .desktop-update-banner {
   width: 100%;
   height: 40px;
   margin: 0;
+}
+
+.mobile-task-views .sidebar-item-button {
   padding-inline: 12px;
 }
 
@@ -15981,7 +16399,7 @@ body.is-tray.is-electron.is-macos .window-drag-strip {
   position: relative;
   flex: none;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   height: 52px;
   border-top: 1px solid rgba(25, 25, 25, 0.06);
   background: #fff;
@@ -16007,6 +16425,179 @@ body.is-tray.is-electron.is-macos .window-drag-strip {
 .tray-tabbar > button svg {
   width: 22px;
   height: 22px;
+}
+
+.tray-focus {
+  padding-top: 10px;
+}
+
+.tray-focus-mode-toggle {
+  align-self: center;
+  flex: none;
+  margin-bottom: 8px;
+}
+
+.tray-focus-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -6px;
+  padding: 0 6px 12px;
+}
+
+.tray-focus-hero {
+  position: relative;
+  display: flex;
+  min-height: 250px;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 0 12px;
+}
+
+.tray-focus .focus-timer-tray {
+  min-height: 0;
+  max-width: 100%;
+  gap: 14px;
+}
+
+.tray-focus .focus-timer-tray .focus-task-link {
+  max-width: 240px;
+  padding: 2px 6px;
+  font-size: 13px;
+}
+
+.tray-focus .focus-timer-tray .focus-ring {
+  --focus-ring-size: 202px;
+}
+
+.tray-focus .focus-timer-tray .focus-clock {
+  font-size: 42px;
+}
+
+.tray-focus .focus-timer-tray .focus-timer-actions,
+.tray-focus .focus-timer-tray .focus-harvest-actions {
+  max-width: 220px;
+  gap: 8px;
+}
+
+.tray-focus .focus-timer-tray .focus-start-button,
+.tray-focus .focus-timer-tray .focus-action-button {
+  height: 40px;
+}
+
+.tray-focus .focus-task-picker {
+  top: 6px;
+  max-height: 236px;
+}
+
+.tray-focus-notice {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgb(225 83 83 / 9%);
+  color: #b74646;
+  font-size: 12px;
+}
+
+.tray-focus-notice button {
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.tray-focus-records {
+  padding: 12px 4px 0;
+  border-top: 1px solid var(--line);
+}
+
+.tray-focus-records h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.tray-focus-records-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tray-focus-records-day {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tray-focus-record {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 6px 0;
+}
+
+.tray-focus-record > svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--blue);
+}
+
+.tray-focus-record-body {
+  min-width: 0;
+}
+
+.tray-focus-record-time {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tray-focus-record-title,
+.tray-focus-record-notes,
+.tray-focus-record-duration {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.tray-focus-record-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tray-focus-record-notes {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tray-focus-record-duration {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tray-focus-records-empty {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .tray-settings-menu {

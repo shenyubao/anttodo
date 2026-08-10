@@ -35,7 +35,7 @@ export type TaskListSort =
   | "label"
   | "priority"
   | "assignee";
-export type TaskListFilterAssignee = "all" | "assigned_to_me";
+export type TaskListFilterAssignee = "all" | "unassigned" | "assigned_to_me" | "users";
 export type TaskListFilterWatching = "all" | "watching";
 export type TaskListFilterCreator = "all" | "created_by_me";
 export type TaskListFilterDue =
@@ -385,6 +385,7 @@ export type TaskListPreference = {
   sort: TaskListSort;
   direction: SortDirection;
   filter_assignee: TaskListFilterAssignee;
+  filter_assignee_ids: string[];
   filter_watching: TaskListFilterWatching;
   filter_creator: TaskListFilterCreator;
   filter_due: TaskListFilterDue;
@@ -392,6 +393,39 @@ export type TaskListPreference = {
   show_completed: boolean;
   show_hours: boolean;
   view_mode: TaskViewMode;
+  updated_at?: string;
+};
+
+export type CustomTaskViewScope = "all" | "label" | "inbox" | "trash";
+
+export type CustomTaskViewDefinition = {
+  scope: CustomTaskViewScope;
+  label_ids: string[];
+  filter_assignee: TaskListFilterAssignee;
+  filter_assignee_ids: string[];
+  filter_watching: TaskListFilterWatching;
+  filter_creator: TaskListFilterCreator;
+  filter_due: TaskListFilterDue;
+};
+
+export type CustomTaskView = {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  name: string;
+  definition: CustomTaskViewDefinition;
+  visible: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskSystemViewPreference = {
+  user_id: string;
+  workspace_id: string;
+  view_key: "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
+  visible: boolean;
+  position: number;
   updated_at?: string;
 };
 
@@ -471,6 +505,8 @@ export type WorkspaceBundle = {
   syncRuns: SyncRun[];
   conflicts: SyncConflict[];
   taskListPreferences: TaskListPreference[];
+  customTaskViews: CustomTaskView[];
+  taskSystemViewPreferences: TaskSystemViewPreference[];
   taskSections: TaskSection[];
   taskPlacements: TaskPlacement[];
 };

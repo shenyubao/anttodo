@@ -99,6 +99,54 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await expect(highPriorityColumn.getByText("补齐树形标签 RLS 测试", { exact: true })).toBeVisible();
 });
 
+test("custom task views can be saved, filtered, hidden, and deleted", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitem", { name: "另存为视图" }).click();
+
+  const saveDialog = page.getByRole("dialog", { name: "另存为视图" });
+  await saveDialog.getByRole("textbox", { name: "视图名称" }).fill("我的筛选视图");
+  await saveDialog.getByRole("button", { name: "保存" }).click();
+
+  await expect(page).toHaveURL(/\/views\/custom\/[0-9a-f-]+$/);
+  await expect(page.getByRole("heading", { name: "我的筛选视图" })).toBeVisible();
+  const customSidebarItem = page.locator(".sidebar .sidebar-item").filter({ hasText: "我的筛选视图" });
+  await expect(customSidebarItem).toBeVisible();
+
+  // Custom views keep filters editable; changes auto-save via list preference.
+  await page.getByRole("button", { name: "过滤" }).click();
+  await page.getByRole("menuitem", { name: /时间/ }).click();
+  await page.getByRole("menuitemradio", { name: "今天" }).click();
+  await page.getByRole("button", { name: "过滤" }).click();
+  await page.getByRole("menuitem", { name: /时间/ }).click();
+  await expect(page.getByRole("menuitemradio", { name: "今天" })).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "指派给我" }).click();
+  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
+  await customSidebarItem.click();
+  await expect(page.getByRole("heading", { name: "我的筛选视图" })).toBeVisible();
+  await page.getByRole("button", { name: "过滤" }).click();
+  await page.getByRole("menuitem", { name: /时间/ }).click();
+  await expect(page.getByRole("menuitemradio", { name: "今天" })).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+  const settings = page.getByRole("dialog", { name: "设置" });
+  await settings.getByRole("button", { name: "智能视图" }).click();
+  await expect(settings.getByText("我的筛选视图", { exact: true })).toBeVisible();
+
+  await settings.getByRole("button", { name: "隐藏我的筛选视图" }).click();
+  await expect(customSidebarItem).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await settings.getByRole("button", { name: "删除我的筛选视图" }).click();
+  await expect(settings.getByText("我的筛选视图", { exact: true })).toHaveCount(0);
+  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
+  await expect(customSidebarItem).toHaveCount(0);
+});
+
 test("kanban cards can be reordered by dragging the card body", async ({ page }) => {
   await page.goto("/?demo=1#/workspaces/workspace-team/tags/urgent/kanban");
   const column = page.getByRole("region", { name: "未分组" });

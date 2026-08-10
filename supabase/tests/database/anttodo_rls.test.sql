@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(152);
+select plan(160);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -899,6 +899,17 @@ select is(
 );
 select is(
   (
+    select cardinality(filter_assignee_ids)
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  0,
+  'filter_assignee_ids defaults to empty for a newly saved preference'
+);
+select is(
+  (
     select filter_due::text
     from public.task_list_preferences
     where user_id = '10000000-0000-0000-0000-000000000001'
@@ -1052,6 +1063,57 @@ select is(
 );
 select lives_ok(
   $$
+    update public.task_list_preferences
+    set filter_assignee = 'users',
+        filter_assignee_ids = array[
+          '10000000-0000-0000-0000-000000000001'::uuid,
+          '10000000-0000-0000-0000-000000000002'::uuid
+        ]
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  'a user can filter by multiple assignee ids'
+);
+select is(
+  (
+    select filter_assignee::text || '/' || cardinality(filter_assignee_ids)::text
+    from public.task_list_preferences
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  ),
+  'users/2',
+  'multi-select assignee filter persists after update'
+);
+select throws_ok(
+  $$
+    update public.task_list_preferences
+    set filter_assignee = 'users',
+        filter_assignee_ids = '{}'
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  '23514',
+  null,
+  'users mode requires non-empty filter_assignee_ids'
+);
+select throws_ok(
+  $$
+    update public.task_list_preferences
+    set filter_assignee = 'all',
+        filter_assignee_ids = array['10000000-0000-0000-0000-000000000001'::uuid]
+    where user_id = '10000000-0000-0000-0000-000000000001'
+      and workspace_id = '20000000-0000-0000-0000-000000000001'
+      and list_key = 'label:30000000-0000-0000-0000-000000000001'
+  $$,
+  '23514',
+  null,
+  'exclusive modes require empty filter_assignee_ids'
+);
+select lives_ok(
+  $$
     insert into public.task_sections (
       id, workspace_id, list_key, name, position, created_by
     ) values (
@@ -1167,6 +1229,17 @@ select is(
   1,
   'a view-only task member can read comments'
 );
+reset role;
+select ok(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
+  'flush buffered mention notification after comment create'
+);
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true
+);
 select is(
   (select count(*)::integer from public.notifications
     where read_at is null
@@ -1238,6 +1311,17 @@ select lives_ok(
     )
   $$,
   'self mentions do not prevent comment creation'
+);
+reset role;
+select ok(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
+  'flush buffered self-mention notification'
+);
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
 );
 select is(
   (
@@ -1697,6 +1781,10 @@ select lives_ok(
   'task editor can mention a viewer in the description'
 );
 reset role;
+select ok(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
+  'flush buffered description mention notification'
+);
 select is(
   (
     select count(*)::integer

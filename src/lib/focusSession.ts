@@ -29,6 +29,8 @@ export type FocusOverviewStats = {
   totalFocusSeconds: number;
 };
 
+export const FOCUS_RUNTIME_UPDATED_EVENT = "anttodo:focus-runtime-updated";
+
 export const DEFAULT_FOCUS_SETTINGS: Omit<FocusSettings, "user_id" | "workspace_id"> = {
   pomodoro_minutes: 25,
   short_break_minutes: 5,
@@ -79,6 +81,14 @@ export function formatFocusClock(totalSeconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+export function formatFocusTrayTitle(
+  state: FocusRuntimeState | null | undefined,
+  nowMs = Date.now(),
+) {
+  if (!state || state.mode !== "pomodoro" || state.phase !== "focusing") return "";
+  return formatFocusClock(remainingSeconds(state, nowMs));
+}
+
 export function formatFocusDuration(totalSeconds: number) {
   const safe = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(safe / 3600);
@@ -111,6 +121,83 @@ export function progressRatio(state: FocusRuntimeState, nowMs = Date.now()) {
   }
   const elapsed = state.plannedSeconds - remainingSeconds(state, nowMs);
   return Math.min(1, Math.max(0, elapsed / state.plannedSeconds));
+}
+
+/** Minimum elapsed seconds before a focus segment is stored (and applied to actual hours). */
+export const FOCUS_SESSION_MIN_SECONDS = 60;
+
+export function totalElapsedSeconds(state: FocusRuntimeState, nowMs = Date.now()) {
+  return Math.max(0, state.elapsedSeconds + runningDeltaSeconds(state, nowMs));
+}
+
+export type SwitchFocusTaskSession = {
+  mode: "stopwatch";
+  kind: "focus";
+  plannedSeconds: number;
+  elapsedSeconds: number;
+  startedAt: string;
+  endedAt: string;
+  notes: string;
+  taskId: string | null;
+};
+
+export type SwitchFocusTaskResult = {
+  sessionToPersist: SwitchFocusTaskSession | null;
+  nextRuntime: FocusRuntimeState;
+};
+
+/**
+ * When the linked task changes during an active stopwatch, settle the previous
+ * segment onto the old task (if long enough) and start a fresh stopwatch for the
+ * new task. Other phases only update taskId.
+ */
+export function switchFocusTask(
+  state: FocusRuntimeState,
+  nextTaskId: string | null,
+  nowMs = Date.now(),
+): SwitchFocusTaskResult {
+  if (state.taskId === nextTaskId) {
+    return { sessionToPersist: null, nextRuntime: state };
+  }
+
+  if (state.phase !== "stopwatch") {
+    return {
+      sessionToPersist: null,
+      nextRuntime: { ...state, taskId: nextTaskId },
+    };
+  }
+
+  const elapsed = totalElapsedSeconds(state, nowMs);
+  const endedAt = new Date(nowMs).toISOString();
+  const sessionToPersist = elapsed >= FOCUS_SESSION_MIN_SECONDS
+    ? {
+        mode: "stopwatch" as const,
+        kind: "focus" as const,
+        plannedSeconds: elapsed,
+        elapsedSeconds: elapsed,
+        startedAt: state.startedAt
+          ?? state.pausedAt
+          ?? new Date(nowMs - elapsed * 1000).toISOString(),
+        endedAt,
+        notes: state.notes,
+        taskId: state.taskId,
+      }
+    : null;
+
+  return {
+    sessionToPersist,
+    nextRuntime: {
+      ...state,
+      taskId: nextTaskId,
+      phase: "stopwatch",
+      mode: "stopwatch",
+      plannedSeconds: 0,
+      elapsedSeconds: 0,
+      startedAt: new Date(nowMs).toISOString(),
+      pausedAt: null,
+      breakKind: null,
+    },
+  };
 }
 
 function runningDeltaSeconds(state: FocusRuntimeState, nowMs: number) {
@@ -349,6 +436,20 @@ export function breakSeconds(
   return (kind === "long_break" ? settings.long_break_minutes : settings.short_break_minutes) * 60;
 }
 
+export function applyFocusSettingsToRuntime(
+  state: FocusRuntimeState,
+  settings: Pick<FocusSettings, "pomodoro_minutes" | "short_break_minutes" | "long_break_minutes">,
+): FocusRuntimeState {
+  if (state.phase !== "idle" && state.phase !== "harvested") return state;
+  if (state.mode !== "pomodoro") return state;
+
+  const plannedSeconds = state.phase === "harvested"
+    ? breakSeconds(state.breakKind ?? "short_break", settings)
+    : settings.pomodoro_minutes * 60;
+  if (state.plannedSeconds === plannedSeconds) return state;
+  return { ...state, plannedSeconds };
+}
+
 export function focusRuntimeStorageKey(userId: string, workspaceId: string) {
   return `anttodo:focus-runtime:${userId}:${workspaceId}`;
 }
@@ -378,6 +479,11 @@ export function saveFocusRuntimeState(
   } catch {
     // Ignore quota / private mode failures.
   }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(FOCUS_RUNTIME_UPDATED_EVENT, {
+      detail: { userId, workspaceId },
+    }));
+  }
 }
 
 export function clearFocusRuntimeState(userId: string, workspaceId: string) {
@@ -385,6 +491,27 @@ export function clearFocusRuntimeState(userId: string, workspaceId: string) {
     localStorage.removeItem(focusRuntimeStorageKey(userId, workspaceId));
   } catch {
     // Ignore storage failures.
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(FOCUS_RUNTIME_UPDATED_EVENT, {
+      detail: { userId, workspaceId },
+    }));
+  }
+}
+
+export function claimFocusRuntimeCompletion(
+  userId: string,
+  workspaceId: string,
+  claimKey: string,
+) {
+  if (typeof localStorage === "undefined") return true;
+  const key = `anttodo:focus-completion:${userId}:${workspaceId}:${claimKey}`;
+  try {
+    if (localStorage.getItem(key)) return false;
+    localStorage.setItem(key, new Date().toISOString());
+    return true;
+  } catch {
+    return true;
   }
 }
 

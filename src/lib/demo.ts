@@ -262,6 +262,8 @@ export function createDemoBundle(): WorkspaceBundle {
     syncRuns: structuredClone(syncRuns),
     conflicts: structuredClone(conflicts),
     taskListPreferences: [],
+    customTaskViews: [],
+    taskSystemViewPreferences: [],
     taskSections: [],
     taskPlacements: [],
   };

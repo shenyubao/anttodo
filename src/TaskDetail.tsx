@@ -41,7 +41,7 @@ import { getPriorityOption, PriorityControl } from "./PriorityControl";
 import { TaskComments, type CreateCommentInput } from "./TaskComments";
 import { TaskActivity } from "./TaskActivity";
 import { TaskCliTerminal } from "./TaskCliTerminal";
-import { FLUSH_PENDING_EDITS_EVENT } from "./ShortcutProvider";
+import { FLUSH_PENDING_EDITS_EVENT, useShortcutHandler } from "./ShortcutProvider";
 import {
   TaskRichTextEditor,
   type TaskRichTextEditorHandle,
@@ -916,6 +916,11 @@ function TaskMoreMenu({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useShortcutHandler("task.logHours", () => {
+    if (!online) return false;
+    setHoursOpen(true);
+  });
 
   useEffect(() => {
     setOpen(false);

@@ -10,6 +10,7 @@ import {
 export function FocusTimer({
   state,
   nowMs,
+  variant = "default",
   taskTitle,
   online,
   onOpenTaskPicker,
@@ -23,6 +24,7 @@ export function FocusTimer({
 }: {
   state: FocusRuntimeState;
   nowMs: number;
+  variant?: "default" | "tray";
   taskTitle: string | null;
   online: boolean;
   onOpenTaskPicker: () => void;
@@ -44,7 +46,7 @@ export function FocusTimer({
   };
 
   return (
-    <div className="focus-timer" id="pomodoro-timer">
+    <div className={clsx("focus-timer", variant === "tray" && "focus-timer-tray")} id="pomodoro-timer">
       <button
         type="button"
         className="focus-task-link"

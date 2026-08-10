@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(15);
+select plan(33);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -114,6 +114,36 @@ reset role;
 
 select is(
   (
+    select count(*)::integer
+    from public.notifications
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000002'
+      and notification_type = 'task_assigned'
+  ),
+  0,
+  'assignment is buffered and does not write public.notifications immediately'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000002'
+      and notification_type = 'task_assigned'
+  ),
+  1,
+  'assignment stages task_assigned in the dispatch buffer'
+);
+
+select is(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 1,
+  true,
+  'force flush drains due buffered notifications'
+);
+
+select is(
+  (
     select notification_type
     from public.notifications
     where task_id = '44100000-0000-0000-0000-000000000001'
@@ -122,7 +152,7 @@ select is(
     limit 1
   ),
   'task_assigned',
-  'assignment creates task_assigned notification for new assignee'
+  'assignment creates task_assigned notification after flush for new assignee'
 );
 
 select is(
@@ -152,6 +182,12 @@ select lives_ok(
 reset role;
 
 select is(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 1,
+  true,
+  'flush after self-assign'
+);
+
+select is(
   (
     select count(*)::integer
     from public.notifications
@@ -169,14 +205,86 @@ select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-0000000
 select lives_ok(
   $$
     update public.tasks
-    set assignee_id = '14100000-0000-0000-0000-000000000002',
-        title = 'Notify task renamed'
+    set title = 'Notify task renamed once'
     where id = '44100000-0000-0000-0000-000000000001'
   $$,
-  'owner can rename task and restore assignee'
+  'owner renames task first time'
+);
+
+select lives_ok(
+  $$
+    update public.tasks
+    set title = 'Notify task renamed twice'
+    where id = '44100000-0000-0000-0000-000000000001'
+  $$,
+  'owner renames task second time'
+);
+
+select lives_ok(
+  $$
+    update public.tasks
+    set status = 'completed',
+        completed_at = now()
+    where id = '44100000-0000-0000-0000-000000000001'
+  $$,
+  'owner completes task after renames'
 );
 
 reset role;
+
+select is(
+  (
+    select count(*)::integer
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000003'
+      and notification_type = 'participant_title_changed'
+  ),
+  1,
+  'same-scenario title edits collapse to one buffer row'
+);
+
+select is(
+  (
+    select payload->>'before'
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000003'
+      and notification_type = 'participant_title_changed'
+  ),
+  'Notify task',
+  'merged title payload keeps first before value'
+);
+
+select is(
+  (
+    select payload->>'after'
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000003'
+      and notification_type = 'participant_title_changed'
+  ),
+  'Notify task renamed twice',
+  'merged title payload uses latest after value'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000003'
+      and notification_type = 'participant_status_changed'
+  ),
+  1,
+  'title and status changes stay on separate scenarios'
+);
+
+select is(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 1,
+  true,
+  'flush title/status buffer rows'
+);
 
 select is(
   (
@@ -187,7 +295,29 @@ select is(
       and notification_type = 'participant_title_changed'
   ),
   1,
-  'title change notifies participants'
+  'title change notifies participants after flush'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+
+select lives_ok(
+  $$
+    update public.tasks
+    set status = 'open',
+        completed_at = null,
+        assignee_id = '14100000-0000-0000-0000-000000000002'
+    where id = '44100000-0000-0000-0000-000000000001'
+  $$,
+  'owner reopens task and restores assignee for comment test'
+);
+
+reset role;
+
+select is(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
+  true,
+  'flush reopen/assign buffer rows'
 );
 
 set local role authenticated;
@@ -206,6 +336,12 @@ select lives_ok(
 );
 
 reset role;
+
+select is(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 1,
+  true,
+  'flush comment buffer rows'
+);
 
 select is(
   (
@@ -250,6 +386,12 @@ select lives_ok(
 reset role;
 
 select is(
+  anttodo_private.force_flush_notification_dispatch_buffer() >= 1,
+  true,
+  'flush subtask buffer rows'
+);
+
+select is(
   (
     select count(*)::integer
     from public.notifications
@@ -259,6 +401,52 @@ select is(
   ),
   1,
   'subtask create notifies participants'
+);
+
+-- Mention cancels pending comment buffer for the mentioned user.
+delete from anttodo_private.notification_dispatch_buffer;
+delete from public.notifications
+where task_id = '44100000-0000-0000-0000-000000000001';
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+
+select lives_ok(
+  $$
+    select public.create_task_comment(
+      '44100000-0000-0000-0000-000000000001',
+      '@participant please review',
+      array[]::text[],
+      array['14100000-0000-0000-0000-000000000003'::uuid]
+    )
+  $$,
+  'owner can comment with mention'
+);
+
+reset role;
+
+select is(
+  (
+    select count(*)::integer
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000003'
+      and notification_type = 'participant_new_comment'
+  ),
+  0,
+  'mention cancels buffered participant_new_comment for mentioned user'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from anttodo_private.notification_dispatch_buffer
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000003'
+      and notification_type = 'todo_mentioned'
+  ),
+  1,
+  'mention stages todo_mentioned buffer for mentioned user'
 );
 
 select * from finish();

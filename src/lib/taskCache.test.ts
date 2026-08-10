@@ -13,6 +13,7 @@ import {
   defaultCreatorParticipantIds,
   findTaskIdForSubtask,
   isOptimisticSubtaskId,
+  normalizeWorkspaceBundle,
   patchSubtaskInBundle,
   removeSubtaskFromBundle,
   removeTaskFromBundle,
@@ -37,12 +38,28 @@ const emptyBundle = (): WorkspaceBundle => ({
   connectors: [],
   syncRuns: [],
   conflicts: [],
-  taskListPreferences: [],
-  taskSections: [],
+    taskListPreferences: [],
+    customTaskViews: [],
+    taskSystemViewPreferences: [],
+    taskSections: [],
   taskPlacements: [],
 });
 
 describe("task cache updates", () => {
+  it("normalizes workspace bundles missing newer view fields", () => {
+    const stale = emptyBundle();
+    delete (stale as { customTaskViews?: WorkspaceBundle["customTaskViews"] }).customTaskViews;
+    delete (stale as { taskSystemViewPreferences?: WorkspaceBundle["taskSystemViewPreferences"] })
+      .taskSystemViewPreferences;
+
+    const normalized = normalizeWorkspaceBundle(stale as WorkspaceBundle);
+    expect(normalized.customTaskViews).toEqual([]);
+    expect(normalized.taskSystemViewPreferences).toEqual([]);
+
+    const current = emptyBundle();
+    expect(normalizeWorkspaceBundle(current)).toBe(current);
+  });
+
   it("auto-watches creator unless self-assigned", () => {
     expect(defaultCreatorParticipantIds("user", null)).toEqual(["user"]);
     expect(defaultCreatorParticipantIds("user", undefined)).toEqual(["user"]);

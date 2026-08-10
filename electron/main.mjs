@@ -239,7 +239,13 @@ function createWindow() {
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    ...(isMac ? { titleBarStyle: "hidden" } : {}),
+    ...(isMac
+      ? {
+          // System traffic-light spacing cannot be tightened; hide and draw compact
+          // controls (TickTick-style) in the renderer instead.
+          titleBarStyle: "hidden",
+        }
+      : {}),
     backgroundColor: "#f6f7f9",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),

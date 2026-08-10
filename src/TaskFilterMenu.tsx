@@ -1,12 +1,17 @@
 import { Check, ChevronRight, ListFilter } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TASK_FILTER_ASSIGNEE_OPTIONS,
   TASK_FILTER_CREATOR_OPTIONS,
   TASK_FILTER_DUE_OPTIONS,
   TASK_FILTER_WATCHING_OPTIONS,
+  assigneeFilterLabel,
+  exclusiveAssigneeFilter,
+  toggleAssigneeUserFilter,
 } from "./lib/taskList";
+import { memberDisplayName } from "./lib/taskTitleTokens";
 import type {
+  Member,
   TaskListFilterAssignee,
   TaskListFilterCreator,
   TaskListFilterDue,
@@ -17,7 +22,11 @@ import type {
 type PreferencePatch = Partial<
   Pick<
     TaskListPreference,
-    "filter_assignee" | "filter_creator" | "filter_due" | "filter_watching"
+    | "filter_assignee"
+    | "filter_assignee_ids"
+    | "filter_creator"
+    | "filter_due"
+    | "filter_watching"
   >
 >;
 
@@ -25,14 +34,20 @@ type Submenu = "due" | "assignee" | "watching" | "creator" | null;
 
 export function TaskFilterMenu({
   preference,
+  members,
   online,
   locked = false,
   onChange,
 }: {
   preference: Pick<
     TaskListPreference,
-    "filter_assignee" | "filter_creator" | "filter_due" | "filter_watching"
+    | "filter_assignee"
+    | "filter_assignee_ids"
+    | "filter_creator"
+    | "filter_due"
+    | "filter_watching"
   >;
+  members: Member[];
   online: boolean;
   locked?: boolean;
   onChange: (patch: PreferencePatch) => Promise<void>;
@@ -43,9 +58,7 @@ export function TaskFilterMenu({
   const dueLabel = TASK_FILTER_DUE_OPTIONS.find(
     (option) => option.value === preference.filter_due,
   )?.label;
-  const assigneeLabel = TASK_FILTER_ASSIGNEE_OPTIONS.find(
-    (option) => option.value === preference.filter_assignee,
-  )?.label;
+  const assigneeLabel = assigneeFilterLabel(preference, members);
   const watchingLabel = TASK_FILTER_WATCHING_OPTIONS.find(
     (option) => option.value === preference.filter_watching,
   )?.label;
@@ -57,6 +70,14 @@ export function TaskFilterMenu({
     || preference.filter_watching !== "all"
     || preference.filter_creator !== "all";
   const canEdit = online && !locked;
+  const sortedMembers = useMemo(
+    () => [...members].sort((left, right) =>
+      memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN")),
+    [members],
+  );
+  const selectedAssigneeIds = preference.filter_assignee === "users"
+    ? new Set(preference.filter_assignee_ids ?? [])
+    : new Set<string>();
 
   useEffect(() => {
     if (!open) return;
@@ -76,10 +97,16 @@ export function TaskFilterMenu({
     setSubmenu(null);
   }
 
-  async function selectAssignee(filter_assignee: TaskListFilterAssignee) {
+  async function selectExclusiveAssignee(
+    mode: Exclude<TaskListFilterAssignee, "users">,
+  ) {
     if (!canEdit) return;
-    await onChange({ filter_assignee });
-    setSubmenu(null);
+    await onChange(exclusiveAssigneeFilter(mode));
+  }
+
+  async function toggleAssigneeUser(userId: string) {
+    if (!canEdit) return;
+    await onChange(toggleAssigneeUserFilter(preference, userId));
   }
 
   async function selectWatching(filter_watching: TaskListFilterWatching) {
@@ -164,19 +191,41 @@ export function TaskFilterMenu({
             </div>
           )}
           {submenu === "assignee" && (
-            <div className="task-view-submenu" role="menu" aria-label="过滤指派人">
+            <div
+              className="task-view-submenu task-view-submenu-scrollable"
+              role="menu"
+              aria-label="过滤指派人"
+            >
               {TASK_FILTER_ASSIGNEE_OPTIONS.map((option) => (
                 <button
                   key={option.value}
                   role="menuitemradio"
                   aria-checked={preference.filter_assignee === option.value}
                   disabled={!canEdit}
-                  onClick={() => void selectAssignee(option.value)}
+                  onClick={() => void selectExclusiveAssignee(option.value)}
                 >
                   <span>{option.label}</span>
                   {preference.filter_assignee === option.value && <Check />}
                 </button>
               ))}
+              {sortedMembers.length > 0 && (
+                <div className="task-assignee-divider" aria-hidden="true" />
+              )}
+              {sortedMembers.map((member) => {
+                const checked = selectedAssigneeIds.has(member.user_id);
+                return (
+                  <button
+                    key={member.user_id}
+                    role="menuitemcheckbox"
+                    aria-checked={checked}
+                    disabled={!canEdit}
+                    onClick={() => void toggleAssigneeUser(member.user_id)}
+                  >
+                    <span>{memberDisplayName(member)}</span>
+                    {checked && <Check />}
+                  </button>
+                );
+              })}
             </div>
           )}
           {submenu === "watching" && (

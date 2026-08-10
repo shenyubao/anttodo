@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
   }),
   tray: Object.freeze({
     setAuthenticated: (value) => ipcRenderer.send("anttodo:tray-set-authenticated", value),
+    setTitle: (title) => ipcRenderer.send("anttodo:tray-set-title", title),
     hide: () => ipcRenderer.send("anttodo:tray-hide"),
     setIgnoreBlur: (value) => ipcRenderer.send("anttodo:tray-ignore-blur", value),
     showMainWindow: () => ipcRenderer.send("anttodo:tray-show-main"),

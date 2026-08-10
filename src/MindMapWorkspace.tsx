@@ -1109,7 +1109,7 @@ function MindMapCanvas({
   async function savePreference(
     patch: Partial<Pick<
       TaskListPreference,
-      "filter_assignee" | "filter_creator" | "filter_due" | "filter_watching"
+      "filter_assignee" | "filter_assignee_ids" | "filter_creator" | "filter_due" | "filter_watching"
     >>,
   ) {
     if (!online) return;
@@ -1121,6 +1121,7 @@ function MindMapCanvas({
       sort: preference.sort,
       direction: preference.direction,
       filter_assignee: preference.filter_assignee,
+      filter_assignee_ids: preference.filter_assignee_ids,
       filter_watching: preference.filter_watching,
       filter_creator: preference.filter_creator,
       filter_due: preference.filter_due,
@@ -1141,6 +1142,7 @@ function MindMapCanvas({
     () => applyTaskListFilters({
       tasks: bundle.tasks,
       filterAssignee: preference.filter_assignee,
+      filterAssigneeIds: preference.filter_assignee_ids,
       filterWatching: preference.filter_watching,
       filterCreator: preference.filter_creator,
       filterDue: preference.filter_due,
@@ -1153,6 +1155,7 @@ function MindMapCanvas({
       currentUserId,
       now,
       preference.filter_assignee,
+      preference.filter_assignee_ids,
       preference.filter_creator,
       preference.filter_due,
       preference.filter_watching,
@@ -1619,6 +1622,7 @@ function MindMapCanvas({
         <div className="mind-map-toolbar-actions">
           <TaskFilterMenu
             preference={preference}
+            members={bundle.members}
             online={online}
             onChange={savePreference}
           />

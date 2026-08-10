@@ -118,6 +118,7 @@ interface Window {
     };
     tray: {
       setAuthenticated: (value: boolean) => void;
+      setTitle: (title: string) => void;
       hide: () => void;
       setIgnoreBlur: (value: boolean) => void;
       showMainWindow: () => void;

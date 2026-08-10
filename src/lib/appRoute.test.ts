@@ -23,6 +23,8 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "view", view: "week", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "week", mode: "timeline" },
     { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "custom:00000000-0000-4000-8000-000000000001", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "custom:00000000-0000-4000-8000-000000000001", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "list" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "timeline" },
@@ -41,6 +43,7 @@ describe("application routes", () => {
     expect(parseAppRoute("/team/acme")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/tags")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/views/unknown")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/views/custom/not-a-uuid")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/views/today/unknown-mode")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/tags/tag-1/unknown-mode")).toBeNull();
   });

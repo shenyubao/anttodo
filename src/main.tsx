@@ -66,32 +66,47 @@ createRoot(document.getElementById("root")!, {
       client={queryClient}
       persistOptions={{
         persister: queryPersister,
-        buster: "workspace-bundle-permissions-v1",
+        buster: "workspace-bundle-custom-views-v1",
         maxAge: 24 * 60 * 60 * 1000,
         dehydrateOptions: {
           shouldDehydrateQuery: (query) => query.state.status === "success",
         },
       }}
     >
-      {window.anttodoDesktop?.platform === "darwin" && !isTraySurface && (
+      {!window.anttodoDesktop || isTraySurface ? null : window.anttodoDesktop.platform === "darwin" ? (
         <div className="window-traffic-lights" aria-label="窗口控制">
           <button
+            type="button"
             className="traffic-light close"
             aria-label="关闭窗口"
-            onClick={() => window.anttodoDesktop?.windowControls.close()}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              window.anttodoDesktop?.windowControls?.close();
+            }}
           />
           <button
+            type="button"
             className="traffic-light minimize"
             aria-label="最小化窗口"
-            onClick={() => window.anttodoDesktop?.windowControls.minimize()}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              window.anttodoDesktop?.windowControls?.minimize();
+            }}
           />
           <button
+            type="button"
             className="traffic-light fullscreen"
             aria-label="进入或退出全屏"
-            onClick={() => window.anttodoDesktop?.windowControls.toggleFullScreen()}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              window.anttodoDesktop?.windowControls?.toggleFullScreen();
+            }}
           />
         </div>
-      )}
+      ) : null}
       {!isTraySurface && <div className="window-drag-strip" aria-hidden="true" />}
       <App />
     </PersistQueryClientProvider>

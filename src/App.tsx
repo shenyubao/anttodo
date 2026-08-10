@@ -23,6 +23,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   Archive,
+  BookmarkPlus,
   Building2,
   Camera,
   CalendarClock,
@@ -49,6 +50,7 @@ import {
   Keyboard,
   LayoutList,
   Bell,
+  ListFilter,
   ListTodo,
   Link2,
   LockKeyhole,
@@ -107,6 +109,8 @@ import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
 import { getPriorityOption } from "./PriorityControl";
 import { ShortcutProvider } from "./ShortcutProvider";
 import { ShortcutsSettingsPanel } from "./ShortcutsSettingsPanel";
+import { SmartViewsSettingsPanel } from "./SmartViewsSettingsPanel";
+import { SaveTaskViewDialog } from "./SaveTaskViewDialog";
 import { TaskContextMenu } from "./TaskContextMenu";
 import { TaskKanban } from "./TaskKanban";
 import { TaskTimeline } from "./TaskTimeline";
@@ -125,6 +129,7 @@ import {
   assignTask as assignTaskApi,
   createTaskComment as createTaskCommentApi,
   createLabelWithAccess as createLabelWithAccessApi,
+  createCustomTaskView,
   createTask,
   createTaskSection,
   createWorkspace,
@@ -132,6 +137,7 @@ import {
   isWorkspaceSlugAvailable,
   deleteTaskSection,
   deleteTaskComment as deleteTaskCommentApi,
+  deleteCustomTaskView,
   purgeTrashedTask as purgeTrashedTaskApi,
   loadDateTimePreferences,
   loadAiFeatureSettings,
@@ -157,6 +163,7 @@ import {
   saveNotificationPreference,
   saveTaskSchedule as saveTaskScheduleApi,
   saveTaskListPreference,
+  saveTaskSystemViewPreference,
   setTaskListOrder,
   toggleTaskLabel as toggleTaskLabelApi,
   toggleTaskParticipant as toggleTaskParticipantApi,
@@ -166,6 +173,8 @@ import {
   updateLabelWithAccess as updateLabelWithAccessApi,
   updateWorkspace,
   reorderChildLabels as reorderChildLabelsApi,
+  reorderCustomTaskViews as reorderCustomTaskViewsApi,
+  reorderSystemSmartViews as reorderSystemSmartViewsApi,
   setUserTopLevelLabelOrder as setUserTopLevelLabelOrderApi,
   WORKSPACE_TASK_PAGE_SIZE,
 } from "./lib/api";
@@ -175,7 +184,12 @@ import {
   type AttachmentService,
 } from "./lib/attachments";
 import { createDemoBundle, createDemoFocusSessions, demoWorkspaces } from "./lib/demo";
-import { createDefaultFocusSettings } from "./lib/focusSession";
+import {
+  createDefaultFocusSettings,
+  FOCUS_RUNTIME_UPDATED_EVENT,
+  formatFocusTrayTitle,
+  loadFocusRuntimeState,
+} from "./lib/focusSession";
 import { createDefaultAiFeatureSettings } from "./lib/aiFeatureSettings";
 import { FocusWorkspace } from "./FocusWorkspace";
 import { getDueStatus } from "./lib/dueTime";
@@ -225,6 +239,7 @@ import {
   createOptimisticTaskSection,
   findTaskIdForSubtask,
   isOptimisticTaskId,
+  normalizeWorkspaceBundle,
   patchSubtaskInBundle,
   patchTaskInBundle,
   patchTaskSectionInBundle,
@@ -239,15 +254,27 @@ import {
 } from "./lib/taskCache";
 import {
   DEFAULT_TASK_LIST_PREFERENCE,
+  applyCustomTaskViewOrder,
+  applySystemSmartViewOrder,
   applyTaskListFilters,
+  buildCustomViewSnapshotFromSmartView,
+  canHideSmartView,
   clampGroupingForViewMode,
   countTasksForLabelSubtree,
+  customTaskViewId,
+  customTaskViewKey,
+  defaultSystemSmartViewPosition,
   filterTasksForView,
   groupTasks,
   isActiveTask,
   isCompletedTask,
+  isCustomTaskView,
+  isHideableSystemSmartView,
+  labelSubtreeIds,
   orderedTaskSections,
+  resolveSystemSmartViewOrder,
   resolveTaskListPreference,
+  resolveTaskListFilters,
   SMART_VIEW_FILTER_PRESETS,
   sortTasks,
   taskOrdersAfterCrossSectionMove,
@@ -383,6 +410,8 @@ import type {
   AiWorkSettings,
   AssigneeTarget,
   AppNotification,
+  CustomTaskView,
+  CustomTaskViewDefinition,
   DateTimePreferences,
   FocusSession,
   FocusSettings,
@@ -402,6 +431,7 @@ import type {
   TaskComment,
   TaskKind,
   TaskListPreference,
+  TaskSystemViewPreference,
   TaskSection,
   TaskPriority,
   TaskViewMode,
@@ -415,12 +445,13 @@ import type {
   WorkspaceRole,
 } from "./types";
 
-type SmartView = "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
+type SmartView = import("./lib/appRoute").AppSmartView;
 type AppSection = "tasks" | "calendar" | "mindmap" | "focus";
 type SettingsTab =
   | "account"
   | "date"
   | "appearance"
+  | "smart-views"
   | "notifications"
   | "ai-features"
   | "team-mgmt"
@@ -449,7 +480,10 @@ function currentTaskReturnRoute(workspaceId: string): AppRoute | null {
   const value = window.history.state?.taskReturnRoute as AppRoute | undefined;
   if (!value || value.workspaceId !== workspaceId) return null;
   if (value.kind === "view") {
-    if (!["all", "today", "week", "assigned", "watching", "inbox", "trash"].includes(value.view)) return null;
+    if (
+      !["all", "today", "week", "assigned", "watching", "inbox", "trash"].includes(value.view)
+      && !value.view.startsWith("custom:")
+    ) return null;
     if (value.mode !== "list" && value.mode !== "kanban") return null;
     return value.view === "trash" ? { ...value, mode: "list" } : value;
   }
@@ -1866,6 +1900,7 @@ function RemoteApplication({
     queryKey: ["workspace-bundle", workspaceId],
     queryFn: () => loadWorkspaceBundle(client, workspaceId!),
     enabled: Boolean(workspaceId),
+    select: normalizeWorkspaceBundle,
   });
 
   useEffect(() => {
@@ -2843,6 +2878,162 @@ function RemoteApplication({
     void queryClient.invalidateQueries({ queryKey });
   }
 
+  async function createCustomTaskViewForWorkspace(input: {
+    name: string;
+    definition: CustomTaskViewDefinition;
+    presentation: Pick<TaskListPreference, "grouping" | "sort" | "direction" | "filter_assignee" | "filter_assignee_ids" | "filter_watching" | "filter_creator" | "filter_due" | "show_labels" | "show_completed" | "show_hours" | "view_mode">;
+  }) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const current = queryClient.getQueryData<WorkspaceBundle>(queryKey) ?? activeBundle;
+    const created = await createCustomTaskView(client, {
+      workspace_id: workspaceId!,
+      user_id: userId,
+      name: input.name,
+      definition: input.definition,
+      position: current.customTaskViews.length,
+    });
+    try {
+      await saveTaskListPreference(client, {
+        user_id: userId,
+        workspace_id: workspaceId!,
+        list_key: customTaskViewKey(created.id),
+        ...input.presentation,
+      });
+    } catch (error) {
+      await deleteCustomTaskView(client, created.id).catch(() => undefined);
+      throw error;
+    }
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? {
+          ...bundle,
+          customTaskViews: [...bundle.customTaskViews, created],
+          taskListPreferences: [
+            ...bundle.taskListPreferences,
+            {
+              user_id: userId,
+              workspace_id: workspaceId!,
+              list_key: customTaskViewKey(created.id),
+              ...input.presentation,
+            },
+          ],
+        }
+      : bundle);
+    return created;
+  }
+
+  async function removeCustomTaskView(viewId: string) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? {
+          ...bundle,
+          customTaskViews: bundle.customTaskViews.filter((view) => view.id !== viewId),
+          taskListPreferences: bundle.taskListPreferences.filter(
+            (preference) => preference.list_key !== customTaskViewKey(viewId),
+          ),
+          taskSections: bundle.taskSections.filter(
+            (section) => section.list_key !== customTaskViewKey(viewId),
+          ),
+          taskPlacements: bundle.taskPlacements.filter(
+            (placement) => placement.list_key !== customTaskViewKey(viewId),
+          ),
+        }
+      : bundle);
+    try {
+      await deleteCustomTaskView(client, viewId);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
+  async function toggleSystemViewVisibility(
+    viewKey: TaskSystemViewPreference["view_key"],
+    visible: boolean,
+  ) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const existing = previous?.taskSystemViewPreferences.find((item) => item.view_key === viewKey);
+    const next = {
+      user_id: userId,
+      workspace_id: workspaceId!,
+      view_key: viewKey,
+      visible,
+      position: existing?.position ?? defaultSystemSmartViewPosition(viewKey),
+    } satisfies TaskSystemViewPreference;
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? {
+          ...bundle,
+          taskSystemViewPreferences: [
+            ...bundle.taskSystemViewPreferences.filter((item) => item.view_key !== viewKey),
+            next,
+          ],
+        }
+      : bundle);
+    try {
+      await saveTaskSystemViewPreference(client, next);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
+  async function toggleCustomViewVisibility(viewId: string, visible: boolean) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? {
+          ...bundle,
+          customTaskViews: bundle.customTaskViews.map((view) =>
+            view.id === viewId ? { ...view, visible } : view),
+        }
+      : bundle);
+    try {
+      const { error } = await client
+        .from("custom_task_views")
+        .update({ visible })
+        .eq("id", viewId);
+      if (error) throw new Error(error.message);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
+  async function reorderSystemSmartViews(orderedKeys: TaskSystemViewPreference["view_key"][]) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const next = applySystemSmartViewOrder(
+      previous?.taskSystemViewPreferences ?? [],
+      orderedKeys,
+      { userId, workspaceId: workspaceId! },
+    );
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? { ...bundle, taskSystemViewPreferences: next }
+      : bundle);
+    try {
+      await reorderSystemSmartViewsApi(client, next);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
+  async function reorderCustomTaskViews(orderedIds: string[]) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const next = applyCustomTaskViewOrder(previous?.customTaskViews ?? [], orderedIds);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? { ...bundle, customTaskViews: next }
+      : bundle);
+    try {
+      await reorderCustomTaskViewsApi(client, orderedIds);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
   async function createComment(
     taskId: string,
     input: CreateCommentInput & { subtaskId?: string | null },
@@ -3185,6 +3376,12 @@ function RemoteApplication({
       onSaveFocusSettings={updateFocusSettings}
       onCreateFocusSession={addFocusSession}
       onSaveTaskListPreference={updateTaskListPreference}
+      onCreateCustomTaskView={createCustomTaskViewForWorkspace}
+      onDeleteCustomTaskView={removeCustomTaskView}
+      onToggleSystemViewVisibility={toggleSystemViewVisibility}
+      onToggleCustomViewVisibility={toggleCustomViewVisibility}
+      onReorderSystemSmartViews={reorderSystemSmartViews}
+      onReorderCustomTaskViews={reorderCustomTaskViews}
       onCreateTaskSection={addTaskSection}
       onReorderTaskSections={reorderTaskSections}
       onUpdateTaskSection={editTaskSection}
@@ -4171,6 +4368,82 @@ function DemoApplication() {
           ],
         }));
       }}
+      onCreateCustomTaskView={async (input) => {
+        const now = new Date().toISOString();
+        const created: CustomTaskView = {
+          id: crypto.randomUUID(),
+          workspace_id: "workspace-team",
+          user_id: "demo-user",
+          name: input.name,
+          definition: input.definition,
+          visible: true,
+          position: bundle.customTaskViews.length,
+          created_at: now,
+          updated_at: now,
+        };
+        const preference: TaskListPreference = {
+          user_id: "demo-user",
+          workspace_id: "workspace-team",
+          list_key: customTaskViewKey(created.id),
+          ...input.presentation,
+        };
+        setBundle((current) => ({
+          ...current,
+          customTaskViews: [...current.customTaskViews, created],
+          taskListPreferences: [...current.taskListPreferences, preference],
+        }));
+        return created;
+      }}
+      onDeleteCustomTaskView={async (viewId) => {
+        setBundle((current) => ({
+          ...current,
+          customTaskViews: current.customTaskViews.filter((view) => view.id !== viewId),
+          taskListPreferences: current.taskListPreferences.filter(
+            (preference) => preference.list_key !== customTaskViewKey(viewId),
+          ),
+        }));
+      }}
+      onToggleSystemViewVisibility={async (viewKey, visible) => {
+        setBundle((current) => {
+          const existing = current.taskSystemViewPreferences.find((item) => item.view_key === viewKey);
+          return {
+            ...current,
+            taskSystemViewPreferences: [
+              ...current.taskSystemViewPreferences.filter((item) => item.view_key !== viewKey),
+              {
+                user_id: "demo-user",
+                workspace_id: "workspace-team",
+                view_key: viewKey,
+                visible,
+                position: existing?.position ?? defaultSystemSmartViewPosition(viewKey),
+              },
+            ],
+          };
+        });
+      }}
+      onToggleCustomViewVisibility={async (viewId, visible) => {
+        setBundle((current) => ({
+          ...current,
+          customTaskViews: current.customTaskViews.map((view) =>
+            view.id === viewId ? { ...view, visible } : view),
+        }));
+      }}
+      onReorderSystemSmartViews={async (orderedKeys) => {
+        setBundle((current) => ({
+          ...current,
+          taskSystemViewPreferences: applySystemSmartViewOrder(
+            current.taskSystemViewPreferences,
+            orderedKeys,
+            { userId: "demo-user", workspaceId: "workspace-team" },
+          ),
+        }));
+      }}
+      onReorderCustomTaskViews={async (orderedIds) => {
+        setBundle((current) => ({
+          ...current,
+          customTaskViews: applyCustomTaskViewOrder(current.customTaskViews, orderedIds),
+        }));
+      }}
       onCreateTaskSection={async (listKey, name, index) => {
         setBundle((current) => {
           const ordered = orderedTaskSections(
@@ -4386,6 +4659,16 @@ type WorkspaceAppProps = {
   onSaveFocusSettings: (settings: FocusSettings) => Promise<void>;
   onCreateFocusSession: (input: Omit<FocusSession, "id" | "created_at">) => Promise<FocusSession>;
   onSaveTaskListPreference: (preference: TaskListPreference) => Promise<void>;
+  onCreateCustomTaskView: (input: {
+    name: string;
+    definition: CustomTaskViewDefinition;
+    presentation: Pick<TaskListPreference, "grouping" | "sort" | "direction" | "filter_assignee" | "filter_assignee_ids" | "filter_watching" | "filter_creator" | "filter_due" | "show_labels" | "show_completed" | "show_hours" | "view_mode">;
+  }) => Promise<CustomTaskView>;
+  onDeleteCustomTaskView: (viewId: string) => Promise<void>;
+  onToggleSystemViewVisibility: (viewKey: TaskSystemViewPreference["view_key"], visible: boolean) => Promise<void>;
+  onToggleCustomViewVisibility: (viewId: string, visible: boolean) => Promise<void>;
+  onReorderSystemSmartViews: (orderedKeys: TaskSystemViewPreference["view_key"][]) => Promise<void>;
+  onReorderCustomTaskViews: (orderedIds: string[]) => Promise<void>;
   onCreateTaskSection: (listKey: string, name: string, index?: number) => Promise<void>;
   onReorderTaskSections: (listKey: string, sectionIds: string[]) => Promise<void>;
   onUpdateTaskSection: (
@@ -4496,6 +4779,39 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       ? workspaceInitialRoute.kind
       : "tasks",
   );
+
+  useEffect(() => {
+    const tray = window.anttodoDesktop?.platform === "darwin"
+      ? window.anttodoDesktop.tray
+      : null;
+    if (!tray?.setTitle) return;
+
+    const syncTrayTitle = () => {
+      const runtime = loadFocusRuntimeState(props.currentUserId, props.workspaceId);
+      tray.setTitle(formatFocusTrayTitle(runtime, Date.now()));
+    };
+
+    const onRuntimeUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        userId?: string;
+        workspaceId?: string;
+      }>).detail;
+      if (
+        detail?.userId !== props.currentUserId
+        || detail?.workspaceId !== props.workspaceId
+      ) return;
+      syncTrayTitle();
+    };
+
+    syncTrayTitle();
+    const interval = window.setInterval(syncTrayTitle, 1000);
+    window.addEventListener(FOCUS_RUNTIME_UPDATED_EVENT, onRuntimeUpdated);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener(FOCUS_RUNTIME_UPDATED_EVENT, onRuntimeUpdated);
+      tray.setTitle("");
+    };
+  }, [props.currentUserId, props.workspaceId]);
   const [selectedLabelId, setSelectedLabelId] = useState<string | null>(
     initialListRoute?.kind === "tag" ? initialListRoute.tagId : null,
   );
@@ -5017,6 +5333,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setDownloadClientDialogOpen(true);
         }}
         onSignOut={props.onSignOut}
+        onCreateCustomTaskView={props.onCreateCustomTaskView}
+        onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
+        onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
       />
       {appSection === "tasks" ? <Sidebar
         openMobile={mobileSidebar}
@@ -5042,6 +5361,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onSetUserTopLevelLabelOrder={props.onSetUserTopLevelLabelOrder}
         onDeleteLabel={props.onDeleteLabel}
         onMoveLabelToInbox={props.onMoveLabelToInbox}
+        onCreateCustomTaskView={props.onCreateCustomTaskView}
+        onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
+        onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
       /> : appSection === "calendar" && !calendarSidebarCollapsed && <CalendarSidebar
         openMobile={mobileSidebar}
         bundle={props.bundle}
@@ -5122,6 +5444,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onPurgeTask={props.onPurgeTask}
           onSaveLabelAccess={props.onSaveLabelAccess}
           onSaveTaskListPreference={props.onSaveTaskListPreference}
+          onCreateCustomTaskView={props.onCreateCustomTaskView}
+          onOpenCustomTaskView={(viewId) => selectSmartView(customTaskViewKey(viewId))}
           onSaveAiWorkSettings={props.onSaveAiWorkSettings}
           onCreateTaskSection={props.onCreateTaskSection}
           onReorderTaskSections={props.onReorderTaskSections}
@@ -5340,6 +5664,20 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onUpdateDateTimePreferences={props.onUpdateDateTimePreferences}
         onUpdateNotificationPreference={props.onUpdateNotificationPreference}
         onSaveAiFeatureSettings={props.onSaveAiFeatureSettings}
+        onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
+        onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
+        onReorderSystemSmartViews={props.onReorderSystemSmartViews}
+        onReorderCustomTaskViews={props.onReorderCustomTaskViews}
+        onDeleteCustomTaskView={async (view) => {
+          try {
+            await props.onDeleteCustomTaskView(view.id);
+            if (smartView === customTaskViewKey(view.id)) {
+              selectSmartView("assigned");
+            }
+          } catch (error) {
+            props.onNotice(error instanceof Error ? error.message : "删除视图失败，请稍后重试");
+          }
+        }}
         onNotice={props.onNotice}
       />
       <CreateWorkspaceDialog
@@ -5637,6 +5975,9 @@ function MobileAppSidebar({
   onOpenNotificationTask,
   onDownloadClient,
   onSignOut,
+  onCreateCustomTaskView,
+  onToggleSystemViewVisibility,
+  onToggleCustomViewVisibility,
 }: {
   open: boolean;
   activeSection: AppSection;
@@ -5673,6 +6014,9 @@ function MobileAppSidebar({
   onOpenNotificationTask: (taskId: string) => void;
   onDownloadClient: () => void;
   onSignOut: () => unknown;
+  onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
+  onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
 }) {
   const [workspaceListOpen, setWorkspaceListOpen] = useState(false);
   const [collapsedLabels, setCollapsedLabels] = useState<Record<string, boolean>>({});
@@ -5691,7 +6035,6 @@ function MobileAppSidebar({
   } | null>(null);
   const currentWorkspace = workspaces.find((item) => item.id === workspaceId);
   const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
-  const trashedTasks = bundle.tasks.filter((task) => Boolean(task.deleted_at));
   const calendarIds = ["inbox", ...bundle.labels.map((label) => label.id)];
   const allCalendarsVisible = calendarIds.every((id) => visibleCalendarIds.has(id));
   const assigneeIds = calendarAssigneeFilterIds(bundle.members);
@@ -6007,52 +6350,17 @@ function MobileAppSidebar({
             <>
               <div className="mobile-sidebar-section-title">智能视图</div>
               <div className="mobile-task-views">
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "all"}
-                  icon={<LayoutList />}
-                  label="所有"
-                  count={openTasks.length}
-                  onClick={() => onSmartView("all")}
-                />
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "today"}
-                  icon={<CalendarDays />}
-                  label="今天"
-                  count={openTasks.filter((task) => task.due_at && isSameDay(new Date(task.due_at), new Date())).length}
-                  onClick={() => onSmartView("today")}
-                />
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "week"}
-                  icon={<CalendarDays />}
-                  label="本周"
-                  onClick={() => onSmartView("week")}
-                />
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "assigned"}
-                  icon={<UserRound />}
-                  label="指派给我"
-                  onClick={() => onSmartView("assigned")}
-                />
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "watching"}
-                  icon={<Eye />}
-                  label="我关注的"
-                  onClick={() => onSmartView("watching")}
-                />
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "inbox"}
-                  icon={<Inbox />}
-                  label="收集箱"
-                  count={openTasks.filter((task) =>
-                    task.label_ids.length === 0 && task.created_by === currentUserId).length}
-                  onClick={() => onSmartView("inbox")}
-                />
-                <SidebarItem
-                  active={!selectedLabelId && smartView === "trash"}
-                  icon={<Trash2 />}
-                  label="回收站"
-                  count={trashedTasks.length}
-                  onClick={() => onSmartView("trash")}
+                <SmartViewsSidebarList
+                  bundle={bundle}
+                  currentUserId={currentUserId}
+                  smartView={smartView}
+                  selectedLabelId={selectedLabelId}
+                  online={online}
+                  showMoreMenu={false}
+                  onSmartView={onSmartView}
+                  onCreateCustomTaskView={onCreateCustomTaskView}
+                  onToggleSystemViewVisibility={onToggleSystemViewVisibility}
+                  onToggleCustomViewVisibility={onToggleCustomViewVisibility}
                 />
               </div>
               <div className="mobile-sidebar-section-title">标签</div>
@@ -6365,6 +6673,9 @@ function Sidebar({
   onSetUserTopLevelLabelOrder,
   onDeleteLabel,
   onMoveLabelToInbox,
+  onCreateCustomTaskView,
+  onToggleSystemViewVisibility,
+  onToggleCustomViewVisibility,
 }: {
   openMobile: boolean;
   bundle: WorkspaceBundle;
@@ -6383,6 +6694,9 @@ function Sidebar({
   onSetUserTopLevelLabelOrder: WorkspaceAppProps["onSetUserTopLevelLabelOrder"];
   onDeleteLabel: WorkspaceAppProps["onDeleteLabel"];
   onMoveLabelToInbox: WorkspaceAppProps["onMoveLabelToInbox"];
+  onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
+  onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
 }) {
   const [creatingLabel, setCreatingLabel] = useState<{ parentId: string | null } | null>(null);
   const [editingLabel, setEditingLabel] = useState<Label | null>(null);
@@ -6401,7 +6715,6 @@ function Sidebar({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
-  const trashedTasks = bundle.tasks.filter((task) => Boolean(task.deleted_at));
   const userLabelOrder = userOrderOverride ?? bundle.userLabelOrder;
   const labels = bundle.labels
     .map((label) => {
@@ -6634,52 +6947,17 @@ function Sidebar({
       {openMobile && <button className="sidebar-scrim" onClick={onCloseMobile} aria-label="关闭侧栏" />}
       <aside className={clsx("sidebar", openMobile && "mobile-open")}>
         <div className="sidebar-list">
-          <SidebarItem
-            active={!selectedLabelId && smartView === "all"}
-            icon={<LayoutList />}
-            label="所有"
-            count={openTasks.length}
-            onClick={() => onSmartView("all")}
-          />
-          <SidebarItem
-            active={!selectedLabelId && smartView === "today"}
-            icon={<CalendarDays />}
-            label="今天"
-            count={openTasks.filter((task) => task.due_at && isSameDay(new Date(task.due_at), new Date())).length}
-            onClick={() => onSmartView("today")}
-          />
-          <SidebarItem
-            active={!selectedLabelId && smartView === "week"}
-            icon={<CalendarDays />}
-            label="本周"
-            onClick={() => onSmartView("week")}
-          />
-          <SidebarItem
-            active={!selectedLabelId && smartView === "assigned"}
-            icon={<UserRound />}
-            label="指派给我"
-            onClick={() => onSmartView("assigned")}
-          />
-          <SidebarItem
-            active={!selectedLabelId && smartView === "watching"}
-            icon={<Eye />}
-            label="我关注的"
-            onClick={() => onSmartView("watching")}
-          />
-          <SidebarItem
-            active={!selectedLabelId && smartView === "inbox"}
-            icon={<Inbox />}
-            label="收集箱"
-            count={openTasks.filter((task) =>
-              task.label_ids.length === 0 && task.created_by === currentUserId).length}
-            onClick={() => onSmartView("inbox")}
-          />
-          <SidebarItem
-            active={!selectedLabelId && smartView === "trash"}
-            icon={<Trash2 />}
-            label="回收站"
-            count={trashedTasks.length}
-            onClick={() => onSmartView("trash")}
+          <SmartViewsSidebarList
+            bundle={bundle}
+            currentUserId={currentUserId}
+            smartView={smartView}
+            selectedLabelId={selectedLabelId}
+            online={online}
+            showMoreMenu
+            onSmartView={onSmartView}
+            onCreateCustomTaskView={onCreateCustomTaskView}
+            onToggleSystemViewVisibility={onToggleSystemViewVisibility}
+            onToggleCustomViewVisibility={onToggleCustomViewVisibility}
           />
         </div>
         <div className="sidebar-section-header">
@@ -7680,20 +7958,336 @@ function SidebarItem({
   label,
   count,
   onClick,
+  showMoreMenu = false,
+  onOpenActions,
 }: {
   active: boolean;
   icon: ReactNode;
   label: string;
   count?: number;
   onClick: () => void;
+  showMoreMenu?: boolean;
+  onOpenActions?: (x: number, y: number) => void;
 }) {
+  const hasActions = Boolean(onOpenActions);
+  const displayCount = count || "";
+
   return (
-    <button className={clsx("sidebar-item", active && "active")} onClick={onClick}>
-      {icon}
-      <span>{label}</span>
-      <span className="item-count">{count || ""}</span>
-    </button>
+    <div
+      className={clsx(
+        "sidebar-item",
+        active && "active",
+        hasActions && showMoreMenu && "has-more-menu",
+      )}
+      onContextMenu={hasActions
+        ? (event) => {
+            event.preventDefault();
+            onOpenActions?.(event.clientX, event.clientY);
+          }
+        : undefined}
+    >
+      <button type="button" className="sidebar-item-button" onClick={onClick}>
+        {icon}
+        <span className="sidebar-item-label">{label}</span>
+        {displayCount !== "" && (
+          <span className={clsx("item-count", hasActions && showMoreMenu && "sidebar-item-count-with-more")}>
+            {displayCount}
+          </span>
+        )}
+      </button>
+      {hasActions && showMoreMenu && (
+        <button
+          type="button"
+          className="sidebar-item-more"
+          aria-label={`${label}更多操作`}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onOpenActions?.(rect.left, rect.bottom + 4);
+          }}
+        >
+          <Ellipsis />
+        </button>
+      )}
+    </div>
   );
+}
+
+function SmartViewsSidebarList({
+  bundle,
+  currentUserId,
+  smartView,
+  selectedLabelId,
+  online,
+  showMoreMenu,
+  onSmartView,
+  onCreateCustomTaskView,
+  onToggleSystemViewVisibility,
+  onToggleCustomViewVisibility,
+}: {
+  bundle: WorkspaceBundle;
+  currentUserId: string;
+  smartView: SmartView;
+  selectedLabelId: string | null;
+  online: boolean;
+  showMoreMenu: boolean;
+  onSmartView: (view: SmartView) => void;
+  onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
+  onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
+}) {
+  const [menu, setMenu] = useState<{ view: SmartView; x: number; y: number } | null>(null);
+  const [createFrom, setCreateFrom] = useState<SmartView | null>(null);
+  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
+  const trashedTasks = bundle.tasks.filter((task) => Boolean(task.deleted_at));
+  const systemOrder = resolveSystemSmartViewOrder(bundle.taskSystemViewPreferences);
+  const customViews = [...bundle.customTaskViews]
+    .sort((left, right) => left.position - right.position || left.created_at.localeCompare(right.created_at));
+
+  function openActions(view: SmartView, x: number, y: number) {
+    setMenu({ view, x, y });
+  }
+
+  function fallbackSmartView(hidden: SmartView): SmartView {
+    const candidates: SmartView[] = [
+      DEFAULT_SMART_VIEW,
+      ...systemOrder,
+      ...customViews.map((view) => customTaskViewKey(view.id)),
+    ];
+    for (const candidate of candidates) {
+      if (candidate === hidden) continue;
+      if (isHideableSystemSmartView(candidate)) {
+        if (!systemSmartViewPreferredVisible(bundle, candidate)) continue;
+        return candidate;
+      }
+      const viewId = customTaskViewId(candidate);
+      if (viewId) {
+        const custom = customViews.find((view) => view.id === viewId);
+        if (!custom?.visible) continue;
+        return candidate;
+      }
+    }
+    return "all";
+  }
+
+  async function hideView(view: SmartView) {
+    if (isHideableSystemSmartView(view)) {
+      await onToggleSystemViewVisibility(view, false);
+    } else {
+      const viewId = customTaskViewId(view);
+      if (viewId) await onToggleCustomViewVisibility(viewId, false);
+    }
+    if (!selectedLabelId && smartView === view) {
+      onSmartView(fallbackSmartView(view));
+    }
+  }
+
+  async function createViewFromSmart(name: string) {
+    if (!createFrom) return;
+    const snapshot = buildCustomViewSnapshotFromSmartView(
+      bundle.taskListPreferences,
+      createFrom,
+      bundle.customTaskViews,
+      bundle.labels,
+    );
+    const created = await onCreateCustomTaskView({
+      name,
+      definition: snapshot.definition,
+      presentation: snapshot.presentation,
+    });
+    onSmartView(customTaskViewKey(created.id));
+  }
+
+  const itemProps = (view: SmartView) => ({
+    showMoreMenu,
+    onOpenActions: (x: number, y: number) => openActions(view, x, y),
+  });
+
+  function renderSystemView(view: TaskSystemViewPreference["view_key"]) {
+    if (!systemSmartViewVisible(bundle, view, smartView)) return null;
+    switch (view) {
+      case "all":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "all"}
+            icon={<LayoutList />}
+            label="所有"
+            count={openTasks.length}
+            onClick={() => onSmartView("all")}
+            {...itemProps("all")}
+          />
+        );
+      case "today":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "today"}
+            icon={<CalendarDays />}
+            label="今天"
+            count={openTasks.filter((task) =>
+              task.assignee_id === currentUserId
+              && task.due_at
+              && isSameDay(new Date(task.due_at), new Date())).length}
+            onClick={() => onSmartView("today")}
+            {...itemProps("today")}
+          />
+        );
+      case "week":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "week"}
+            icon={<CalendarDays />}
+            label="本周"
+            onClick={() => onSmartView("week")}
+            {...itemProps("week")}
+          />
+        );
+      case "assigned":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "assigned"}
+            icon={<UserRound />}
+            label="指派给我"
+            onClick={() => onSmartView("assigned")}
+            {...itemProps("assigned")}
+          />
+        );
+      case "watching":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "watching"}
+            icon={<Eye />}
+            label="我关注的"
+            onClick={() => onSmartView("watching")}
+            {...itemProps("watching")}
+          />
+        );
+      case "inbox":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "inbox"}
+            icon={<Inbox />}
+            label="收集箱"
+            count={openTasks.filter((task) =>
+              task.label_ids.length === 0 && task.created_by === currentUserId).length}
+            onClick={() => onSmartView("inbox")}
+            {...itemProps("inbox")}
+          />
+        );
+      case "trash":
+        return (
+          <SidebarItem
+            key={view}
+            active={!selectedLabelId && smartView === "trash"}
+            icon={<Trash2 />}
+            label="回收站"
+            count={trashedTasks.length}
+            onClick={() => onSmartView("trash")}
+            {...itemProps("trash")}
+          />
+        );
+      default:
+        return null;
+    }
+  }
+
+  // Keep custom views before inbox/trash when those sit in the trailing
+  // segment; otherwise respect the full system order as one contiguous group.
+  const footerStart = systemOrder.findIndex((view) => view === "inbox" || view === "trash");
+  const mainSystemViews = footerStart === -1 ? systemOrder : systemOrder.slice(0, footerStart);
+  const footerSystemViews = footerStart === -1 ? [] : systemOrder.slice(footerStart);
+
+  return (
+    <>
+      {mainSystemViews.map((view) => renderSystemView(view))}
+      {customViews.map((view) => (
+        (view.visible || smartView === customTaskViewKey(view.id)) && (
+          <SidebarItem
+            key={view.id}
+            active={!selectedLabelId && smartView === customTaskViewKey(view.id)}
+            icon={<ListFilter />}
+            label={view.name}
+            onClick={() => onSmartView(customTaskViewKey(view.id))}
+            {...itemProps(customTaskViewKey(view.id))}
+          />
+        )
+      ))}
+      {footerSystemViews.map((view) => renderSystemView(view))}
+      {menu && (
+        <>
+          <button
+            type="button"
+            className="label-menu-scrim"
+            aria-label="关闭菜单"
+            onClick={() => setMenu(null)}
+          />
+          <div
+            className="label-context-menu"
+            role="menu"
+            aria-label="智能清单操作"
+            style={{ left: menu.x, top: menu.y }}
+          >
+            {canHideSmartView(menu.view) && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!online}
+                onClick={() => {
+                  const view = menu.view;
+                  setMenu(null);
+                  void hideView(view);
+                }}
+              >
+                隐藏
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!online}
+              onClick={() => {
+                setCreateFrom(menu.view);
+                setMenu(null);
+              }}
+            >
+              创建新视图
+            </button>
+          </div>
+        </>
+      )}
+      <SaveTaskViewDialog
+        open={createFrom !== null}
+        title="创建新视图"
+        onOpenChange={(open) => {
+          if (!open) setCreateFrom(null);
+        }}
+        onSave={createViewFromSmart}
+      />
+    </>
+  );
+}
+
+function systemSmartViewPreferredVisible(
+  bundle: WorkspaceBundle,
+  view: TaskSystemViewPreference["view_key"],
+) {
+  return bundle.taskSystemViewPreferences?.find((item) => item.view_key === view)?.visible ?? true;
+}
+
+function systemSmartViewVisible(
+  bundle: WorkspaceBundle,
+  view: TaskSystemViewPreference["view_key"],
+  active: string,
+) {
+  // Keep the active view in the sidebar so hide does not leave the user with
+  // an empty selection that cannot be restored from the current list.
+  return active === view || systemSmartViewPreferredVisible(bundle, view);
 }
 
 const QUICK_ADD_SETTINGS_KEY = "anttodo:quick-add-settings";
@@ -7898,6 +8492,8 @@ function TaskWorkspace({
   onPurgeTask,
   onSaveLabelAccess,
   onSaveTaskListPreference,
+  onCreateCustomTaskView,
+  onOpenCustomTaskView,
   onSaveAiWorkSettings,
   onCreateTaskSection,
   onReorderTaskSections,
@@ -7938,6 +8534,8 @@ function TaskWorkspace({
   onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
   dateTimePreferences: DateTimePreferences;
   onSaveTaskListPreference: WorkspaceAppProps["onSaveTaskListPreference"];
+  onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onOpenCustomTaskView: (viewId: string) => void;
   onSaveAiWorkSettings: WorkspaceAppProps["onSaveAiWorkSettings"];
   onCreateTaskSection: WorkspaceAppProps["onCreateTaskSection"];
   onReorderTaskSections: WorkspaceAppProps["onReorderTaskSections"];
@@ -7962,12 +8560,16 @@ function TaskWorkspace({
   const [sectionDraftIndex, setSectionDraftIndex] = useState<number | null>(null);
   const [sectionDraftName, setSectionDraftName] = useState("");
   const [sectionDraftBusy, setSectionDraftBusy] = useState(false);
+  const [saveViewOpen, setSaveViewOpen] = useState(false);
   const [collapsedTaskSubtasks, setCollapsedTaskSubtasks] = useState(
     () => readCollapsedTaskSubtasks(workspaceId),
   );
   const taskScrollRef = useRef<HTMLDivElement>(null);
   const taskLoadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const selectedLabel = bundle.labels.find((label) => label.id === selectedLabelId);
+  const customView = bundle.customTaskViews.find(
+    (view) => view.id === customTaskViewId(smartView),
+  ) ?? null;
   const assigneeMembers = selectedLabelId
     ? getAssignableMembers(
       bundle,
@@ -7980,8 +8582,8 @@ function TaskWorkspace({
     || currentLabelPermissionLevel(bundle, selectedLabel.id) >= 2;
   const canEditTask = (task: Task) =>
     currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
-  const isTrashView = !selectedLabelId && smartView === "trash";
-  const title = selectedLabel?.name ?? {
+  const isTrashView = !selectedLabelId && (smartView === "trash" || customView?.definition.scope === "trash");
+  const title = selectedLabel?.name ?? customView?.name ?? ({
     all: "所有",
     today: "今天",
     week: "本周",
@@ -7989,9 +8591,9 @@ function TaskWorkspace({
     watching: "我关注的",
     inbox: "收集箱",
     trash: "回收站",
-  }[smartView];
+  } as Record<string, string>)[smartView] ?? "智能视图";
   const listKey = taskListKey(smartView, selectedLabelId);
-  const preference = isTrashView
+  const preference = isTrashView && !customView
     ? {
         ...DEFAULT_TASK_LIST_PREFERENCE,
         list_key: listKey,
@@ -8098,6 +8700,7 @@ function TaskWorkspace({
     storeQuickAddSettings(workspaceId, { kind: quickKind, priority });
   }
 
+  const listFilters = resolveTaskListFilters(listKey, preference, customView);
   const tasks = useMemo(
     () => applyTaskListFilters({
       tasks: filterTasksForView({
@@ -8105,11 +8708,13 @@ function TaskWorkspace({
         labels: bundle.labels,
         smartView,
         selectedLabelId,
+        customView,
       }),
-      filterAssignee: preference.filter_assignee,
-      filterWatching: preference.filter_watching,
-      filterCreator: preference.filter_creator,
-      filterDue: preference.filter_due,
+      filterAssignee: listFilters.filter_assignee,
+      filterAssigneeIds: listFilters.filter_assignee_ids,
+      filterWatching: listFilters.filter_watching,
+      filterCreator: listFilters.filter_creator,
+      filterDue: listFilters.filter_due,
       currentUserId,
       now,
       weekStartsOn: dateTimePreferences.weekStartsOn,
@@ -8118,16 +8723,19 @@ function TaskWorkspace({
       bundle.labels,
       bundle.tasks,
       currentUserId,
+      listFilters.filter_assignee,
+      listFilters.filter_assignee_ids,
+      listFilters.filter_creator,
+      listFilters.filter_due,
+      listFilters.filter_watching,
       now,
-      preference.filter_assignee,
-      preference.filter_creator,
-      preference.filter_due,
-      preference.filter_watching,
       dateTimePreferences.weekStartsOn,
       selectedLabelId,
       smartView,
+      customView,
     ],
   );
+  // System smart-view presets stay fixed; custom views keep editable, auto-saved filters.
   const filtersLocked = !selectedLabelId && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
 
   const groups = useMemo(() => {
@@ -8225,6 +8833,7 @@ function TaskWorkspace({
       | "sort"
       | "direction"
       | "filter_assignee"
+      | "filter_assignee_ids"
       | "filter_watching"
       | "filter_creator"
       | "filter_due"
@@ -8243,6 +8852,7 @@ function TaskWorkspace({
       sort: preference.sort,
       direction: preference.direction,
       filter_assignee: preference.filter_assignee,
+      filter_assignee_ids: preference.filter_assignee_ids,
       filter_watching: preference.filter_watching,
       filter_creator: preference.filter_creator,
       filter_due: preference.filter_due,
@@ -8252,6 +8862,33 @@ function TaskWorkspace({
       view_mode: preference.view_mode,
       ...patch,
     });
+  }
+
+  async function saveCurrentAsCustomView(name: string) {
+    const filterFields = listFilters;
+    const definition: CustomTaskViewDefinition = {
+      scope: customView?.definition.scope
+        ?? (selectedLabelId ? "label" : smartView === "inbox" ? "inbox" : smartView === "trash" ? "trash" : "all"),
+      label_ids: selectedLabelId
+        ? [...labelSubtreeIds(bundle.labels, selectedLabelId)]
+        : customView?.definition.label_ids ?? [],
+      ...filterFields,
+    };
+    const created = await onCreateCustomTaskView({
+      name,
+      definition,
+      presentation: {
+        grouping: preference.grouping,
+        sort: preference.sort,
+        direction: preference.direction,
+        ...filterFields,
+        show_labels: preference.show_labels,
+        show_completed: preference.show_completed,
+        show_hours: preference.show_hours,
+        view_mode: preference.view_mode,
+      },
+    });
+    onOpenCustomTaskView(created.id);
   }
 
   async function changeViewMode(mode: TaskViewMode) {
@@ -8650,26 +9287,27 @@ function TaskWorkspace({
           >
             <Search />
           </button>
+          {!isTrashView && smartView === "week" && !selectedLabelId && (
+            <TaskRecommendationButton
+              tasks={bundle.tasks}
+              currentUserId={currentUserId}
+              online={online}
+              now={now}
+              weekStartsOn={dateTimePreferences.weekStartsOn}
+              onUpdateTask={onUpdateTask}
+            />
+          )}
+          <TaskViewMenu
+            preference={preference}
+            viewMode={viewMode}
+            online={online}
+            onChange={savePreference}
+          />
           {!isTrashView && (
             <>
-              {smartView === "week" && !selectedLabelId && (
-                <TaskRecommendationButton
-                  tasks={bundle.tasks}
-                  currentUserId={currentUserId}
-                  online={online}
-                  now={now}
-                  weekStartsOn={dateTimePreferences.weekStartsOn}
-                  onUpdateTask={onUpdateTask}
-                />
-              )}
-              <TaskViewMenu
-                preference={preference}
-                viewMode={viewMode}
-                online={online}
-                onChange={savePreference}
-              />
               <TaskFilterMenu
                 preference={preference}
+                members={bundle.members}
                 online={online}
                 locked={filtersLocked}
                 onChange={savePreference}
@@ -8689,6 +9327,7 @@ function TaskWorkspace({
                 onOpenPermissions={() => setLabelSettingsOpen(true)}
                 onAddGroup={() => void beginAddSection().catch((error) =>
                   onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
+                onSaveAsView={() => setSaveViewOpen(true)}
                 onToggleShowLabels={() =>
                   void savePreference({ show_labels: !preference.show_labels })}
                 onToggleShowCompleted={() =>
@@ -9021,6 +9660,11 @@ function TaskWorkspace({
           onSave={onSaveAiWorkSettings}
         />
       )}
+      <SaveTaskViewDialog
+        open={saveViewOpen}
+        onOpenChange={setSaveViewOpen}
+        onSave={saveCurrentAsCustomView}
+      />
     </>
   );
 }
@@ -9037,6 +9681,7 @@ function LabelActionsMenu({
   onChangeViewMode,
   onOpenPermissions,
   onAddGroup,
+  onSaveAsView,
   onToggleShowLabels,
   onToggleShowCompleted,
   onToggleShowHours,
@@ -9053,6 +9698,7 @@ function LabelActionsMenu({
   onChangeViewMode: (mode: TaskViewMode) => void;
   onOpenPermissions: () => void;
   onAddGroup: () => void;
+  onSaveAsView: () => void;
   onToggleShowLabels: () => void;
   onToggleShowCompleted: () => void;
   onToggleShowHours: () => void;
@@ -9165,6 +9811,17 @@ function LabelActionsMenu({
           >
             <Plus />
             <span>添加分组</span>
+          </button>
+          <button
+            role="menuitem"
+            disabled={!online}
+            onClick={() => {
+              setOpen(false);
+              onSaveAsView();
+            }}
+          >
+            <BookmarkPlus />
+            <span>另存为视图</span>
           </button>
           <button
             role="menuitem"
@@ -11182,6 +11839,11 @@ function SettingsDialog({
   onUpdateDateTimePreferences,
   onUpdateNotificationPreference,
   onSaveAiFeatureSettings,
+  onToggleSystemViewVisibility,
+  onToggleCustomViewVisibility,
+  onReorderSystemSmartViews,
+  onReorderCustomTaskViews,
+  onDeleteCustomTaskView,
   onNotice,
 }: {
   open: boolean;
@@ -11219,6 +11881,11 @@ function SettingsDialog({
   onUpdateDateTimePreferences: WorkspaceAppProps["onUpdateDateTimePreferences"];
   onUpdateNotificationPreference: WorkspaceAppProps["onUpdateNotificationPreference"];
   onSaveAiFeatureSettings: WorkspaceAppProps["onSaveAiFeatureSettings"];
+  onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
+  onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
+  onReorderSystemSmartViews: WorkspaceAppProps["onReorderSystemSmartViews"];
+  onReorderCustomTaskViews: WorkspaceAppProps["onReorderCustomTaskViews"];
+  onDeleteCustomTaskView: (view: CustomTaskView) => Promise<void>;
   onNotice: (message: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
@@ -11253,6 +11920,7 @@ function SettingsDialog({
         { id: "account", label: "账户与安全", icon: UserRound },
         { id: "date", label: "日期与时间", icon: CalendarClock },
         { id: "appearance", label: "外观", icon: Palette },
+        { id: "smart-views", label: "智能视图", icon: ListFilter },
         { id: "notifications", label: "通知配置", icon: Bell },
         { id: "ai-features", label: "AI功能", icon: Sparkles },
         { id: "shortcuts", label: "快捷键", icon: Keyboard },
@@ -11473,6 +12141,41 @@ function SettingsDialog({
               />
             ) : activeTab === "appearance" ? (
               <AppearanceSettingsPanel />
+            ) : activeTab === "smart-views" ? (
+              <SmartViewsSettingsPanel
+                customViews={bundle.customTaskViews}
+                systemPreferences={bundle.taskSystemViewPreferences}
+                online={online}
+                onToggleSystem={async (viewKey, visible) => {
+                  try {
+                    await onToggleSystemViewVisibility(viewKey, visible);
+                  } catch (error) {
+                    onNotice(error instanceof Error ? error.message : "更新系统视图失败，请稍后重试");
+                  }
+                }}
+                onToggleCustom={async (viewId, visible) => {
+                  try {
+                    await onToggleCustomViewVisibility(viewId, visible);
+                  } catch (error) {
+                    onNotice(error instanceof Error ? error.message : "更新视图显示状态失败，请稍后重试");
+                  }
+                }}
+                onDeleteCustom={onDeleteCustomTaskView}
+                onReorderSystem={async (orderedKeys) => {
+                  try {
+                    await onReorderSystemSmartViews(orderedKeys);
+                  } catch (error) {
+                    onNotice(error instanceof Error ? error.message : "系统视图排序失败，请稍后重试");
+                  }
+                }}
+                onReorderCustom={async (orderedIds) => {
+                  try {
+                    await onReorderCustomTaskViews(orderedIds);
+                  } catch (error) {
+                    onNotice(error instanceof Error ? error.message : "自定义视图排序失败，请稍后重试");
+                  }
+                }}
+              />
             ) : activeTab === "notifications" ? (
               <NotificationSettingsPanel
                 client={supabase}
