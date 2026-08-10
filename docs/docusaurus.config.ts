@@ -76,8 +76,16 @@ const config: Config = {
               to: '/企业管理/单点登录',
             },
             {
+              label: '连接器',
+              to: '/企业管理/连接器',
+            },
+            {
               label: '通知配置',
               to: '/企业管理/通知配置',
+            },
+            {
+              label: 'CLI 快速开始',
+              to: '/cli/quickstart',
             },
           ],
         },

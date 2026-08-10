@@ -1,9 +1,13 @@
 # AntTodo CLI
 
+正式版本可使用 `npx @anttodos/cli` 或全局安装的 `anttodo` 命令；仓库内开发请使用 `pnpm cli:run`，或从 `pnpm pack` 生成的 tarball 安装。
+
 ```bash
-npx @anttodo/cli auth login
-anttodo workspace list --format table
-anttodo task list
+# 已发布版本
+npx @anttodos/cli auth login
+
+# 仓库内开发版本
+pnpm cli:run auth login
 ```
 
 Requires Node.js 22 or newer. Commands return a JSON envelope by default and
@@ -21,6 +25,12 @@ Run `anttodo man --format pretty` for the full command tree.
 Inside this repository, use `pnpm cli:run man` (or any other command and
 options) to build and execute the local CLI.
 
+The CLI also exposes task/note editing and bulk status operations, reminder and
+recurrence schedules, subtask editing/assignment/reordering, tag access and
+ordering management, workspace administration and invite links, full-text task
+search, comments, activity history, and attachment upload/download/signed URLs.
+Use `anttodo man` as the machine-readable API contract.
+
 Deployment order is database migration, `cli-device-auth` Edge Function, Web
 authorization page and well-known configuration, then the npm package.
 
@@ -29,7 +39,20 @@ Repository checks:
 ```bash
 pnpm cli:test
 pnpm cli:pack
+pnpm cli:verify
 # With local Supabase and `supabase functions serve` running:
 pnpm cli:test:integration
 pnpm cli:test:browser
 ```
+
+手动发布 CLI：
+
+```bash
+pnpm deploy:cli
+```
+
+该命令会先完成 CLI 校验，再执行 `npm publish ./cli --access public`。
+
+Pushing a `cli-v<version>` tag starts `.github/workflows/publish-cli.yml`; the
+tag must match `cli/package.json` and the repository must provide an `NPM_TOKEN`
+secret.

@@ -424,10 +424,24 @@ export function DueDateControl({
   }
 
   function applyPreset(preset: DuePreset) {
+    if (busy) return;
     const date = getPresetDate(preset);
-    setPointDate(toDateInput(date, timeZone));
-    setPointTime(toTimeInput(date, timeZone));
+    const nextDate = toDateInput(date, timeZone);
+    const nextTime = toTimeInput(date, timeZone);
+    cancelReminderPanel();
+    setRepeatOpen(false);
+    setTab("point");
+    setPointDate(nextDate);
+    setPointTime(nextTime);
+    setPointHasTime(true);
     setDisplayedMonth(date);
+    setError("");
+    void save({
+      tab: "point",
+      pointDate: nextDate,
+      pointTime: nextTime,
+      pointHasTime: true,
+    });
   }
 
   function switchTab(next: "point" | "range") {
@@ -447,7 +461,16 @@ export function DueDateControl({
     setError("");
   }
 
-  async function save() {
+  async function save(overrides?: {
+    tab?: "point" | "range";
+    pointDate?: string;
+    pointTime?: string;
+    pointHasTime?: boolean;
+  }) {
+    const activeTab = overrides?.tab ?? tab;
+    const activePointDate = overrides?.pointDate ?? pointDate;
+    const activePointTime = overrides?.pointTime ?? pointTime;
+    const activePointHasTime = overrides?.pointHasTime ?? pointHasTime;
     if (!isValidTimeZone(timeZone)) {
       setError("请选择有效的 IANA 时区");
       return;
@@ -457,9 +480,9 @@ export function DueDateControl({
       Task,
       "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone"
     >;
-    if (tab === "point" && !pointHasTime) {
-      const start = fromZonedDateTime(pointDate, "00:00", savedZone);
-      const end = fromZonedDateTime(pointDate, "23:59", savedZone);
+    if (activeTab === "point" && !activePointHasTime) {
+      const start = fromZonedDateTime(activePointDate, "00:00", savedZone);
+      const end = fromZonedDateTime(activePointDate, "23:59", savedZone);
       end.setSeconds(59, 999);
       patch = {
         due_at: end.toISOString(),
@@ -467,8 +490,8 @@ export function DueDateControl({
         due_is_all_day: true,
         due_timezone: savedZone,
       };
-    } else if (tab === "point") {
-      const dueAt = fromZonedDateTime(pointDate, pointTime, savedZone);
+    } else if (activeTab === "point") {
+      const dueAt = fromZonedDateTime(activePointDate, activePointTime, savedZone);
       if (Number.isNaN(dueAt.getTime())) {
         setError("请选择有效的日期和时间");
         return;
@@ -603,10 +626,10 @@ export function DueDateControl({
           {tab === "point" ? (
             <div className="due-point-panel">
               <div className="due-presets">
-                <button title="今天" aria-label="今天" onClick={() => applyPreset("today")}><Sun /></button>
-                <button title="明天" aria-label="明天" onClick={() => applyPreset("tomorrow")}><Sunrise /></button>
-                <button title="下周" aria-label="下周" onClick={() => applyPreset("next-week")}><CalendarPlus /><span>+7</span></button>
-                <button title="下月" aria-label="下月" onClick={() => applyPreset("next-month")}><Moon /></button>
+                <button type="button" title="今天" aria-label="今天" disabled={busy} onClick={() => applyPreset("today")}><Sun /></button>
+                <button type="button" title="明天" aria-label="明天" disabled={busy} onClick={() => applyPreset("tomorrow")}><Sunrise /></button>
+                <button type="button" title="下周" aria-label="下周" disabled={busy} onClick={() => applyPreset("next-week")}><CalendarPlus /><span>+7</span></button>
+                <button type="button" title="下月" aria-label="下月" disabled={busy} onClick={() => applyPreset("next-month")}><Moon /></button>
               </div>
               <div className="due-calendar-header">
                 <strong>{format(displayedMonth, "yyyy年 M月")}</strong>

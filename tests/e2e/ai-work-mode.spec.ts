@@ -46,6 +46,70 @@ test("web shows disabled AI settings entry and notes hide assignment/terminal", 
   await expect(detail.locator(".detail-terminal-trigger")).toHaveCount(0);
 });
 
+test("AI feature settings manage prompt overrides and task-detail entries", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+
+  const settings = page.getByRole("dialog", { name: "设置" });
+  await settings.getByRole("button", { name: "AI功能", exact: true }).click();
+  await expect(settings.getByRole("heading", { name: "AI功能" })).toBeVisible();
+  await expect(settings.getByRole("heading", { name: "关联" })).toBeVisible();
+  await expect(settings.getByRole("heading", { name: "功能", exact: true })).toBeVisible();
+  const cliLink = settings.getByRole("link", { name: /蚂蚁清单 CLI/ });
+  await expect(cliLink).toHaveAttribute("href", "https://docs.anttodo.com/cli/quickstart");
+  await expect(cliLink).toHaveAttribute("target", "_blank");
+
+  const formatRow = settings.locator(".ai-feature-row").filter({ hasText: "智能格式化" });
+  await expect(formatRow.getByRole("switch", { name: "智能格式化" })).toBeChecked();
+  await formatRow.getByRole("button", { name: /覆盖提示词/ }).click();
+  const promptDialog = page.getByRole("dialog", { name: "覆盖智能格式化提示词" });
+  const promptEditor = promptDialog.getByRole("textbox", { name: "智能格式化提示词" });
+  await expect(promptEditor).toHaveValue(/请把任务整理为更规范的结构化建议/);
+  await promptEditor.fill("使用短句整理，并保留原文术语。");
+  await promptDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(promptDialog).toBeHidden();
+  await expect(formatRow.getByText("已覆盖", { exact: true })).toBeVisible();
+
+  await formatRow.getByRole("button", { name: /覆盖提示词/ }).click();
+  await expect(promptEditor).toHaveValue("使用短句整理，并保留原文术语。");
+  await promptDialog.getByRole("button", { name: "恢复默认" }).click();
+  await promptDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(formatRow.getByText("默认", { exact: true })).toBeVisible();
+
+  await formatRow.getByRole("switch", { name: "智能格式化" }).uncheck();
+  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await page.getByText(demoTaskTitle, { exact: true }).click();
+  const detail = page.locator(".task-detail-panel");
+  await detail.getByRole("button", { name: "智能处理" }).click();
+  await expect(page.getByRole("menuitem", { name: /格式化待办/ })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: /智能分解子任务/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+  const reopenedSettings = page.getByRole("dialog", { name: "设置" });
+  await reopenedSettings.getByRole("button", { name: "AI功能", exact: true }).click();
+  await reopenedSettings.getByRole("switch", { name: "智能分解子任务" }).uncheck();
+  await reopenedSettings.getByRole("button", { name: "关闭设置" }).click();
+  await expect(detail.getByRole("button", { name: "智能处理" })).toHaveCount(0);
+});
+
+test("offline AI feature settings stay read-only", async ({ context, page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+  const settings = page.getByRole("dialog", { name: "设置" });
+  await settings.getByRole("button", { name: "AI功能", exact: true }).click();
+  await context.setOffline(true);
+  await expect(settings.getByRole("switch", { name: "智能格式化" })).toBeDisabled();
+  await expect(settings.getByRole("switch", { name: "智能分解子任务" })).toBeDisabled();
+  await expect(settings.getByRole("button", { name: /覆盖提示词/ })).toHaveCount(2);
+  for (const button of await settings.getByRole("button", { name: /覆盖提示词/ }).all()) {
+    await expect(button).toBeDisabled();
+  }
+  await expect(settings.getByRole("link", { name: /蚂蚁清单 CLI/ })).toBeEnabled();
+});
+
 test("desktop configures Codex and opens independent task/subtask terminals", async ({ page }) => {
   await installDesktopAiBridge(page);
   await page.goto("/?demo=1");

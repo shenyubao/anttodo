@@ -5,6 +5,7 @@ import {
   dingtalkCallbackUrl,
   getPublicAppUrl,
   getSsoStateSecret,
+  isSsoClient,
   parsePublicConfig,
   type SsoClient,
 } from "../_shared/dingtalk-sso.ts";
@@ -36,9 +37,10 @@ export default {
       ? normalizeWorkspaceSlug(body.slug)
       : "";
     if (!validWorkspaceSlug(slug)) return jsonError(PUBLIC_ERROR, 404);
-    const client: SsoClient = body?.client === "desktop" ? "desktop" : "web";
-    if (body?.client !== undefined && body.client !== "web" && body.client !== "desktop") {
-      return jsonError("Unsupported SSO client");
+    let client: SsoClient = "web";
+    if (body?.client !== undefined) {
+      if (!isSsoClient(body.client)) return jsonError("Unsupported SSO client");
+      client = body.client;
     }
 
     const { data: workspace, error: workspaceError } = await ctx.supabaseAdmin

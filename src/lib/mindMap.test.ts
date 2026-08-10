@@ -41,6 +41,7 @@ function task(overrides: Partial<Task> = {}): Task {
     recurrence: overrides.recurrence ?? null,
     estimate_hours: overrides.estimate_hours ?? null,
     actual_hours: overrides.actual_hours ?? null,
+    description_mentions: overrides.description_mentions ?? [],
   };
 }
 

@@ -13,6 +13,13 @@ import {
 } from "react";
 import { MemberAvatar } from "./MemberAvatar";
 import type { AttachmentService, UploadedAttachment } from "./lib/attachments";
+import {
+  detectMentionQuery,
+  filterMentionCandidates,
+  memberDisplayName,
+  visibleMentionIds,
+  type MentionQuery,
+} from "./lib/mentions";
 import type { Member, Task, TaskComment } from "./types";
 
 export type CreateCommentInput = {
@@ -21,23 +28,9 @@ export type CreateCommentInput = {
   mentionedUserIds: string[];
 };
 
-type MentionState = { start: number; query: string } | null;
+export { visibleMentionIds } from "./lib/mentions";
 
-function memberName(member: Member) {
-  return member.profile?.display_name?.trim() || "团队成员";
-}
-
-export function visibleMentionIds(
-  body: string,
-  selectedIds: Iterable<string>,
-  members: Member[],
-) {
-  const names = new Map(members.map((member) => [member.user_id, memberName(member)]));
-  return [...new Set(selectedIds)].filter((id) => {
-    const name = names.get(id);
-    return name ? body.includes(`@${name}`) : false;
-  });
-}
+type MentionState = MentionQuery | null;
 
 export function commentRelativeTime(value: string, now = new Date()) {
   return formatDistance(new Date(value), now, { addSuffix: true, locale: zhCN });
@@ -167,36 +160,32 @@ export function TaskComments({
     return () => observer.disconnect();
   }, [comments, editingId]);
 
-  const candidates = useMemo(() => {
-    const allowed = new Set(candidateIds ?? []);
-    const query = mention?.query.toLocaleLowerCase("zh-CN") ?? "";
-    return members.filter((member) =>
-      member.user_id !== currentUserId &&
-      allowed.has(member.user_id) &&
-      memberName(member).toLocaleLowerCase("zh-CN").includes(query));
-  }, [candidateIds, currentUserId, members, mention?.query]);
+  const candidates = useMemo(
+    () => filterMentionCandidates({
+      members,
+      candidateIds,
+      currentUserId,
+      query: mention?.query ?? "",
+    }),
+    [candidateIds, currentUserId, members, mention?.query],
+  );
 
-  const editCandidates = useMemo(() => {
-    const allowed = new Set(candidateIds ?? []);
-    const query = editMention?.query.toLocaleLowerCase("zh-CN") ?? "";
-    return members.filter((member) =>
-      member.user_id !== currentUserId &&
-      allowed.has(member.user_id) &&
-      memberName(member).toLocaleLowerCase("zh-CN").includes(query));
-  }, [candidateIds, currentUserId, editMention?.query, members]);
+  const editCandidates = useMemo(
+    () => filterMentionCandidates({
+      members,
+      candidateIds,
+      currentUserId,
+      query: editMention?.query ?? "",
+    }),
+    [candidateIds, currentUserId, editMention?.query, members],
+  );
 
   useEffect(() => setActiveCandidate(0), [mention?.query]);
 
   function detectMention(value: string, caret: number) {
-    const prefix = value.slice(0, caret);
-    const match = /(?:^|\s)@([^\s@]*)$/.exec(prefix);
-    if (!match) {
-      setMention(null);
-      return;
-    }
-    const start = caret - match[1].length - 1;
-    setMention({ start, query: match[1] });
-    if (candidateIds === null) {
+    const next = detectMentionQuery(value, caret);
+    setMention(next);
+    if (next && candidateIds === null) {
       void onLoadCandidates()
         .then(setCandidateIds)
         .catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取可引用成员"));
@@ -211,7 +200,7 @@ export function TaskComments({
   function selectMention(member: Member) {
     if (!mention) return;
     const caret = textareaRef.current?.selectionStart ?? body.length;
-    const insertion = `@${memberName(member)} `;
+    const insertion = `@${memberDisplayName(member)} `;
     const next = `${body.slice(0, mention.start)}${insertion}${body.slice(caret)}`;
     const nextCaret = mention.start + insertion.length;
     setBody(next);
@@ -247,17 +236,13 @@ export function TaskComments({
   function changeEditBody(event: ChangeEvent<HTMLTextAreaElement>) {
     const next = event.target.value;
     setEditBody(next);
-    const prefix = next.slice(0, event.target.selectionStart);
-    const match = /(?:^|\s)@([^\s@]*)$/.exec(prefix);
-    setEditMention(match
-      ? { start: event.target.selectionStart - match[1].length - 1, query: match[1] }
-      : null);
+    setEditMention(detectMentionQuery(next, event.target.selectionStart));
   }
 
   function selectEditMention(member: Member) {
     if (!editMention) return;
     const caret = editRef.current?.selectionStart ?? editBody.length;
-    const insertion = `@${memberName(member)} `;
+    const insertion = `@${memberDisplayName(member)} `;
     const next = `${editBody.slice(0, editMention.start)}${insertion}${editBody.slice(caret)}`;
     const nextCaret = editMention.start + insertion.length;
     setEditBody(next);
@@ -424,7 +409,7 @@ export function TaskComments({
                             aria-selected="false" onMouseDown={(event) => event.preventDefault()}
                             onClick={() => selectEditMention(member)}>
                             <MemberAvatar member={member} className="comment-candidate-avatar" />
-                            <span>{memberName(member)}</span>
+                            <span>{memberDisplayName(member)}</span>
                           </button>
                         ))}
                         {candidateIds !== null && editCandidates.length === 0 && <p>没有匹配的成员</p>}
@@ -472,7 +457,7 @@ export function TaskComments({
                 aria-selected={index === activeCandidate} onMouseDown={(event) => event.preventDefault()}
                 onClick={() => selectMention(member)}>
                 <MemberAvatar member={member} className="comment-candidate-avatar" />
-                <span>{memberName(member)}</span>
+                <span>{memberDisplayName(member)}</span>
               </button>
             ))}
             {candidateIds !== null && candidates.length === 0 && <p>没有匹配的成员</p>}

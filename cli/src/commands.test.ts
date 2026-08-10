@@ -11,14 +11,15 @@ describe("command tree", () => {
   it("contains the requested domains and workspace selection", () => {
     const program = buildProgram();
     expect(program.commands.map((command) => command.name())).toEqual([
-      "auth", "workspace", "task", "subtask", "note", "tag", "user", "man",
+      "auth", "workspace", "task", "subtask", "note", "tag", "user",
+      "group", "search", "comment", "activity", "attachment", "man",
     ]);
   });
 
-  it("does not expose unsupported subtask priority", () => {
+  it("exposes subtask editing and ordering", () => {
     const subtask = buildProgram().commands.find((command) => command.name() === "subtask");
     expect(subtask?.commands.map((command) => command.name())).toEqual([
-      "list", "get", "create", "set-duetime", "delete",
+      "list", "get", "create", "update", "set-status", "assign", "set-priority", "reorder", "set-duetime", "delete",
     ]);
   });
 

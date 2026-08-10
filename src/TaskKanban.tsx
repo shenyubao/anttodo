@@ -813,9 +813,6 @@ function KanbanCard({
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      onPointerDown={draggable
-        ? (event) => listeners?.onPointerDown?.(event)
-        : undefined}
     >
       {draggable && (
         <button

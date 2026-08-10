@@ -30,6 +30,7 @@ import {
   useState,
   type CSSProperties,
   type FocusEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -79,8 +80,17 @@ import {
   formatHoursValue,
   normalizeHoursInput,
 } from "./lib/taskHours";
+import {
+  MOBILE_TASK_DETAIL_MEDIA,
+  mobileTaskDetailRatioFromTranslateY,
+  mobileTaskDetailSnapRatio,
+  mobileTaskDetailTranslateY,
+  resolveMobileTaskDetailRelease,
+  type MobileTaskDetailSnap,
+} from "./lib/mobileTaskDetailSheet";
 import type {
   AiCliTool,
+  AiFeatureSettings,
   AiWorkSettings,
   AssigneeTarget,
   DateTimePreferences,
@@ -120,10 +130,14 @@ export type TaskDetailProps = {
   attachmentService: AttachmentService;
   now: Date;
   dateTimePreferences: DateTimePreferences;
+  aiFeatureSettings: AiFeatureSettings;
   aiWorkSettings: AiWorkSettings;
   settingsLabelName?: string | null;
   onClose: () => void;
-  onUpdate: (patch: Partial<Task>) => Promise<void>;
+  onUpdate: (
+    patch: Partial<Task>,
+    options?: { mentionedUserIds?: string[] },
+  ) => Promise<void>;
   onSaveSchedule: (
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
@@ -1197,6 +1211,7 @@ function AiSmartProcessControl({
   task,
   bundle,
   currentUserId,
+  aiFeatureSettings,
   online,
   editable,
   onCreateSubtask,
@@ -1208,6 +1223,7 @@ function AiSmartProcessControl({
   task: Task;
   bundle: WorkspaceBundle;
   currentUserId: string;
+  aiFeatureSettings: AiFeatureSettings;
   online: boolean;
   editable: boolean;
   onCreateSubtask: (
@@ -1215,7 +1231,10 @@ function AiSmartProcessControl({
     extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
   ) => Promise<void>;
   onEnsureSubtasksVisible?: () => void;
-  onUpdate: (patch: Partial<Task>) => Promise<void>;
+  onUpdate: (
+    patch: Partial<Task>,
+    options?: { mentionedUserIds?: string[] },
+  ) => Promise<void>;
   onSaveSchedule: (
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
@@ -1269,6 +1288,22 @@ function AiSmartProcessControl({
     closePanel();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when switching tasks
   }, [task.id]);
+
+  useEffect(() => {
+    const currentFeatureDisabled =
+      (panel === "format" && !aiFeatureSettings.smart_format_enabled)
+      || (panel === "decompose" && !aiFeatureSettings.subtask_decompose_enabled)
+      || (!aiFeatureSettings.smart_format_enabled
+        && !aiFeatureSettings.subtask_decompose_enabled);
+    if (!currentFeatureDisabled) return;
+    requestIdRef.current += 1;
+    closePanel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to feature availability
+  }, [
+    aiFeatureSettings.smart_format_enabled,
+    aiFeatureSettings.subtask_decompose_enabled,
+    panel,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -1493,6 +1528,11 @@ function AiSmartProcessControl({
     ? formatAiSuggestedDueAt(formatSuggestion.due_at)
     : null;
 
+  if (!aiFeatureSettings.smart_format_enabled
+    && !aiFeatureSettings.subtask_decompose_enabled) {
+    return null;
+  }
+
   return (
     <div className="ai-smart-process" ref={rootRef}>
       <button
@@ -1529,26 +1569,32 @@ function AiSmartProcessControl({
           aria-label="智能处理"
           style={position}
         >
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!writable}
-            onClick={() => {
-              void requestDecompose();
-            }}
-          >
-            智能分解子任务
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!writable}
-            onClick={() => {
-              void requestFormat();
-            }}
-          >
-            智能格式化
-          </button>
+          {aiFeatureSettings.smart_format_enabled && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!writable}
+              onClick={() => {
+                void requestFormat();
+              }}
+            >
+              <span>格式化待办</span>
+              <span className="ai-smart-process-beta">Beta</span>
+            </button>
+          )}
+          {aiFeatureSettings.subtask_decompose_enabled && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!writable}
+              onClick={() => {
+                void requestDecompose();
+              }}
+            >
+              <span>智能分解子任务</span>
+              <span className="ai-smart-process-beta">Beta</span>
+            </button>
+          )}
         </div>,
         document.body,
       )}
@@ -1698,6 +1744,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   attachmentService,
   now,
   dateTimePreferences,
+  aiFeatureSettings,
   aiWorkSettings,
   settingsLabelName = null,
   focusedSubtaskId = null,
@@ -2308,31 +2355,36 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     );
   }
 
+  const completeTrigger = task.kind !== "note" ? (
+    <button
+      className="detail-complete-trigger"
+      type="button"
+      disabled={!writable}
+      aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
+      style={{
+        "--priority-color": getPriorityOption(task.priority).color,
+      } as CSSProperties}
+      onClick={() => void onUpdate({
+        status: task.status === "completed" ? "open" : "completed",
+        completed_at: task.status === "completed" ? null : new Date().toISOString(),
+      })}
+    >
+      {task.status === "completed" && <Check />}
+    </button>
+  ) : null;
+
   const toolbarLeading: ReactNode = presentation === "dialog" ? (
     <>
       {task.kind === "note" ? (
         <span className="detail-note-icon" aria-label="笔记"><NotebookPen /></span>
-      ) : (
-        <button
-          className="detail-complete-trigger"
-          type="button"
-          disabled={!writable}
-          aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
-          style={{
-            "--priority-color": getPriorityOption(task.priority).color,
-          } as CSSProperties}
-          onClick={() => void onUpdate({
-            status: task.status === "completed" ? "open" : "completed",
-            completed_at: task.status === "completed" ? null : new Date().toISOString(),
-          })}
-        >
-          {task.status === "completed" && <Check />}
-        </button>
-      )}
+      ) : completeTrigger}
       <span className="detail-toolbar-divider" aria-hidden="true" />
     </>
   ) : (
-    <button type="button" onClick={() => void closeDetail()} aria-label="关闭详情"><X /></button>
+    <>
+      <button type="button" onClick={() => void closeDetail()} aria-label="关闭详情"><X /></button>
+      {completeTrigger}
+    </>
   );
 
   const aiWorkConfigured = isAiWorkConfigured(aiWorkSettings);
@@ -2491,6 +2543,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                   task={task}
                   bundle={bundle}
                   currentUserId={currentUserId}
+                  aiFeatureSettings={aiFeatureSettings}
                   online={online}
                   editable={editable}
                   onCreateSubtask={onCreateSubtask}
@@ -2526,11 +2579,19 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           ref={editorRef}
           attachmentContext={{ workspaceId: task.workspace_id, taskId: task.id }}
           attachmentService={attachmentService}
+          currentUserId={currentUserId}
           immersive={immersive}
           initialMarkdown={descriptionSeed ?? task.description}
+          initialMentionUserIds={(task.description_mentions ?? []).map((item) => item.user_id)}
+          members={bundle.members}
           online={writable}
           onImmersiveChange={setImmersive}
-          onSave={(description) => onUpdate({ description })}
+          onLoadMentionCandidates={onLoadCommentCandidates}
+          onSave={(description, mentionedUserIds) =>
+            onUpdate(
+              { description },
+              mentionedUserIds ? { mentionedUserIds } : undefined,
+            )}
           toolbarHost={toolbarHost}
           toolbarOpen={toolbarOpen}
         />
@@ -2803,8 +2864,206 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   );
 });
 
+function useMobileTaskDetailSheet() {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== "undefined"
+      && window.matchMedia(MOBILE_TASK_DETAIL_MEDIA).matches);
+
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_TASK_DETAIL_MEDIA);
+    const update = () => setMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return mobile;
+}
+
+function MobileTaskDetailSheet({
+  taskId,
+  onClose,
+  onRequestFlushClose,
+  children,
+}: {
+  taskId: string;
+  onClose: () => void;
+  onRequestFlushClose: () => void;
+  children: (requestClose: () => void) => ReactNode;
+}) {
+  const [snap, setSnap] = useState<MobileTaskDetailSnap>("peek");
+  const [dragY, setDragY] = useState<number | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window !== "undefined" ? window.innerHeight : 0);
+  const dragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startTranslateY: number;
+    startTime: number;
+  } | null>(null);
+  const closingRef = useRef(false);
+
+  useEffect(() => {
+    setSnap("peek");
+    setDragY(null);
+    closingRef.current = false;
+  }, [taskId]);
+
+  useEffect(() => {
+    const update = () => setViewportHeight(window.innerHeight);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, []);
+
+  const baseTranslateY = mobileTaskDetailTranslateY(
+    mobileTaskDetailSnapRatio(snap),
+    viewportHeight,
+  );
+  const translateY = dragY ?? baseTranslateY;
+  const ratio = mobileTaskDetailRatioFromTranslateY(translateY, viewportHeight);
+  const scrimOpacity = Math.min(0.36, 0.12 + ratio * 0.28);
+
+  function closeSheet() {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setDragY(viewportHeight);
+    window.setTimeout(() => {
+      onClose();
+    }, 180);
+  }
+
+  function onHandlePointerDown(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0 || dragRef.current || closingRef.current) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startTranslateY: translateY,
+      startTime: event.timeStamp,
+    };
+    setDragY(translateY);
+  }
+
+  function onHandlePointerMove(event: ReactPointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const next = Math.min(
+      viewportHeight,
+      Math.max(0, drag.startTranslateY + (event.clientY - drag.startY)),
+    );
+    setDragY(next);
+  }
+
+  function onHandlePointerUp(event: ReactPointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const deltaY = event.clientY - drag.startY;
+    const velocityY = deltaY / Math.max(1, event.timeStamp - drag.startTime);
+    const nextRatio = mobileTaskDetailRatioFromTranslateY(
+      Math.min(
+        viewportHeight,
+        Math.max(0, drag.startTranslateY + deltaY),
+      ),
+      viewportHeight,
+    );
+    const release = resolveMobileTaskDetailRelease({
+      ratio: nextRatio,
+      velocityY,
+    });
+    setDragY(null);
+    if (release === "close") {
+      onRequestFlushClose();
+      return;
+    }
+    setSnap(release);
+  }
+
+  function onHandlePointerCancel(event: ReactPointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    setDragY(null);
+  }
+
+  return (
+    <div className="task-detail-sheet-root">
+      <button
+        type="button"
+        className="task-detail-sheet-scrim"
+        aria-label="关闭详情"
+        style={{ opacity: scrimOpacity }}
+        onClick={() => onRequestFlushClose()}
+      />
+      <div
+        className={clsx(
+          "task-detail-sheet",
+          snap === "full" && "is-full",
+          dragY !== null && "is-dragging",
+        )}
+        style={{
+          transform: `translate3d(0, ${translateY}px, 0)`,
+        }}
+      >
+        <div
+          className="task-detail-sheet-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="拖拽调整详情高度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(ratio * 100)}
+          onPointerDown={onHandlePointerDown}
+          onPointerMove={onHandlePointerMove}
+          onPointerUp={onHandlePointerUp}
+          onPointerCancel={onHandlePointerCancel}
+        >
+          <span className="task-detail-sheet-handle-bar" aria-hidden="true" />
+        </div>
+        {children(closeSheet)}
+      </div>
+    </div>
+  );
+}
+
 export function TaskDetailPanel(props: TaskDetailProps) {
-  return <TaskDetailContent {...props} presentation="panel" />;
+  const mobileSheet = useMobileTaskDetailSheet();
+  const contentRef = useRef<TaskDetailContentHandle>(null);
+  if (!mobileSheet) {
+    return <TaskDetailContent {...props} presentation="panel" />;
+  }
+  return (
+    <MobileTaskDetailSheet
+      taskId={props.task.id}
+      onClose={props.onClose}
+      onRequestFlushClose={() => {
+        void contentRef.current?.close();
+      }}
+    >
+      {(requestClose) => (
+        <TaskDetailContent
+          ref={contentRef}
+          {...props}
+          presentation="panel"
+          onClose={requestClose}
+        />
+      )}
+    </MobileTaskDetailSheet>
+  );
 }
 
 export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {

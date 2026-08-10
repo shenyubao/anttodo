@@ -448,6 +448,12 @@ entrypoint = "./functions/connector-admin/index.ts"
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/connector-admin/*.html" ]
 
+[functions.dingtalk-group-bot]
+enabled = true
+verify_jwt = false
+import_map = "./functions/dingtalk-group-bot/deno.json"
+entrypoint = "./functions/dingtalk-group-bot/index.ts"
+
 [functions.workspace-invite]
 enabled = true
 verify_jwt = true

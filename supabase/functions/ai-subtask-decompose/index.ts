@@ -4,6 +4,12 @@ import {
   deepseekChatCompletion,
   extractJsonText,
 } from "../_shared/deepseek.ts";
+import {
+  buildSmartFormatPrompt,
+  buildSubtaskDecomposePrompt,
+  normalizeAiPromptOverride,
+  type AiPromptContact,
+} from "../_shared/ai-feature-prompts.ts";
 import { resolveUser } from "../_shared/resolveUser.ts";
 
 type AiTaskRequest = {
@@ -12,11 +18,6 @@ type AiTaskRequest = {
   taskId: string;
   nowIso?: string;
   timeZone?: string;
-};
-
-type Contact = {
-  user_id: string;
-  display_name: string;
 };
 
 type SuggestedSubtask = {
@@ -114,78 +115,6 @@ function normalizeFormatSuggestion(raw: unknown): FormatSuggestion | null {
   };
 }
 
-function buildDecomposePrompt(input: {
-  title: string;
-  description: string;
-  existingSubtasks: string[];
-  contacts: Contact[];
-  nowIso: string;
-  timeZone: string;
-}) {
-  const contactLines = input.contacts.length
-    ? input.contacts
-      .map((contact) => `- ${contact.display_name} (user_id: ${contact.user_id})`)
-      .join("\n")
-    : "(无可用联系人)";
-  const existing = input.existingSubtasks.length
-    ? input.existingSubtasks.map((title) => `- ${title}`).join("\n")
-    : "(暂无子任务)";
-
-  return `你是团队待办助手。请把下面的父任务拆成 3~12 条可执行的子任务。
-
-规则：
-1. 只输出 JSON（不要 markdown 代码块），格式为 {"subtasks":[{"title":"...","assignee_user_id":null,"due_at":null},...]}。
-2. title 必填，简洁可执行，中文优先，不超过 60 字。
-3. assignee_user_id 只能填 contacts 里的 user_id；不确定则 null。
-4. due_at 使用 ISO 8601 字符串；不确定则 null。若只有日期，用该日本地上午 09:00 再转 ISO。
-5. 不要重复「已有子任务」中的标题。
-6. 结合当前时间与时区理解「今天/明天/下周」等表述。
-
-当前时间：${input.nowIso}
-时区：${input.timeZone}
-
-父任务标题：
-${input.title}
-
-父任务描述：
-${input.description || "(无描述)"}
-
-已有子任务：
-${existing}
-
-组织联系人：
-${contactLines}`;
-}
-
-function buildFormatPrompt(input: {
-  title: string;
-  description: string;
-  nowIso: string;
-  timeZone: string;
-}) {
-  return `你是团队待办助手。请把下面的任务整理为更规范的结构化建议，供用户确认后再采纳。
-
-规则：
-1. 只输出 JSON（不要 markdown 代码块），格式为：
-{"title":"...","description":"...","due_at":null,"acceptance_criteria":null,"references":null}
-2. title 必填，简明扼要，中文优先，不超过 60 字。
-3. description 为正文说明（不含单独的「验收标准」「参考资料」小节），可为空字符串。
-4. 若原文能识别截止时间，due_at 使用 ISO 8601 字符串；不确定则 null。若只有日期，用该日本地上午 09:00 再转 ISO。
-5. 若原文含验收标准，抽到 acceptance_criteria；没有则 null。不要捏造。
-6. 若原文含参考资料/链接/文档，抽到 references；没有则 null。不要捏造。
-7. 结合当前时间与时区理解「今天/明天/下周」等表述。
-8. 不要添加原文没有的事实与需求。
-
-当前时间：${input.nowIso}
-时区：${input.timeZone}
-
-任务标题：
-${input.title}
-
-任务描述：
-${input.description || "(无描述)"}`;
-}
-
 export default {
   fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
@@ -206,6 +135,30 @@ export default {
     const workspaceId = body.workspaceId.trim();
     const taskId = body.taskId.trim();
     if (!workspaceId || !taskId) return jsonError("Invalid request");
+
+    const { data: featureSettings, error: featureSettingsError } =
+      await ctx.supabaseAdmin
+        .from("user_ai_feature_settings")
+        .select(
+          "smart_format_enabled, smart_format_prompt_override, subtask_decompose_enabled, subtask_decompose_prompt_override",
+        )
+        .eq("user_id", user.id)
+        .maybeSingle();
+    if (featureSettingsError) {
+      return jsonError("AI 功能设置读取失败，请稍后重试。", 500);
+    }
+
+    const featureEnabled = action === "format"
+      ? featureSettings?.smart_format_enabled ?? true
+      : featureSettings?.subtask_decompose_enabled ?? true;
+    if (!featureEnabled) {
+      return jsonError(
+        action === "format"
+          ? "智能格式化已在设置中关闭。"
+          : "智能分解子任务已在设置中关闭。",
+        403,
+      );
+    }
 
     const { data: membership, error: membershipError } = await ctx.supabaseAdmin
       .from("workspace_members")
@@ -253,11 +206,14 @@ export default {
             {
               role: "system",
               content:
-                "你是精准的任务格式化助手。只输出合法 JSON 对象，键为 title、description、due_at、acceptance_criteria、references。",
+                "你是任务格式化助手。必须遵守用户消息中的固定输出协议，只输出合法 JSON 对象，键为 title、description、due_at、acceptance_criteria、references。",
             },
             {
               role: "user",
-              content: buildFormatPrompt({
+              content: buildSmartFormatPrompt({
+                instruction: normalizeAiPromptOverride(
+                  featureSettings?.smart_format_prompt_override,
+                ),
                 title: taskTitle,
                 description: taskDescription,
                 nowIso,
@@ -315,7 +271,7 @@ export default {
     const profileById = new Map(
       (profiles ?? []).map((profile) => [profile.id as string, profile]),
     );
-    const contacts: Contact[] = memberIds.map((userId) => {
+    const contacts: AiPromptContact[] = memberIds.map((userId) => {
       const profile = profileById.get(userId);
       const displayName =
         typeof profile?.display_name === "string" && profile.display_name.trim()
@@ -332,11 +288,14 @@ export default {
           {
             role: "system",
             content:
-              "你是精准的任务分解助手。只输出合法 JSON 对象，键为 subtasks（数组）。",
+              "你是任务分解助手。必须遵守用户消息中的固定输出协议，只输出合法 JSON 对象，键为 subtasks（数组）。",
           },
           {
             role: "user",
-            content: buildDecomposePrompt({
+            content: buildSubtaskDecomposePrompt({
+              instruction: normalizeAiPromptOverride(
+                featureSettings?.subtask_decompose_prompt_override,
+              ),
               title: taskTitle,
               description: taskDescription,
               existingSubtasks: (existingSubtasks ?? [])
@@ -349,7 +308,7 @@ export default {
           },
         ],
         responseFormat: { type: "json_object" },
-        temperature: 0.35,
+        temperature: 0.2,
         maxTokens: 2048,
       });
     } catch (error) {

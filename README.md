@@ -197,13 +197,15 @@ pnpm ios:sync
 pnpm ios:testflight
 ```
 
-CLI 位于独立 workspace 包 `@anttodo/cli`，要求 Node.js 22+：
+CLI 位于独立 workspace 包 `@anttodos/cli`，要求 Node.js 22+：
 
 ```bash
 pnpm cli:build
 pnpm cli:run man
 pnpm cli:test
 pnpm cli:pack
+pnpm cli:verify
+pnpm deploy:cli       # 校验后发布 @anttodos/cli
 node cli/dist/index.js man --format pretty
 ```
 
@@ -217,7 +219,8 @@ pnpm cli:test:integration
 pnpm cli:test:browser
 ```
 
-本次仓库只生成可发布 tarball，不执行 npm 发布。
+`pnpm deploy:cli` 会先执行类型检查、单元测试和 tarball 检查，再运行
+`npm publish ./cli --access public`。首次发布或账号启用 2FA 时，npm 会要求浏览器认证或一次性验证码；不要把验证码写入脚本或 CI 日志。
 
 本地 macOS 发布推荐三步：`pnpm mac:submit`（提交公证）→
 `pnpm mac:list`（查看 ID/时间/状态）→ `pnpm mac:deploy`（装订并上传
@@ -241,7 +244,7 @@ OSS）。一条龙可用 `pnpm mac:all`（或 `pnpm deploy:mac`）。一次性�
 
 ```text
 docs/                     Docusaurus 文档站（docs.anttodo.com）
-cli/                      @anttodo/cli workspace 包
+cli/                      @anttodos/cli workspace 包
 electron/                 Electron main/preload
 src/                      共享 React 客户端
 supabase/migrations/      数据库与 RLS

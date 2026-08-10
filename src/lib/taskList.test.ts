@@ -63,6 +63,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   recurrence: patch.recurrence ?? null,
   estimate_hours: patch.estimate_hours ?? null,
   actual_hours: patch.actual_hours ?? null,
+  description_mentions: patch.description_mentions ?? [],
 });
 
 describe("task list grouping and sorting", () => {
@@ -505,8 +506,9 @@ describe("task list preference filters", () => {
     expect(preference.filter_due).toBe("all");
   });
 
-  it("uses fixed filter presets for today, assigned, watching, and inbox smart views", () => {
+  it("uses fixed filter presets for today, week, assigned, watching, and inbox smart views", () => {
     expect(resolveTaskListPreference([], "today")).toMatchObject(SMART_VIEW_FILTER_PRESETS.today);
+    expect(resolveTaskListPreference([], "week")).toMatchObject(SMART_VIEW_FILTER_PRESETS.week);
     expect(resolveTaskListPreference([], "assigned")).toMatchObject(
       SMART_VIEW_FILTER_PRESETS.assigned,
     );
@@ -562,6 +564,38 @@ describe("task list preference filters", () => {
         now,
       }).map((item) => item.id),
     ).toEqual(["mine-today", "mine-later"]);
+    const week = SMART_VIEW_FILTER_PRESETS.week;
+    expect(
+      applyTaskListFilters({
+        tasks: [
+          task("week-start", {
+            assignee_id: "u",
+            due_at: "2026-07-26T16:00:00.000Z",
+            due_is_all_day: true,
+          }),
+          task("week-end", {
+            assignee_id: "u",
+            due_at: "2026-08-02T15:59:59.999Z",
+            due_is_all_day: true,
+          }),
+          task("next-week", {
+            assignee_id: "u",
+            due_at: "2026-08-02T16:00:00.000Z",
+            due_is_all_day: true,
+          }),
+          task("other-assignee", {
+            assignee_id: "other",
+            due_at: "2026-07-30T15:59:59.999Z",
+            due_is_all_day: true,
+          }),
+        ],
+        filterAssignee: week.filter_assignee,
+        filterDue: week.filter_due,
+        currentUserId: "u",
+        now,
+        weekStartsOn: 1,
+      }).map((item) => item.id),
+    ).toEqual(["week-start", "week-end"]);
     const watching = SMART_VIEW_FILTER_PRESETS.watching;
     expect(
       applyTaskListFilters({

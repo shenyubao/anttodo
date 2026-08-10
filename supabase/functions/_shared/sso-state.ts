@@ -1,11 +1,19 @@
 const encoder = new TextEncoder();
 
-export type SsoClient = "web" | "desktop";
+export type SsoClient = "web" | "desktop" | "mobile";
 
 export type SsoStateClaims = {
   workspaceId: string;
   client: SsoClient;
 };
+
+export function isSsoClient(value: unknown): value is SsoClient {
+  return value === "web" || value === "desktop" || value === "mobile";
+}
+
+export function usesSsoAuthHandoff(client: SsoClient) {
+  return client === "desktop" || client === "mobile";
+}
 
 function toBase64Url(bytes: Uint8Array) {
   let binary = "";
@@ -55,7 +63,7 @@ export async function verifySsoStateClaims(
     return null;
   }
   if (stateWorkspaceId !== workspaceId) return null;
-  if (clientRaw !== "web" && clientRaw !== "desktop") return null;
+  if (!isSsoClient(clientRaw)) return null;
   const issuedAt = Number.parseInt(issuedAtRaw, 36);
   const ageMs = Date.now() - issuedAt;
   if (!Number.isFinite(issuedAt) || ageMs > maxAgeMs || ageMs < -60_000) return null;

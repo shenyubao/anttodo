@@ -56,11 +56,13 @@ import {
   Menu,
   NotebookPen,
   Palette,
+  Plug,
   Plus,
   RefreshCw,
   Search,
   Settings,
   ShieldCheck,
+  Sparkles,
   Smartphone,
   SquareTerminal,
   Tag,
@@ -87,8 +89,10 @@ import { isSameDay } from "date-fns";
 import clsx from "clsx";
 import antTodoIconUrl from "./assets/anttodo-icon.png";
 import { AiCliAvatar } from "./AiCliAvatar";
+import { AiFeatureSettingsPanel } from "./AiFeatureSettingsPanel";
 import { AiWorkSettingsDialog } from "./AiWorkSettingsDialog";
 import { CalendarSidebar, CalendarWorkspace } from "./CalendarWorkspace";
+import { ConnectorSettingsPanel } from "./ConnectorSettingsPanel";
 import { QuickAddForm } from "./QuickAddForm";
 import {
   DesktopUpdateBanner,
@@ -130,6 +134,7 @@ import {
   deleteTaskComment as deleteTaskCommentApi,
   purgeTrashedTask as purgeTrashedTaskApi,
   loadDateTimePreferences,
+  loadAiFeatureSettings,
   loadAiWorkSettings,
   loadFocusSessions,
   loadFocusSettings,
@@ -139,12 +144,14 @@ import {
   loadNotifications,
   loadTaskActivity,
   loadTaskComments,
+  loadWorkspaceTasksPage,
   loadUserQuota,
   loadWorkspaceBundle,
   loadWorkspaces,
   markAllNotificationsRead,
   markNotificationRead,
   saveDateTimePreferences,
+  saveAiFeatureSettings,
   saveAiWorkSettings,
   saveFocusSettings,
   saveNotificationPreference,
@@ -153,12 +160,14 @@ import {
   setTaskListOrder,
   toggleTaskLabel as toggleTaskLabelApi,
   toggleTaskParticipant as toggleTaskParticipantApi,
+  updateTaskDescription as updateTaskDescriptionApi,
   updateTaskSection,
   updateTaskComment as updateTaskCommentApi,
   updateLabelWithAccess as updateLabelWithAccessApi,
   updateWorkspace,
   reorderChildLabels as reorderChildLabelsApi,
   setUserTopLevelLabelOrder as setUserTopLevelLabelOrderApi,
+  WORKSPACE_TASK_PAGE_SIZE,
 } from "./lib/api";
 import {
   createDemoAttachmentService,
@@ -167,6 +176,7 @@ import {
 } from "./lib/attachments";
 import { createDemoBundle, createDemoFocusSessions, demoWorkspaces } from "./lib/demo";
 import { createDefaultFocusSettings } from "./lib/focusSession";
+import { createDefaultAiFeatureSettings } from "./lib/aiFeatureSettings";
 import { FocusWorkspace } from "./FocusWorkspace";
 import { getDueStatus } from "./lib/dueTime";
 import {
@@ -184,6 +194,12 @@ import {
 } from "./lib/profile";
 import { ensureWebPushSubscription } from "./lib/webPush";
 import { defaultNotificationPreferences } from "./lib/notificationPreferences";
+import {
+  buildDesktopReminderEntries,
+  desktopNotificationCopy,
+  shouldShowSystemNotification,
+  showDesktopSystemNotification,
+} from "./lib/desktopNotifications";
 import { searchTasks } from "./lib/taskSearch";
 import {
   MOBILE_SIDEBAR_EDGE_WIDTH,
@@ -240,6 +256,7 @@ import {
   taskListKey,
 } from "./lib/taskList";
 import { TaskFilterMenu } from "./TaskFilterMenu";
+import { TaskRecommendationButton } from "./TaskRecommendationButton";
 import { TaskViewMenu } from "./TaskViewMenu";
 import { isTrayHash } from "./lib/traySurface";
 import { TrayApp } from "./TrayApp";
@@ -337,10 +354,13 @@ import {
   writePendingWorkspace,
   writePendingWorkspaceInvite,
 } from "./lib/workspaceInvites";
+import { App as CapacitorApp } from "@capacitor/app";
+import { Browser as CapacitorBrowser } from "@capacitor/browser";
+import { Capacitor } from "@capacitor/core";
 import {
   buildDingtalkCallbackUrl,
   dingtalkExchangeOnce,
-  dingtalkDesktopCallbackUrl,
+  dingtalkNativeCallbackUrl,
   dingtalkFrameLoginUrl,
   dingtalkLoginErrorMessage,
   dingtalkOAuthAuthorizeUrl,
@@ -349,13 +369,17 @@ import {
   isDingtalkCallbackPath,
   isDingtalkClientId,
   initialWorkspaceSsoProvider,
+  parseAuthDeepLink,
   parseWorkspaceSsoLoginConfig,
+  resolveSsoClient,
+  usesNativeSsoHandoff,
   type WorkspaceSsoLoginConfig,
   type WorkspaceSsoLoginProvider,
   type WorkspaceSsoProvider,
 } from "./lib/sso";
 import type {
   AiCliTool,
+  AiFeatureSettings,
   AiWorkSettings,
   AssigneeTarget,
   AppNotification,
@@ -369,6 +393,7 @@ import type {
   NotificationChannelPreferences,
   NotificationPreferences,
   NotificationScenario,
+  NotificationType,
   ReminderSchedule,
   Subtask,
   Task,
@@ -390,17 +415,19 @@ import type {
   WorkspaceRole,
 } from "./types";
 
-type SmartView = "all" | "today" | "assigned" | "watching" | "inbox" | "trash";
+type SmartView = "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
 type AppSection = "tasks" | "calendar" | "mindmap" | "focus";
 type SettingsTab =
   | "account"
   | "date"
   | "appearance"
   | "notifications"
+  | "ai-features"
   | "team-mgmt"
   | "team"
   | "user-groups"
   | "sso"
+  | "connectors"
   | "shortcuts"
   | "about";
 
@@ -422,7 +449,7 @@ function currentTaskReturnRoute(workspaceId: string): AppRoute | null {
   const value = window.history.state?.taskReturnRoute as AppRoute | undefined;
   if (!value || value.workspaceId !== workspaceId) return null;
   if (value.kind === "view") {
-    if (!["all", "today", "assigned", "watching", "inbox", "trash"].includes(value.view)) return null;
+    if (!["all", "today", "week", "assigned", "watching", "inbox", "trash"].includes(value.view)) return null;
     if (value.mode !== "list" && value.mode !== "kanban") return null;
     return value.view === "trash" ? { ...value, mode: "list" } : value;
   }
@@ -431,6 +458,31 @@ function currentTaskReturnRoute(workspaceId: string): AppRoute | null {
     return value;
   }
   return null;
+}
+
+function taskReturnRouteForTask(
+  workspaceId: string,
+  task: Task,
+  bundle: WorkspaceBundle,
+): AppRoute {
+  const labelId = task.label_ids.find((id) => bundle.labels.some((label) => label.id === id));
+  if (!labelId) {
+    return { workspaceId, kind: "view", view: "inbox", mode: "list" };
+  }
+
+  const savedMode = resolveTaskListPreference(
+    bundle.taskListPreferences,
+    taskListKey("all", labelId),
+    bundle.labels,
+  ).view_mode;
+  return {
+    workspaceId,
+    kind: "tag",
+    tagId: labelId,
+    // The timeline renders task details as a dialog, so deep links should
+    // choose a side-panel-compatible mode instead.
+    mode: savedMode === "timeline" ? "list" : savedMode,
+  };
 }
 
 function useOnline() {
@@ -480,13 +532,13 @@ export default function App() {
     ReturnType<NonNullable<typeof supabase>["auth"]["getSession"]>
   >["data"]["session"]>(null);
   const [authReady, setAuthReady] = useState(demoMode);
-  const [desktopAuthStatus, setDesktopAuthStatus] = useState<
+  const [nativeAuthStatus, setNativeAuthStatus] = useState<
     | null
     | { state: "processing" }
     | { state: "error"; message: string }
   >(null);
-  const desktopAuthProcessing = useRef(false);
-  const processedDesktopCodes = useRef(new Set<string>());
+  const nativeAuthProcessing = useRef(false);
+  const processedNativeCodes = useRef(new Set<string>());
 
   useEffect(() => {
     if (teamSlug && isTeamClientDownloadInvite(window.location.search)) {
@@ -523,66 +575,110 @@ export default function App() {
   }, [traySurface, session]);
 
   useEffect(() => {
-    const desktopAuth = window.anttodoDesktop?.auth;
-    if (!desktopAuth || !supabase || demoMode) return;
-    const desktopAuthBridge = desktopAuth;
+    if (!supabase || demoMode) return;
     const authClient = supabase;
     let cancelled = false;
 
-    async function consumePendingCallback() {
-      if (desktopAuthProcessing.current) return;
-      desktopAuthProcessing.current = true;
+    async function consumeHandoffCode(code: string): Promise<boolean> {
+      if (processedNativeCodes.current.has(code)) return true;
+      processedNativeCodes.current.add(code);
+      setNativeAuthStatus({ state: "processing" });
+      const { data, error } = await authClient.functions.invoke("dingtalk-sso", {
+        body: { action: "consume-handoff", code },
+      });
+      if (cancelled) return false;
+      if (error || !data?.workspaceId || !data?.tokenHash) {
+        setNativeAuthStatus({
+          state: "error",
+          message: await edgeFunctionErrorMessage(
+            error,
+            data,
+            "无法完成钉钉客户端登录，请重新扫码。",
+          ),
+        });
+        return false;
+      }
+      const { error: verifyError } = await authClient.auth.verifyOtp(
+        dingtalkTokenHashOtpParams(String(data.tokenHash)),
+      );
+      if (cancelled) return false;
+      if (verifyError) {
+        setNativeAuthStatus({
+          state: "error",
+          message: verifyError.message || "无法建立登录会话。",
+        });
+        return false;
+      }
+      writePendingWorkspace(String(data.workspaceId));
+      setNativeAuthStatus(null);
+      if (Capacitor.isNativePlatform()) {
+        void CapacitorBrowser.close().catch(() => undefined);
+      }
+      return true;
+    }
+
+    async function consumePendingDesktopCallbacks() {
+      const desktopAuth = window.anttodoDesktop?.auth;
+      if (!desktopAuth || nativeAuthProcessing.current) return;
+      nativeAuthProcessing.current = true;
       try {
-        let code = await desktopAuthBridge.takePendingCallback();
+        let code = await desktopAuth.takePendingCallback();
         while (!cancelled && code) {
-          if (processedDesktopCodes.current.has(code)) {
-            code = await desktopAuthBridge.takePendingCallback();
-            continue;
-          }
-          processedDesktopCodes.current.add(code);
-          setDesktopAuthStatus({ state: "processing" });
-          const { data, error } = await authClient.functions.invoke("dingtalk-sso", {
-            body: { action: "consume-handoff", code },
-          });
-          if (cancelled) return;
-          if (error || !data?.workspaceId || !data?.tokenHash) {
-            setDesktopAuthStatus({
-              state: "error",
-              message: await edgeFunctionErrorMessage(
-                error,
-                data,
-                "无法完成钉钉客户端登录，请重新扫码。",
-              ),
-            });
-            return;
-          }
-          const { error: verifyError } = await authClient.auth.verifyOtp(
-            dingtalkTokenHashOtpParams(String(data.tokenHash)),
-          );
-          if (cancelled) return;
-          if (verifyError) {
-            setDesktopAuthStatus({
-              state: "error",
-              message: verifyError.message || "无法建立登录会话。",
-            });
-            return;
-          }
-          writePendingWorkspace(String(data.workspaceId));
-          setDesktopAuthStatus(null);
-          code = await desktopAuthBridge.takePendingCallback();
+          const ok = await consumeHandoffCode(code);
+          if (!ok || cancelled) return;
+          code = await desktopAuth.takePendingCallback();
         }
       } finally {
-        desktopAuthProcessing.current = false;
+        nativeAuthProcessing.current = false;
       }
     }
 
-    const unsubscribe = desktopAuthBridge.onCallbackAvailable(() => {
-      void consumePendingCallback();
-    });
-    void consumePendingCallback();
+    async function consumeMobileDeepLink(url: string) {
+      const code = parseAuthDeepLink(url);
+      if (!code || nativeAuthProcessing.current) return;
+      nativeAuthProcessing.current = true;
+      try {
+        await consumeHandoffCode(code);
+      } finally {
+        nativeAuthProcessing.current = false;
+      }
+    }
+
+    const desktopAuth = window.anttodoDesktop?.auth;
+    const unsubscribers: Array<() => void> = [];
+    if (desktopAuth) {
+      unsubscribers.push(
+        desktopAuth.onCallbackAvailable(() => {
+          void consumePendingDesktopCallbacks();
+        }),
+      );
+      void consumePendingDesktopCallbacks();
+    }
+
+    if (Capacitor.isNativePlatform()) {
+      void CapacitorApp.getLaunchUrl()
+        .then((result) => {
+          if (result?.url) void consumeMobileDeepLink(result.url);
+        })
+        .catch(() => undefined);
+      let listenerHandle: { remove: () => Promise<void> } | null = null;
+      void CapacitorApp.addListener("appUrlOpen", (event) => {
+        void consumeMobileDeepLink(event.url);
+      }).then((handle) => {
+        if (cancelled) {
+          void handle.remove();
+          return;
+        }
+        listenerHandle = handle;
+      });
+      unsubscribers.push(() => {
+        void listenerHandle?.remove();
+      });
+    }
+
     return () => {
       cancelled = true;
-      unsubscribe();
+      for (const unsubscribe of unsubscribers) unsubscribe();
     };
   }, [demoMode]);
 
@@ -598,14 +694,14 @@ export default function App() {
   if (sessionBridge) {
     return <SessionBridgeScreen authenticated={Boolean(session)} />;
   }
-  if (desktopAuthStatus?.state === "processing") {
+  if (nativeAuthStatus?.state === "processing") {
     return <Splash label="正在完成钉钉登录…" />;
   }
-  if (desktopAuthStatus?.state === "error") {
+  if (nativeAuthStatus?.state === "error") {
     return (
       <DesktopAuthErrorScreen
-        message={desktopAuthStatus.message}
-        onDismiss={() => setDesktopAuthStatus(null)}
+        message={nativeAuthStatus.message}
+        onDismiss={() => setNativeAuthStatus(null)}
       />
     );
   }
@@ -972,7 +1068,7 @@ function MissingConfig() {
 
 function DingtalkCallbackScreen() {
   const [error, setError] = useState("");
-  const [desktopDeepLink, setDesktopDeepLink] = useState("");
+  const [nativeDeepLink, setNativeDeepLink] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -1001,7 +1097,9 @@ function DingtalkCallbackScreen() {
         );
         if (
           exchangeError ||
-          (data?.mode === "desktop" ? !data?.handoffCode : !data?.tokenHash)
+          (usesNativeSsoHandoff(String(data?.mode ?? ""))
+            ? !data?.handoffCode
+            : !data?.tokenHash)
         ) {
           return {
             ok: false as const,
@@ -1012,10 +1110,10 @@ function DingtalkCallbackScreen() {
             ),
           };
         }
-        if (data.mode === "desktop") {
+        if (usesNativeSsoHandoff(String(data.mode))) {
           return {
             ok: true as const,
-            mode: "desktop" as const,
+            mode: data.mode as "desktop" | "mobile",
             workspaceId: String(data.workspaceId || workspaceId),
             handoffCode: String(data.handoffCode),
           };
@@ -1032,26 +1130,26 @@ function DingtalkCallbackScreen() {
         setError(exchange.error);
         return;
       }
-      if (exchange.mode === "desktop") {
-        const deepLink = dingtalkDesktopCallbackUrl(exchange.handoffCode);
-        if (!deepLink) {
-          setError("客户端登录交接码无效，请重新扫码登录。");
+      if (exchange.mode === "web") {
+        const { error: verifyError } = await client.auth.verifyOtp(
+          dingtalkTokenHashOtpParams(exchange.tokenHash),
+        );
+        if (cancelled) return;
+        if (verifyError) {
+          setError(verifyError.message || "无法建立登录会话。");
           return;
         }
-        setDesktopDeepLink(deepLink);
-        window.location.assign(deepLink);
+        writePendingWorkspace(exchange.workspaceId);
+        window.location.replace("/");
         return;
       }
-      const { error: verifyError } = await client.auth.verifyOtp(
-        dingtalkTokenHashOtpParams(exchange.tokenHash),
-      );
-      if (cancelled) return;
-      if (verifyError) {
-        setError(verifyError.message || "无法建立登录会话。");
+      const deepLink = dingtalkNativeCallbackUrl(exchange.handoffCode);
+      if (!deepLink) {
+        setError("客户端登录交接码无效，请重新扫码登录。");
         return;
       }
-      writePendingWorkspace(exchange.workspaceId);
-      window.location.replace("/");
+      setNativeDeepLink(deepLink);
+      window.location.assign(deepLink);
     }
     void complete();
     return () => {
@@ -1076,12 +1174,12 @@ function DingtalkCallbackScreen() {
               返回登录
             </a>
           </div>
-        ) : desktopDeepLink ? (
+        ) : nativeDeepLink ? (
           <div className="dingtalk-login">
             <strong>授权已完成</strong>
-            <p>AntTodo 应已自动打开。若没有反应，请点击下方按钮返回客户端。</p>
-            <a className="button primary full" href={desktopDeepLink}>
-              打开 AntTodo
+            <p>蚂蚁清单应已自动打开。若没有反应，请点击下方按钮返回客户端。</p>
+            <a className="button primary full" href={nativeDeepLink}>
+              打开蚂蚁清单
             </a>
           </div>
         ) : (
@@ -1120,9 +1218,12 @@ const SSO_PROVIDER_RENDERERS: Record<
     const canRedirect = Boolean(
       provider.config.redirectUri && provider.config.state && provider.config.appKey,
     );
+    const preferRedirect =
+      Boolean(window.anttodoDesktop) || Capacitor.isNativePlatform();
+    const showQr = canRedirect && !preferRedirect;
     return (
       <>
-        {!canRedirect && (
+        {showQr && (
           <div
             className="dingtalk-qr-frame"
             aria-label="钉钉登录二维码"
@@ -1144,7 +1245,7 @@ const SSO_PROVIDER_RENDERERS: Record<
         {canRedirect && (
           <button
             type="button"
-            className="button secondary full"
+            className={preferRedirect ? "button primary full" : "button secondary full"}
             onClick={onRedirect}
           >
             <RefreshCw aria-hidden="true" />
@@ -1175,8 +1276,8 @@ function AuthScreen({
   showModeTabs?: boolean;
 }) {
   const teamEntry = loginSurface === "team-sso";
-  const [desktopTeamEntry, setDesktopTeamEntry] = useState(false);
-  const ssoEntry = teamEntry || desktopTeamEntry;
+  const [clientTeamEntry, setClientTeamEntry] = useState(false);
+  const ssoEntry = teamEntry || clientTeamEntry;
   const [activeMode, setActiveMode] = useState<"account" | "enterprise">("account");
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [phone, setPhone] = useState("");
@@ -1220,7 +1321,7 @@ function AuthScreen({
       {
         body: {
           slug,
-          client: window.anttodoDesktop ? "desktop" : "web",
+          client: resolveSsoClient(),
         },
       },
     );
@@ -1269,7 +1370,7 @@ function AuthScreen({
             setSsoError("钉钉登录回调校验失败，请刷新页面重试。");
             return;
           }
-          if (window.anttodoDesktop) {
+          if (window.anttodoDesktop || Capacitor.isNativePlatform()) {
             void openDingtalkUrl(redirectUrl.toString());
           } else {
             window.location.assign(redirectUrl.toString());
@@ -1351,12 +1452,20 @@ function AuthScreen({
   }
 
   async function openDingtalkUrl(url: string) {
-    if (!window.anttodoDesktop) {
-      window.location.assign(url);
+    if (window.anttodoDesktop) {
+      const opened = await window.anttodoDesktop.auth.openDingtalkUrl(url);
+      if (!opened) setSsoError("无法在系统浏览器打开钉钉授权，请稍后重试。");
       return;
     }
-    const opened = await window.anttodoDesktop.auth.openDingtalkUrl(url);
-    if (!opened) setSsoError("无法在系统浏览器打开钉钉授权，请稍后重试。");
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await CapacitorBrowser.open({ url });
+      } catch {
+        setSsoError("无法在系统浏览器打开钉钉授权，请稍后重试。");
+      }
+      return;
+    }
+    window.location.assign(url);
   }
 
   function openRedirectLogin() {
@@ -1391,8 +1500,8 @@ function AuthScreen({
       return;
     }
     setEnterpriseError("");
-    if (window.anttodoDesktop) {
-      setDesktopTeamEntry(true);
+    if (window.anttodoDesktop || Capacitor.isNativePlatform()) {
+      setClientTeamEntry(true);
       void loadSsoConfig(normalizedSlug);
     } else {
       window.location.assign(loginUrl);
@@ -1672,6 +1781,10 @@ function RemoteApplication({
   const pendingSectionMutationsRef = useRef(0);
   const recentLocalRealtimeChangesRef = useRef<Map<string, number>>(new Map());
   const realtimeRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const taskPageOffsetRef = useRef(0);
+  const taskPageWorkspaceRef = useRef<string | null>(null);
+  const [tasksHasMore, setTasksHasMore] = useState(false);
+  const [tasksLoadingMore, setTasksLoadingMore] = useState(false);
 
   const workspacesQuery = useQuery({
     queryKey: ["workspaces", userId],
@@ -1754,6 +1867,25 @@ function RemoteApplication({
     queryFn: () => loadWorkspaceBundle(client, workspaceId!),
     enabled: Boolean(workspaceId),
   });
+
+  useEffect(() => {
+    taskPageWorkspaceRef.current = workspaceId;
+    taskPageOffsetRef.current = 0;
+    setTasksHasMore(false);
+  }, [workspaceId]);
+
+  useEffect(() => {
+    const bundle = bundleQuery.data;
+    if (!workspaceId || !bundle) return;
+    if (bundle.tasks.some((task) => task.workspace_id !== workspaceId)) return;
+    const serverTaskCount = bundle.tasks.filter((task) => !isOptimisticTaskId(task.id)).length;
+    const bundleIsInitialOrRefreshed = taskPageOffsetRef.current === 0
+      || serverTaskCount < taskPageOffsetRef.current;
+    if (!bundleIsInitialOrRefreshed) return;
+    taskPageWorkspaceRef.current = workspaceId;
+    taskPageOffsetRef.current = serverTaskCount;
+    setTasksHasMore(serverTaskCount === WORKSPACE_TASK_PAGE_SIZE);
+  }, [bundleQuery.data, workspaceId]);
   const aiWorkSettingsQuery = useQuery({
     queryKey: ["ai-work-settings", userId, workspaceId],
     queryFn: () => loadAiWorkSettings(client, userId, workspaceId!),
@@ -1773,6 +1905,10 @@ function RemoteApplication({
     queryKey: ["date-time-preferences", userId],
     queryFn: () => loadDateTimePreferences(client, userId),
   });
+  const aiFeatureSettingsQuery = useQuery({
+    queryKey: ["ai-feature-settings", userId],
+    queryFn: () => loadAiFeatureSettings(client, userId),
+  });
   const notificationPreferencesQuery = useQuery({
     queryKey: ["notification-preferences", userId],
     queryFn: () => loadNotificationPreferences(client, userId),
@@ -1789,26 +1925,56 @@ function RemoteApplication({
     if (!items.length) return;
     const known = seenNotificationIdsRef.current;
     const isFirst = known.size === 0;
+    const preferences = notificationPreferencesQuery.data
+      ?? defaultNotificationPreferences();
     for (const item of items) {
       if (known.has(item.id)) continue;
       known.add(item.id);
       if (isFirst || item.read_at) continue;
-      const title = item.task?.title || "AntTodo";
-      const body = item.actor?.display_name
-        ? `${item.actor.display_name} · ${title}`
-        : title;
-      try {
-        if (typeof window.Notification !== "undefined" && Notification.permission === "granted") {
-          new Notification(title, { body, tag: `notification:${item.id}` });
-        }
-      } catch {
-        // Ignore notification permission / constructor failures.
-      }
+      if (!shouldShowSystemNotification(item, preferences)) continue;
+      const { title, body } = desktopNotificationCopy(item);
+      void showDesktopSystemNotification({
+        title,
+        body,
+        workspaceId: item.workspace_id,
+        taskId: item.task_id,
+        tag: `notification:${item.id}`,
+      });
     }
     if (isFirst) {
       for (const item of items) known.add(item.id);
     }
-  }, [notificationsQuery.data]);
+  }, [notificationPreferencesQuery.data, notificationsQuery.data]);
+
+  useEffect(() => {
+    const reminders = window.anttodoDesktop?.reminders;
+    if (!reminders) return;
+
+    const preferences = notificationPreferencesQuery.data
+      ?? defaultNotificationPreferences();
+    if (!workspaceId || !preferences.task_due_reminder.systemEnabled) {
+      void reminders.sync([]);
+      return;
+    }
+
+    const entries = buildDesktopReminderEntries(
+      bundleQuery.data?.tasks ?? [],
+      workspaceId,
+      userId,
+    );
+    void reminders.sync(entries);
+  }, [
+    bundleQuery.data?.tasks,
+    notificationPreferencesQuery.data,
+    userId,
+    workspaceId,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      void window.anttodoDesktop?.reminders?.sync([]);
+    };
+  }, []);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -1860,6 +2026,11 @@ function RemoteApplication({
           }
           if (table === "task_comment_mentions") {
             setCommentsRevision((value) => value + 1);
+            return;
+          }
+          if (table === "task_description_mentions") {
+            void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+            void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
             return;
           }
           if (table === "notifications") {
@@ -1953,6 +2124,32 @@ function RemoteApplication({
   const activeWorkspaceId = workspaceId;
   const activeBundle = bundleQuery.data;
 
+  async function loadMoreTasks() {
+    if (tasksLoadingMore || !tasksHasMore) return;
+    setTasksLoadingMore(true);
+    try {
+      const offset = taskPageOffsetRef.current;
+      const page = await loadWorkspaceTasksPage(client, activeWorkspaceId, offset);
+      queryClient.setQueryData<WorkspaceBundle>(
+        ["workspace-bundle", activeWorkspaceId],
+        (current) => {
+          if (!current) return current;
+          const existingIds = new Set(current.tasks.map((task) => task.id));
+          const nextTasks = page.tasks.filter((task) => !existingIds.has(task.id));
+          return nextTasks.length > 0
+            ? { ...current, tasks: [...current.tasks, ...nextTasks] }
+            : current;
+        },
+      );
+      taskPageOffsetRef.current += page.tasks.length;
+      setTasksHasMore(page.hasMore);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "加载更多任务失败，请重试");
+    } finally {
+      setTasksLoadingMore(false);
+    }
+  }
+
   function rememberLocalRealtimeChanges(table: string, taskIds: Iterable<string>) {
     const expiresAt = Date.now() + 5_000;
     for (const taskId of taskIds) {
@@ -1960,7 +2157,11 @@ function RemoteApplication({
     }
   }
 
-  async function updateTask(taskId: string, patch: Partial<Task>) {
+  async function updateTask(
+    taskId: string,
+    patch: Partial<Task>,
+    options?: { mentionedUserIds?: string[] },
+  ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const current = previous?.tasks.find((task) => task.id === taskId);
@@ -1973,6 +2174,16 @@ function RemoteApplication({
     delete payload.reminders;
     delete payload.reminder_persistent;
     delete payload.recurrence;
+    delete payload.description_mentions;
+    const mentionedUserIds = options?.mentionedUserIds;
+    const descriptionUpdate = typeof payload.description === "string"
+      && mentionedUserIds !== undefined
+      ? {
+          description: String(payload.description),
+          mentionedUserIds,
+        }
+      : null;
+    if (descriptionUpdate) delete payload.description;
 
     if (current && payload.status === "completed" && current.status !== "completed") {
       stopCliTerminalsForTask(taskId, current.subtasks.map((subtask) => subtask.id));
@@ -1986,6 +2197,14 @@ function RemoteApplication({
       && current.due_at
     );
     const rolled = shouldRoll ? nextOccurrenceFields(current!) : null;
+    const nextDescriptionMentions = descriptionUpdate
+      ? (previous?.members ?? [])
+          .filter((member) => descriptionUpdate.mentionedUserIds.includes(member.user_id))
+          .map((member) => ({
+            user_id: member.user_id,
+            display_name_snapshot: member.profile?.display_name?.trim() || "团队成员",
+          }))
+      : null;
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
       bundle
         ? {
@@ -2005,6 +2224,9 @@ function RemoteApplication({
                 : {
                     ...task,
                     ...normalizedPatch,
+                    ...(nextDescriptionMentions
+                      ? { description_mentions: nextDescriptionMentions }
+                      : {}),
                     ...(normalizedPatch.kind === "note" ? {
                       subtasks: task.subtasks.map((subtask) => ({
                         ...subtask,
@@ -2019,8 +2241,19 @@ function RemoteApplication({
           }
         : bundle);
     rememberLocalRealtimeChanges("tasks", [taskId]);
-    const { error } = await client.from("tasks").update(payload).eq("id", taskId);
-    if (error) {
+    try {
+      if (descriptionUpdate) {
+        await updateTaskDescriptionApi(client, {
+          taskId,
+          description: descriptionUpdate.description,
+          mentionedUserIds: descriptionUpdate.mentionedUserIds,
+        });
+      }
+      if (Object.keys(payload).length > 0) {
+        const { error } = await client.from("tasks").update(payload).eq("id", taskId);
+        if (error) throw error;
+      }
+    } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
     }
@@ -2538,6 +2771,21 @@ function RemoteApplication({
     }
   }
 
+  async function updateAiFeatureSettings(next: AiFeatureSettings) {
+    const queryKey = ["ai-feature-settings", userId];
+    const previous = queryClient.getQueryData<AiFeatureSettings>(queryKey)
+      ?? createDefaultAiFeatureSettings(userId);
+    queryClient.setQueryData(queryKey, next);
+    try {
+      const saved = await saveAiFeatureSettings(client, next);
+      queryClient.setQueryData(queryKey, saved);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      setNotice("AI 功能设置保存失败，请稍后重试");
+      throw error;
+    }
+  }
+
   async function updateFocusSettings(next: FocusSettings) {
     const queryKey = ["focus-settings", userId, activeWorkspaceId];
     const previous = queryClient.getQueryData<FocusSettings>(queryKey);
@@ -2790,6 +3038,9 @@ function RemoteApplication({
         notificationPreferencesQuery.data ?? defaultNotificationPreferences()
       }
       attachmentService={attachmentService}
+      aiFeatureSettings={
+        aiFeatureSettingsQuery.data ?? createDefaultAiFeatureSettings(userId)
+      }
       aiWorkSettings={aiWorkSettingsQuery.data ?? {
         user_id: userId,
         workspace_id: activeWorkspaceId,
@@ -2800,11 +3051,14 @@ function RemoteApplication({
       focusSessions={focusSessionsQuery.data ?? []}
       commentsRevision={commentsRevision}
       activityRevision={activityRevision}
+      tasksHasMore={tasksHasMore}
+      tasksLoadingMore={tasksLoadingMore}
       notifications={notificationsQuery.data ?? []}
       notificationsLoading={notificationsQuery.isLoading}
       notice={notice}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
+      onLoadMoreTasks={loadMoreTasks}
       onWorkspaceChange={setWorkspaceId}
       quota={quotaQuery.data ?? {
         user_id: userId,
@@ -2926,6 +3180,7 @@ function RemoteApplication({
       onDeleteAccount={deleteAccount}
       onUpdateDateTimePreferences={updateDateTimePreferences}
       onUpdateNotificationPreference={updateNotificationPreference}
+      onSaveAiFeatureSettings={updateAiFeatureSettings}
       onSaveAiWorkSettings={updateAiWorkSettings}
       onSaveFocusSettings={updateFocusSettings}
       onCreateFocusSession={addFocusSession}
@@ -2955,6 +3210,9 @@ function DemoApplication() {
     cli_tools: [],
     default_working_path: null,
   });
+  const [aiFeatureSettings, setAiFeatureSettings] = useState<AiFeatureSettings>(() =>
+    createDefaultAiFeatureSettings("demo-user"),
+  );
   const [focusSettings, setFocusSettings] = useState<FocusSettings>(() =>
     createDefaultFocusSettings("demo-user", workspaceId),
   );
@@ -3036,7 +3294,11 @@ function DemoApplication() {
     setActivityRevision((value) => value + 1);
   }
 
-  function patchTask(taskId: string, patch: Partial<Task>) {
+  function patchTask(
+    taskId: string,
+    patch: Partial<Task>,
+    options?: { mentionedUserIds?: string[] },
+  ) {
     const task = bundle.tasks.find((item) => item.id === taskId);
     let nextPatch = { ...patch };
     if (nextPatch.kind === "note") {
@@ -3083,6 +3345,20 @@ function DemoApplication() {
       field in nextPatch && task?.[field] !== nextPatch[field]
         ? [[field, { before: task?.[field] ?? null, after: nextPatch[field] ?? null }]]
         : []));
+    const previousMentionIds = new Set(
+      (task?.description_mentions ?? []).map((item) => item.user_id),
+    );
+    const nextDescriptionMentions = options?.mentionedUserIds
+      ? bundle.members
+          .filter((member) => options.mentionedUserIds!.includes(member.user_id))
+          .map((member) => ({
+            user_id: member.user_id,
+            display_name_snapshot: member.profile?.display_name?.trim() || "团队成员",
+          }))
+      : null;
+    const newlyMentioned = (nextDescriptionMentions ?? []).filter(
+      (item) => !previousMentionIds.has(item.user_id),
+    );
     setBundle((current) => ({
       ...current,
       tasks: current.tasks.map((item) =>
@@ -3090,6 +3366,9 @@ function DemoApplication() {
           ? {
               ...item,
               ...nextPatch,
+              ...(nextDescriptionMentions
+                ? { description_mentions: nextDescriptionMentions }
+                : {}),
               ...(nextPatch.kind === "note" ? {
                 subtasks: item.subtasks.map((subtask) => ({
                   ...subtask,
@@ -3104,6 +3383,33 @@ function DemoApplication() {
       ),
     }));
     if (Object.keys(changes).length) appendDemoActivity(taskId, "task.updated", { changes });
+    if (newlyMentioned.length > 0 && task) {
+      const mentionType = task.kind === "note" ? "note_mentioned" : "todo_mentioned";
+      setDemoNotifications((current) => [
+        ...newlyMentioned.map((mention) => ({
+          id: crypto.randomUUID(),
+          workspace_id: task.workspace_id,
+          task_id: taskId,
+          comment_id: null,
+          recipient_id: mention.user_id,
+          actor_id: "demo-user",
+          notification_type: mentionType as NotificationType,
+          payload: { source: "description" },
+          read_at: null,
+          created_at: new Date().toISOString(),
+          actor: bundle.members.find((member) => member.user_id === "demo-user")?.profile,
+          task: {
+            id: task.id,
+            title: nextPatch.title ?? task.title,
+            kind: task.kind,
+            description: typeof nextPatch.description === "string"
+              ? nextPatch.description
+              : task.description,
+          },
+        })),
+        ...current,
+      ]);
+    }
     return Promise.resolve();
   }
 
@@ -3143,17 +3449,21 @@ function DemoApplication() {
       dateTimePreferences={dateTimePreferences}
       notificationPreferences={notificationPreferences}
       attachmentService={attachmentService}
+      aiFeatureSettings={aiFeatureSettings}
       aiWorkSettings={aiWorkSettings}
       focusSettings={focusSettings}
       focusSessions={focusSessions}
       commentsRevision={commentsRevision}
       activityRevision={activityRevision}
+      tasksHasMore={false}
+      tasksLoadingMore={false}
       notifications={demoNotifications.filter((item) =>
         item.workspace_id === workspaceId && item.recipient_id === "demo-user")}
       notificationsLoading={false}
       notice={notice}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
+      onLoadMoreTasks={async () => undefined}
       onWorkspaceChange={setWorkspaceId}
       quota={{
         user_id: "demo-user",
@@ -3236,6 +3546,7 @@ function DemoApplication() {
               label_ids: input.labelIds,
               participant_ids:
                 input.assigneeId === "demo-user" ? [] : ["demo-user"],
+              description_mentions: [],
               subtasks: [],
               reminders: [],
               reminder_persistent: false,
@@ -3827,6 +4138,7 @@ function DemoApplication() {
       onUpdateNotificationPreference={async (scenario, next) => {
         setNotificationPreferences((current) => ({ ...current, [scenario]: next }));
       }}
+      onSaveAiFeatureSettings={async (settings) => setAiFeatureSettings(settings)}
       onSaveAiWorkSettings={async (settings) => setAiWorkSettings(settings)}
       onSaveFocusSettings={async (settings) => setFocusSettings(settings)}
       onCreateFocusSession={async (input) => {
@@ -3949,16 +4261,20 @@ type WorkspaceAppProps = {
   dateTimePreferences: DateTimePreferences;
   notificationPreferences: NotificationPreferences;
   attachmentService: AttachmentService;
+  aiFeatureSettings: AiFeatureSettings;
   aiWorkSettings: AiWorkSettings;
   focusSettings: FocusSettings;
   focusSessions: FocusSession[];
   commentsRevision: number;
   activityRevision: number;
+  tasksHasMore: boolean;
+  tasksLoadingMore: boolean;
   notifications: AppNotification[];
   notificationsLoading: boolean;
   notice: string;
   onDismissNotice: () => void;
   onNotice: (message: string) => void;
+  onLoadMoreTasks: () => Promise<void>;
   onWorkspaceChange: (id: string) => void;
   onCreateWorkspace: (input: { name: string; slug: string }) => Promise<Workspace>;
   onCheckWorkspaceSlug: (slug: string) => Promise<boolean>;
@@ -3983,7 +4299,11 @@ type WorkspaceAppProps = {
       taskIds: string[];
     };
   }) => Promise<unknown>;
-  onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
+  onUpdateTask: (
+    taskId: string,
+    patch: Partial<Task>,
+    options?: { mentionedUserIds?: string[] },
+  ) => Promise<void>;
   onSaveTaskSchedule: (
     taskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
@@ -4061,6 +4381,7 @@ type WorkspaceAppProps = {
     scenario: NotificationScenario,
     preferences: NotificationChannelPreferences,
   ) => Promise<void>;
+  onSaveAiFeatureSettings: (settings: AiFeatureSettings) => Promise<void>;
   onSaveAiWorkSettings: (settings: AiWorkSettings) => Promise<void>;
   onSaveFocusSettings: (settings: FocusSettings) => Promise<void>;
   onCreateFocusSession: (input: Omit<FocusSession, "id" | "created_at">) => Promise<FocusSession>;
@@ -4158,8 +4479,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const workspaceInitialRoute = initialRoute?.workspaceId === props.workspaceId
     ? initialRoute
     : null;
+  const initialTask = workspaceInitialRoute?.kind === "task"
+    ? props.bundle.tasks.find((task) => task.id === workspaceInitialRoute.taskId) ?? null
+    : null;
   const initialListRoute = workspaceInitialRoute?.kind === "task"
     ? currentTaskReturnRoute(props.workspaceId)
+      ?? (initialTask ? taskReturnRouteForTask(props.workspaceId, initialTask, props.bundle) : null)
     : workspaceInitialRoute;
   const [smartView, setSmartView] = useState<SmartView>(
     initialListRoute?.kind === "view" ? initialListRoute.view : DEFAULT_SMART_VIEW,
@@ -4377,8 +4702,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         return;
       }
       setAppSection("tasks");
+      const task = route.kind === "task"
+        ? props.bundle.tasks.find((item) => item.id === route.taskId) ?? null
+        : null;
       const listRoute = route.kind === "task"
         ? currentTaskReturnRoute(props.workspaceId)
+          ?? (task ? taskReturnRouteForTask(props.workspaceId, task, props.bundle) : null)
         : route;
       setSmartView(listRoute?.kind === "view" ? listRoute.view : DEFAULT_SMART_VIEW);
       setSelectedLabelId(listRoute?.kind === "tag" ? listRoute.tagId : null);
@@ -4411,8 +4740,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return;
     }
     setAppSection("tasks");
+    const task = route.kind === "task"
+      ? props.bundle.tasks.find((item) => item.id === route.taskId) ?? null
+      : null;
     const listRoute = route.kind === "task"
       ? currentTaskReturnRoute(props.workspaceId)
+        ?? (task ? taskReturnRouteForTask(props.workspaceId, task, props.bundle) : null)
       : route;
     setSmartView(listRoute?.kind === "view" ? listRoute.view : DEFAULT_SMART_VIEW);
     setSelectedLabelId(listRoute?.kind === "tag" ? listRoute.tagId : null);
@@ -4420,14 +4753,16 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setViewMode(listRoute.mode ?? "list");
     }
     if (route.kind === "task") {
-      const task = props.bundle.tasks.find((item) => item.id === route.taskId);
       if (task) {
         setSelectedTaskId(task.id);
         setSelectedSubtaskId(null);
         writeRoute({
           ...route,
           itemKind: task.kind === "note" ? "note" : "task",
-        }, true, window.history.state);
+        }, true, {
+          ...(window.history.state ?? {}),
+          taskReturnRoute: listRoute ?? taskReturnRouteForTask(props.workspaceId, task, props.bundle),
+        });
       }
     } else {
       setSelectedTaskId(null);
@@ -4775,6 +5110,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
+          tasksHasMore={props.tasksHasMore}
+          tasksLoadingMore={props.tasksLoadingMore}
+          onLoadMoreTasks={props.onLoadMoreTasks}
           onToggleTaskLabel={props.onToggleTaskLabel}
           onAssignTask={props.onAssignTask}
           onCreateSubtask={props.onCreateSubtask}
@@ -4859,6 +5197,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             attachmentService={props.attachmentService}
             now={now}
             dateTimePreferences={props.dateTimePreferences}
+            aiFeatureSettings={props.aiFeatureSettings}
             aiWorkSettings={props.aiWorkSettings}
             settingsLabelName={selectedLabelId
               ? props.bundle.labels.find((label) => label.id === selectedLabelId)?.name
@@ -4866,7 +5205,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             focusedSubtaskId={selectedSubtaskId}
             onClearFocusedSubtask={() => setSelectedSubtaskId(null)}
             onClose={closeTask}
-            onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
+            onUpdate={(patch, options) =>
+              props.onUpdateTask(selectedTask.id, patch, options)}
             onSaveSchedule={(patch, schedule) =>
               props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
             onAssign={(assigneeId) =>
@@ -4904,12 +5244,14 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           attachmentService={props.attachmentService}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
+          aiFeatureSettings={props.aiFeatureSettings}
           aiWorkSettings={props.aiWorkSettings}
           settingsLabelName={selectedLabelId
             ? props.bundle.labels.find((label) => label.id === selectedLabelId)?.name
             : null}
           onClose={closeTask}
-          onUpdate={(patch) => props.onUpdateTask(selectedTask.id, patch)}
+          onUpdate={(patch, options) =>
+            props.onUpdateTask(selectedTask.id, patch, options)}
           onSaveSchedule={(patch, schedule) =>
             props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
           onAssign={(assigneeId) => props.onAssignTask(selectedTask.id, assigneeId)}
@@ -4994,8 +5336,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onDeleteAccount={props.onDeleteAccount}
         dateTimePreferences={props.dateTimePreferences}
         notificationPreferences={props.notificationPreferences}
+        aiFeatureSettings={props.aiFeatureSettings}
         onUpdateDateTimePreferences={props.onUpdateDateTimePreferences}
         onUpdateNotificationPreference={props.onUpdateNotificationPreference}
+        onSaveAiFeatureSettings={props.onSaveAiFeatureSettings}
         onNotice={props.onNotice}
       />
       <CreateWorkspaceDialog
@@ -5678,6 +6022,12 @@ function MobileAppSidebar({
                   onClick={() => onSmartView("today")}
                 />
                 <SidebarItem
+                  active={!selectedLabelId && smartView === "week"}
+                  icon={<CalendarDays />}
+                  label="本周"
+                  onClick={() => onSmartView("week")}
+                />
+                <SidebarItem
                   active={!selectedLabelId && smartView === "assigned"}
                   icon={<UserRound />}
                   label="指派给我"
@@ -6297,6 +6647,12 @@ function Sidebar({
             label="今天"
             count={openTasks.filter((task) => task.due_at && isSameDay(new Date(task.due_at), new Date())).length}
             onClick={() => onSmartView("today")}
+          />
+          <SidebarItem
+            active={!selectedLabelId && smartView === "week"}
+            icon={<CalendarDays />}
+            label="本周"
+            onClick={() => onSmartView("week")}
           />
           <SidebarItem
             active={!selectedLabelId && smartView === "assigned"}
@@ -7530,6 +7886,9 @@ function TaskWorkspace({
   onCreateTask,
   onUpdateTask,
   onSaveTaskSchedule,
+  tasksHasMore,
+  tasksLoadingMore,
+  onLoadMoreTasks,
   onToggleTaskLabel,
   onAssignTask,
   onCreateSubtask,
@@ -7566,6 +7925,9 @@ function TaskWorkspace({
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
+  tasksHasMore: boolean;
+  tasksLoadingMore: boolean;
+  onLoadMoreTasks: WorkspaceAppProps["onLoadMoreTasks"];
   onToggleTaskLabel: WorkspaceAppProps["onToggleTaskLabel"];
   onAssignTask: WorkspaceAppProps["onAssignTask"];
   onCreateSubtask: WorkspaceAppProps["onCreateSubtask"];
@@ -7603,6 +7965,8 @@ function TaskWorkspace({
   const [collapsedTaskSubtasks, setCollapsedTaskSubtasks] = useState(
     () => readCollapsedTaskSubtasks(workspaceId),
   );
+  const taskScrollRef = useRef<HTMLDivElement>(null);
+  const taskLoadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const selectedLabel = bundle.labels.find((label) => label.id === selectedLabelId);
   const assigneeMembers = selectedLabelId
     ? getAssignableMembers(
@@ -7620,6 +7984,7 @@ function TaskWorkspace({
   const title = selectedLabel?.name ?? {
     all: "所有",
     today: "今天",
+    week: "本周",
     assigned: "指派给我",
     watching: "我关注的",
     inbox: "收集箱",
@@ -7680,6 +8045,22 @@ function TaskWorkspace({
   }, [listKey]);
 
   useEffect(() => {
+    const root = taskScrollRef.current;
+    const sentinel = taskLoadMoreSentinelRef.current;
+    if (!root || !sentinel || !tasksHasMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting) && !tasksLoadingMore) {
+          void onLoadMoreTasks();
+        }
+      },
+      { root, rootMargin: "320px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [onLoadMoreTasks, tasksHasMore, tasksLoadingMore]);
+
+  useEffect(() => {
     const openAiSettings = (event: Event) => {
       setAiSettingsTitle(aiWorkSettingsTitleFromEvent(
         event,
@@ -7731,6 +8112,7 @@ function TaskWorkspace({
       filterDue: preference.filter_due,
       currentUserId,
       now,
+      weekStartsOn: dateTimePreferences.weekStartsOn,
     }),
     [
       bundle.labels,
@@ -7741,6 +8123,7 @@ function TaskWorkspace({
       preference.filter_creator,
       preference.filter_due,
       preference.filter_watching,
+      dateTimePreferences.weekStartsOn,
       selectedLabelId,
       smartView,
     ],
@@ -8269,6 +8652,16 @@ function TaskWorkspace({
           </button>
           {!isTrashView && (
             <>
+              {smartView === "week" && !selectedLabelId && (
+                <TaskRecommendationButton
+                  tasks={bundle.tasks}
+                  currentUserId={currentUserId}
+                  online={online}
+                  now={now}
+                  weekStartsOn={dateTimePreferences.weekStartsOn}
+                  onUpdateTask={onUpdateTask}
+                />
+              )}
               <TaskViewMenu
                 preference={preference}
                 viewMode={viewMode}
@@ -8439,7 +8832,7 @@ function TaskWorkspace({
           onNotice={onNotice}
         />
       ) : (
-      <div className="task-scroll">
+      <div className="task-scroll" ref={taskScrollRef}>
         {!online && (
           <div className="offline-banner">
             <CloudOff size={16} />
@@ -8594,6 +8987,15 @@ function TaskWorkspace({
             onPurgeTask={onPurgeTask}
             onNotice={onNotice}
           />
+        )}
+        {tasksHasMore && (
+          <div
+            ref={taskLoadMoreSentinelRef}
+            className="task-list-pagination"
+            aria-live="polite"
+          >
+            {tasksLoadingMore ? "正在加载更多任务…" : "下滑加载更多任务"}
+          </div>
         )}
       </div>
       )}
@@ -10776,8 +11178,10 @@ function SettingsDialog({
   onDeleteAccount,
   dateTimePreferences,
   notificationPreferences,
+  aiFeatureSettings,
   onUpdateDateTimePreferences,
   onUpdateNotificationPreference,
+  onSaveAiFeatureSettings,
   onNotice,
 }: {
   open: boolean;
@@ -10811,8 +11215,10 @@ function SettingsDialog({
   onDeleteAccount: WorkspaceAppProps["onDeleteAccount"];
   dateTimePreferences: DateTimePreferences;
   notificationPreferences: NotificationPreferences;
+  aiFeatureSettings: AiFeatureSettings;
   onUpdateDateTimePreferences: WorkspaceAppProps["onUpdateDateTimePreferences"];
   onUpdateNotificationPreference: WorkspaceAppProps["onUpdateNotificationPreference"];
+  onSaveAiFeatureSettings: WorkspaceAppProps["onSaveAiFeatureSettings"];
   onNotice: (message: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
@@ -10848,6 +11254,7 @@ function SettingsDialog({
         { id: "date", label: "日期与时间", icon: CalendarClock },
         { id: "appearance", label: "外观", icon: Palette },
         { id: "notifications", label: "通知配置", icon: Bell },
+        { id: "ai-features", label: "AI功能", icon: Sparkles },
         { id: "shortcuts", label: "快捷键", icon: Keyboard },
       ],
     },
@@ -10858,6 +11265,7 @@ function SettingsDialog({
         { id: "team", label: "成员管理", icon: Users },
         { id: "user-groups", label: "用户组", icon: Workflow },
         { id: "sso", label: "单点登录", icon: KeyRound },
+        { id: "connectors", label: "连接器", icon: Plug },
       ],
     },
     {
@@ -11073,6 +11481,12 @@ function SettingsDialog({
                 online={online}
                 onChange={onUpdateNotificationPreference}
               />
+            ) : activeTab === "ai-features" ? (
+              <AiFeatureSettingsPanel
+                settings={aiFeatureSettings}
+                online={online}
+                onChange={onSaveAiFeatureSettings}
+              />
             ) : activeTab === "team-mgmt" ? (
               <TeamManagementList
                 workspaces={workspaces}
@@ -11107,6 +11521,14 @@ function SettingsDialog({
               <SsoSettingsPanel
                 workspace={workspace}
                 online={online}
+                onNotice={onNotice}
+              />
+            ) : activeTab === "connectors" ? (
+              <ConnectorSettingsPanel
+                workspace={workspace}
+                connectors={bundle.connectors}
+                online={online}
+                onNavigateToSso={() => setActiveTab("sso")}
                 onNotice={onNotice}
               />
             ) : activeTab === "about" ? (

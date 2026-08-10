@@ -3,6 +3,26 @@ export type TaskPriority = "none" | "low" | "medium" | "high";
 export type TaskStatus = "open" | "completed" | "cancelled";
 export type LabelAccessScope = "inherit" | "all" | "users" | "groups";
 export type LabelKind = "private" | "team";
+export type TaskKind = "todo" | "note";
+export type ReminderAnchor = "start" | "end";
+export type ReminderUnit = "minute" | "hour" | "day" | "week";
+export type ReminderRule = {
+  anchor: ReminderAnchor;
+  offset_value: number;
+  offset_unit: ReminderUnit;
+  local_time?: string | null;
+};
+export type RecurrenceFrequency = "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
+export type RecurrenceRule = { freq: RecurrenceFrequency; interval: 1; mode: "due" };
+export type TaskSchedule = {
+  dueAt: string | null;
+  dueStartAt?: string | null;
+  dueIsAllDay?: boolean;
+  dueTimezone?: string | null;
+  reminders: ReminderRule[];
+  persistent: boolean;
+  recurrence: RecurrenceRule | null;
+};
 
 export type PublicConfig = {
   supabaseUrl: string;

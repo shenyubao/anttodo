@@ -9,7 +9,8 @@ import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
 import { buildEventNotificationCard } from "../_shared/dingtalk-notification-cards.ts";
 
 const SCENARIO_BY_TYPE: Record<string, string> = {
-  comment_mention: "task_new_comment",
+  comment_mention: "todo_mentioned",
+  todo_mentioned: "todo_mentioned",
   task_assigned: "task_assigned",
   task_new_comment: "task_new_comment",
   note_mentioned: "note_mentioned",
@@ -38,6 +39,8 @@ function notificationCopy(input: {
       return { title: "待办评论", body: `${actor} 评论了「${title}」` };
     case "note_mentioned":
       return { title: "笔记提及", body: `${actor} 在笔记「${title}」中提及了你` };
+    case "todo_mentioned":
+      return { title: "待办提及", body: `${actor} 在待办「${title}」中提及了你` };
     case "comment_mention":
       return {
         title: input.taskKind === "note" ? "笔记提及" : "待办提及",

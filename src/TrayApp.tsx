@@ -279,6 +279,7 @@ export function TrayApp({
       filterDue: preference.filter_due,
       currentUserId: userId,
       now,
+      weekStartsOn: dateTimePreferences.weekStartsOn,
     });
   }, [
     bundle,
@@ -287,6 +288,7 @@ export function TrayApp({
     preference.filter_creator,
     preference.filter_due,
     preference.filter_watching,
+    dateTimePreferences.weekStartsOn,
     userId,
   ]);
 

@@ -44,6 +44,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { MemberAvatar } from "./MemberAvatar";
 import {
   attachmentMarkdown,
   isSafeEditorUrl,
@@ -51,7 +52,18 @@ import {
   type AttachmentService,
   type UploadedAttachment,
 } from "./lib/attachments";
+import {
+  caretClientRect,
+  detectMentionQuery,
+  expandSelectionBackward,
+  filterMentionCandidates,
+  getPlainTextBeforeCaret,
+  memberDisplayName,
+  visibleMentionIds,
+  type MentionQuery,
+} from "./lib/mentions";
 import { SerialSaveQueue, type SaveQueueState } from "./lib/serialSave";
+import type { Member } from "./types";
 
 const ATTACHMENT_ACCEPT = [
   ".csv",
@@ -82,11 +94,15 @@ export type TaskRichTextEditorHandle = {
 type TaskRichTextEditorProps = {
   attachmentContext: AttachmentContext;
   attachmentService: AttachmentService;
+  currentUserId?: string;
   immersive: boolean;
   initialMarkdown: string;
+  initialMentionUserIds?: string[];
+  members?: Member[];
   online: boolean;
   onImmersiveChange: (immersive: boolean) => void;
-  onSave: (markdown: string) => Promise<void>;
+  onLoadMentionCandidates?: () => Promise<string[]>;
+  onSave: (markdown: string, mentionedUserIds?: string[]) => Promise<void>;
   toolbarHost: HTMLElement | null;
   toolbarOpen: boolean;
 };
@@ -268,10 +284,14 @@ export const TaskRichTextEditor = forwardRef<
   {
     attachmentContext,
     attachmentService,
+    currentUserId = "",
     immersive,
     initialMarkdown,
+    initialMentionUserIds = [],
+    members = [],
     online,
     onImmersiveChange,
+    onLoadMentionCandidates,
     onSave,
     toolbarHost,
     toolbarOpen,
@@ -279,27 +299,176 @@ export const TaskRichTextEditor = forwardRef<
   forwardedRef,
 ) {
   const editorRef = useRef<MDXEditorMethods>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const onlineRef = useRef(online);
   const saveRef = useRef(onSave);
+  const membersRef = useRef(members);
+  const selectedMentionIdsRef = useRef<string[]>(initialMentionUserIds);
+  const mentionUiRef = useRef({
+    mention: null as MentionQuery | null,
+    candidates: [] as Member[],
+    activeCandidate: 0,
+  });
   const [saveState, setSaveState] = useState<SaveQueueState>({ status: "idle" });
   const [uploadState, setUploadState] = useState<
     { status: "idle" | "uploading" } | { status: "error"; error: Error }
   >({ status: "idle" });
+  const [candidateIds, setCandidateIds] = useState<string[] | null>(null);
+  const [mention, setMention] = useState<MentionQuery | null>(null);
+  const [activeCandidate, setActiveCandidate] = useState(0);
+  const [mentionMenuPos, setMentionMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [selectedMentionIds, setSelectedMentionIds] = useState<string[]>(initialMentionUserIds);
+  const [mentionError, setMentionError] = useState("");
   const queueRef = useRef<SerialSaveQueue<string> | null>(null);
+  const trackMentionsRef = useRef(Boolean(onLoadMentionCandidates && currentUserId));
 
   saveRef.current = onSave;
   onlineRef.current = online;
+  membersRef.current = members;
+  selectedMentionIdsRef.current = selectedMentionIds;
+  trackMentionsRef.current = Boolean(onLoadMentionCandidates && currentUserId);
+
+  const mentionsEnabled = trackMentionsRef.current;
 
   if (!queueRef.current) {
     queueRef.current = new SerialSaveQueue(
       initialMarkdown,
-      (markdown) => saveRef.current(markdown),
+      (markdown) => {
+        if (!trackMentionsRef.current) return saveRef.current(markdown);
+        return saveRef.current(
+          markdown,
+          visibleMentionIds(markdown, selectedMentionIdsRef.current, membersRef.current),
+        );
+      },
       (state) => {
         if (mountedRef.current) setSaveState(state);
       },
     );
   }
+
+  const candidates = useMemo(
+    () => filterMentionCandidates({
+      members,
+      candidateIds,
+      currentUserId,
+      query: mention?.query ?? "",
+    }),
+    [candidateIds, currentUserId, members, mention?.query],
+  );
+
+  mentionUiRef.current = { mention, candidates, activeCandidate };
+
+  useEffect(() => setActiveCandidate(0), [mention?.query]);
+
+  const ensureCandidates = useCallback(() => {
+    if (!onLoadMentionCandidates || candidateIds !== null) return;
+    void onLoadMentionCandidates()
+      .then(setCandidateIds)
+      .catch((cause) => {
+        setMentionError(cause instanceof Error ? cause.message : "无法读取可引用成员");
+      });
+  }, [candidateIds, onLoadMentionCandidates]);
+
+  const syncMentionFromCaret = useCallback(() => {
+    if (!trackMentionsRef.current || !onlineRef.current) {
+      setMention(null);
+      setMentionMenuPos(null);
+      return;
+    }
+    const content = rootRef.current?.querySelector<HTMLElement>(".rich-editor-content");
+    if (!content) {
+      setMention(null);
+      setMentionMenuPos(null);
+      return;
+    }
+    const text = getPlainTextBeforeCaret(content);
+    if (text == null) {
+      setMention(null);
+      setMentionMenuPos(null);
+      return;
+    }
+    const next = detectMentionQuery(text, text.length);
+    setMention(next);
+    if (!next) {
+      setMentionMenuPos(null);
+      return;
+    }
+    ensureCandidates();
+    const rect = caretClientRect();
+    if (rect) {
+      setMentionMenuPos({ top: rect.bottom + 6, left: rect.left });
+    } else {
+      const host = rootRef.current?.getBoundingClientRect();
+      setMentionMenuPos(host
+        ? { top: host.top + 48, left: host.left + 16 }
+        : null);
+    }
+  }, [ensureCandidates]);
+
+  const selectMention = useCallback((member: Member) => {
+    const active = mentionUiRef.current.mention;
+    if (!active) return;
+    const insertion = `@${memberDisplayName(member)} `;
+    const replaced = expandSelectionBackward(active.query.length + 1);
+    if (replaced) {
+      document.execCommand("insertText", false, insertion);
+    } else {
+      editorRef.current?.insertMarkdown(insertion);
+    }
+    setSelectedMentionIds((current) => [...new Set([...current, member.user_id])]);
+    setMention(null);
+    setMentionMenuPos(null);
+  }, []);
+
+  useEffect(() => {
+    if (!mentionsEnabled) return;
+    const root = rootRef.current;
+    if (!root) return;
+
+    const onInput = () => syncMentionFromCaret();
+    const onKeyDown = (event: KeyboardEvent) => {
+      const ui = mentionUiRef.current;
+      if (!ui.mention) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setMention(null);
+        setMentionMenuPos(null);
+        return;
+      }
+      if (ui.candidates.length === 0) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        setActiveCandidate((current) =>
+          (current + (event.key === "ArrowDown" ? 1 : -1) + ui.candidates.length)
+            % ui.candidates.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        event.stopPropagation();
+        selectMention(ui.candidates[ui.activeCandidate] ?? ui.candidates[0]);
+      }
+    };
+    const onKeyUp = () => syncMentionFromCaret();
+    const onSelectionChange = () => {
+      if (!root.contains(document.activeElement)) return;
+      syncMentionFromCaret();
+    };
+
+    root.addEventListener("input", onInput);
+    root.addEventListener("keyup", onKeyUp);
+    root.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => {
+      root.removeEventListener("input", onInput);
+      root.removeEventListener("keyup", onKeyUp);
+      root.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("selectionchange", onSelectionChange);
+    };
+  }, [mentionsEnabled, selectMention, syncMentionFromCaret]);
 
   useImperativeHandle(
     forwardedRef,
@@ -415,7 +584,7 @@ export const TaskRichTextEditor = forwardRef<
         : null;
 
   return (
-    <div className="task-rich-editor">
+    <div className="task-rich-editor" ref={rootRef}>
       <MDXEditor
         ref={editorRef}
         className="task-rich-editor-root"
@@ -427,6 +596,12 @@ export const TaskRichTextEditor = forwardRef<
         trim={false}
         onBlur={() => {
           if (online) void queueRef.current?.flush().catch(() => undefined);
+          window.setTimeout(() => {
+            if (!rootRef.current?.contains(document.activeElement)) {
+              setMention(null);
+              setMentionMenuPos(null);
+            }
+          }, 0);
         }}
         onChange={(markdown, initialMarkdownNormalize) => {
           if (!initialMarkdownNormalize) queueRef.current?.schedule(markdown);
@@ -435,19 +610,43 @@ export const TaskRichTextEditor = forwardRef<
           setSaveState({ status: "error", error: new Error(error) });
         }}
       />
+      {mention && mentionMenuPos && createPortal(
+        <div
+          className="comment-mention-menu rich-editor-mention-menu"
+          role="listbox"
+          aria-label="可引用成员"
+          style={{ top: mentionMenuPos.top, left: mentionMenuPos.left }}
+        >
+          {candidates.map((member, index) => (
+            <button
+              key={member.user_id}
+              type="button"
+              role="option"
+              aria-selected={index === activeCandidate}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => selectMention(member)}
+            >
+              <MemberAvatar member={member} className="comment-candidate-avatar" />
+              <span>{memberDisplayName(member)}</span>
+            </button>
+          ))}
+          {candidateIds !== null && candidates.length === 0 && <p>没有匹配的成员</p>}
+        </div>,
+        document.body,
+      )}
       <div
-        className={`rich-editor-status${error ? " error" : ""}`}
+        className={`rich-editor-status${error || mentionError ? " error" : ""}`}
         role="status"
         aria-live="polite"
       >
         {uploadState.status === "uploading" && "正在上传附件…"}
-        {!error && uploadState.status !== "uploading" && saveState.status === "saving" &&
+        {!error && !mentionError && uploadState.status !== "uploading" && saveState.status === "saving" &&
           "正在保存…"}
-        {!error && uploadState.status !== "uploading" && saveState.status === "saved" &&
+        {!error && !mentionError && uploadState.status !== "uploading" && saveState.status === "saved" &&
           "已保存"}
-        {error && (
+        {(error || mentionError) && (
           <>
-            <span>{error.message}</span>
+            <span>{error?.message ?? mentionError}</span>
             {saveState.status === "error" && (
               <button
                 type="button"

@@ -49,8 +49,8 @@ export const connectorMetadata: Record<
     color: "#ff6a00",
   },
   dingtalk: {
-    title: "钉钉待办",
-    description: "已预留待办、执行者和完成状态映射",
+    title: "钉钉群机器人",
+    description: "在钉钉群内 @机器人快速创建团队任务",
     color: "#1677ff",
   },
 };

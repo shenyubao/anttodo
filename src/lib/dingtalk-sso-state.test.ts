@@ -43,6 +43,14 @@ describe("DingTalk SSO state", () => {
     });
   });
 
+  it("signs the mobile client into new states", async () => {
+    const state = await createSsoState(workspaceId, secret, "mobile");
+    await expect(verifySsoStateClaims(state, workspaceId, secret)).resolves.toEqual({
+      workspaceId,
+      client: "mobile",
+    });
+  });
+
   it("accepts legacy states as web logins", async () => {
     const state = await legacyState(Date.now());
     await expect(verifySsoStateClaims(state, workspaceId, secret)).resolves.toEqual({

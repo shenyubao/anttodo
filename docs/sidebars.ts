@@ -18,8 +18,24 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
+          id: '企业管理/连接器',
+          label: '连接器',
+        },
+        {
+          type: 'doc',
           id: '企业管理/通知配置',
           label: '通知配置',
+        },
+      ],
+    },
+    {
+      type: 'category',
+      label: 'CLI',
+      items: [
+        {
+          type: 'doc',
+          id: 'cli/quickstart',
+          label: '快速开始',
         },
       ],
     },

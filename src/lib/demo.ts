@@ -118,6 +118,7 @@ const task = (
   reminders: [],
   reminder_persistent: false,
   participant_ids: [],
+  description_mentions: [],
   ...options,
 });
 
@@ -187,56 +188,22 @@ const tasks: Task[] = [
 
 const connectors: Connector[] = [
   {
-    id: "connector-mock",
+    id: "connector-dingtalk-group-robot",
     workspace_id: "workspace-team",
-    type: "mock",
-    name: "产品演示同步",
+    type: "dingtalk",
+    name: "钉钉群机器人",
     enabled: true,
     schedule_minutes: 5,
-    public_config: {},
+    public_config: { kind: "group_robot", timezone: "Asia/Shanghai" },
     credential_hint: null,
     last_synced_at: subDays(now, 0.05).toISOString(),
     next_sync_at: addDays(now, 0.01).toISOString(),
   },
-  {
-    id: "connector-yunxiao",
-    workspace_id: "workspace-team",
-    type: "yunxiao",
-    name: "云效 · 产品项目",
-    enabled: false,
-    schedule_minutes: 10,
-    public_config: { organizationId: "", projectId: "" },
-    credential_hint: null,
-    last_synced_at: null,
-    next_sync_at: addDays(now, 1).toISOString(),
-  },
 ];
 
-const syncRuns: SyncRun[] = [
-  {
-    id: "run-1",
-    connector_id: "connector-mock",
-    status: "succeeded",
-    trigger: "cron",
-    pulled_count: 2,
-    pushed_count: 1,
-    conflict_count: 0,
-    error_message: null,
-    created_at: subDays(now, 0.05).toISOString(),
-  },
-];
+const syncRuns: SyncRun[] = [];
 
-const conflicts: SyncConflict[] = [
-  {
-    id: "conflict-1",
-    connector_id: "connector-mock",
-    task_id: "task-2",
-    status: "open",
-    local_snapshot: { title: "优化任务详情抽屉交互" },
-    remote_snapshot: { title: "优化任务详情面板交互（远端）" },
-    created_at: subDays(now, 0.02).toISOString(),
-  },
-];
+const conflicts: SyncConflict[] = [];
 
 export function createDemoBundle(): WorkspaceBundle {
   const members: Member[] = [

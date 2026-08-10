@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
       return () => ipcRenderer.removeListener("anttodo:reminder-open-task", handler);
     }
   }),
+  notifications: Object.freeze({
+    show: (payload) => ipcRenderer.invoke("anttodo:notifications-show", payload)
+  }),
+
   updates: Object.freeze({
     getAppVersion: () => ipcRenderer.invoke("anttodo:app-version"),
     check: () => ipcRenderer.invoke("anttodo:check-for-update"),

@@ -54,6 +54,7 @@ function task(patch: Partial<Task> = {}): Task {
     version: 1,
     label_ids: [],
     participant_ids: [],
+    description_mentions: [],
     subtasks: [],
     reminders: [],
     reminder_persistent: false,

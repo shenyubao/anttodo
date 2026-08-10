@@ -98,6 +98,29 @@ describe("parseTaskDateText", () => {
     expect(toDateInput(evening!.due.due_at!, ZONE)).toBe("2026-08-04");
   });
 
+  it("parses numeric dates with year and common separators", () => {
+    const dotted = parse("RPA独立分支合并回魔方，出包3.60 2026.9.2");
+    expect(dotted!.match.text).toBe("2026.9.2");
+    expect(dotted!.title).toBe("RPA独立分支合并回魔方，出包3.60");
+    expect(dotted!.due.due_is_all_day).toBe(true);
+    expect(toDateInput(dotted!.due.due_at!, ZONE)).toBe("2026-09-02");
+
+    const dashed = parse("发布 2026-09-02");
+    expect(dashed!.match.text).toBe("2026-09-02");
+    expect(toDateInput(dashed!.due.due_at!, ZONE)).toBe("2026-09-02");
+
+    const slashed = parse("上线 2026/9/2下午3点");
+    expect(slashed!.match.text).toBe("2026/9/2下午3点");
+    expect(slashed!.due.due_is_all_day).toBe(false);
+    expect(toDateInput(slashed!.due.due_at!, ZONE)).toBe("2026-09-02");
+    expect(toTimeInput(slashed!.due.due_at!, ZONE)).toBe("15:00");
+  });
+
+  it("does not treat version numbers as numeric dates", () => {
+    expect(parse("出包3.60")).toBeNull();
+    expect(parse("升级到1.2.3")).toBeNull();
+  });
+
   it("returns null when nothing matches", () => {
     expect(parse("买菜")).toBeNull();
     expect(parse("")).toBeNull();

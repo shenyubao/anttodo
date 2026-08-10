@@ -70,6 +70,14 @@ interface Window {
       acknowledge: (reminderId: string) => void;
       onOpenTask: (listener: (target: { workspaceId: string; taskId: string }) => void) => () => void;
     };
+    notifications: {
+      show: (payload: {
+        title: string;
+        body: string;
+        workspaceId?: string;
+        taskId?: string;
+      }) => Promise<boolean>;
+    };
     updates: {
       getAppVersion: () => Promise<string>;
       check: () => Promise<DesktopUpdateCheckResult>;

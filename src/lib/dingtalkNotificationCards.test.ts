@@ -71,6 +71,7 @@ describe("DingTalk notification cards", () => {
     "task_assigned",
     "task_new_comment",
     "note_mentioned",
+    "todo_mentioned",
     "comment_mention",
     "participant_added",
     "participant_title_changed",

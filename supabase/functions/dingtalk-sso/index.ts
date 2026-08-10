@@ -468,7 +468,7 @@ export default {
         return jsonError(linkError?.message || "无法签发登录凭证", 500);
       }
 
-      if (stateClaims.client === "desktop") {
+      if (stateClaims.client === "desktop" || stateClaims.client === "mobile") {
         const handoffCode = createHandoffCode();
         const expiresAt = new Date(
           Date.now() + HANDOFF_TTL_SECONDS * 1_000,
@@ -484,7 +484,7 @@ export default {
         );
         if (handoffError) return jsonError("无法创建客户端登录交接", 500);
         return Response.json({
-          mode: "desktop",
+          mode: stateClaims.client,
           workspaceId,
           handoffCode,
           expiresInSeconds: HANDOFF_TTL_SECONDS,

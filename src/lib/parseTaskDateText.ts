@@ -3,8 +3,14 @@ import {
   fromZonedDateTime,
   systemTimeZone,
   toDateInput,
-} from "./dateTimePreferences";
-import type { DueFields } from "./dueTime";
+  zonedDate,
+} from "./timeZoneCore.ts";
+
+type DueFields = {
+  due_at: string | null;
+  due_start_at: string | null;
+  due_is_all_day: boolean;
+};
 
 export type ParsedTaskDateMatch = {
   start: number;
@@ -365,6 +371,52 @@ function findMonthDayCandidates(text: string, now: Date): Candidate[] {
   });
 }
 
+function resolveAbsoluteDate(year: number, month: number, day: number): Date | null {
+  if (year < 1970 || year > 2100) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const candidate = new Date(year, month - 1, day);
+  if (Number.isNaN(candidate.getTime()) || candidate.getDate() !== day) return null;
+  if (candidate.getFullYear() !== year || candidate.getMonth() !== month - 1) return null;
+  return startOfDay(candidate);
+}
+
+function findNumericDateCandidates(text: string): Candidate[] {
+  // Require a 4-digit year so version-like tokens ("3.60") are not treated as dates.
+  const pattern = new RegExp(
+    String.raw`(?<![\d./-])(\d{4})([./-])(\d{1,2})\2(\d{1,2})(?![\d./-])(?:\s*(${TIME_TOKEN}))?`,
+    "g",
+  );
+  return collectMatches(text, pattern, (match, start) => {
+    const year = Number(match[1]);
+    const month = Number(match[3]);
+    const day = Number(match[4]);
+    const date = resolveAbsoluteDate(year, month, day);
+    if (!date) return null;
+    const timeRaw = match[5];
+    const labelDate = format(date, "yyyy-M-d");
+    if (timeRaw) {
+      const time = parseClock(timeRaw);
+      if (!time) return null;
+      return {
+        start,
+        end: start + match[0].length,
+        text: match[0],
+        date,
+        time,
+        label: `${labelDate} ${formatTimeLabel(time)}`,
+      };
+    }
+    return {
+      start,
+      end: start + match[0].length,
+      text: match[0],
+      date,
+      time: null,
+      label: labelDate,
+    };
+  });
+}
+
 function findStandaloneTimeCandidates(text: string, now: Date): Candidate[] {
   const results: Candidate[] = [];
 
@@ -375,7 +427,7 @@ function findStandaloneTimeCandidates(text: string, now: Date): Candidate[] {
       const time = parseClock(match[1] ? `晚上${match[1]}` : "晚上8点");
       if (!time) return null;
       let date = startOfDay(now);
-      const at = new Date(now);
+      const at = startOfDay(now);
       at.setHours(time.hours, time.minutes, 0, 0);
       if (at.getTime() < now.getTime()) date = addDays(date, 1);
       return {
@@ -397,7 +449,7 @@ function findStandaloneTimeCandidates(text: string, now: Date): Candidate[] {
       const time = parseClock(match[1]!);
       if (!time) return null;
       let date = startOfDay(now);
-      const at = new Date(now);
+      const at = startOfDay(now);
       at.setHours(time.hours, time.minutes, 0, 0);
       if (at.getTime() < now.getTime()) date = addDays(date, 1);
       return {
@@ -426,7 +478,7 @@ function findStandaloneTimeCandidates(text: string, now: Date): Candidate[] {
       const time = parseClock(match[1]!);
       if (!time) return null;
       let date = startOfDay(now);
-      const at = new Date(now);
+      const at = startOfDay(now);
       at.setHours(time.hours, time.minutes, 0, 0);
       if (at.getTime() < now.getTime()) date = addDays(date, 1);
       return {
@@ -471,14 +523,17 @@ export function parseTaskDateText(
 ): ParsedTaskDate | null {
   if (!text.trim()) return null;
 
-  const now = options?.now ?? new Date();
   const timeZone = options?.timeZone ?? systemTimeZone();
+  // Interpret relative calendar words in the requested zone, not in the
+  // browser/server process zone. This matters around Shanghai midnight.
+  const now = zonedDate(options?.now ?? new Date(), timeZone);
 
   const candidates = [
     ...findRelativeDayCandidates(text, now),
     ...findDaysLaterCandidates(text, now),
     ...findWeekdayCandidates(text, now),
     ...findMonthDayCandidates(text, now),
+    ...findNumericDateCandidates(text),
     ...findStandaloneTimeCandidates(text, now),
   ];
 

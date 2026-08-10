@@ -294,10 +294,6 @@ export function TaskContextMenu({
       });
       return;
     }
-    const itemName = isNote ? "笔记" : "任务";
-    if (!window.confirm(
-      `删除${itemName}“${task.title}”？此操作会将${itemName}移入回收站。`,
-    )) return;
     await run(async () => {
       await onUpdateTask(task.id, { deleted_at: new Date().toISOString() });
     });

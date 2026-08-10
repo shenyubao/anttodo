@@ -8,8 +8,14 @@ describe("demo workspace", () => {
     expect(bundle.labels.some((label) => label.parent_id)).toBe(true);
     expect(bundle.tasks.some((task) => task.label_ids.length > 1)).toBe(true);
     expect(bundle.tasks.some((task) => task.label_ids.length === 0)).toBe(true);
-    expect(bundle.connectors.some((connector) => connector.type === "mock")).toBe(true);
-    expect(bundle.conflicts.some((conflict) => conflict.status === "open")).toBe(true);
+    expect(bundle.connectors).toEqual([
+      expect.objectContaining({
+        type: "dingtalk",
+        name: "钉钉群机器人",
+        public_config: expect.objectContaining({ kind: "group_robot" }),
+      }),
+    ]);
+    expect(bundle.conflicts).toEqual([]);
   });
 
   it("returns a fresh mutable copy for each demo session", () => {

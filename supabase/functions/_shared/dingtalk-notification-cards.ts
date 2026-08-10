@@ -159,6 +159,8 @@ function eventCopy(input: {
       return { heading: "💬 待办评论", summary: `${actor} 评论了此待办` };
     case "note_mentioned":
       return { heading: "@ 笔记提及", summary: `${actor} 在此笔记中提及了你` };
+    case "todo_mentioned":
+      return { heading: "@ 待办提及", summary: `${actor} 在此待办中提及了你` };
     case "comment_mention":
       return { heading: `@ ${object}提及`, summary: `${actor} 在此${object}的评论中提及了你` };
     case "participant_added":

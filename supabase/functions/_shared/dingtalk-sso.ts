@@ -5,6 +5,8 @@ export {
 export { normalizeDingtalkAvatarUrl } from "./dingtalk-sso-avatar.ts";
 export {
   createSsoState,
+  isSsoClient,
+  usesSsoAuthHandoff,
   verifySsoState,
   verifySsoStateClaims,
   type SsoClient,

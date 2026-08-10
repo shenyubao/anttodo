@@ -1,3 +1,5 @@
+import { Capacitor } from "@capacitor/core";
+
 const DINGTALK_CALLBACK_PATH = /^\/auth\/dingtalk\/callback\/?$/i;
 
 export type WorkspaceSsoProvider = {
@@ -166,11 +168,61 @@ export function dingtalkFrameLoginUrl(input: {
   return url.toString();
 }
 
-export function dingtalkDesktopCallbackUrl(handoffCode: string) {
+export function dingtalkNativeCallbackUrl(handoffCode: string) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(handoffCode)) return null;
   const url = new URL("anttodo://auth/callback");
   url.searchParams.set("code", handoffCode);
   return url.toString();
+}
+
+/** @deprecated Prefer dingtalkNativeCallbackUrl */
+export const dingtalkDesktopCallbackUrl = dingtalkNativeCallbackUrl;
+
+const AUTH_DEEP_LINK_SCHEME = "anttodo";
+const HANDOFF_CODE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/** Parse anttodo://auth/callback?code=… from desktop or mobile deep links. */
+export function parseAuthDeepLink(value: string) {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== `${AUTH_DEEP_LINK_SCHEME}:` ||
+      url.hostname !== "auth" ||
+      url.pathname !== "/callback" ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.hash ||
+      [...url.searchParams.keys()].some((key) => key !== "code")
+    ) {
+      return null;
+    }
+    const codes = url.searchParams.getAll("code");
+    if (codes.length !== 1 || !HANDOFF_CODE_PATTERN.test(codes[0]!)) return null;
+    return codes[0]!;
+  } catch {
+    return null;
+  }
+}
+
+export type SsoClientKind = "web" | "desktop" | "mobile";
+
+export function usesNativeSsoHandoff(mode: string): mode is "desktop" | "mobile" {
+  return mode === "desktop" || mode === "mobile";
+}
+
+/** Resolve which SSO client this surface should claim when starting DingTalk login. */
+export function resolveSsoClient(
+  input: {
+    isDesktop?: boolean;
+    isNativeMobile?: boolean;
+  } = {},
+): SsoClientKind {
+  if (input.isDesktop === true) return "desktop";
+  if (input.isNativeMobile === true) return "mobile";
+  if (typeof window !== "undefined" && window.anttodoDesktop) return "desktop";
+  if (Capacitor.isNativePlatform()) return "mobile";
+  return "web";
 }
 
 export function dingtalkFrameLoginParams(input: {
@@ -342,7 +394,7 @@ export async function edgeFunctionErrorMessage(
 
 type DingtalkExchangeResult =
   | { ok: true; mode: "web"; workspaceId: string; tokenHash: string }
-  | { ok: true; mode: "desktop"; workspaceId: string; handoffCode: string }
+  | { ok: true; mode: "desktop" | "mobile"; workspaceId: string; handoffCode: string }
   | { ok: false; error: string };
 
 const dingtalkExchangePromises = new Map<string, Promise<DingtalkExchangeResult>>();

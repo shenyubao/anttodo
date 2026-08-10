@@ -58,29 +58,55 @@ function isReminderEntry(value) {
     && typeof value.triggerAt === "string";
 }
 
+function isNotificationShowPayload(value) {
+  return value && typeof value.title === "string"
+    && typeof value.body === "string"
+    && (value.workspaceId === undefined || typeof value.workspaceId === "string")
+    && (value.taskId === undefined || typeof value.taskId === "string");
+}
+
+function openTaskFromNotification(target) {
+  if (!target?.workspaceId || !target?.taskId) return;
+  restoreMainWindow();
+  mainWindow?.webContents.send("anttodo:open-task", target);
+  // Keep the legacy reminder channel for older preload listeners.
+  mainWindow?.webContents.send("anttodo:reminder-open-task", target);
+}
+
+function showNativeNotification({ title, body, workspaceId, taskId }, handlers = {}) {
+  if (!Notification.isSupported()) {
+    handlers.onFailed?.("unsupported");
+    return false;
+  }
+  const notification = new Notification({ title, body });
+  notification.once("show", () => handlers.onShow?.());
+  notification.once("click", () => {
+    handlers.onClick?.();
+    openTaskFromNotification({ workspaceId, taskId });
+  });
+  notification.once("close", () => handlers.onClose?.());
+  notification.once("failed", (_event, error) => {
+    handlers.onFailed?.(error);
+  });
+  notification.show();
+  return true;
+}
+
 const reminderScheduler = createReminderScheduler({
   show: (entry, acknowledge) => {
-    if (!Notification.isSupported()) {
+    const shown = showNativeNotification(entry, {
+      onShow: () => {
+        mainWindow?.webContents.send("anttodo:reminder-shown", entry.id);
+      },
+      onClick: acknowledge,
+      onClose: acknowledge,
+      onFailed: (error) => {
+        mainWindow?.webContents.send("anttodo:reminder-failed", entry.id, error);
+      },
+    });
+    if (!shown) {
       mainWindow?.webContents.send("anttodo:reminder-failed", entry.id, "unsupported");
-      return;
     }
-    const notification = new Notification({ title: entry.title, body: entry.body });
-    notification.once("show", () => {
-      mainWindow?.webContents.send("anttodo:reminder-shown", entry.id);
-    });
-    notification.once("click", () => {
-      acknowledge();
-      restoreMainWindow();
-      mainWindow?.webContents.send("anttodo:reminder-open-task", {
-        workspaceId: entry.workspaceId,
-        taskId: entry.taskId,
-      });
-    });
-    notification.once("close", acknowledge);
-    notification.once("failed", (_event, error) => {
-      mainWindow?.webContents.send("anttodo:reminder-failed", entry.id, error);
-    });
-    notification.show();
   },
 });
 
@@ -159,6 +185,16 @@ ipcMain.handle("anttodo:reminders-sync", (_event, entries) => {
 
 ipcMain.on("anttodo:reminders-acknowledge", (_event, reminderId) => {
   if (typeof reminderId === "string") reminderScheduler.acknowledge(reminderId);
+});
+
+ipcMain.handle("anttodo:notifications-show", (_event, payload) => {
+  if (!isNotificationShowPayload(payload)) return false;
+  return showNativeNotification({
+    title: payload.title,
+    body: payload.body,
+    workspaceId: payload.workspaceId,
+    taskId: payload.taskId,
+  });
 });
 
 ipcMain.handle("anttodo:app-version", () => app.getVersion());

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { commentRelativeTime, visibleMentionIds } from "./TaskComments";
+import { commentRelativeTime } from "./TaskComments";
+import { visibleMentionIds } from "./lib/mentions";
 import type { Member } from "./types";
 
 const members: Member[] = [

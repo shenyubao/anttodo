@@ -19,6 +19,9 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "view", view: "today", mode: "timeline" },
+    { workspaceId: "workspace-1", kind: "view", view: "week", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "week", mode: "kanban" },
+    { workspaceId: "workspace-1", kind: "view", view: "week", mode: "timeline" },
     { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "list" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "kanban" },
@@ -81,6 +84,12 @@ describe("application routes", () => {
       kind: "view",
       view: "today",
       mode: "timeline",
+    });
+    expect(parseAppRoute("/workspaces/workspace-1/views/week")).toEqual({
+      workspaceId: "workspace-1",
+      kind: "view",
+      view: "week",
+      mode: "list",
     });
     expect(appRoutePath({
       workspaceId: "workspace-1",

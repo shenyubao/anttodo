@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(8);
+select plan(10);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -23,12 +23,14 @@ values ('56100000-0000-0000-0000-000000000001', '46100000-0000-0000-0000-0000000
 select has_column('public', 'subtasks', 'description', 'subtasks expose description');
 select has_column('public', 'subtasks', 'estimate_hours', 'subtasks expose estimate hours');
 select has_column('public', 'subtasks', 'actual_hours', 'subtasks expose actual hours');
+select has_column('public', 'subtasks', 'priority', 'subtasks expose priority');
 select has_column('public', 'task_comments', 'subtask_id', 'task comments can target a subtask');
 
 update public.subtasks
 set description = '子任务说明',
     estimate_hours = 1.5,
-    actual_hours = 0.5
+    actual_hours = 0.5,
+    priority = 'high'
 where id = '56100000-0000-0000-0000-000000000001';
 
 select is(
@@ -45,6 +47,11 @@ select is(
   (select actual_hours from public.subtasks where id = '56100000-0000-0000-0000-000000000001'),
   0.5::numeric,
   'subtask actual hours can be updated'
+);
+select is(
+  (select priority::text from public.subtasks where id = '56100000-0000-0000-0000-000000000001'),
+  'high',
+  'subtask priority can be updated'
 );
 
 select lives_ok(

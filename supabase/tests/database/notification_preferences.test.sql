@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(13);
+select plan(15);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -134,7 +134,7 @@ select is(
       and notification_type = 'task_assigned'
   ),
   0,
-  'assignment does not notify the actor'
+  'assigning someone else does not notify the actor'
 );
 
 set local role authenticated;
@@ -143,10 +143,37 @@ select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-0000000
 select lives_ok(
   $$
     update public.tasks
-    set title = 'Notify task renamed'
+    set assignee_id = '14100000-0000-0000-0000-000000000001'
     where id = '44100000-0000-0000-0000-000000000001'
   $$,
-  'owner can rename task'
+  'owner can self-assign task'
+);
+
+reset role;
+
+select is(
+  (
+    select count(*)::integer
+    from public.notifications
+    where task_id = '44100000-0000-0000-0000-000000000001'
+      and recipient_id = '14100000-0000-0000-0000-000000000001'
+      and notification_type = 'task_assigned'
+  ),
+  1,
+  'self-assignment notifies the actor as assignee'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+
+select lives_ok(
+  $$
+    update public.tasks
+    set assignee_id = '14100000-0000-0000-0000-000000000002',
+        title = 'Notify task renamed'
+    where id = '44100000-0000-0000-0000-000000000001'
+  $$,
+  'owner can rename task and restore assignee'
 );
 
 reset role;
@@ -188,8 +215,8 @@ select is(
       and recipient_id = '14100000-0000-0000-0000-000000000002'
       and notification_type = 'task_new_comment'
   ),
-  0,
-  'comment author who is assignee is not notified via task_new_comment'
+  1,
+  'comment author who is assignee is also notified via task_new_comment'
 );
 
 select is(

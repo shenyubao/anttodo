@@ -1,5 +1,5 @@
 {
-  "name": "@anttodo/cli",
+  "name": "@anttodos/cli",
   "version": "0.1.0",
   "description": "Command-line client for AntTodo",
   "type": "module",

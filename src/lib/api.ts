@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  AiFeatureSettings,
   AiWorkSettings,
   AssigneeTarget,
   AppNotification,
@@ -37,6 +38,10 @@ import {
   type AiSuggestedSubtask,
 } from "./aiSubtaskDecompose";
 import {
+  createDefaultAiFeatureSettings,
+  normalizeAiFeatureSettings,
+} from "./aiFeatureSettings";
+import {
   DEFAULT_DATE_TIME_PREFERENCES,
   preferenceModelToRow,
   preferenceRowToModel,
@@ -55,14 +60,57 @@ export type { AiSuggestedSubtask };
 
 type TaskRow = Omit<
   Task,
-  "label_ids" | "participant_ids" | "subtasks" | "reminders" | "reminder_persistent"
+  | "label_ids"
+  | "participant_ids"
+  | "subtasks"
+  | "reminders"
+  | "reminder_persistent"
+  | "description_mentions"
 > & {
   task_labels?: Array<{ label_id: string }>;
   task_participants?: Array<{ user_id: string }>;
+  task_description_mentions?: Array<{ user_id: string; display_name_snapshot: string }>;
   subtasks?: Task["subtasks"];
   task_reminders?: Task["reminders"];
   task_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
 };
+
+export const WORKSPACE_TASK_PAGE_SIZE = 1000;
+
+export type WorkspaceTaskPage = {
+  tasks: Task[];
+  hasMore: boolean;
+};
+
+function normalizeTaskRow(row: TaskRow): Task {
+  const settings = Array.isArray(row.task_reminder_settings)
+    ? row.task_reminder_settings[0]
+    : row.task_reminder_settings;
+  return {
+    ...row,
+    kind: row.kind ?? "todo",
+    recurrence: row.recurrence ?? null,
+    estimate_hours: coerceHours(row.estimate_hours),
+    actual_hours: coerceHours(row.actual_hours),
+    label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
+    participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
+    description_mentions: row.task_description_mentions ?? [],
+    subtasks: [...(row.subtasks ?? [])]
+      .sort((a, b) => a.position - b.position)
+      .map((subtask) => ({
+        ...subtask,
+        description: subtask.description ?? "",
+        estimate_hours: coerceHours(subtask.estimate_hours),
+        actual_hours: coerceHours(subtask.actual_hours),
+      })),
+    reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
+    reminder_persistent: settings?.persistent ?? false,
+  };
+}
+
+function normalizeTaskRows(rows: TaskRow[]): Task[] {
+  return rows.map(normalizeTaskRow);
+}
 
 function assertNoError(error: { message: string } | null) {
   if (error) throw new Error(error.message);
@@ -194,6 +242,23 @@ export async function listTaskCommentCandidateIds(
   return (data ?? []).map((row: { user_id: string }) => row.user_id);
 }
 
+export async function updateTaskDescription(
+  client: SupabaseClient,
+  input: {
+    taskId: string;
+    description: string;
+    mentionedUserIds: string[];
+  },
+) {
+  const { data, error } = await client.rpc("update_task_description", {
+    p_task_id: input.taskId,
+    p_description: input.description,
+    p_mentioned_user_ids: input.mentionedUserIds,
+  });
+  assertNoError(error);
+  return data as Task;
+}
+
 export async function createTaskComment(
   client: SupabaseClient,
   input: {
@@ -280,7 +345,7 @@ export async function loadNotifications(
       ? client.from("profiles").select("id, display_name, avatar_url").in("id", actorIds)
       : Promise.resolve({ data: [], error: null }),
     taskIds.length
-      ? client.from("tasks").select("id, title, kind").in("id", taskIds)
+      ? client.from("tasks").select("id, title, kind, description").in("id", taskIds)
       : Promise.resolve({ data: [], error: null }),
     commentIds.length
       ? client.from("task_comments").select("id, body, image_uris").in("id", commentIds)
@@ -424,6 +489,42 @@ export async function loadAiWorkSettings(
   };
 }
 
+export async function loadAiFeatureSettings(
+  client: SupabaseClient,
+  userId: string,
+): Promise<AiFeatureSettings> {
+  const { data, error } = await client
+    .from("user_ai_feature_settings")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  assertNoError(error);
+  return data
+    ? normalizeAiFeatureSettings(data as AiFeatureSettings)
+    : createDefaultAiFeatureSettings(userId);
+}
+
+export async function saveAiFeatureSettings(
+  client: SupabaseClient,
+  settings: AiFeatureSettings,
+) {
+  const normalized = normalizeAiFeatureSettings(settings);
+  const { data, error } = await client
+    .from("user_ai_feature_settings")
+    .upsert({
+      user_id: normalized.user_id,
+      smart_format_enabled: normalized.smart_format_enabled,
+      smart_format_prompt_override: normalized.smart_format_prompt_override,
+      subtask_decompose_enabled: normalized.subtask_decompose_enabled,
+      subtask_decompose_prompt_override: normalized.subtask_decompose_prompt_override,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id" })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return normalizeAiFeatureSettings(data as AiFeatureSettings);
+}
+
 export async function saveAiWorkSettings(
   client: SupabaseClient,
   settings: AiWorkSettings,
@@ -565,10 +666,12 @@ export async function loadWorkspaceBundle(
     client.from("labels").select("*").eq("workspace_id", workspaceId).order("position"),
     client
       .from("tasks")
-      .select("*, task_labels(label_id), task_participants(user_id), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+      .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
       .eq("workspace_id", workspaceId)
       .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
-      .order("created_at", { ascending: false }),
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(0, WORKSPACE_TASK_PAGE_SIZE - 1),
     client
       .from("connector_instances")
       .select("*")
@@ -690,30 +793,7 @@ export async function loadWorkspaceBundle(
         ],
       ),
     ),
-    tasks: ((tasksResult.data ?? []) as TaskRow[]).map((row) => {
-      const settings = Array.isArray(row.task_reminder_settings)
-        ? row.task_reminder_settings[0]
-        : row.task_reminder_settings;
-      return {
-        ...row,
-        kind: row.kind ?? "todo",
-        recurrence: row.recurrence ?? null,
-        estimate_hours: coerceHours(row.estimate_hours),
-        actual_hours: coerceHours(row.actual_hours),
-        label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
-        participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
-        subtasks: [...(row.subtasks ?? [])]
-          .sort((a, b) => a.position - b.position)
-          .map((subtask) => ({
-            ...subtask,
-            description: subtask.description ?? "",
-            estimate_hours: coerceHours(subtask.estimate_hours),
-            actual_hours: coerceHours(subtask.actual_hours),
-          })),
-        reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
-        reminder_persistent: settings?.persistent ?? false,
-      };
-    }),
+    tasks: normalizeTaskRows((tasksResult.data ?? []) as TaskRow[]),
     connectors,
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
@@ -721,6 +801,27 @@ export async function loadWorkspaceBundle(
     taskListPreferences: (preferencesResult.data ?? []) as WorkspaceBundle["taskListPreferences"],
     taskSections: (sectionsResult.data ?? []) as WorkspaceBundle["taskSections"],
     taskPlacements: (placementsResult.data ?? []) as WorkspaceBundle["taskPlacements"],
+  };
+}
+
+export async function loadWorkspaceTasksPage(
+  client: SupabaseClient,
+  workspaceId: string,
+  offset: number,
+): Promise<WorkspaceTaskPage> {
+  const { data, error } = await client
+    .from("tasks")
+    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+    .eq("workspace_id", workspaceId)
+    .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .range(offset, offset + WORKSPACE_TASK_PAGE_SIZE - 1);
+  assertNoError(error);
+  const tasks = normalizeTaskRows((data ?? []) as TaskRow[]);
+  return {
+    tasks,
+    hasMore: tasks.length === WORKSPACE_TASK_PAGE_SIZE,
   };
 }
 
@@ -972,6 +1073,7 @@ export async function createTask(
       ...created,
       estimate_hours: coerceHours(created.estimate_hours),
       actual_hours: coerceHours(created.actual_hours),
+      description_mentions: created.description_mentions ?? [],
     };
   }
 
@@ -987,6 +1089,7 @@ export async function createTask(
     ...next,
     estimate_hours: coerceHours(next.estimate_hours),
     actual_hours: coerceHours(next.actual_hours),
+    description_mentions: next.description_mentions ?? [],
   };
 }
 

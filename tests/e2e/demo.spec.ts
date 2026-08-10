@@ -526,7 +526,6 @@ test("mind map creates labels, inherits labels, and exposes context deletion", a
     hasText: "导图标签任务",
   });
   await inheritedTask.click({ button: "right" });
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("menuitem", { name: "删除任务" }).click();
   await expect(inheritedTask).toHaveCount(0);
 });
@@ -841,6 +840,38 @@ test("offline mode disables task assignment", async ({ context, page }) => {
   ).toBeDisabled();
 });
 
+test("connector settings exposes marketplace and installed DingTalk robot", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "设置" });
+  await dialog.getByRole("button", { name: "连接器", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "连接器" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "连接器市场" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "已接入 1" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "快速创建" })).toBeVisible();
+  await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("已接入", { exact: true })).toBeVisible();
+
+  await dialog.getByRole("tab", { name: "研发工具" }).click();
+  await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("暂未开放", { exact: true })).toBeVisible();
+
+  await dialog.getByRole("tab", { name: "已接入 1" }).click();
+  const setupGuide = dialog.getByRole("region", { name: "钉钉机器人配置步骤" });
+  await expect(setupGuide).toBeVisible();
+  await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("演示预览，不会连接真实钉钉应用。")).toBeVisible();
+
+  await page.setViewportSize({ width: 680, height: 800 });
+  await expect(setupGuide.locator(".connector-callback-row")).toHaveCSS(
+    "flex-direction",
+    "column",
+  );
+});
+
 test("settings matches the reference geometry and reads account data", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/?demo=1");
@@ -871,23 +902,28 @@ test("settings matches the reference geometry and reads account data", async ({ 
   expect(settingsTabLabels.indexOf("用户组")).toBe(
     settingsTabLabels.indexOf("单点登录") - 1,
   );
+  expect(settingsTabLabels.indexOf("单点登录")).toBe(
+    settingsTabLabels.indexOf("连接器") - 1,
+  );
   expect(settingsTabLabels).toEqual([
     "账户与安全",
     "日期与时间",
     "外观",
     "通知配置",
+    "AI功能",
     "快捷键",
     "团队管理",
     "成员管理",
     "用户组",
     "单点登录",
+    "连接器",
     "关于",
   ]);
   await expect(dialog.locator(".settings-tab-group-title")).toHaveText([
     "基础配置",
     "团队配置",
   ]);
-  await expect(dialog.getByRole("button", { name: "连接器", exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "连接器", exact: true })).toBeVisible();
 
   await dialog.getByRole("button", { name: "外观", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "外观" })).toBeVisible();
@@ -942,6 +978,19 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await dialog.getByRole("button", { name: "单点登录", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "单点登录" })).toBeVisible();
   await expect(dialog.getByText("钉钉企业登录", { exact: true })).toBeVisible();
+
+  await dialog.getByRole("button", { name: "连接器", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "连接器" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "连接器市场" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "已接入 1" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "快速创建" })).toBeVisible();
+  await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
+  await dialog.getByRole("tab", { name: "研发工具" }).click();
+  await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("暂未开放", { exact: true })).toBeVisible();
+  await dialog.getByRole("tab", { name: "已接入 1" }).click();
+  await expect(dialog.getByRole("region", { name: "钉钉机器人配置步骤" })).toBeVisible();
+  await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
 
   await dialog.getByRole("button", { name: "日期与时间", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "日期与时间" })).toBeVisible();
@@ -1178,7 +1227,6 @@ test("due date picker saves point, range, all-day, and clear states", async ({ p
   await expect(picker.getByRole("button", { name: "下周", exact: true })).toBeVisible();
   await expect(picker.getByRole("button", { name: "下月", exact: true })).toBeVisible();
   await picker.getByRole("button", { name: "明天", exact: true }).click();
-  await picker.getByRole("button", { name: "确定" }).click();
   await expect(picker).toBeHidden();
   await expect(page.locator(".detail-due-trigger")).not.toHaveClass(/overdue/);
 
@@ -1208,10 +1256,10 @@ test("repeating task rolls due date forward on complete", async ({ page }) => {
   await page.getByText("完成 AntTodo 项目框架验收", { exact: true }).click();
   await page.getByRole("button", { name: "设置到期时间" }).click();
   const picker = page.getByRole("dialog", { name: "设置到期时间" });
-  await picker.getByRole("button", { name: "明天", exact: true }).click();
   await picker.getByRole("button", { name: "重复" }).click();
   await picker.getByRole("button", { name: "每天" }).click();
-  await picker.getByRole("button", { name: "确定" }).click();
+  await picker.getByRole("button", { name: "明天", exact: true }).click();
+  await expect(picker).toBeHidden();
 
   const dueBefore = await page.locator(".detail-due-trigger").innerText();
   await page.getByRole("button", { name: "完成任务" }).click();
@@ -1228,7 +1276,6 @@ test("reminder picker saves multiple, custom, all-day and persistent rules", asy
   await page.getByText("完成 AntTodo 项目框架验收", { exact: true }).click();
   await page.getByRole("button", { name: "设置到期时间" }).click();
   const picker = page.getByRole("dialog", { name: "设置到期时间" });
-  await picker.getByRole("button", { name: "明天", exact: true }).click();
   await picker.getByRole("button", { name: "提醒", exact: true }).click();
   const reminderPanel = picker.getByRole("region", { name: "提醒设置" });
   await reminderPanel.getByRole("button", { name: "准时" }).click();
@@ -1247,7 +1294,8 @@ test("reminder picker saves multiple, custom, all-day and persistent rules", asy
   await reminderPanel.getByRole("button", { name: "保存" }).click();
   await reminderPanel.getByRole("button", { name: "确定" }).click();
   await expect(picker.getByRole("button", { name: "提醒", exact: true })).toContainText("3 个提醒");
-  await picker.locator(".due-footer").getByRole("button", { name: "确定" }).click();
+  await picker.getByRole("button", { name: "明天", exact: true }).click();
+  await expect(picker).toBeHidden();
 
   await page.getByRole("button", { name: "设置到期时间" }).click();
   await picker.getByRole("button", { name: "提醒", exact: true }).click();

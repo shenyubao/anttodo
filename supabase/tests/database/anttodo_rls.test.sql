@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(148);
+select plan(152);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -1170,7 +1170,7 @@ select is(
 select is(
   (select count(*)::integer from public.notifications
     where read_at is null
-      and notification_type in ('comment_mention', 'note_mentioned')),
+      and notification_type in ('comment_mention', 'todo_mentioned', 'note_mentioned')),
   1,
   'a mentioned member receives one unread notification'
 );
@@ -1179,7 +1179,7 @@ select lives_ok(
     update public.notifications
     set read_at = now()
     where read_at is null
-      and notification_type in ('comment_mention', 'note_mentioned')
+      and notification_type in ('comment_mention', 'todo_mentioned', 'note_mentioned')
   $$,
   'a notification recipient can mark their notification read'
 );
@@ -1240,9 +1240,16 @@ select lives_ok(
   'self mentions do not prevent comment creation'
 );
 select is(
-  (select count(*)::integer from public.notifications where recipient_id = auth.uid()),
-  0,
-  'self mentions do not create notifications'
+  (
+    select count(*)::integer
+    from public.notifications n
+    join public.task_comments c on c.id = n.comment_id
+    where n.recipient_id = auth.uid()
+      and n.notification_type in ('comment_mention', 'todo_mentioned', 'note_mentioned')
+      and c.body = '@owner self mention'
+  ),
+  1,
+  'self mentions create notifications'
 );
 select lives_ok(
   $$
@@ -1671,6 +1678,46 @@ select is(
   ),
   0,
   'a sole-owner workspace is deleted with the account'
+);
+
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
+);
+select lives_ok(
+  $$
+    select public.update_task_description(
+      '40000000-0000-0000-0000-000000000001',
+      '@member please check the description',
+      array['10000000-0000-0000-0000-000000000002'::uuid]
+    )
+  $$,
+  'task editor can mention a viewer in the description'
+);
+reset role;
+select is(
+  (
+    select count(*)::integer
+    from public.task_description_mentions
+    where task_id = '40000000-0000-0000-0000-000000000001'
+      and user_id = '10000000-0000-0000-0000-000000000002'
+  ),
+  1,
+  'description mentions persist for newly mentioned viewers'
+);
+select is(
+  (
+    select count(*)::integer
+    from public.notifications
+    where task_id = '40000000-0000-0000-0000-000000000001'
+      and recipient_id = '10000000-0000-0000-0000-000000000002'
+      and notification_type = 'todo_mentioned'
+      and coalesce(payload->>'source', '') = 'description'
+  ),
+  1,
+  'new description mentions create 待办-被提及 notifications'
 );
 
 select * from finish();

@@ -133,6 +133,7 @@ export const TASK_FILTER_DUE_OPTIONS: Array<{
   { value: "overdue", label: "已过期" },
   { value: "today", label: "今天" },
   { value: "tomorrow", label: "明天" },
+  { value: "this_week", label: "本周" },
   { value: "next_7_days", label: "7天内" },
   { value: "next_30_days", label: "30天内" },
 ];
@@ -148,6 +149,12 @@ export type TaskListFilterFields = {
 export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
   today: {
     filter_due: "today",
+    filter_assignee: "assigned_to_me",
+    filter_watching: "all",
+    filter_creator: "all",
+  },
+  week: {
+    filter_due: "this_week",
     filter_assignee: "assigned_to_me",
     filter_watching: "all",
     filter_creator: "all",
@@ -289,6 +296,7 @@ export function applyTaskListFilters(input: {
   filterDue?: TaskListFilterDue;
   currentUserId: string;
   now?: Date;
+  weekStartsOn?: DateTimePreferences["weekStartsOn"];
 }) {
   const {
     currentUserId,
@@ -298,6 +306,7 @@ export function applyTaskListFilters(input: {
     filterDue = "all",
   } = input;
   const now = input.now ?? new Date();
+  const weekStartsOn = input.weekStartsOn ?? 1;
   let result = input.tasks;
 
   if (filterAssignee === "assigned_to_me") {
@@ -334,6 +343,14 @@ export function applyTaskListFilters(input: {
     return result.filter((task) => {
       const due = dueTime(task);
       return due != null && due >= tomorrow.getTime() && due < afterTomorrow.getTime();
+    });
+  }
+  if (filterDue === "this_week") {
+    const weekStart = startOfWeek(now, weekStartsOn);
+    const nextWeek = addLocalDays(weekStart, 7);
+    return result.filter((task) => {
+      const due = dueTime(task);
+      return due != null && due >= weekStart.getTime() && due < nextWeek.getTime();
     });
   }
   const windowDays = filterDue === "next_7_days" ? 7 : 30;

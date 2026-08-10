@@ -57,6 +57,7 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
     deleted_at: null,
     version: 1,
     created_at: timestamp,
+    description_mentions: [],
     updated_at: timestamp,
     label_ids: [],
     participant_ids: [],

@@ -43,6 +43,7 @@ export type TaskListFilterDue =
   | "overdue"
   | "today"
   | "tomorrow"
+  | "this_week"
   | "next_7_days"
   | "next_30_days";
 export type SortDirection = "asc" | "desc";
@@ -62,6 +63,16 @@ export type AiWorkSettings = {
   workspace_id: string;
   cli_tools: AiCliTool[];
   default_working_path: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AiFeatureSettings = {
+  user_id: string;
+  smart_format_enabled: boolean;
+  smart_format_prompt_override: string | null;
+  subtask_decompose_enabled: boolean;
+  subtask_decompose_prompt_override: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -274,6 +285,7 @@ export type Task = {
   subtasks: Subtask[];
   reminders: TaskReminder[];
   reminder_persistent: boolean;
+  description_mentions: CommentMention[];
 };
 
 export type CommentMention = {
@@ -316,6 +328,7 @@ export type NotificationScenario =
   | "task_due_reminder"
   | "task_new_comment"
   | "note_mentioned"
+  | "todo_mentioned"
   | "participant_added"
   | "participant_title_changed"
   | "participant_status_changed"
@@ -336,6 +349,7 @@ export type NotificationPreferences = Record<
 
 export type NotificationType =
   | "comment_mention"
+  | "todo_mentioned"
   | "task_assigned"
   | "task_new_comment"
   | "note_mentioned"
@@ -359,7 +373,7 @@ export type AppNotification = {
   read_at: string | null;
   created_at: string;
   actor?: Profile;
-  task?: Pick<Task, "id" | "title" | "kind">;
+  task?: Pick<Task, "id" | "title" | "kind"> & { description?: string };
   comment?: Pick<TaskComment, "id" | "body" | "image_uris">;
 };
 

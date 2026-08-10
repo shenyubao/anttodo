@@ -258,9 +258,10 @@ select is(
     join public.tasks t on t.id = n.task_id
     where t.title = 'Unassigned auto-watch'
       and n.notification_type = 'participant_added'
+      and n.recipient_id = '13100000-0000-0000-0000-000000000001'
   ),
-  0,
-  'auto-watch creator does not notify self as participant_added'
+  1,
+  'auto-watch creator is notified as participant_added for self'
 );
 
 set local role authenticated;

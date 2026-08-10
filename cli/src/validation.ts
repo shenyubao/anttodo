@@ -1,5 +1,12 @@
 import { CliError } from "./errors.js";
-import type { LabelAccessScope, LabelKind, TaskPriority, TaskStatus } from "./types.js";
+import type {
+  LabelAccessScope,
+  LabelKind,
+  RecurrenceRule,
+  ReminderRule,
+  TaskPriority,
+  TaskStatus,
+} from "./types.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
@@ -107,4 +114,32 @@ export function validateTimeZone(value: string | undefined) {
     throw new CliError({ type: "validation", code: "invalid_timezone", message: `Invalid IANA timezone: ${timeZone}` });
   }
   return timeZone;
+}
+
+export function parseReminder(value: string): ReminderRule {
+  const match = value.trim().match(/^(start|end):(\d+):(minute|hour|day|week)(?:@([01]\d|2[0-3]):([0-5]\d))?$/);
+  if (!match) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_reminder",
+      message: `Invalid reminder rule: ${value}`,
+      hint: "Use start:15:minute, end:1:day, or start:1:day@09:00",
+    });
+  }
+  const offset = Number(match[2]);
+  if (offset > 525600) throw new CliError({ type: "validation", code: "invalid_reminder", message: "Reminder offset is too large" });
+  return {
+    anchor: match[1] as ReminderRule["anchor"],
+    offset_value: offset,
+    offset_unit: match[3] as ReminderRule["offset_unit"],
+    local_time: match[4] ? `${match[4]}:${match[5]}` : null,
+  };
+}
+
+export function parseRecurrence(value: string | undefined): RecurrenceRule | null {
+  if (!value || value === "none") return null;
+  if (!["daily", "weekdays", "weekly", "monthly", "yearly"].includes(value)) {
+    throw new CliError({ type: "validation", code: "invalid_recurrence", message: `Invalid recurrence: ${value}` });
+  }
+  return { freq: value as RecurrenceRule["freq"], interval: 1, mode: "due" };
 }

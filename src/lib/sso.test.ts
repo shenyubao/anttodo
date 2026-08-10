@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildDingtalkCallbackUrl,
   DINGTALK_LOGIN_SCOPE,
   dingtalkExchangeOnce,
   dingtalkDesktopCallbackUrl,
+  dingtalkNativeCallbackUrl,
   dingtalkFrameLoginParams,
   dingtalkFrameLoginUrl,
   dingtalkLoginErrorAction,
@@ -16,11 +17,18 @@ import {
   isDingtalkClientId,
   isDingtalkTransientLoginError,
   normalizeDingtalkLoginError,
+  parseAuthDeepLink,
   parseWorkspaceSsoLoginConfig,
+  resolveSsoClient,
+  usesNativeSsoHandoff,
 } from "./sso";
 
 describe("dingtalk sso helpers", () => {
   const workspaceId = "7e74efbb-780a-411b-aa7a-1867efbfa40a";
+
+  afterEach(() => {
+    delete (window as { anttodoDesktop?: unknown }).anttodoDesktop;
+  });
 
   it("detects callback path", () => {
     expect(isDingtalkCallbackPath("/auth/dingtalk/callback")).toBe(true);
@@ -49,13 +57,38 @@ describe("dingtalk sso helpers", () => {
     expect(url.searchParams.get("scope")).toBe(DINGTALK_LOGIN_SCOPE);
   });
 
-  it("builds desktop callbacks only for 32-byte base64url handoff codes", () => {
+  it("builds native callbacks only for 32-byte base64url handoff codes", () => {
     const code = "a".repeat(43);
+    expect(dingtalkNativeCallbackUrl(code)).toBe(
+      `anttodo://auth/callback?code=${code}`,
+    );
     expect(dingtalkDesktopCallbackUrl(code)).toBe(
       `anttodo://auth/callback?code=${code}`,
     );
-    expect(dingtalkDesktopCallbackUrl("short")).toBeNull();
-    expect(dingtalkDesktopCallbackUrl(`${"a".repeat(42)}+`)).toBeNull();
+    expect(dingtalkNativeCallbackUrl("short")).toBeNull();
+    expect(dingtalkNativeCallbackUrl(`${"a".repeat(42)}+`)).toBeNull();
+  });
+
+  it("parses auth deep links the same way as Electron", () => {
+    const code = "b".repeat(43);
+    expect(parseAuthDeepLink(`anttodo://auth/callback?code=${code}`)).toBe(code);
+    expect(parseAuthDeepLink("https://app.anttodo.com/auth/dingtalk/callback")).toBeNull();
+    expect(parseAuthDeepLink("anttodo://auth/callback?code=short")).toBeNull();
+    expect(parseAuthDeepLink(`anttodo://auth/callback?code=${code}&extra=1`)).toBeNull();
+  });
+
+  it("resolves SSO client for desktop, mobile, and web", () => {
+    expect(resolveSsoClient({ isDesktop: true })).toBe("desktop");
+    expect(resolveSsoClient({ isNativeMobile: true })).toBe("mobile");
+    expect(resolveSsoClient({ isDesktop: false, isNativeMobile: false })).toBe("web");
+    window.anttodoDesktop = { platform: "darwin" } as Window["anttodoDesktop"];
+    expect(resolveSsoClient()).toBe("desktop");
+  });
+
+  it("detects native handoff modes", () => {
+    expect(usesNativeSsoHandoff("desktop")).toBe(true);
+    expect(usesNativeSsoHandoff("mobile")).toBe(true);
+    expect(usesNativeSsoHandoff("web")).toBe(false);
   });
 
   it("builds DTFrameLogin params without corpId to avoid admin-only org scope", () => {

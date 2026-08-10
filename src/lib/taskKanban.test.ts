@@ -42,6 +42,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   reminder_persistent: false,
   ...patch,
   cli_assignee: patch.cli_assignee ?? null,
+  description_mentions: patch.description_mentions ?? [],
 });
 
 function columns(grouping: "custom" | "due" | "label" | "priority" | "assignee" | "created" | "none", tasks: Task[], selectedLabelId: string | null = null) {

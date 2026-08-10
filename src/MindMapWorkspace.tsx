@@ -1146,6 +1146,7 @@ function MindMapCanvas({
       filterDue: preference.filter_due,
       currentUserId,
       now,
+      weekStartsOn: dateTimePreferences.weekStartsOn,
     }),
     [
       bundle.tasks,
@@ -1155,6 +1156,7 @@ function MindMapCanvas({
       preference.filter_creator,
       preference.filter_due,
       preference.filter_watching,
+      dateTimePreferences.weekStartsOn,
     ],
   );
 
@@ -1431,10 +1433,9 @@ function MindMapCanvas({
     const isLabel = node.data.kind === "label" && node.data.labelId;
     if (!isTask && !isLabel) return;
     const itemName = node.data.task?.kind === "note" ? "笔记" : "任务";
-    const confirmed = isTask
-      ? window.confirm(`删除${itemName}“${node.data.label}”？此操作会将${itemName}移入回收站。`)
-      : window.confirm(`确定删除标签“${node.data.label}”吗？其子标签也会被删除。`);
-    if (!confirmed) return;
+    if (!isTask && !window.confirm(`确定删除标签“${node.data.label}”吗？其子标签也会被删除。`)) {
+      return;
+    }
     setContextBusy(true);
     setError("");
     try {

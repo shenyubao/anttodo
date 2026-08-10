@@ -114,12 +114,6 @@ export function WorkspaceShortcutBindings({
     if (appSection !== "tasks" || !selectedTask || !online || selectedTask.deleted_at) {
       return false;
     }
-    const itemName = selectedTask.kind === "note" ? "笔记" : "任务";
-    if (!window.confirm(
-      `删除${itemName}“${selectedTask.title}”？此操作会将${itemName}移入回收站。`,
-    )) {
-      return false;
-    }
     void onUpdateTask(selectedTask.id, { deleted_at: new Date().toISOString() })
       .then(() => onCloseTask())
       .catch((error) => {
