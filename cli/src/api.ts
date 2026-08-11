@@ -2,7 +2,20 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { basename, extname } from "node:path";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { CliError } from "./errors.js";
-import { getDefaultWorkspace, setDefaultWorkspace } from "./storage.js";
+import {
+  getDefaultWorkspace,
+  setDefaultWorkspace,
+} from "./storage.js";
+import {
+  invalidateTaskCachesForWorkspace,
+  invalidateWorkspaceListCaches,
+  readThroughCache,
+  taskCacheKey,
+  taskListCacheKey,
+  workspaceCacheKey,
+  type CacheReadOptions,
+  type TaskListCacheOptions,
+} from "./cache.js";
 import type {
   FocusSession,
   LabelAccessScope,
@@ -18,8 +31,28 @@ import type {
 type Workspace = { id: string; name: string; slug: string; role: string };
 type ApiContext = { client: SupabaseClient; user: User };
 
+async function invalidateTaskCache(workspaceId: string) {
+  await invalidateTaskCachesForWorkspace(workspaceId).catch(() => undefined);
+}
+
 function throwError(error: { message: string; code?: string; details?: string } | null) {
   if (!error) return;
+  const message = error.message.toLowerCase();
+  if (
+    error.code === "401"
+    || error.code === "PGRST301"
+    || message.includes("jwt")
+    || message.includes("unauthorized")
+    || message.includes("token is expired")
+  ) {
+    throw new CliError({
+      type: "authentication",
+      code: "invalid_session",
+      message: "The saved session is no longer valid",
+      hint: "Run `anttodo auth login` again",
+      details: error.details,
+    });
+  }
   throw new CliError({
     type: error.code === "42501" ? "authorization" : "api",
     code: error.code ?? "supabase_error",
@@ -33,7 +66,7 @@ function requireRow<T>(data: T | null, resource: string): T {
   throw new CliError({ type: "not_found", code: "not_found", message: `${resource} not found or not accessible` });
 }
 
-export async function listWorkspaces({ client, user }: ApiContext): Promise<Workspace[]> {
+async function listWorkspacesFromApi({ client, user }: ApiContext): Promise<Workspace[]> {
   const { data, error } = await client
     .from("workspace_members")
     .select("role, workspaces(id, name, slug)")
@@ -46,8 +79,24 @@ export async function listWorkspaces({ client, user }: ApiContext): Promise<Work
   });
 }
 
-export async function resolveWorkspace(context: ApiContext, requested?: string): Promise<Workspace> {
-  const workspaces = await listWorkspaces(context);
+export async function listWorkspaces(
+  context: ApiContext,
+  cache?: CacheReadOptions,
+): Promise<Workspace[]> {
+  if (!cache) return listWorkspacesFromApi(context);
+  return readThroughCache(
+    workspaceCacheKey(cache.userId),
+    cache,
+    () => listWorkspacesFromApi(context),
+  );
+}
+
+export async function resolveWorkspace(
+  context: ApiContext,
+  requested?: string,
+  cache?: CacheReadOptions,
+): Promise<Workspace> {
+  const workspaces = await listWorkspaces(context, cache);
   if (!workspaces.length) {
     throw new CliError({ type: "not_found", code: "no_workspace", message: "No AntTodo workspace is available" });
   }
@@ -101,7 +150,7 @@ function normalizeTask(row: Record<string, unknown>) {
   };
 }
 
-export async function listTasks(
+async function listTasksFromApi(
   client: SupabaseClient,
   workspaceId: string,
   kind: "todo" | "note",
@@ -146,7 +195,22 @@ export async function listTasks(
   return (data ?? []).map((row) => normalizeTask(row as Record<string, unknown>));
 }
 
-export async function getTask(client: SupabaseClient, workspaceId: string, id: string, kind: "todo" | "note") {
+export async function listTasks(
+  client: SupabaseClient,
+  workspaceId: string,
+  kind: "todo" | "note",
+  options: TaskListCacheOptions,
+  cache?: CacheReadOptions,
+) {
+  if (!cache) return listTasksFromApi(client, workspaceId, kind, options);
+  return readThroughCache(
+    taskListCacheKey(cache.userId, workspaceId, kind, options),
+    cache,
+    () => listTasksFromApi(client, workspaceId, kind, options),
+  );
+}
+
+async function getTaskFromApi(client: SupabaseClient, workspaceId: string, id: string, kind: "todo" | "note") {
   const { data, error } = await client
     .from("tasks")
     .select(taskSelect)
@@ -156,6 +220,21 @@ export async function getTask(client: SupabaseClient, workspaceId: string, id: s
     .maybeSingle();
   throwError(error);
   return normalizeTask(requireRow(data as Record<string, unknown> | null, kind === "note" ? "Note" : "Task"));
+}
+
+export async function getTask(
+  client: SupabaseClient,
+  workspaceId: string,
+  id: string,
+  kind: "todo" | "note",
+  cache?: CacheReadOptions,
+) {
+  if (!cache) return getTaskFromApi(client, workspaceId, id, kind);
+  return readThroughCache(
+    taskCacheKey(cache.userId, workspaceId, kind, id),
+    cache,
+    () => getTaskFromApi(client, workspaceId, id, kind),
+  );
 }
 
 export async function createFocusSession(
@@ -216,6 +295,7 @@ export async function createTask(client: SupabaseClient, input: {
     p_kind: input.kind,
   });
   throwError(error);
+  await invalidateTaskCache(input.workspaceId);
   return data;
 }
 
@@ -233,6 +313,7 @@ export async function assignTask(client: SupabaseClient, workspaceId: string, ta
     });
   }
   throwError(result.error);
+  await invalidateTaskCache(workspaceId);
   return result.data;
 }
 
@@ -245,6 +326,7 @@ export async function setTaskPriority(
   await getTask(client, workspaceId, taskId, "todo");
   const { data, error } = await client.from("tasks").update({ priority }).eq("id", taskId).select("*").maybeSingle();
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return requireRow(data, "Task");
 }
 
@@ -273,6 +355,7 @@ export async function setTaskDueTime(
     p_recurrence: dueAt ? task.recurrence : null,
   });
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return getTask(client, workspaceId, taskId, "todo");
 }
 
@@ -285,6 +368,7 @@ export async function softDeleteTask(client: SupabaseClient, workspaceId: string
     .select("*")
     .maybeSingle();
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return requireRow(data, kind === "note" ? "Note" : "Task");
 }
 
@@ -316,6 +400,7 @@ export async function createSubtask(client: SupabaseClient, userId: string, work
     created_by: userId,
   }).select("*").maybeSingle();
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return requireRow(data, "Subtask");
 }
 
@@ -323,6 +408,7 @@ export async function updateSubtaskDueTime(client: SupabaseClient, workspaceId: 
   await getSubtask(client, workspaceId, id);
   const { data, error } = await client.from("subtasks").update({ due_at: dueAt }).eq("id", id).select("*").maybeSingle();
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return requireRow(data, "Subtask");
 }
 
@@ -331,6 +417,7 @@ export async function deleteSubtask(client: SupabaseClient, workspaceId: string,
   const { data, error } = await client.from("subtasks").delete().eq("id", id).select("id").maybeSingle();
   throwError(error);
   requireRow(data, "Subtask");
+  await invalidateTaskCache(workspaceId);
   return subtask;
 }
 
@@ -381,6 +468,7 @@ export async function createTag(client: SupabaseClient, userId: string, input: {
     p_inherit_permissions: Boolean(input.parentId),
   });
   throwError(error);
+  await invalidateTaskCache(input.workspaceId);
   return data;
 }
 
@@ -412,6 +500,7 @@ export async function deleteTag(client: SupabaseClient, workspaceId: string, id:
   const { data, error } = await client.from("labels").delete().eq("id", id).select("id").maybeSingle();
   throwError(error);
   requireRow(data, "Tag");
+  await invalidateTaskCache(workspaceId);
   return preview;
 }
 
@@ -468,7 +557,9 @@ export async function updateTask(
       throwError(addError);
     }
   }
-  return getTask(client, workspaceId, taskId, kind);
+  const result = await getTask(client, workspaceId, taskId, kind);
+  await invalidateTaskCache(workspaceId);
+  return result;
 }
 
 export async function setTaskStatus(
@@ -499,6 +590,7 @@ export async function purgeTask(client: SupabaseClient, workspaceId: string, tas
   }
   const { data, error } = await client.from("tasks").delete().eq("id", taskId).select("id").maybeSingle();
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return requireRow(data, kind === "note" ? "Note" : "Task");
 }
 
@@ -534,20 +626,22 @@ export async function saveTaskSchedule(
   taskId: string,
   schedule: TaskSchedule,
 ) {
-  const task = await getTask(client, workspaceId, taskId, "todo") as Record<string, unknown>;
+  const currentTask = await getTask(client, workspaceId, taskId, "todo") as Record<string, unknown>;
   const dueAt = schedule.dueAt;
   const { data, error } = await client.rpc("save_task_schedule", {
     p_task_id: taskId,
     p_due_at: dueAt,
     p_due_start_at: schedule.dueStartAt ?? null,
     p_due_is_all_day: Boolean(schedule.dueIsAllDay),
-    p_due_timezone: dueAt ? schedule.dueTimezone ?? task.due_timezone ?? null : null,
+    p_due_timezone: dueAt ? schedule.dueTimezone ?? currentTask.due_timezone ?? null : null,
     p_reminders: schedule.reminders,
     p_persistent: schedule.persistent,
     p_recurrence: schedule.recurrence,
   });
   throwError(error);
-  return { task: await getTask(client, workspaceId, taskId, "todo"), reminders: data ?? [] };
+  const updatedTask = await getTask(client, workspaceId, taskId, "todo");
+  await invalidateTaskCache(workspaceId);
+  return { task: updatedTask, reminders: data ?? [] };
 }
 
 export async function updateSubtask(
@@ -559,6 +653,7 @@ export async function updateSubtask(
   await getSubtask(client, workspaceId, id);
   const { data, error } = await client.from("subtasks").update(patch).eq("id", id).select("*").maybeSingle();
   throwError(error);
+  await invalidateTaskCache(workspaceId);
   return requireRow(data, "Subtask");
 }
 
@@ -621,7 +716,9 @@ export async function updateTag(
     const { error: moveError } = await client.from("labels").update({ parent_id: patch.parentId }).eq("id", tagId);
     throwError(moveError);
   }
-  return data ?? getTag(client, workspaceId, tagId);
+  const result = data ?? await getTag(client, workspaceId, tagId);
+  await invalidateTaskCache(workspaceId);
+  return result;
 }
 
 export async function reorderTags(client: SupabaseClient, workspaceId: string, parentId: string | null, orderedIds: string[]) {
@@ -632,7 +729,9 @@ export async function reorderTags(client: SupabaseClient, workspaceId: string, p
     const { error } = await client.rpc("set_user_top_level_label_order", { p_workspace_id: workspaceId, p_ordered_ids: orderedIds });
     throwError(error);
   }
-  return listTags(client, workspaceId);
+  const result = await listTags(client, workspaceId);
+  await invalidateTaskCache(workspaceId);
+  return result;
 }
 
 export async function listUserGroups(client: SupabaseClient, workspaceId: string) {
@@ -649,6 +748,7 @@ export async function createWorkspace(client: SupabaseClient, userId: string, na
   const normalized = slug?.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
   const { data, error } = await client.from("workspaces").insert({ name: name.trim(), slug: normalized || undefined, created_by: userId }).select("*").single();
   throwError(error);
+  await invalidateWorkspaceListCaches().catch(() => undefined);
   return data;
 }
 
@@ -656,12 +756,15 @@ export async function updateWorkspace(client: SupabaseClient, workspaceId: strin
   const payload = { ...patch, ...(patch.name === undefined ? {} : { name: patch.name.trim() }), ...(patch.slug === undefined ? {} : { slug: patch.slug.trim().toLowerCase() }) };
   const { data, error } = await client.from("workspaces").update(payload).eq("id", workspaceId).select("*").single();
   throwError(error);
+  await invalidateWorkspaceListCaches().catch(() => undefined);
   return data;
 }
 
 export async function deleteWorkspace(client: SupabaseClient, workspaceId: string, confirmationName: string) {
   const { data, error } = await client.functions.invoke("workspace-admin", { body: { action: "delete", workspaceId, confirmationName } });
   if (error) throw new CliError({ type: "api", code: "workspace_delete_failed", message: typeof data?.error === "string" ? data.error : error.message, details: data });
+  await invalidateWorkspaceListCaches().catch(() => undefined);
+  await invalidateTaskCache(workspaceId);
   return data;
 }
 
@@ -672,6 +775,7 @@ export async function updateWorkspaceMemberRole(client: SupabaseClient, workspac
   if (current.data.role === "owner") throw new CliError({ type: "authorization", code: "owner_protected", message: "The workspace owner role cannot be changed" });
   const { data, error } = await client.from("workspace_members").update({ role }).eq("workspace_id", workspaceId).eq("user_id", userId).select("*").maybeSingle();
   throwError(error);
+  await invalidateWorkspaceListCaches().catch(() => undefined);
   return requireRow(data, "Workspace member");
 }
 
@@ -682,6 +786,7 @@ export async function removeWorkspaceMember(client: SupabaseClient, workspaceId:
   if (current.data.role === "owner") throw new CliError({ type: "authorization", code: "owner_protected", message: "The workspace owner cannot be removed" });
   const { data, error } = await client.from("workspace_members").delete().eq("workspace_id", workspaceId).eq("user_id", userId).neq("role", "owner").select("user_id").maybeSingle();
   throwError(error);
+  await invalidateWorkspaceListCaches().catch(() => undefined);
   return requireRow(data, "Workspace member");
 }
 

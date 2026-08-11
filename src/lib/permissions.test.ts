@@ -39,10 +39,12 @@ describe("strict multi-label permission intersection", () => {
     )).toBe(0);
   });
 
-  it("lets only the creator or workspace administrators edit inbox tasks", () => {
+  it("lets the creator, assignee, or workspace administrators edit inbox tasks", () => {
     const bundle = createDemoBundle();
     const task = bundle.tasks.find((item) => item.id === "task-5")!;
     expect(currentTaskPermissionLevel(bundle, task, "demo-user")).toBe(2);
     expect(currentTaskPermissionLevel(bundle, task, "demo-member")).toBe(1);
+    task.assignee_id = "demo-member";
+    expect(currentTaskPermissionLevel(bundle, task, "demo-member")).toBe(2);
   });
 });

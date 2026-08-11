@@ -11,6 +11,7 @@ import {
   clampGroupingForViewMode,
   customTaskViewKey,
   DEFAULT_SYSTEM_SMART_VIEW_ORDER,
+  dueFilterLabel,
   exclusiveAssigneeFilter,
   filterTasksForView,
   groupingOptionsForViewMode,
@@ -29,6 +30,7 @@ import {
   taskSectionOrderAfterMove,
   TIMELINE_GROUPING_OPTIONS,
   toggleAssigneeUserFilter,
+  toggleDueFilter,
 } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
@@ -99,7 +101,7 @@ describe("task list grouping and sorting", () => {
         filter_assignee_ids: [],
         filter_watching: "all",
         filter_creator: "all",
-        filter_due: "all",
+        filter_due: ["all"],
       },
     };
     expect(filterTasksForView({
@@ -114,26 +116,26 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "today",
+      filter_due: ["today"],
     }, view)).toEqual({
       filter_assignee: "assigned_to_me",
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "today",
+      filter_due: ["today"],
     });
     expect(resolveTaskListFilters("custom:view-1", {
       filter_assignee: "all",
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
     }, view)).toEqual({
       filter_assignee: "all",
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
     });
   });
   it("keeps the default ungrouped view and restores a saved custom preference", () => {
@@ -149,7 +151,7 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -171,7 +173,7 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -192,7 +194,7 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
       show_labels: false,
       show_completed: true,
       show_hours: false,
@@ -213,7 +215,7 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -236,7 +238,7 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
       show_labels: false,
       show_completed: false,
       show_hours: false,
@@ -278,7 +280,7 @@ describe("task list grouping and sorting", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
       show_labels: false,
       show_completed: false,
       show_hours: true,
@@ -579,7 +581,37 @@ describe("task list preference filters", () => {
     expect(preference.filter_assignee_ids).toEqual([]);
     expect(preference.filter_watching).toBe("all");
     expect(preference.filter_creator).toBe("all");
-    expect(preference.filter_due).toBe("all");
+    expect(preference.filter_due).toEqual(["all"]);
+  });
+
+  it("toggles multiple due filters and falls back to all when cleared", () => {
+    expect(toggleDueFilter(["all"], "today")).toEqual(["today"]);
+    expect(toggleDueFilter(["today"], "tomorrow")).toEqual(["today", "tomorrow"]);
+    expect(toggleDueFilter(["today", "tomorrow"], "today")).toEqual(["tomorrow"]);
+    expect(toggleDueFilter(["tomorrow"], "tomorrow")).toEqual(["all"]);
+    expect(toggleDueFilter(["today"], "all")).toEqual(["all"]);
+    expect(dueFilterLabel(["today", "tomorrow"])).toBe("今天等2项");
+  });
+
+  it("takes the union when multiple due filters are selected", () => {
+    const tasks = [
+      task("overdue", { due_at: "2026-07-29T04:00:00.000Z" }),
+      task("today", { due_at: "2026-07-30T12:00:00.000Z" }),
+      task("tomorrow", { due_at: "2026-07-31T04:00:00.000Z" }),
+      task("later", { due_at: "2026-08-08T04:00:00.000Z" }),
+    ];
+    expect(applyTaskListFilters({
+      tasks,
+      filterDue: ["overdue", "tomorrow"],
+      currentUserId: "u",
+      now,
+    }).map((item) => item.id)).toEqual(["overdue", "tomorrow"]);
+    expect(applyTaskListFilters({
+      tasks,
+      filterDue: ["today", "next_7_days"],
+      currentUserId: "u",
+      now,
+    }).map((item) => item.id)).toEqual(["today", "tomorrow"]);
   });
 
   it("uses fixed filter presets for today, week, assigned, watching, and inbox smart views", () => {
@@ -599,7 +631,7 @@ describe("task list preference filters", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "today",
+      filter_due: ["today"],
     })).toEqual(SMART_VIEW_FILTER_PRESETS.assigned);
 
     const tasks = [
@@ -979,7 +1011,7 @@ describe("smart view order helpers", () => {
           filter_assignee_ids: [],
           filter_watching: "all",
           filter_creator: "all",
-          filter_due: "all",
+          filter_due: ["all"],
         },
         visible: true,
         position: 0,
@@ -998,7 +1030,7 @@ describe("smart view order helpers", () => {
           filter_assignee_ids: [],
           filter_watching: "all",
           filter_creator: "all",
-          filter_due: "all",
+          filter_due: ["all"],
         },
         visible: false,
         position: 1,
@@ -1042,7 +1074,7 @@ describe("smart view hide rules and create snapshots", () => {
       filter_assignee_ids: [],
       filter_watching: "all",
       filter_creator: "all",
-      filter_due: "all",
+      filter_due: ["all"],
     });
   });
 
@@ -1059,7 +1091,7 @@ describe("smart view hide rules and create snapshots", () => {
         filter_assignee_ids: [],
         filter_watching: "all",
         filter_creator: "created_by_me",
-        filter_due: "next_30_days",
+        filter_due: ["next_30_days"],
       },
       visible: true,
       position: 0,

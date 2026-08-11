@@ -213,6 +213,38 @@ export function appendCreatedLabelToBundle(
   );
 }
 
+export function removeLabelSubtreeFromBundle(
+  bundle: WorkspaceBundle,
+  rootLabelId: string,
+): WorkspaceBundle {
+  const removedIds = new Set([rootLabelId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const label of bundle.labels) {
+      if (label.parent_id && removedIds.has(label.parent_id) && !removedIds.has(label.id)) {
+        removedIds.add(label.id);
+        changed = true;
+      }
+    }
+  }
+
+  return {
+    ...bundle,
+    labels: bundle.labels.filter((label) => !removedIds.has(label.id)),
+    labelUserAcls: bundle.labelUserAcls.filter((acl) => !removedIds.has(acl.label_id)),
+    labelGroupAcls: bundle.labelGroupAcls.filter((acl) => !removedIds.has(acl.label_id)),
+    labelPermissionLevels: Object.fromEntries(
+      Object.entries(bundle.labelPermissionLevels).filter(([labelId]) => !removedIds.has(labelId)),
+    ),
+    userLabelOrder: bundle.userLabelOrder.filter((row) => !removedIds.has(row.label_id)),
+    tasks: bundle.tasks.map((task) => {
+      const labelIds = task.label_ids.filter((labelId) => !removedIds.has(labelId));
+      return labelIds.length === task.label_ids.length ? task : { ...task, label_ids: labelIds };
+    }),
+  };
+}
+
 export function labelIdFromRealtimeChange(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const change = payload as {

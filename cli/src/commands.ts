@@ -51,6 +51,7 @@ import {
 } from "./api.js";
 import { authStatus, completeLogin, logout, renderQrCode, startLogin } from "./auth.js";
 import { authenticatedContext } from "./client.js";
+import type { CacheReadOptions, CacheRefreshRequest, TaskListCacheOptions } from "./cache.js";
 import { requireConfirmation } from "./confirmation.js";
 import { CliError } from "./errors.js";
 import { formatMan } from "./man.js";
@@ -83,10 +84,40 @@ function emit(command: Command, data: unknown, meta: Record<string, unknown> = {
   process.stdout.write(renderSuccess(data, meta, formatFor(command)));
 }
 
+function cacheFor(context: { user: { id: string } }, refresh: CacheRefreshRequest): CacheReadOptions {
+  return { userId: context.user.id, refresh };
+}
+
+function taskListCacheFor(
+  context: { user: { id: string } },
+  workspaceId: string,
+  taskKind: "todo" | "note",
+  options: TaskListCacheOptions,
+) {
+  return cacheFor(context, { type: "task-list", userId: context.user.id, workspaceId, taskKind, options });
+}
+
+function taskCacheFor(
+  context: { user: { id: string } },
+  workspaceId: string,
+  taskKind: "todo" | "note",
+  taskId: string,
+) {
+  return cacheFor(context, { type: "task", userId: context.user.id, workspaceId, taskKind, taskId });
+}
+
 async function businessContext(command: Command) {
   const authenticated = await authenticatedContext();
-  const workspace = await resolveWorkspace(authenticated, command.optsWithGlobals().workspace);
-  return { ...authenticated, workspace };
+  const useCachedWorkspace = (command as Command & { risk?: string }).risk === "read";
+  const workspaceCache = useCachedWorkspace
+    ? cacheFor(authenticated, { type: "workspaces", userId: authenticated.user.id })
+    : undefined;
+  const workspace = await resolveWorkspace(
+    authenticated,
+    command.optsWithGlobals().workspace,
+    workspaceCache,
+  );
+  return { ...authenticated, workspace, workspaceCache };
 }
 
 function setRisk(command: Command, risk: "read" | "write" | "high-risk-write") {
@@ -207,7 +238,10 @@ export function buildProgram() {
   setRisk(workspace.command("list").description("List joined workspaces").action(async (_options, command) => {
     const context = await authenticatedContext();
     const active = await getDefaultWorkspace(context.user.id);
-    const data = (await listWorkspaces(context)).map((item) => ({ ...item, active: item.id === active }));
+    const data = (await listWorkspaces(
+      context,
+      cacheFor(context, { type: "workspaces", userId: context.user.id }),
+    )).map((item) => ({ ...item, active: item.id === active }));
     emit(command, data, { count: data.length });
   }), "read");
   setRisk(workspace.command("use <id-or-slug>").description("Save the default workspace").action(async (value, _options, command) => {
@@ -286,12 +320,29 @@ export function buildProgram() {
       includeTrash: Boolean(options.includeTrash),
       limit: positiveInteger(options.limit, "limit", 1000, 1),
       offset: positiveInteger(options.offset, "offset", 1_000_000),
-    });
+    }, taskListCacheFor(context, context.workspace.id, "todo", {
+      status: parseStatus(options.status),
+      priority: options.priority ? parsePriority(options.priority) : undefined,
+      assignee: options.assignee,
+      tag: options.tag,
+      search: options.search,
+      trash: Boolean(options.trash),
+      includeTrash: Boolean(options.includeTrash),
+      limit: positiveInteger(options.limit, "limit", 1000, 1),
+      offset: positiveInteger(options.offset, "offset", 1_000_000),
+    }));
     emit(command, data, { count: data.length, workspace: context.workspace.id });
   }), "read");
   setRisk(task.command("get <task-id>").description("Get one task").action(async (id, _options, command) => {
     const context = await businessContext(command);
-    emit(command, await getTask(context.client, context.workspace.id, assertUuid(id, "task-id"), "todo"));
+    const taskId = assertUuid(id, "task-id");
+    emit(command, await getTask(
+      context.client,
+      context.workspace.id,
+      taskId,
+      "todo",
+      taskCacheFor(context, context.workspace.id, "todo", taskId),
+    ));
   }), "read");
   setRisk(task.command("create").description("Create a task")
     .requiredOption("--title <text>")
@@ -520,14 +571,28 @@ export function buildProgram() {
         search: options.search,
         trash: Boolean(options.trash),
         includeTrash: Boolean(options.includeTrash),
-      limit: positiveInteger(options.limit, "limit", 1000, 1),
-      offset: positiveInteger(options.offset, "offset", 1_000_000),
-    });
+        limit: positiveInteger(options.limit, "limit", 1000, 1),
+        offset: positiveInteger(options.offset, "offset", 1_000_000),
+      }, taskListCacheFor(context, context.workspace.id, "note", {
+        status: "all",
+        search: options.search,
+        trash: Boolean(options.trash),
+        includeTrash: Boolean(options.includeTrash),
+        limit: positiveInteger(options.limit, "limit", 1000, 1),
+        offset: positiveInteger(options.offset, "offset", 1_000_000),
+      }));
     emit(command, data, { count: data.length });
   }), "read");
   setRisk(note.command("get <note-id>").description("Get one note").action(async (id, _options, command) => {
     const context = await businessContext(command);
-    emit(command, await getTask(context.client, context.workspace.id, assertUuid(id, "note-id"), "note"));
+    const noteId = assertUuid(id, "note-id");
+    emit(command, await getTask(
+      context.client,
+      context.workspace.id,
+      noteId,
+      "note",
+      taskCacheFor(context, context.workspace.id, "note", noteId),
+    ));
   }), "read");
   setRisk(note.command("create").description("Create a note")
     .requiredOption("--title <text>")
@@ -696,9 +761,19 @@ export function buildProgram() {
       if (!["todo", "note", "all"].includes(options.kind)) throw new CliError({ type: "validation", code: "invalid_kind", message: "Kind must be todo, note, or all" });
       const context = await businessContext(command);
       const kinds = options.kind === "all" ? ["todo", "note"] as const : [options.kind as "todo" | "note"];
-      const rows = (await Promise.all(kinds.map((kind) => listTasks(context.client, context.workspace.id, kind, {
-        search: nonEmpty(query, "query"), status: parseStatus(options.status), limit: positiveInteger(options.limit, "limit", 1000, 1), offset: positiveInteger(options.offset, "offset", 1_000_000),
-      })))).flat();
+      const rows = (await Promise.all(
+        kinds.map((kind) => listTasks(context.client, context.workspace.id, kind, {
+          search: nonEmpty(query, "query"),
+          status: parseStatus(options.status),
+          limit: positiveInteger(options.limit, "limit", 1000, 1),
+          offset: positiveInteger(options.offset, "offset", 1_000_000),
+        }, taskListCacheFor(context, context.workspace.id, kind, {
+          search: nonEmpty(query, "query"),
+          status: parseStatus(options.status),
+          limit: positiveInteger(options.limit, "limit", 1000, 1),
+          offset: positiveInteger(options.offset, "offset", 1_000_000),
+        })),
+      ))).flat();
       emit(command, rows, { count: rows.length, workspace: context.workspace.id });
     }), "read");
 

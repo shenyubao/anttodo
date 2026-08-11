@@ -35,16 +35,7 @@ export async function authenticatedContext(): Promise<ClientContext & { user: Us
       hint: "Run `anttodo auth login`",
     });
   }
-  const { data, error } = await context.client.auth.getUser();
-  if (error || !data.user) {
-    throw new CliError({
-      type: "authentication",
-      code: "invalid_session",
-      message: "The saved session is no longer valid",
-      hint: "Run `anttodo auth login` again",
-    });
-  }
-  return { ...context, user: data.user };
+  return { ...context, user: sessionData.session.user };
 }
 
 export async function invokeDeviceAuthorization(

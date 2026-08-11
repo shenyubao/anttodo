@@ -7,6 +7,7 @@ import { decryptSession, generateDeviceKeyPair, hashDeviceCode, newDeviceCode } 
 import { CliError } from "./errors.js";
 import {
   clearAuthStorage,
+  clearCache,
   clearPendingAuthorizations,
   clearWorkspaceSettings,
   loadPendingAuthorization,
@@ -171,6 +172,7 @@ export async function logout() {
     await clearAuthStorage();
     await clearWorkspaceSettings();
     await clearPendingAuthorizations();
+    await clearCache();
   }
   if (signOutError) throw signOutError;
   return { logged_out: true };

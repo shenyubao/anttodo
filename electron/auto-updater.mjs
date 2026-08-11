@@ -8,21 +8,57 @@ export const UPDATE_FEED_URL =
 
 /**
  * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isDesktopUpdateLocationError(error) {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = raw.toLowerCase();
+  return normalized.includes("read-only volume")
+    || normalized.includes("read only volume")
+    || normalized.includes("running from dmg")
+    || normalized.includes("running from a dmg")
+    || normalized.includes("application is on a read-only volume");
+}
+
+/**
+ * @param {unknown} error
  * @returns {string}
  */
 export function formatDesktopUpdateError(error) {
   const raw = error instanceof Error ? error.message : String(error ?? "");
-  const normalized = raw.toLowerCase();
-  if (
-    normalized.includes("applications")
-    || normalized.includes("read-only")
-    || normalized.includes("dmg")
-    || normalized.includes("volume")
-  ) {
+  if (isDesktopUpdateLocationError(error)) {
+    return "macOS 阻止了应用内替换，请下载安装包重新安装";
+  }
+  if (raw.toLowerCase().includes("applications")) {
     return "请先将蚂蚁清单安装到「应用程序」文件夹后再更新";
   }
   if (!raw.trim()) return "更新失败，请稍后重试";
   return raw;
+}
+
+/**
+ * Preserve the updater's original error for diagnostics shown in the UI.
+ * @param {unknown} error
+ * @returns {string}
+ */
+export function formatDesktopUpdateErrorDetail(error) {
+  if (error instanceof Error) {
+    const errorWithCode = /** @type {Error & { code?: unknown }} */ (error);
+    const code = typeof errorWithCode.code === "string" ? errorWithCode.code : "";
+    const stack = typeof error.stack === "string" && error.stack !== error.message
+      ? error.stack
+      : "";
+    return [code && `code=${code}`, error.message, stack].filter(Boolean).join("\n").trim()
+      || "未知错误";
+  }
+  return String(error ?? "").trim() || "未知错误";
+}
+
+function formatDesktopUpdateErrorPayload(error) {
+  return {
+    message: formatDesktopUpdateError(error),
+    detail: formatDesktopUpdateErrorDetail(error),
+  };
 }
 
 /**
@@ -98,7 +134,7 @@ export function createDesktopAutoUpdater(options = {}) {
       });
       updater.on("error", (error) => {
         broadcast("anttodo:update-download-error", {
-          message: formatDesktopUpdateError(error),
+          ...formatDesktopUpdateErrorPayload(error),
         });
       });
     }
@@ -111,7 +147,8 @@ export function createDesktopAutoUpdater(options = {}) {
    * @returns {Promise<
    *   | { status: "installing" }
    *   | { status: "unavailable", message: string }
-   *   | { status: "error", message: string }
+   *   | { status: "manual", message: string, detail?: string }
+   *   | { status: "error", message: string, detail?: string }
    * >}
    */
   async function downloadAndInstall() {
@@ -147,13 +184,22 @@ export function createDesktopAutoUpdater(options = {}) {
           updater.quitAndInstall(false, true);
         } catch (error) {
           broadcast("anttodo:update-download-error", {
-            message: formatDesktopUpdateError(error),
+            ...formatDesktopUpdateErrorPayload(error),
           });
         }
       });
       return { status: "installing" };
     } catch (error) {
-      return { status: "error", message: formatDesktopUpdateError(error) };
+      if (isDesktopUpdateLocationError(error)) {
+        return {
+          status: "manual",
+          ...formatDesktopUpdateErrorPayload(error),
+        };
+      }
+      return {
+        status: "error",
+        ...formatDesktopUpdateErrorPayload(error),
+      };
     } finally {
       downloading = false;
     }

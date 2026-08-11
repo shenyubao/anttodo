@@ -46,7 +46,7 @@ select lives_ok($$
     '27000000-0000-0000-0000-000000000001',
     '17000000-0000-0000-0000-000000000001',
     '我的视图',
-    '{"scope":"all","label_ids":[],"filter_assignee":"all","filter_assignee_ids":[],"filter_watching":"all","filter_creator":"all","filter_due":"all"}'::jsonb,
+    '{"scope":"all","label_ids":[],"filter_assignee":"all","filter_assignee_ids":[],"filter_watching":"all","filter_creator":"all","filter_due":["all"]}'::jsonb,
     1
   )
 $$, 'a member can create a personal custom view');

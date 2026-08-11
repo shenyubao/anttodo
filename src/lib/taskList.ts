@@ -9,6 +9,7 @@ import type {
   TaskListFilterAssignee,
   TaskListFilterCreator,
   TaskListFilterDue,
+  TaskListFilterDueSelection,
   TaskListFilterWatching,
   TaskListGrouping,
   TaskListPreference,
@@ -37,7 +38,7 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   filter_assignee_ids: [] as string[],
   filter_watching: "all",
   filter_creator: "all",
-  filter_due: "all",
+  filter_due: ["all"] as TaskListFilterDueSelection,
   show_labels: false,
   show_completed: false,
   show_hours: false,
@@ -144,12 +145,52 @@ export const TASK_FILTER_DUE_OPTIONS: Array<{
   { value: "next_30_days", label: "30天内" },
 ];
 
+const TASK_FILTER_DUE_VALUES = TASK_FILTER_DUE_OPTIONS
+  .map((option) => option.value)
+  .filter((value): value is Exclude<TaskListFilterDue, "all"> => value !== "all");
+
+type TaskListFilterDueInput =
+  | TaskListFilterDueSelection
+  | TaskListFilterDue
+  | "all"
+  | null
+  | undefined;
+
+export function normalizeDueFilter(input: TaskListFilterDueInput): TaskListFilterDueSelection {
+  const values = Array.isArray(input) ? input : input == null ? [] : [input];
+  if (values.includes("all")) return ["all"];
+  const selected = new Set(values);
+  return TASK_FILTER_DUE_VALUES.filter((value) => selected.has(value));
+}
+
+export function toggleDueFilter(
+  current: TaskListFilterDueInput,
+  value: TaskListFilterDue | "all",
+): TaskListFilterDueSelection {
+  if (value === "all") return ["all"];
+  const selected = new Set(normalizeDueFilter(current));
+  selected.delete("all");
+  if (selected.has(value)) selected.delete(value);
+  else selected.add(value);
+  return normalizeDueFilter(selected.size > 0 ? Array.from(selected) : ["all"]);
+}
+
+export function dueFilterLabel(filter: TaskListFilterDueInput): string {
+  const selected = normalizeDueFilter(filter);
+  if (selected[0] === "all") return "不限";
+  const labels = selected
+    .map((value) => TASK_FILTER_DUE_OPTIONS.find((option) => option.value === value)?.label)
+    .filter((label): label is string => Boolean(label));
+  if (labels.length <= 1) return labels[0] ?? "不限";
+  return `${labels[0]}等${labels.length}项`;
+}
+
 export type TaskListFilterFields = {
   filter_assignee: TaskListFilterAssignee;
   filter_assignee_ids: string[];
   filter_watching: TaskListFilterWatching;
   filter_creator: TaskListFilterCreator;
-  filter_due: TaskListFilterDue;
+  filter_due: TaskListFilterDueSelection;
 };
 
 export function normalizeAssigneeFilter(input: {
@@ -217,35 +258,35 @@ export function assigneeFilterLabel(
 /** Smart views that are just fixed filter presets over the full task list. */
 export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
   today: {
-    filter_due: "today",
+    filter_due: ["today"],
     filter_assignee: "assigned_to_me",
     filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "all",
   },
   week: {
-    filter_due: "this_week",
+    filter_due: ["this_week"],
     filter_assignee: "assigned_to_me",
     filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "all",
   },
   assigned: {
-    filter_due: "all",
+    filter_due: ["all"],
     filter_assignee: "assigned_to_me",
     filter_assignee_ids: [],
     filter_watching: "all",
     filter_creator: "all",
   },
   watching: {
-    filter_due: "all",
+    filter_due: ["all"],
     filter_assignee: "all",
     filter_assignee_ids: [],
     filter_watching: "watching",
     filter_creator: "all",
   },
   inbox: {
-    filter_due: "all",
+    filter_due: ["all"],
     filter_assignee: "all",
     filter_assignee_ids: [],
     filter_watching: "all",
@@ -401,7 +442,7 @@ export function buildCustomViewSnapshotFromSmartView(
   if (customView) {
     const filters = customTaskViewFilters(customView);
     return {
-      definition: { ...customView.definition },
+      definition: { ...customView.definition, filter_due: filters.filter_due },
       presentation: {
         grouping: preference.grouping,
         sort: preference.sort,
@@ -456,7 +497,7 @@ export function customTaskViewFilters(view: CustomTaskView | CustomTaskViewDefin
     }),
     filter_watching: definition.filter_watching,
     filter_creator: definition.filter_creator,
-    filter_due: definition.filter_due,
+    filter_due: normalizeDueFilter(definition.filter_due),
   };
 }
 
@@ -479,14 +520,14 @@ export function resolveTaskListFilters(
       }),
       filter_watching: preference.filter_watching ?? seed.filter_watching,
       filter_creator: preference.filter_creator ?? seed.filter_creator,
-      filter_due: preference.filter_due ?? seed.filter_due,
+      filter_due: normalizeDueFilter(preference.filter_due ?? seed.filter_due),
     };
   }
   return {
     ...normalizeAssigneeFilter(preference),
     filter_watching: preference.filter_watching,
     filter_creator: preference.filter_creator,
-    filter_due: preference.filter_due,
+    filter_due: normalizeDueFilter(preference.filter_due),
   };
 }
 
@@ -602,7 +643,7 @@ export function applyTaskListFilters(input: {
   filterAssigneeIds?: string[];
   filterWatching?: TaskListFilterWatching;
   filterCreator?: TaskListFilterCreator;
-  filterDue?: TaskListFilterDue;
+  filterDue?: TaskListFilterDueInput;
   currentUserId: string;
   now?: Date;
   weekStartsOn?: DateTimePreferences["weekStartsOn"];
@@ -613,7 +654,7 @@ export function applyTaskListFilters(input: {
     filterAssigneeIds = [],
     filterWatching = "all",
     filterCreator = "all",
-    filterDue = "all",
+    filterDue = ["all"],
   } = input;
   const assigneeFilter = normalizeAssigneeFilter({
     filter_assignee: filterAssignee,
@@ -638,7 +679,8 @@ export function applyTaskListFilters(input: {
     result = result.filter((task) => task.created_by === currentUserId);
   }
 
-  if (filterDue === "all") return result;
+  const dueFilters = normalizeDueFilter(filterDue);
+  if (dueFilters.includes("all") || dueFilters.length === 0) return result;
 
   const today = startOfLocalDay(now);
   const tomorrow = addLocalDays(today, 1);
@@ -646,37 +688,32 @@ export function applyTaskListFilters(input: {
   const dueTime = (task: Task) => task.due_at ? new Date(task.due_at).getTime() : null;
   const overdue = (task: Task) => isTaskOverdue(task, now, today);
 
-  if (filterDue === "overdue") {
-    return result.filter(overdue);
-  }
-  if (filterDue === "today") {
-    return result.filter((task) => {
+  const matchesDueFilter = (task: Task, filter: Exclude<TaskListFilterDue, "all">) => {
+    if (filter === "overdue") return overdue(task);
+    if (filter === "today") {
       const due = dueTime(task);
       return due != null
         && due >= today.getTime()
         && due < tomorrow.getTime();
-    });
-  }
-  if (filterDue === "tomorrow") {
-    return result.filter((task) => {
+    }
+    if (filter === "tomorrow") {
       const due = dueTime(task);
       return due != null && due >= tomorrow.getTime() && due < afterTomorrow.getTime();
-    });
-  }
-  if (filterDue === "this_week") {
-    const weekStart = startOfWeek(now, weekStartsOn);
-    const nextWeek = addLocalDays(weekStart, 7);
-    return result.filter((task) => {
+    }
+    if (filter === "this_week") {
+      const weekStart = startOfWeek(now, weekStartsOn);
+      const nextWeek = addLocalDays(weekStart, 7);
       const due = dueTime(task);
       return due != null && due >= weekStart.getTime() && due < nextWeek.getTime();
-    });
-  }
-  const windowDays = filterDue === "next_7_days" ? 7 : 30;
-  const windowEnd = addLocalDays(today, windowDays);
-  return result.filter((task) => {
+    }
+    const windowDays = filter === "next_7_days" ? 7 : 30;
+    const windowEnd = addLocalDays(today, windowDays);
     const due = dueTime(task);
     return due != null && due >= today.getTime() && due < windowEnd.getTime();
-  });
+  };
+  return result.filter((task) => dueFilters
+    .filter((filter): filter is Exclude<TaskListFilterDue, "all"> => filter !== "all")
+    .some((filter) => matchesDueFilter(task, filter)));
 }
 
 export function defaultSortDirection(sort: TaskListSort): SortDirection {
@@ -718,7 +755,7 @@ export function resolveTaskListPreference(
     filter_assignee_ids: found.filter_assignee_ids ?? filterDefaults.filter_assignee_ids,
     filter_watching: found.filter_watching ?? filterDefaults.filter_watching,
     filter_creator: found.filter_creator ?? filterDefaults.filter_creator,
-    filter_due: found.filter_due ?? filterDefaults.filter_due,
+    filter_due: normalizeDueFilter(found.filter_due ?? filterDefaults.filter_due),
   });
   return {
     ...DEFAULT_TASK_LIST_PREFERENCE,

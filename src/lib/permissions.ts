@@ -28,7 +28,10 @@ export function currentTaskPermissionLevel(
   }
   const member = bundle.members.find((item) => item.user_id === currentUserId);
   if (!member) return 0;
-  return task.created_by === currentUserId || member.role === "owner" || member.role === "admin"
+  return task.created_by === currentUserId
+    || task.assignee_id === currentUserId
+    || member.role === "owner"
+    || member.role === "admin"
     ? 2
     : 1;
 }

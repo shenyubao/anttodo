@@ -46,6 +46,7 @@ export type TaskListFilterDue =
   | "this_week"
   | "next_7_days"
   | "next_30_days";
+export type TaskListFilterDueSelection = TaskListFilterDue[];
 export type SortDirection = "asc" | "desc";
 
 export type DateTimePreferences = {
@@ -393,7 +394,7 @@ export type TaskListPreference = {
   filter_assignee_ids: string[];
   filter_watching: TaskListFilterWatching;
   filter_creator: TaskListFilterCreator;
-  filter_due: TaskListFilterDue;
+  filter_due: TaskListFilterDueSelection;
   show_labels: boolean;
   show_completed: boolean;
   show_hours: boolean;
@@ -410,7 +411,7 @@ export type CustomTaskViewDefinition = {
   filter_assignee_ids: string[];
   filter_watching: TaskListFilterWatching;
   filter_creator: TaskListFilterCreator;
-  filter_due: TaskListFilterDue;
+  filter_due: TaskListFilterDueSelection;
 };
 
 export type CustomTaskView = {

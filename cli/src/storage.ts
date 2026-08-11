@@ -17,13 +17,14 @@ const AUTH_FILE = join(STATE_DIR, "auth.json");
 const SETTINGS_FILE = join(STATE_DIR, "settings.json");
 const PENDING_FILE = join(STATE_DIR, "pending-authorizations.json");
 const PUBLIC_CONFIG_FILE = join(STATE_DIR, "public-config.json");
+export const CACHE_FILE = join(STATE_DIR, "cache.json");
 
 async function ensureStateDirectory() {
   await mkdir(STATE_DIR, { recursive: true, mode: 0o700 });
   if (platform() !== "win32") await chmod(STATE_DIR, 0o700);
 }
 
-async function readJson<T>(path: string, fallback: T): Promise<T> {
+export async function readJson<T>(path: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as T;
   } catch {
@@ -31,7 +32,7 @@ async function readJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-async function atomicWrite(path: string, value: unknown) {
+export async function atomicWrite(path: string, value: unknown) {
   await ensureStateDirectory();
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -80,6 +81,10 @@ export async function setDefaultWorkspace(userId: string, workspaceId: string) {
 
 export async function clearWorkspaceSettings() {
   await unlink(SETTINGS_FILE).catch(() => undefined);
+}
+
+export async function clearCache() {
+  await unlink(CACHE_FILE).catch(() => undefined);
 }
 
 export async function savePendingAuthorization(pending: PendingAuthorization) {

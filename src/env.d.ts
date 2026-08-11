@@ -31,7 +31,8 @@ type DesktopUpdateCheckResult =
 type DesktopUpdateInstallResult =
   | { status: "installing" }
   | { status: "unavailable"; message: string }
-  | { status: "error"; message: string };
+  | { status: "manual"; message: string; detail?: string }
+  | { status: "error"; message: string; detail?: string };
 
 type DesktopUpdateDownloadProgress = {
   percent: number;
@@ -93,7 +94,7 @@ interface Window {
         listener: (progress: DesktopUpdateDownloadProgress) => void,
       ) => () => void;
       onDownloadError: (
-        listener: (payload: { message: string }) => void,
+        listener: (payload: { message: string; detail?: string }) => void,
       ) => () => void;
     };
     aiWork: {

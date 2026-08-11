@@ -5,6 +5,20 @@ title: ChangeLog
 description: AntTodo 的版本更新记录。
 ---
 
+## 1.0.2.20260812
+
+### ALL
+
+- Bugfix: 修复收集箱时，指派人没有权限修改待办的缺陷
+
+### Mac
+
+- Bugfix: 修复 Mac 升级时可能无法原地下载的缺陷
+
+### CLI
+
+- Enhance: 增加部分本地缓存，提升 CLI 执行速度
+
 ## 1.0.1.20260811
 
 ### ALL

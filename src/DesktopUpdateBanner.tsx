@@ -20,6 +20,7 @@ export function useDesktopUpdateCheck() {
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<DesktopUpdateDownloadProgress | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [installErrorDetail, setInstallErrorDetail] = useState<string | null>(null);
 
   useEffect(() => {
     if (!window.anttodoDesktop?.updates) return;
@@ -63,6 +64,7 @@ export function useDesktopUpdateCheck() {
         setProgress(next);
         setInstalling(true);
         setInstallError(null);
+        setInstallErrorDetail(null);
       }
     });
     const unsubscribeError = desktopUpdates.onDownloadError?.((payload) => {
@@ -70,6 +72,7 @@ export function useDesktopUpdateCheck() {
         setInstalling(false);
         setProgress(null);
         setInstallError(payload.message || "更新失败，请稍后重试");
+        setInstallErrorDetail(payload.detail || null);
       }
     });
 
@@ -87,12 +90,14 @@ export function useDesktopUpdateCheck() {
     snoozeUpdate(availableUpdate.latestVersion);
     setDismissed(true);
     setInstallError(null);
+    setInstallErrorDetail(null);
   }
 
   async function downloadUpdate() {
     if (!availableUpdate || !window.anttodoDesktop?.updates) return;
     setInstalling(true);
     setInstallError(null);
+    setInstallErrorDetail(null);
     setProgress({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 });
 
     try {
@@ -112,11 +117,21 @@ export function useDesktopUpdateCheck() {
         setProgress(null);
         return;
       }
+      if (result.status === "manual") {
+        await window.anttodoDesktop.updates.openDownload(availableUpdate.downloadUrl);
+        setInstallError("已打开安装包，请将蚂蚁清单拖入「应用程序」文件夹后重新打开");
+        setInstallErrorDetail(result.detail || null);
+        setInstalling(false);
+        setProgress(null);
+        return;
+      }
       setInstallError(result.message);
+      setInstallErrorDetail(result.detail || null);
       setInstalling(false);
       setProgress(null);
     } catch {
       setInstallError("更新失败，请稍后重试");
+      setInstallErrorDetail(null);
       setInstalling(false);
       setProgress(null);
     }
@@ -133,6 +148,7 @@ export function useDesktopUpdateCheck() {
     installing,
     progress,
     installError,
+    installErrorDetail,
   };
 }
 
@@ -143,6 +159,7 @@ export function DesktopUpdateBanner({
   installing = false,
   progress = null,
   installError = null,
+  installErrorDetail = null,
 }: {
   update: DesktopUpdateAvailable;
   onDownload: () => void;
@@ -150,6 +167,7 @@ export function DesktopUpdateBanner({
   installing?: boolean;
   progress?: DesktopUpdateDownloadProgress | null;
   installError?: string | null;
+  installErrorDetail?: string | null;
 }) {
   const message = installError
     ? installError
@@ -160,7 +178,12 @@ export function DesktopUpdateBanner({
   return (
     <div className="desktop-update-banner" role="status">
       <Download size={16} aria-hidden="true" />
-      <span>{message}</span>
+      <div className="desktop-update-banner-message">
+        <span>{message}</span>
+        {installError ? (
+          <UpdateErrorDetails detail={installErrorDetail} />
+        ) : null}
+      </div>
       <div className="desktop-update-banner-actions">
         {!installing ? (
           <button type="button" className="button primary" onClick={onDownload}>
@@ -197,6 +220,21 @@ export function DesktopUpdateBanner({
         </div>
       ) : null}
     </div>
+  );
+}
+
+export function UpdateErrorDetails({
+  detail,
+  className = "",
+}: {
+  detail?: string | null;
+  className?: string;
+}) {
+  return (
+    <details className={`update-error-details ${className}`.trim()} open>
+      <summary>详细异常</summary>
+      <pre>{detail || "未提供原始异常信息"}</pre>
+    </details>
   );
 }
 

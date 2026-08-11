@@ -13392,6 +13392,39 @@ button.shortcuts-settings-binding.capturing {
   color: #df5151;
 }
 
+.update-error-details {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.update-error-details summary {
+  width: fit-content;
+  color: #b74444;
+  cursor: pointer;
+  user-select: none;
+}
+
+.update-error-details pre {
+  max-width: 100%;
+  max-height: 180px;
+  margin: 5px 0 0;
+  padding: 7px 9px;
+  overflow: auto;
+  border: 1px solid rgb(223 81 81 / 16%);
+  border-radius: 7px;
+  color: #7d3d3d;
+  background: rgb(223 81 81 / 5%);
+  font: 11px/16px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.about-settings-error-details {
+  width: 100%;
+}
+
 .about-settings-web-note {
   margin: 16px 0 0;
   color: var(--muted);
@@ -13404,7 +13437,7 @@ button.shortcuts-settings-binding.capturing {
   z-index: 75;
   left: 50%;
   top: 18px;
-  max-width: min(640px, calc(100vw - 40px));
+  max-width: min(760px, calc(100vw - 40px));
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -13430,9 +13463,13 @@ body.is-electron.is-macos .desktop-update-banner {
   color: #4772fa;
 }
 
-.desktop-update-banner > span {
+.desktop-update-banner-message {
   flex: 1;
   min-width: 0;
+}
+
+.desktop-update-banner-message > span {
+  display: block;
 }
 
 .desktop-update-banner-actions {

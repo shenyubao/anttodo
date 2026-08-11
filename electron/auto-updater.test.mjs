@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createDesktopAutoUpdater,
   formatDesktopUpdateError,
+  formatDesktopUpdateErrorDetail,
+  isDesktopUpdateLocationError,
   isAllowedUpdateFeedUrl,
   UPDATE_FEED_URL,
 } from "./auto-updater.mjs";
@@ -15,14 +17,19 @@ describe("desktop auto updater helpers", () => {
   });
 
   it("maps install-location failures to a clear Chinese message", () => {
-    expect(formatDesktopUpdateError(new Error("Cannot update while running from a read-only volume"))).toBe(
-      "请先将蚂蚁清单安装到「应用程序」文件夹后再更新",
+    const locationError = new Error("Cannot update while running on a read-only volume");
+    expect(isDesktopUpdateLocationError(locationError)).toBe(true);
+    expect(formatDesktopUpdateError(locationError)).toBe(
+      "macOS 阻止了应用内替换，请下载安装包重新安装",
     );
     expect(formatDesktopUpdateError(new Error("Please move the app into Applications"))).toBe(
       "请先将蚂蚁清单安装到「应用程序」文件夹后再更新",
     );
     expect(formatDesktopUpdateError(new Error("network timeout"))).toBe("network timeout");
     expect(formatDesktopUpdateError(new Error(""))).toBe("更新失败，请稍后重试");
+    expect(formatDesktopUpdateErrorDetail(Object.assign(new Error("network timeout"), {
+      code: "ETIMEDOUT",
+    }))).toContain("code=ETIMEDOUT");
   });
 
   it("reports unavailable outside packaged macOS builds", async () => {
@@ -103,8 +110,9 @@ describe("desktop auto updater helpers", () => {
     });
 
     await expect(updater.downloadAndInstall()).resolves.toEqual({
-      status: "error",
-      message: "请先将蚂蚁清单安装到「应用程序」文件夹后再更新",
+      status: "manual",
+      message: "macOS 阻止了应用内替换，请下载安装包重新安装",
+      detail: expect.stringContaining("Cannot update while running from dmg"),
     });
   });
 });

@@ -6,7 +6,9 @@ import {
   TASK_FILTER_DUE_OPTIONS,
   TASK_FILTER_WATCHING_OPTIONS,
   assigneeFilterLabel,
+  dueFilterLabel,
   exclusiveAssigneeFilter,
+  toggleDueFilter,
   toggleAssigneeUserFilter,
 } from "./lib/taskList";
 import { memberDisplayName } from "./lib/taskTitleTokens";
@@ -55,9 +57,7 @@ export function TaskFilterMenu({
   const [open, setOpen] = useState(false);
   const [submenu, setSubmenu] = useState<Submenu>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const dueLabel = TASK_FILTER_DUE_OPTIONS.find(
-    (option) => option.value === preference.filter_due,
-  )?.label;
+  const dueLabel = dueFilterLabel(preference.filter_due);
   const assigneeLabel = assigneeFilterLabel(preference, members);
   const watchingLabel = TASK_FILTER_WATCHING_OPTIONS.find(
     (option) => option.value === preference.filter_watching,
@@ -65,7 +65,7 @@ export function TaskFilterMenu({
   const creatorLabel = TASK_FILTER_CREATOR_OPTIONS.find(
     (option) => option.value === preference.filter_creator,
   )?.label;
-  const active = preference.filter_due !== "all"
+  const active = !preference.filter_due.includes("all")
     || preference.filter_assignee !== "all"
     || preference.filter_watching !== "all"
     || preference.filter_creator !== "all";
@@ -93,8 +93,7 @@ export function TaskFilterMenu({
 
   async function selectDue(filter_due: TaskListFilterDue) {
     if (!canEdit) return;
-    await onChange({ filter_due });
-    setSubmenu(null);
+    await onChange({ filter_due: toggleDueFilter(preference.filter_due, filter_due) });
   }
 
   async function selectExclusiveAssignee(
@@ -179,13 +178,19 @@ export function TaskFilterMenu({
               {TASK_FILTER_DUE_OPTIONS.map((option) => (
                 <button
                   key={option.value}
-                  role="menuitemradio"
-                  aria-checked={preference.filter_due === option.value}
+                  role="menuitemcheckbox"
+                  aria-checked={option.value === "all"
+                    ? preference.filter_due.includes("all")
+                    : preference.filter_due.includes(option.value)}
                   disabled={!canEdit}
-                  onClick={() => void selectDue(option.value)}
+                  onClick={() => option.value === "all"
+                    ? void onChange({ filter_due: ["all"] })
+                    : void selectDue(option.value)}
                 >
                   <span>{option.label}</span>
-                  {preference.filter_due === option.value && <Check />}
+                  {((option.value === "all" && preference.filter_due.includes("all"))
+                    || (option.value !== "all" && preference.filter_due.includes(option.value)))
+                    && <Check />}
                 </button>
               ))}
             </div>

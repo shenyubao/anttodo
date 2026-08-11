@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(160);
+select plan(163);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -693,6 +693,15 @@ select is(
 select lives_ok(
   $$
     select public.assign_task(
+      (select id from public.tasks where title = 'Created in inbox'),
+      '10000000-0000-0000-0000-000000000002'
+    )
+  $$,
+  'task editor can assign an unlabeled inbox task'
+);
+select lives_ok(
+  $$
+    select public.assign_task(
       '40000000-0000-0000-0000-000000000001',
       '10000000-0000-0000-0000-000000000002'
     )
@@ -787,6 +796,21 @@ select set_config(
   'request.jwt.claims',
   '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}',
   true
+);
+select ok(
+  anttodo_private.can_edit_task(
+    (select id from public.tasks where title = 'Created in inbox')
+  ),
+  'the assignee can edit an unlabeled inbox task'
+);
+select lives_ok(
+  $$
+    select public.assign_task(
+      (select id from public.tasks where title = 'Created in inbox'),
+      null
+    )
+  $$,
+  'the assignee can change the assignee of an unlabeled inbox task'
 );
 select throws_ok(
   $$
@@ -916,7 +940,7 @@ select is(
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
   ),
-  'all',
+  '{all}',
   'filter_due defaults to all for a newly saved preference'
 );
 select is(
@@ -1043,7 +1067,7 @@ select lives_ok(
     set filter_assignee = 'assigned_to_me',
         filter_watching = 'watching',
         filter_creator = 'created_by_me',
-        filter_due = 'next_7_days'
+        filter_due = array['next_7_days'::public.task_list_filter_due]
     where user_id = '10000000-0000-0000-0000-000000000001'
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
@@ -1058,7 +1082,7 @@ select is(
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
   ),
-  'assigned_to_me/watching/created_by_me/next_7_days',
+  'assigned_to_me/watching/created_by_me/{next_7_days}',
   'task list filters persist after update'
 );
 select lives_ok(

@@ -9,6 +9,7 @@ import {
   labelIdFromRealtimeChange,
   moveIdInOrder,
   newLabelAccessDefaults,
+  removeLabelSubtreeFromBundle,
   sortSiblingLabels,
 } from "./labels";
 import type { Label, LabelAccessDraft, WorkspaceBundle } from "../types";
@@ -205,6 +206,84 @@ describe("label bundle updates", () => {
         permission: "edit",
       },
     ]);
+  });
+
+  it("removes a label subtree and all cached associations", () => {
+    const child: Label = {
+      ...labels[0],
+      id: "team-child",
+      parent_id: "team-parent",
+      name: "子标签",
+      position: 0,
+    };
+    const grandchild: Label = {
+      ...child,
+      id: "team-grandchild",
+      parent_id: "team-child",
+      name: "孙标签",
+    };
+    const bundle: WorkspaceBundle = {
+      ...emptyBundle(),
+      labels: [...labels, child, grandchild],
+      labelUserAcls: [
+        { label_id: "team-parent", workspace_id: "workspace", user_id: "viewer", permission: "view" },
+        { label_id: "private-parent", workspace_id: "workspace", user_id: "owner", permission: "edit" },
+      ],
+      labelGroupAcls: [
+        { label_id: "team-child", workspace_id: "workspace", group_id: "group", permission: "view" },
+      ],
+      labelPermissionLevels: {
+        "team-parent": 2,
+        "team-child": 1,
+        "team-grandchild": 1,
+        "private-parent": 2,
+      },
+      userLabelOrder: [
+        { user_id: "user", workspace_id: "workspace", label_id: "team-parent", position: 0 },
+        { user_id: "user", workspace_id: "workspace", label_id: "private-parent", position: 1 },
+      ],
+      tasks: [{
+        id: "task",
+        workspace_id: "workspace",
+        title: "任务",
+        description: "",
+        kind: "todo",
+        status: "open",
+        priority: "none",
+        due_at: null,
+        due_start_at: null,
+        due_is_all_day: false,
+        due_timezone: null,
+        recurrence: null,
+        estimate_hours: null,
+        actual_hours: null,
+        estimate_pomodoros: null,
+        actual_pomodoros: null,
+        assignee_id: null,
+        cli_assignee: null,
+        created_by: "user",
+        completed_at: null,
+        deleted_at: null,
+        version: 1,
+        created_at: "",
+        updated_at: "",
+        label_ids: ["team-parent", "team-grandchild", "private-parent"],
+        participant_ids: [],
+        description_mentions: [],
+        subtasks: [],
+        reminders: [],
+        reminder_persistent: false,
+      }],
+    };
+
+    const next = removeLabelSubtreeFromBundle(bundle, "team-parent");
+
+    expect(next.labels.map((label) => label.id)).toEqual(["private-parent"]);
+    expect(next.labelUserAcls.map((acl) => acl.label_id)).toEqual(["private-parent"]);
+    expect(next.labelGroupAcls).toEqual([]);
+    expect(next.labelPermissionLevels).toEqual({ "private-parent": 2 });
+    expect(next.userLabelOrder.map((row) => row.label_id)).toEqual(["private-parent"]);
+    expect(next.tasks[0]?.label_ids).toEqual(["private-parent"]);
   });
 });
 

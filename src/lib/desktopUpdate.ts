@@ -23,7 +23,8 @@ export type DesktopUpdateAvailable = Extract<
 export type DesktopUpdateInstallResult =
   | { status: "installing" }
   | { status: "unavailable"; message: string }
-  | { status: "error"; message: string };
+  | { status: "manual"; message: string; detail?: string }
+  | { status: "error"; message: string; detail?: string };
 
 export type DesktopUpdateDownloadProgress = {
   percent: number;

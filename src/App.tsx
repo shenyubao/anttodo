@@ -99,6 +99,7 @@ import { QuickAddForm } from "./QuickAddForm";
 import {
   DesktopUpdateBanner,
   formatUpdateCheckMessage,
+  UpdateErrorDetails,
   useDesktopUpdateCheck,
 } from "./DesktopUpdateBanner";
 import { initials, MemberAvatar } from "./MemberAvatar";
@@ -358,6 +359,7 @@ import {
   labelIdFromRealtimeChange,
   moveIdInOrder,
   newLabelAccessDefaults,
+  removeLabelSubtreeFromBundle,
   sortSiblingLabels,
   userLabelOrderRows,
   type LabelDropIntent,
@@ -2516,8 +2518,14 @@ function RemoteApplication({
   }
 
   async function createLabel(draft: LabelAccessDraft) {
-    await createLabelWithAccessApi(client, activeWorkspaceId, draft);
-    await refresh();
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const created = await createLabelWithAccessApi(client, activeWorkspaceId, draft);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+      current ? appendCreatedLabelToBundle(current, created, draft) : current,
+    );
+    void queryClient.invalidateQueries({ queryKey }).catch((cause) => {
+      setNotice(cause instanceof Error ? cause.message : "标签数据刷新失败，请重试");
+    });
   }
 
   async function saveLabelAccess(labelId: string, draft: LabelAccessDraft) {
@@ -2542,9 +2550,15 @@ function RemoteApplication({
   }
 
   async function deleteLabel(labelId: string) {
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
     const { error } = await client.from("labels").delete().eq("id", labelId);
     if (error) throw error;
-    await refresh();
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
+      current ? removeLabelSubtreeFromBundle(current, labelId) : current,
+    );
+    void queryClient.invalidateQueries({ queryKey }).catch((cause) => {
+      setNotice(cause instanceof Error ? cause.message : "标签数据刷新失败，请重试");
+    });
   }
 
   async function moveLabelToInbox(sourceLabelId: string) {
@@ -4338,14 +4352,7 @@ function DemoApplication({
         }));
       }}
       onDeleteLabel={async (labelId) => {
-        setBundle((current) => ({
-          ...current,
-          labels: current.labels.filter((label) => label.id !== labelId),
-          tasks: current.tasks.map((task) => ({
-            ...task,
-            label_ids: task.label_ids.filter((id) => id !== labelId),
-          })),
-        }));
+        setBundle((current) => removeLabelSubtreeFromBundle(current, labelId));
       }}
       onMoveLabelToInbox={async (sourceLabelId) => {
         setBundle((current) => {
@@ -5036,6 +5043,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     installing: updateInstalling,
     progress: updateProgress,
     installError: updateInstallError,
+    installErrorDetail: updateInstallErrorDetail,
   } = useDesktopUpdateCheck();
 
   useEffect(() => {
@@ -5631,6 +5639,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onOpenAiWorkSettings={(labelName) => {
           requestAiWorkSettings({ title: labelName });
         }}
+        onNotice={props.onNotice}
         onCreateLabel={props.onCreateLabel}
         onSaveLabelAccess={props.onSaveLabelAccess}
         onUpdateLabel={props.onUpdateLabel}
@@ -5992,6 +6001,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           installing={updateInstalling}
           progress={updateProgress}
           installError={updateInstallError}
+          installErrorDetail={updateInstallErrorDetail}
         />
       )}
       {props.notice && (
@@ -6958,6 +6968,7 @@ function Sidebar({
   onSmartView,
   onLabel,
   onOpenAiWorkSettings,
+  onNotice,
   onCreateLabel,
   onSaveLabelAccess,
   onUpdateLabel,
@@ -6980,6 +6991,7 @@ function Sidebar({
   onSmartView: (view: SmartView) => void;
   onLabel: (id: string) => void;
   onOpenAiWorkSettings: (labelName: string) => void;
+  onNotice: (message: string) => void;
   onCreateLabel: WorkspaceAppProps["onCreateLabel"];
   onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
   onUpdateLabel: WorkspaceAppProps["onUpdateLabel"];
@@ -7382,7 +7394,9 @@ function Sidebar({
                   const label = menu.label;
                   setMenu(null);
                   if (window.confirm(`确定删除标签“${label.name}”吗？其子标签也会被删除。`)) {
-                    void onDeleteLabel(label.id);
+                    void onDeleteLabel(label.id).catch((cause) => {
+                      onNotice(cause instanceof Error ? cause.message : "标签删除失败，请重试");
+                    });
                   }
                 }}>删除</button>
               </>
@@ -12003,6 +12017,7 @@ function AboutSettingsPanel() {
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<DesktopUpdateDownloadProgress | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [installErrorDetail, setInstallErrorDetail] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -12022,11 +12037,13 @@ function AboutSettingsPanel() {
       setProgress(next);
       setInstalling(true);
       setInstallError(null);
+      setInstallErrorDetail(null);
     });
     const unsubscribeError = desktopUpdates.onDownloadError?.((payload) => {
       setInstalling(false);
       setProgress(null);
       setInstallError(payload.message || "更新失败，请稍后重试");
+      setInstallErrorDetail(payload.detail || null);
     });
     return () => {
       unsubscribeProgress?.();
@@ -12038,6 +12055,7 @@ function AboutSettingsPanel() {
     if (!window.anttodoDesktop?.updates) return;
     setChecking(true);
     setInstallError(null);
+    setInstallErrorDetail(null);
     try {
       const result = await window.anttodoDesktop.updates.check();
       setCheckResult(result);
@@ -12054,6 +12072,7 @@ function AboutSettingsPanel() {
     }
     setInstalling(true);
     setInstallError(null);
+    setInstallErrorDetail(null);
     setProgress({ percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 });
     try {
       const result = await window.anttodoDesktop.updates.downloadAndInstall();
@@ -12065,10 +12084,12 @@ function AboutSettingsPanel() {
         return;
       }
       setInstallError(result.message);
+      setInstallErrorDetail(result.detail || null);
       setInstalling(false);
       setProgress(null);
     } catch {
       setInstallError("更新失败，请稍后重试");
+      setInstallErrorDetail(null);
       setInstalling(false);
       setProgress(null);
     }
@@ -12149,6 +12170,12 @@ function AboutSettingsPanel() {
             >
               {statusMessage}
             </p>
+          ) : null}
+          {installError ? (
+            <UpdateErrorDetails
+              detail={installErrorDetail}
+              className="about-settings-error-details"
+            />
           ) : null}
         </div>
       ) : (
