@@ -22,6 +22,7 @@ import {
   replaceOptimisticTask,
   replaceOptimisticTaskSection,
   sectionIdFromRealtimeChange,
+  smartViewIdFromRealtimeChange,
   taskIdFromRealtimeChange,
 } from "./taskCache";
 
@@ -255,6 +256,24 @@ describe("task cache updates", () => {
     })).toBe("section-1");
   });
 
+  it("reads smart view ids from realtime payloads", () => {
+    expect(smartViewIdFromRealtimeChange({
+      table: "custom_task_views",
+      new: { id: "view-1" },
+      old: {},
+    })).toBe("view-1");
+    expect(smartViewIdFromRealtimeChange({
+      table: "custom_task_views",
+      new: {},
+      old: { id: "view-2" },
+    })).toBe("view-2");
+    expect(smartViewIdFromRealtimeChange({
+      table: "task_system_view_preferences",
+      new: { view_key: "today", visible: false },
+      old: {},
+    })).toBe("today");
+  });
+
   it("replaces an optimistic task in place and keeps its custom placement", () => {
     const existing = createOptimisticTask({
       workspaceId: "workspace",
@@ -372,9 +391,12 @@ describe("task cache updates", () => {
       description: "",
       completed: false,
       position: 0,
+      priority: "none" as const,
       due_at: null,
       estimate_hours: null,
       actual_hours: null,
+      estimate_pomodoros: null,
+      actual_pomodoros: null,
       assignee_id: null,
       cli_assignee: null,
       created_by: "user",

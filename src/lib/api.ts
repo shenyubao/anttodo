@@ -51,7 +51,7 @@ import {
 } from "./dateTimePreferences";
 import { createDefaultFocusSettings } from "./focusSession";
 import { mergeNotificationPreferenceRows } from "./notificationPreferences";
-import { coerceHours } from "./taskHours";
+import { coerceHours, coercePomodoros } from "./taskHours";
 import { edgeFunctionErrorMessage } from "./sso";
 import {
   isValidWorkspaceSlug,
@@ -95,6 +95,8 @@ function normalizeTaskRow(row: TaskRow): Task {
     recurrence: row.recurrence ?? null,
     estimate_hours: coerceHours(row.estimate_hours),
     actual_hours: coerceHours(row.actual_hours),
+    estimate_pomodoros: coercePomodoros(row.estimate_pomodoros),
+    actual_pomodoros: coercePomodoros(row.actual_pomodoros),
     label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
     participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
     description_mentions: row.task_description_mentions ?? [],
@@ -103,8 +105,11 @@ function normalizeTaskRow(row: TaskRow): Task {
       .map((subtask) => ({
         ...subtask,
         description: subtask.description ?? "",
+        priority: subtask.priority ?? "none",
         estimate_hours: coerceHours(subtask.estimate_hours),
         actual_hours: coerceHours(subtask.actual_hours),
+        estimate_pomodoros: coercePomodoros(subtask.estimate_pomodoros),
+        actual_pomodoros: coercePomodoros(subtask.actual_pomodoros),
       })),
     reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
     reminder_persistent: settings?.persistent ?? false,
@@ -845,6 +850,23 @@ export async function loadWorkspaceTasksPage(
   };
 }
 
+/** Load one task for a DeepLink without requiring it to be in the first page. */
+export async function loadWorkspaceTask(
+  client: SupabaseClient,
+  workspaceId: string,
+  taskId: string,
+): Promise<Task | null> {
+  const { data, error } = await client
+    .from("tasks")
+    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+    .eq("workspace_id", workspaceId)
+    .eq("id", taskId)
+    .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
+    .maybeSingle();
+  assertNoError(error);
+  return data ? normalizeTaskRows([data as TaskRow])[0] ?? null : null;
+}
+
 export async function reorderChildLabels(
   client: SupabaseClient,
   parentId: string,
@@ -1163,6 +1185,8 @@ export async function createTask(
       ...created,
       estimate_hours: coerceHours(created.estimate_hours),
       actual_hours: coerceHours(created.actual_hours),
+      estimate_pomodoros: coercePomodoros(created.estimate_pomodoros),
+      actual_pomodoros: coercePomodoros(created.actual_pomodoros),
       description_mentions: created.description_mentions ?? [],
     };
   }
@@ -1179,6 +1203,8 @@ export async function createTask(
     ...next,
     estimate_hours: coerceHours(next.estimate_hours),
     actual_hours: coerceHours(next.actual_hours),
+    estimate_pomodoros: coercePomodoros(next.estimate_pomodoros),
+    actual_pomodoros: coercePomodoros(next.actual_pomodoros),
     description_mentions: next.description_mentions ?? [],
   };
 }

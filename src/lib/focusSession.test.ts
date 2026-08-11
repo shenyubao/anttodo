@@ -120,7 +120,7 @@ describe("focusSession helpers", () => {
     expect(same.nextRuntime).toBe(focusing);
   });
 
-  it("formats the macOS tray title only for pomodoro work", () => {
+  it("formats the macOS tray title for active pomodoro and stopwatch sessions", () => {
     const startedAt = new Date(2026, 7, 6, 10, 0, 0).toISOString();
     const focusing = createRuntime("focusing", {
       mode: "pomodoro",
@@ -134,8 +134,20 @@ describe("focusSession helpers", () => {
     expect(formatFocusTrayTitle(paused, new Date(2026, 7, 6, 10, 20, 0).getTime()))
       .toBe("25:00");
     expect(formatFocusTrayTitle(createRuntime("breaking"), Date.now())).toBe("");
-    expect(formatFocusTrayTitle(createRuntime("stopwatch", { mode: "stopwatch" }), Date.now()))
-      .toBe("");
+    const stopwatch = createRuntime("stopwatch", {
+      mode: "stopwatch",
+      startedAt,
+      elapsedSeconds: 30,
+    });
+    const pausedStopwatch = {
+      ...stopwatch,
+      startedAt: null,
+      pausedAt: new Date(2026, 7, 6, 10, 5, 0).toISOString(),
+      elapsedSeconds: 300,
+    };
+    expect(formatFocusTrayTitle(stopwatch, new Date(2026, 7, 6, 10, 0, 10).getTime()))
+      .toBe("00:40");
+    expect(formatFocusTrayTitle(pausedStopwatch, Date.now())).toBe("05:00");
     expect(formatFocusTrayTitle(createRuntime("idle"), Date.now())).toBe("");
   });
 

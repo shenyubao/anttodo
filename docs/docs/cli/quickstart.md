@@ -15,6 +15,7 @@ AntTodo CLI（`@anttodos/cli`）适合在终端、脚本和 CI 中管理任务�
 - 子任务：编辑标题、完成状态、负责人、优先级、截止时间和排序。
 - 笔记与标签：编辑、恢复、回收站、标签调整，以及标签改名、改色、移动、排序和权限配置。
 - 团队空间：创建、编辑、删除、成员角色、移除成员和邀请链接；`user list`、`group list` 可查询成员与用户组。
+- 专注记录：通过 `pomodoro` 和 `stopwatch` 写入完整、已结束的专注 session。
 - 协作 API：搜索、评论、附件和活动记录。
 
 ## 1. 安装
@@ -120,7 +121,26 @@ anttodo task bulk complete --id task-1 --id task-2
 anttodo task bulk set-priority --id task-3 --id task-4 --priority high
 ```
 
-## 5. 设置提醒和重复规则
+## 5. 记录专注 session
+
+CLI 只记录已经完整结束的专注 session，不负责启动、暂停或实时计时。起止时间必须使用带时区的 RFC3339，且 session 至少持续 60 秒：
+
+```bash
+anttodo pomodoro \
+  --started-at 2026-08-10T09:00:00+08:00 \
+  --ended-at 2026-08-10T09:25:00+08:00 \
+  --planned-seconds 1500 \
+  --task <任务 ID> \
+  --notes "完成初稿"
+
+anttodo stopwatch \
+  --started-at 2026-08-10T10:00:00+08:00 \
+  --ended-at 2026-08-10T10:42:00+08:00
+```
+
+`pomodoro` 的计划时长由 `--planned-seconds` 指定；`stopwatch` 的计划时长自动等于起止时间计算出的实际时长。两者都只写入 `kind=focus`，任务关联和备注均为可选。
+
+## 6. 设置提醒和重复规则
 
 `task schedule` 同时管理到期时间、时区、提醒和重复规则：
 
@@ -141,7 +161,7 @@ anttodo task schedule <任务 ID> \
 anttodo task schedule <任务 ID> --clear
 ```
 
-## 6. 子任务、笔记和标签
+## 7. 子任务、笔记和标签
 
 ```bash
 # 子任务
@@ -164,7 +184,7 @@ anttodo tag reorder <标签 ID> --before <另一个标签 ID>
 
 笔记和标签的永久删除同样需要 `--yes`；回收站中的笔记可先用 `note list --trash` 检查，再执行 `note restore` 或 `note purge`。
 
-## 7. 搜索、评论、附件和活动记录
+## 8. 搜索、评论、附件和活动记录
 
 ```bash
 anttodo search "发布说明" --kind all --format table
@@ -179,7 +199,7 @@ anttodo attachment download <附件 URI> --output ./release-notes.pdf
 
 上传附件后，CLI 会返回附件 URI；需要在评论中插入附件时，可以使用 `--comment-image` 上传为评论图片，或将 URI 传给 `comment create --image-uri`。
 
-## 8. 在脚本和 CI 中使用
+## 9. 在脚本和 CI 中使用
 
 所有命令都支持统一的输出格式：`json`、`pretty`、`table`、`ndjson` 和 `csv`。自动化场景建议使用 JSON，并让退出码控制流水线：
 
@@ -194,7 +214,7 @@ anttodo search "待发布" --format ndjson | jq -r '.id'
 anttodo man --format pretty
 ```
 
-## 9. 常见问题
+## 10. 常见问题
 
 - `not_logged_in`：先执行 `anttodo auth login`，再用 `auth status --verify` 检查会话。
 - `workspace_required`：执行 `workspace list` 后用 `workspace use` 设置默认团队空间，或在命令上加 `--workspace`。

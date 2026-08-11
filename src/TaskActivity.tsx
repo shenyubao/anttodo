@@ -197,6 +197,14 @@ export function taskActivityPresentation(
         icon: <CalendarClock />,
       };
     }
+    if (changes.priority) {
+      return {
+        action: "修改了子任务优先级",
+        detail: `${String(event.payload.title ?? "")} · ${priorityName(changes.priority.after)}`,
+        tone: "edit",
+        icon: <Pencil />,
+      };
+    }
     return completed === true
       ? { action: "完成了子任务", detail: String(event.payload.title ?? ""), tone: "complete", icon: <Check /> }
       : completed === false

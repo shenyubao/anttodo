@@ -57,6 +57,12 @@ interface Window {
       takePendingCallback: () => Promise<string | null>;
       onCallbackAvailable: (listener: () => void) => () => void;
     };
+    deepLinks: {
+      ready: () => void;
+      onCommand: (
+        listener: (command: import("./lib/desktopDeepLink").DesktopDeepLinkCommand) => void,
+      ) => () => void;
+    };
     reminders: {
       sync: (entries: Array<{
         id: string;

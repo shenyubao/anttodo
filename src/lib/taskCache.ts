@@ -76,6 +76,8 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
     recurrence: null,
     estimate_hours: input.estimateHours ?? null,
     actual_hours: null,
+    estimate_pomodoros: null,
+    actual_pomodoros: null,
     assignee_id: input.assigneeId ?? null,
     cli_assignee: null,
     created_by: input.userId,
@@ -115,6 +117,8 @@ function taskFromCreatedRow(
     recurrence: created.recurrence ?? null,
     estimate_hours: created.estimate_hours ?? null,
     actual_hours: created.actual_hours ?? null,
+    estimate_pomodoros: created.estimate_pomodoros ?? null,
+    actual_pomodoros: created.actual_pomodoros ?? null,
     assignee_id: created.assignee_id ?? null,
     cli_assignee: created.cli_assignee ?? null,
     created_by: created.created_by,
@@ -342,6 +346,24 @@ export function sectionIdFromRealtimeChange(payload: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/** custom_task_views.id or task_system_view_preferences.view_key */
+export function smartViewIdFromRealtimeChange(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const change = payload as {
+    table?: unknown;
+    new?: Record<string, unknown>;
+    old?: Record<string, unknown>;
+  };
+  const record = change.new && Object.keys(change.new).length > 0 ? change.new : change.old;
+  if (!record) return null;
+  if (change.table === "task_system_view_preferences") {
+    const viewKey = record.view_key;
+    return typeof viewKey === "string" ? viewKey : null;
+  }
+  const id = record.id;
+  return typeof id === "string" ? id : null;
+}
+
 export function taskIdFromRealtimeChange(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const change = payload as {
@@ -404,6 +426,7 @@ export type OptimisticSubtaskInput = {
   userId: string;
   title: string;
   position: number;
+  priority?: TaskPriority;
   dueAt?: string | null;
   assigneeId?: string | null;
   cliAssignee?: AiCliTool | null;
@@ -422,9 +445,12 @@ export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask 
     description: "",
     completed: false,
     position: input.position,
+    priority: input.priority ?? "none",
     due_at: input.dueAt ?? null,
     estimate_hours: null,
     actual_hours: null,
+    estimate_pomodoros: null,
+    actual_pomodoros: null,
     assignee_id: input.assigneeId ?? null,
     cli_assignee: input.cliAssignee ?? null,
     created_by: input.userId,

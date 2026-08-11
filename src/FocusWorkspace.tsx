@@ -29,6 +29,7 @@ import {
   type FocusRuntimeState,
 } from "./lib/focusSession";
 import type { FocusSession, FocusSettings, Task } from "./types";
+import type { DesktopFocusDeepLinkEnvelope } from "./lib/desktopDeepLink";
 
 export function FocusWorkspace({
   workspaceId,
@@ -41,6 +42,8 @@ export function FocusWorkspace({
   onCreateSession,
   onNotice,
   onMenu,
+  deepLinkCommand,
+  onDeepLinkHandled,
 }: {
   workspaceId: string;
   userId: string;
@@ -52,6 +55,8 @@ export function FocusWorkspace({
   onCreateSession: (input: Omit<FocusSession, "id" | "created_at">) => Promise<FocusSession>;
   onNotice: (message: string) => void;
   onMenu: () => void;
+  deepLinkCommand: DesktopFocusDeepLinkEnvelope | null;
+  onDeepLinkHandled: (id: number) => void;
 }) {
   const [runtime, setRuntime] = useState<FocusRuntimeState>(() => {
     const restored = loadFocusRuntimeState(userId, workspaceId);
@@ -121,6 +126,130 @@ export function FocusWorkspace({
     const id = window.setInterval(() => setNowMs(Date.now()), 250);
     return () => window.clearInterval(id);
   }, [runtime.phase, runtime.pausedAt]);
+
+  function isRunningState(state: FocusRuntimeState) {
+    return state.phase === "focusing"
+      || state.phase === "breaking"
+      || state.phase === "stopwatch";
+  }
+
+  function startTimerForMode(
+    mode: "pomodoro" | "stopwatch",
+    taskId?: string,
+  ) {
+    if (!online) {
+      onNotice("离线时无法开始专注");
+      return false;
+    }
+    const current = runtimeRef.current;
+    if (isRunningState(current)) {
+      if (current.mode !== mode || !current.pausedAt) {
+        onNotice("当前已有计时正在运行，请先暂停或结束。");
+        return false;
+      }
+      if (taskId && taskId !== current.taskId) {
+        onNotice("暂停中的计时不能同时切换任务。");
+        return false;
+      }
+      setRuntime({ ...current, startedAt: new Date().toISOString(), pausedAt: null });
+      return true;
+    }
+    if (current.phase !== "idle") {
+      onNotice("当前计时状态不支持直接启动。");
+      return false;
+    }
+    const nextTaskId = taskId ?? current.taskId;
+    if (mode === "stopwatch") {
+      setRuntime({
+        ...current,
+        mode,
+        phase: "stopwatch",
+        taskId: nextTaskId,
+        plannedSeconds: 0,
+        elapsedSeconds: 0,
+        startedAt: new Date().toISOString(),
+        pausedAt: null,
+        breakKind: null,
+      });
+    } else {
+      setRuntime({
+        ...current,
+        mode,
+        phase: "focusing",
+        taskId: nextTaskId,
+        plannedSeconds: settings.pomodoro_minutes * 60,
+        elapsedSeconds: 0,
+        startedAt: new Date().toISOString(),
+        pausedAt: null,
+        breakKind: null,
+      });
+    }
+    return true;
+  }
+
+  function pauseTimerForMode(mode: "pomodoro" | "stopwatch") {
+    const current = runtimeRef.current;
+    if (
+      current.mode !== mode
+      || !isRunningState(current)
+      || current.pausedAt
+      || !current.startedAt
+    ) {
+      onNotice("当前计时状态不支持暂停。");
+      return false;
+    }
+    pauseTimer();
+    return true;
+  }
+
+  async function stopTimerForMode(mode: "pomodoro" | "stopwatch") {
+    const current = runtimeRef.current;
+    if (current.mode !== mode || !isRunningState(current)) {
+      onNotice("当前计时状态不支持结束。");
+      return false;
+    }
+    await stopTimer();
+    return true;
+  }
+
+  useEffect(() => {
+    if (!deepLinkCommand) return;
+    let cancelled = false;
+    void (async () => {
+      const { id, command } = deepLinkCommand;
+      let handled = false;
+      try {
+        const linkedTask = command.taskId
+          ? tasks.find((task) => task.id === command.taskId)
+          : null;
+        if (
+          command.taskId
+          && (!linkedTask || linkedTask.deleted_at || linkedTask.kind === "note")
+        ) {
+          onNotice("DeepLink 指定的任务不存在或无权访问。");
+        } else if (command.action === "switch") {
+          await selectFocusTask(command.taskId ?? null);
+          handled = true;
+        } else if (command.action === "start" && command.mode) {
+          handled = startTimerForMode(command.mode, command.taskId);
+        } else if (command.action === "pause" && command.mode) {
+          handled = pauseTimerForMode(command.mode);
+        } else if (command.action === "stop" && command.mode) {
+          handled = await stopTimerForMode(command.mode);
+        } else {
+          onNotice("DeepLink 缺少有效的计时模式或动作。");
+        }
+      } catch (error) {
+        onNotice(error instanceof Error ? error.message : "DeepLink 执行失败。");
+      } finally {
+        if (!cancelled) onDeepLinkHandled(id);
+      }
+      return handled;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deepLinkCommand, onDeepLinkHandled, onNotice, online, settings.pomodoro_minutes, tasks]);
 
   useEffect(() => {
     if (!settings.show_tab_title) {

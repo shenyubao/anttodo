@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nonEmpty, parseDueTime, parseRecurrence, parseReminder, positiveInteger } from "./validation.js";
+import { nonEmpty, parseDueTime, parseFocusSessionInterval, parseRecurrence, parseReminder, positiveInteger } from "./validation.js";
 
 describe("CLI validation", () => {
   it("requires an explicit RFC3339 timezone", () => {
@@ -24,5 +24,24 @@ describe("CLI validation", () => {
     expect(parseRecurrence("weekly")).toEqual({ freq: "weekly", interval: 1, mode: "due" });
     expect(parseRecurrence("none")).toBeNull();
     expect(() => parseReminder("start:1:month")).toThrow(/Invalid reminder/);
+  });
+
+  it("derives a completed focus session interval", () => {
+    expect(parseFocusSessionInterval(
+      "2026-08-04T09:00:00+08:00",
+      "2026-08-04T09:25:01+08:00",
+    )).toEqual({
+      startedAt: "2026-08-04T01:00:00.000Z",
+      endedAt: "2026-08-04T01:25:01.000Z",
+      elapsedSeconds: 1501,
+    });
+    expect(() => parseFocusSessionInterval(
+      "2026-08-04T09:00:00+08:00",
+      "2026-08-04T09:00:59+08:00",
+    )).toThrow(/at least 60 seconds/);
+    expect(() => parseFocusSessionInterval(
+      "2026-08-04T09:01:00+08:00",
+      "2026-08-04T09:00:00+08:00",
+    )).toThrow(/ended_at must be later/);
   });
 });

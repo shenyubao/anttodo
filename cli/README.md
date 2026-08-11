@@ -25,7 +25,8 @@ Run `anttodo man --format pretty` for the full command tree.
 Inside this repository, use `pnpm cli:run man` (or any other command and
 options) to build and execute the local CLI.
 
-The CLI also exposes task/note editing and bulk status operations, reminder and
+The CLI also exposes task/note editing and bulk status operations, completed
+pomodoro and stopwatch session recording, reminder and
 recurrence schedules, subtask editing/assignment/reordering, tag access and
 ordering management, workspace administration and invite links, full-text task
 search, comments, activity history, and attachment upload/download/signed URLs.

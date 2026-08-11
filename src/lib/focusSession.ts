@@ -85,8 +85,14 @@ export function formatFocusTrayTitle(
   state: FocusRuntimeState | null | undefined,
   nowMs = Date.now(),
 ) {
-  if (!state || state.mode !== "pomodoro" || state.phase !== "focusing") return "";
-  return formatFocusClock(remainingSeconds(state, nowMs));
+  if (!state) return "";
+  if (state.mode === "pomodoro" && state.phase === "focusing") {
+    return formatFocusClock(remainingSeconds(state, nowMs));
+  }
+  if (state.mode === "stopwatch" && state.phase === "stopwatch") {
+    return formatFocusClock(displayedSeconds(state, nowMs));
+  }
+  return "";
 }
 
 export function formatFocusDuration(totalSeconds: number) {

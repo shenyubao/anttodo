@@ -42,6 +42,8 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   reminder_persistent: false,
   ...patch,
   cli_assignee: patch.cli_assignee ?? null,
+  estimate_pomodoros: patch.estimate_pomodoros ?? null,
+  actual_pomodoros: patch.actual_pomodoros ?? null,
   description_mentions: patch.description_mentions ?? [],
 });
 

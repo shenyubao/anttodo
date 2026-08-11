@@ -17,7 +17,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import clsx from "clsx";
 import { DueDateControl } from "./DueDateControl";
 import { PRIORITY_OPTIONS } from "./PriorityControl";
-import { appRoutePath } from "./lib/appRoute";
+import { taskShareUrl } from "./lib/appRoute";
 import { clearSchedulePatch } from "./lib/calendarScheduling";
 import { systemTimeZone } from "./lib/dateTimePreferences";
 import { getPresetDate, type DuePreset } from "./lib/dueTime";
@@ -67,17 +67,7 @@ function subtaskDueFromPreset(preset: DuePreset) {
 }
 
 async function copyTaskLink(workspaceId: string, task: Task) {
-  const path = appRoutePath({
-    workspaceId,
-    kind: "task",
-    taskId: task.id,
-    itemKind: task.kind === "note" ? "note" : "task",
-  });
-  let url = new URL(path, window.location.origin).toString();
-  if (window.location.protocol === "file:" && import.meta.env.VITE_PUBLIC_APP_URL) {
-    url = new URL(path, import.meta.env.VITE_PUBLIC_APP_URL).toString();
-  }
-  await navigator.clipboard.writeText(url);
+  await navigator.clipboard.writeText(taskShareUrl(workspaceId, task));
 }
 
 export function TaskContextMenu({
@@ -128,11 +118,11 @@ export function TaskContextMenu({
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "priority">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
@@ -149,7 +139,7 @@ export function TaskContextMenu({
   const menuWidth = 220;
   const estimatedHeight = variant === "trash"
     ? 110
-    : isNote || isSubtask ? 300 : 360;
+    : isNote ? 300 : isSubtask ? 340 : 360;
   const menuLeft = Math.min(Math.max(12, x), window.innerWidth - menuWidth - 12);
   const menuTop = Math.min(Math.max(12, y), window.innerHeight - estimatedHeight - 12);
 
@@ -221,7 +211,12 @@ export function TaskContextMenu({
   }
 
   async function setPriority(priority: TaskPriority) {
-    if (isSubtask || priority === task.priority) return;
+    if (subtask) {
+      if (priority === subtask.priority) return;
+      await run(() => onUpdateSubtask(subtask.id, { priority }), { closeAfter: false });
+      return;
+    }
+    if (priority === task.priority) return;
     await run(async () => {
       await onUpdateTask(task.id, { priority });
     }, { closeAfter: false });
@@ -242,6 +237,7 @@ export function TaskContextMenu({
           due_at: subtask.due_at,
           assignee_id: subtask.assignee_id,
           cli_assignee: subtask.cli_assignee,
+          priority: subtask.priority,
         });
         onNotice("已在本任务下创建副本");
         return;
@@ -484,7 +480,7 @@ export function TaskContextMenu({
           )}
         </div>
 
-        {!isNote && !isSubtask && (
+        {!isNote && (
           <div className="task-context-section">
             <span className="task-context-section-label">优先级</span>
             <div className="task-context-icon-row" role="group" aria-label="设置优先级">
@@ -494,9 +490,9 @@ export function TaskContextMenu({
                   type="button"
                   title={option.label}
                   aria-label={option.label}
-                  aria-pressed={task.priority === option.value}
+                  aria-pressed={(subtask?.priority ?? task.priority) === option.value}
                   data-priority={option.value}
-                  className={clsx(task.priority === option.value && "selected")}
+                  className={clsx((subtask?.priority ?? task.priority) === option.value && "selected")}
                   disabled={!writable}
                   style={{ "--priority-color": option.color } as CSSProperties}
                   onClick={() => void setPriority(option.value)}

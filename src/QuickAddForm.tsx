@@ -50,6 +50,8 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
     recurrence: null,
     estimate_hours: null,
     actual_hours: null,
+    estimate_pomodoros: null,
+    actual_pomodoros: null,
     assignee_id: null,
     cli_assignee: null,
     created_by: "",

@@ -22,7 +22,15 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Check, Circle, Ellipsis, GripVertical, NotebookPen, Plus } from "lucide-react";
-import { Fragment, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  Fragment,
+  memo,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { AiCliAvatar } from "./AiCliAvatar";
@@ -167,11 +175,11 @@ export function TaskKanban({
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "priority">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
@@ -190,6 +198,14 @@ export function TaskKanban({
   const columnsById = useMemo(
     () => new Map(columns.map((column) => [column.id, column])),
     [columns],
+  );
+  const labelById = useMemo(
+    () => new Map(labels.map((label) => [label.id, label])),
+    [labels],
+  );
+  const memberById = useMemo(
+    () => new Map(members.map((member) => [member.user_id, member])),
+    [members],
   );
   const customSectionColumns = useMemo(
     () => columns.filter((column) =>
@@ -272,6 +288,8 @@ export function TaskKanban({
       column={column}
       labels={labels}
       members={members}
+      labelById={labelById}
+      memberById={memberById}
       labelPermissionLevels={labelPermissionLevels}
       userLabelOrder={userLabelOrder}
       currentUserId={currentUserId}
@@ -368,8 +386,8 @@ export function TaskKanban({
             {activeCard ? (
               <KanbanCardOverlay
                 task={activeCard}
-                labels={labels}
-                members={members}
+                labelById={labelById}
+                memberById={memberById}
                 now={now}
                 showLabels={showLabels}
                 showHours={showHours}
@@ -408,6 +426,8 @@ function KanbanColumnView({
   column,
   labels,
   members,
+  labelById,
+  memberById,
   labelPermissionLevels,
   userLabelOrder,
   currentUserId,
@@ -436,6 +456,8 @@ function KanbanColumnView({
   column: KanbanColumn;
   labels: Label[];
   members: Member[];
+  labelById: Map<string, Label>;
+  memberById: Map<string, Member>;
   labelPermissionLevels: Record<string, LabelPermissionLevel | undefined>;
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
   currentUserId: string;
@@ -473,7 +495,6 @@ function KanbanColumnView({
     disabled: !canManageSection,
   });
   const [adding, setAdding] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [sectionMenuOpen, setSectionMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [sectionName, setSectionName] = useState(column.title);
@@ -492,11 +513,11 @@ function KanbanColumnView({
   const taskIsOverColumn = active?.data.current?.type !== "section"
     && over?.data.current?.columnId === column.id;
 
-  async function submit(event: FormEvent) {
+  function submit(event: FormEvent) {
     event.preventDefault();
     if (tokens.token) return;
     const payload = tokens.toSubmitPayload();
-    if (!payload.title || !canCreate || busy) return;
+    if (!payload.title || !canCreate) return;
     const hoursParsed = parseEstimateHoursText(payload.title);
     const nextPayload = hoursParsed
       ? {
@@ -506,16 +527,12 @@ function KanbanColumnView({
         }
       : { ...payload, estimateHours: null as number | null };
     if (!nextPayload.title) return;
-    setBusy(true);
-    try {
-      await onCreate(column, nextPayload);
-      tokens.reset();
-      setAdding(false);
-    } catch (error) {
+    // Release the composer immediately; optimistic cache update happens in onCreate.
+    tokens.reset();
+    setAdding(false);
+    void onCreate(column, nextPayload).catch((error) => {
       onError(error instanceof Error ? error.message : "新建失败，请重试");
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function saveSectionName() {
@@ -676,7 +693,6 @@ function KanbanColumnView({
               ref={inputRef}
               autoFocus
               value={tokens.title}
-              disabled={busy}
               aria-label={`添加任务至“${column.title}”`}
               placeholder="添加任务"
               onChange={tokens.handleChange}
@@ -690,7 +706,7 @@ function KanbanColumnView({
               onBlur={() => {
                 const onlyDefaultAssignee = !tokens.assigneeId
                   || tokens.assigneeId === (defaultAssigneeId ?? null);
-                if (!tokens.title.trim() && onlyDefaultAssignee && tokens.labelIds.length === 0 && !busy) {
+                if (!tokens.title.trim() && onlyDefaultAssignee && tokens.labelIds.length === 0) {
                   tokens.reset();
                   setAdding(false);
                 }
@@ -710,7 +726,6 @@ function KanbanColumnView({
           <TaskTitleTokenChips
             assignee={tokens.assignee}
             labels={tokens.selectedLabels}
-            disabled={busy}
             onRemoveAssignee={tokens.removeAssignee}
             onRemoveLabel={tokens.removeLabel}
           />
@@ -723,8 +738,8 @@ function KanbanColumnView({
               key={`${column.id}:${task.id}`}
               columnId={column.id}
               task={task}
-              labels={labels}
-              members={members}
+              labelById={labelById}
+              memberById={memberById}
               selected={selectedTaskId === task.id}
               online={online && canEditTask(task)}
               now={now}
@@ -735,13 +750,10 @@ function KanbanColumnView({
                 || customSort
                 || !["created", "completed"].includes(column.target.kind)
               )}
-              onSelect={() => onSelectTask(task.id)}
-              onToggle={() => onUpdateTask(task.id, {
-                status: task.status === "completed" ? "open" : "completed",
-                completed_at: task.status === "completed" ? null : new Date().toISOString(),
-              })}
+              onSelectTask={onSelectTask}
+              onUpdateTask={onUpdateTask}
               onError={onError}
-              onContextMenu={(x, y) => onContextMenu(task, x, y)}
+              onContextMenu={onContextMenu}
             />
           ))}
         </SortableContext>
@@ -750,36 +762,45 @@ function KanbanColumnView({
   );
 }
 
-function KanbanCard({
+function resolveTaskLabels(task: Task, labelById: Map<string, Label>) {
+  const result: Label[] = [];
+  for (const labelId of task.label_ids) {
+    const label = labelById.get(labelId);
+    if (label) result.push(label);
+  }
+  return result;
+}
+
+const KanbanCard = memo(function KanbanCard({
   columnId,
   task,
-  labels,
-  members,
+  labelById,
+  memberById,
   selected,
   online,
   now,
   showLabels,
   showHours,
   draggable,
-  onSelect,
-  onToggle,
+  onSelectTask,
+  onUpdateTask,
   onError,
   onContextMenu,
 }: {
   columnId: string;
   task: Task;
-  labels: Label[];
-  members: Member[];
+  labelById: Map<string, Label>;
+  memberById: Map<string, Member>;
   selected: boolean;
   online: boolean;
   now: Date;
   showLabels: boolean;
   showHours: boolean;
   draggable: boolean;
-  onSelect: () => void;
-  onToggle: () => Promise<void>;
+  onSelectTask: (taskId: string) => void;
+  onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
   onError: (message: string) => void;
-  onContextMenu: (x: number, y: number) => void;
+  onContextMenu: (task: Task, x: number, y: number) => void;
 }) {
   const sortableId = `kanban-card:${columnId}:${task.id}`;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -787,8 +808,8 @@ function KanbanCard({
     data: { taskId: task.id, columnId },
     disabled: !draggable,
   });
-  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
-  const assignee = members.find((member) => member.user_id === task.assignee_id);
+  const taskLabels = showLabels ? resolveTaskLabels(task, labelById) : [];
+  const assignee = task.assignee_id ? memberById.get(task.assignee_id) : undefined;
   const dueStatus = getDueStatus(task.due_at, now);
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
@@ -808,10 +829,10 @@ function KanbanCard({
         transition,
         "--priority-color": getPriorityOption(task.priority).color,
       } as CSSProperties}
-      onClick={onSelect}
+      onClick={() => onSelectTask(task.id)}
       onContextMenu={(event) => {
         event.preventDefault();
-        onContextMenu(event.clientX, event.clientY);
+        onContextMenu(task, event.clientX, event.clientY);
       }}
     >
       {draggable && (
@@ -837,7 +858,10 @@ function KanbanCard({
             disabled={!online}
             onClick={(event) => {
               event.stopPropagation();
-              void onToggle().catch((error) => {
+              void onUpdateTask(task.id, {
+                status: task.status === "completed" ? "open" : "completed",
+                completed_at: task.status === "completed" ? null : new Date().toISOString(),
+              }).catch((error) => {
                 onError(error instanceof Error ? error.message : "任务更新失败，请重试");
               });
             }}
@@ -850,7 +874,7 @@ function KanbanCard({
           className="kanban-card-content"
           onClick={(event) => {
             event.stopPropagation();
-            onSelect();
+            onSelectTask(task.id);
           }}
         >
           <span className="kanban-card-title">{task.title}</span>
@@ -888,25 +912,25 @@ function KanbanCard({
       </div>
     </article>
   );
-}
+});
 
 function KanbanCardOverlay({
   task,
-  labels,
-  members,
+  labelById,
+  memberById,
   now,
   showLabels,
   showHours,
 }: {
   task: Task;
-  labels: Label[];
-  members: Member[];
+  labelById: Map<string, Label>;
+  memberById: Map<string, Member>;
   now: Date;
   showLabels: boolean;
   showHours: boolean;
 }) {
-  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
-  const assignee = members.find((member) => member.user_id === task.assignee_id);
+  const taskLabels = showLabels ? resolveTaskLabels(task, labelById) : [];
+  const assignee = task.assignee_id ? memberById.get(task.assignee_id) : undefined;
   const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)

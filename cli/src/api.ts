@@ -4,6 +4,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { CliError } from "./errors.js";
 import { getDefaultWorkspace, setDefaultWorkspace } from "./storage.js";
 import type {
+  FocusSession,
   LabelAccessScope,
   LabelKind,
   RecurrenceRule,
@@ -155,6 +156,41 @@ export async function getTask(client: SupabaseClient, workspaceId: string, id: s
     .maybeSingle();
   throwError(error);
   return normalizeTask(requireRow(data as Record<string, unknown> | null, kind === "note" ? "Note" : "Task"));
+}
+
+export async function createFocusSession(
+  client: SupabaseClient,
+  input: {
+    userId: string;
+    workspaceId: string;
+    taskId: string | null;
+    mode: FocusSession["mode"];
+    plannedSeconds: number;
+    elapsedSeconds: number;
+    notes: string | null;
+    startedAt: string;
+    endedAt: string;
+  },
+) {
+  if (input.taskId) await getTask(client, input.workspaceId, input.taskId, "todo");
+  const { data, error } = await client
+    .from("focus_sessions")
+    .insert({
+      user_id: input.userId,
+      workspace_id: input.workspaceId,
+      task_id: input.taskId,
+      mode: input.mode,
+      kind: "focus",
+      planned_seconds: input.plannedSeconds,
+      elapsed_seconds: input.elapsedSeconds,
+      notes: input.notes,
+      started_at: input.startedAt,
+      ended_at: input.endedAt,
+    })
+    .select("*")
+    .single();
+  throwError(error);
+  return requireRow(data as FocusSession | null, "Focus session");
 }
 
 export async function createTask(client: SupabaseClient, input: {

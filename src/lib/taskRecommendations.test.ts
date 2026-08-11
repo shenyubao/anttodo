@@ -36,6 +36,8 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   actual_hours: null,
   description_mentions: [],
   ...patch,
+  estimate_pomodoros: patch.estimate_pomodoros ?? null,
+  actual_pomodoros: patch.actual_pomodoros ?? null,
 });
 
 describe("task recommendations", () => {

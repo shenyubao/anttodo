@@ -76,6 +76,8 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   recurrence: patch.recurrence ?? null,
   estimate_hours: patch.estimate_hours ?? null,
   actual_hours: patch.actual_hours ?? null,
+  estimate_pomodoros: patch.estimate_pomodoros ?? null,
+  actual_pomodoros: patch.actual_pomodoros ?? null,
   description_mentions: patch.description_mentions ?? [],
 });
 

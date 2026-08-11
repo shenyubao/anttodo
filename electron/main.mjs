@@ -8,6 +8,11 @@ import {
   isAllowedDingtalkExternalUrl,
   parseAuthDeepLink,
 } from "./auth-deep-link.mjs";
+import {
+  DEEP_LINK_PREFIX,
+  createDeepLinkQueue,
+  parseDesktopDeepLink,
+} from "./deep-link.mjs";
 import { createReminderScheduler } from "./reminder-scheduler.mjs";
 import {
   checkForDesktopUpdate,
@@ -20,8 +25,10 @@ import { createTrayController } from "./tray.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const authCallbackQueue = createAuthCallbackQueue(5);
+const deepLinkQueue = createDeepLinkQueue(20);
 let mainWindow = null;
 let isQuitting = false;
+let deepLinksReady = false;
 const trayController = createTrayController({
   isDev,
   restoreMainWindow: () => restoreMainWindow(),
@@ -137,15 +144,43 @@ function receiveAuthDeepLink(url) {
   notifyAuthCallbackAvailable();
 }
 
+function dispatchPendingDeepLinks() {
+  if (!deepLinksReady || !mainWindow || mainWindow.isDestroyed()) return;
+  let command = deepLinkQueue.take();
+  if (!command) return;
+  restoreMainWindow();
+  while (command) {
+    mainWindow.webContents.send("anttodo:deep-link-command", command);
+    command = deepLinkQueue.take();
+  }
+}
+
+function receiveDesktopDeepLink(url) {
+  const command = parseDesktopDeepLink(url);
+  if (!command) return;
+  deepLinkQueue.enqueue(command);
+  dispatchPendingDeepLinks();
+}
+
+function receiveDeepLink(url) {
+  if (typeof url !== "string" || !url.startsWith(DEEP_LINK_PREFIX)) return;
+  if (url.startsWith(AUTH_DEEP_LINK_PREFIX)) {
+    receiveAuthDeepLink(url);
+    return;
+  }
+  receiveDesktopDeepLink(url);
+}
+
 app.on("open-url", (event, url) => {
   event.preventDefault();
-  receiveAuthDeepLink(url);
+  receiveDeepLink(url);
 });
 
 app.on("second-instance", (_event, commandLine) => {
-  const deepLink = commandLine.find((arg) => arg.startsWith(AUTH_DEEP_LINK_PREFIX));
-  if (deepLink) receiveAuthDeepLink(deepLink);
-  else if (mainWindow) {
+  const deepLinks = commandLine.filter((arg) => arg.startsWith(DEEP_LINK_PREFIX));
+  if (deepLinks.length > 0) {
+    for (const deepLink of deepLinks) receiveDeepLink(deepLink);
+  } else if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
@@ -155,6 +190,12 @@ app.on("second-instance", (_event, commandLine) => {
 function windowForEvent(event) {
   return BrowserWindow.fromWebContents(event.sender);
 }
+
+ipcMain.on("anttodo:deep-links-ready", (event) => {
+  if (!mainWindow || event.sender.id !== mainWindow.webContents.id) return;
+  deepLinksReady = true;
+  dispatchPendingDeepLinks();
+});
 
 ipcMain.on("anttodo:window-close", (event) => {
   windowForEvent(event)?.close();
@@ -234,6 +275,7 @@ ipcMain.handle("anttodo:ai-terminal-stop", (event, sessionId) =>
 
 function createWindow() {
   const isMac = process.platform === "darwin";
+  deepLinksReady = false;
   const window = new BrowserWindow({
     width: 1360,
     height: 860,
@@ -269,7 +311,13 @@ function createWindow() {
   window.webContents.on("render-process-gone", () => {
     aiTerminalManager.stopOwner(webContentsId);
   });
-  window.webContents.on("did-finish-load", notifyAuthCallbackAvailable);
+  window.webContents.on("did-start-loading", () => {
+    if (mainWindow === window) deepLinksReady = false;
+  });
+  window.webContents.on("did-finish-load", () => {
+    notifyAuthCallbackAvailable();
+    dispatchPendingDeepLinks();
+  });
 
   if (isMac) window.setWindowButtonVisibility(false);
 
@@ -301,6 +349,11 @@ function createWindow() {
 
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
+    // macOS delivers protocol launches through `open-url`; argv is used only
+    // by non-macOS launchers to cover cold-start protocol arguments.
+    if (process.platform !== "darwin") {
+      for (const arg of process.argv) receiveDeepLink(arg);
+    }
     createWindow();
     trayController.start();
     powerMonitor.on("resume", () => reminderScheduler.resume());

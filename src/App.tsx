@@ -151,6 +151,7 @@ import {
   loadTaskActivity,
   loadTaskComments,
   loadWorkspaceTasksPage,
+  loadWorkspaceTask,
   loadUserQuota,
   loadWorkspaceBundle,
   loadWorkspaces,
@@ -188,12 +189,14 @@ import {
   createDefaultFocusSettings,
   FOCUS_RUNTIME_UPDATED_EVENT,
   formatFocusTrayTitle,
+  isPomodoroCount,
   loadFocusRuntimeState,
 } from "./lib/focusSession";
 import { createDefaultAiFeatureSettings } from "./lib/aiFeatureSettings";
 import { FocusWorkspace } from "./FocusWorkspace";
 import { getDueStatus } from "./lib/dueTime";
 import {
+  appendActualPomodoros,
   appendActualHours,
   formatHoursList,
   hoursFromFocusSeconds,
@@ -250,6 +253,7 @@ import {
   replaceOptimisticTask,
   replaceOptimisticTaskSection,
   sectionIdFromRealtimeChange,
+  smartViewIdFromRealtimeChange,
   taskIdFromRealtimeChange,
 } from "./lib/taskCache";
 import {
@@ -316,6 +320,11 @@ import {
   parseAppRoute,
   type AppRoute,
 } from "./lib/appRoute";
+import type {
+  DesktopDeepLinkCommand,
+  DesktopDeepLinkEnvelope,
+  DesktopFocusDeepLinkEnvelope,
+} from "./lib/desktopDeepLink";
 import {
   isSessionBridgePath,
   resolveSessionBridgeParentOrigin,
@@ -551,6 +560,9 @@ function useMinuteNow() {
 
 export default function App() {
   const demoMode = new URLSearchParams(window.location.search).get("demo") === "1";
+  const [desktopDeepLinks, setDesktopDeepLinks] = useState<DesktopDeepLinkEnvelope[]>([]);
+  const [desktopDeepLinkNotice, setDesktopDeepLinkNotice] = useState("");
+  const nextDesktopDeepLinkId = useRef(0);
   const pathname = window.location.pathname;
   const inviteId = workspaceInviteIdFromPath(pathname);
   const dingtalkCallback = isDingtalkCallbackPath(pathname);
@@ -573,6 +585,33 @@ export default function App() {
   >(null);
   const nativeAuthProcessing = useRef(false);
   const processedNativeCodes = useRef(new Set<string>());
+
+  useEffect(() => {
+    const desktopDeepLinksApi = window.anttodoDesktop?.deepLinks;
+    if (!desktopDeepLinksApi) return;
+    const unsubscribe = desktopDeepLinksApi.onCommand((command) => {
+      setDesktopDeepLinks((current) => [
+        ...current,
+        { id: nextDesktopDeepLinkId.current++, command },
+      ].slice(-20));
+    });
+    desktopDeepLinksApi.ready();
+    return unsubscribe;
+  }, []);
+
+  const consumeDesktopDeepLink = (id: number) => {
+    setDesktopDeepLinks((current) => current.filter((item) => item.id !== id));
+  };
+
+  useEffect(() => {
+    if (demoMode || !authReady || session || desktopDeepLinks.length === 0) return;
+    setDesktopDeepLinkNotice("请先登录后再打开此 DeepLink。");
+    consumeDesktopDeepLink(desktopDeepLinks[0].id);
+  }, [authReady, demoMode, desktopDeepLinks, session]);
+
+  useEffect(() => {
+    if (session) setDesktopDeepLinkNotice("");
+  }, [session]);
 
   useEffect(() => {
     if (teamSlug && isTeamClientDownloadInvite(window.location.search)) {
@@ -716,7 +755,14 @@ export default function App() {
     };
   }, [demoMode]);
 
-  if (demoMode) return <DemoApplication />;
+  if (demoMode) {
+    return (
+      <DemoApplication
+        desktopDeepLinks={desktopDeepLinks}
+        onConsumeDesktopDeepLink={consumeDesktopDeepLink}
+      />
+    );
+  }
   if (!hasSupabaseConfig || !supabase) return <MissingConfig />;
   if (!authReady) return <Splash label="正在恢复工作区…" />;
   if (traySurface) {
@@ -754,6 +800,7 @@ export default function App() {
         loginSurface={loginSurface}
         teamSlug={teamSlug}
         showModeTabs={!teamSlug}
+        deepLinkNotice={desktopDeepLinkNotice}
       />
     );
   }
@@ -771,6 +818,8 @@ export default function App() {
       email={session.user.email ?? ""}
       phone={session.user.phone ?? ""}
       preferredTeamSlug={teamSlug}
+      desktopDeepLinks={desktopDeepLinks}
+      onConsumeDesktopDeepLink={consumeDesktopDeepLink}
     />
   );
 }
@@ -1304,10 +1353,12 @@ function AuthScreen({
   loginSurface = "phone",
   teamSlug = null,
   showModeTabs = false,
+  deepLinkNotice = "",
 }: {
   loginSurface?: "phone" | "team-sso";
   teamSlug?: string | null;
   showModeTabs?: boolean;
+  deepLinkNotice?: string;
 }) {
   const teamEntry = loginSurface === "team-sso";
   const [clientTeamEntry, setClientTeamEntry] = useState(false);
@@ -1645,6 +1696,7 @@ function AuthScreen({
             ) : null}
           </div>
         </div>
+        {deepLinkNotice && <p className="form-error" role="alert">{deepLinkNotice}</p>}
         {showModeTabs && !ssoEntry && (
           <div className="auth-tabs" role="tablist" aria-label="登录方式">
             <button
@@ -1793,11 +1845,15 @@ function RemoteApplication({
   email,
   phone,
   preferredTeamSlug = null,
+  desktopDeepLinks,
+  onConsumeDesktopDeepLink,
 }: {
   userId: string;
   email: string;
   phone: string;
   preferredTeamSlug?: string | null;
+  desktopDeepLinks: DesktopDeepLinkEnvelope[];
+  onConsumeDesktopDeepLink: (id: number) => void;
 }) {
   const client = supabase!;
   const queryClient = useQueryClient();
@@ -1813,12 +1869,19 @@ function RemoteApplication({
   const [activityRevision, setActivityRevision] = useState(0);
   const pendingTaskCreatesRef = useRef(0);
   const pendingSectionMutationsRef = useRef(0);
+  const pendingSmartViewMutationsRef = useRef(0);
   const recentLocalRealtimeChangesRef = useRef<Map<string, number>>(new Map());
   const realtimeRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const taskPageOffsetRef = useRef(0);
   const taskPageWorkspaceRef = useRef<string | null>(null);
   const [tasksHasMore, setTasksHasMore] = useState(false);
   const [tasksLoadingMore, setTasksLoadingMore] = useState(false);
+
+  useEffect(() => {
+    if (workspaceId) {
+      window.localStorage.setItem("anttodo:last-workspace-id", workspaceId);
+    }
+  }, [workspaceId]);
 
   const workspacesQuery = useQuery({
     queryKey: ["workspaces", userId],
@@ -1870,8 +1933,16 @@ function RemoteApplication({
     const routeWorkspace = workspacesQuery.data.find(
       (workspace) => workspace.id === requestedWorkspaceId,
     );
+    const lastWorkspaceId = window.localStorage.getItem("anttodo:last-workspace-id");
+    const lastWorkspace = workspacesQuery.data.find(
+      (workspace) => workspace.id === lastWorkspaceId,
+    );
     const preferred =
-      slugWorkspace ?? routeWorkspace ?? pendingWorkspace ?? workspacesQuery.data[0];
+      slugWorkspace
+      ?? routeWorkspace
+      ?? lastWorkspace
+      ?? pendingWorkspace
+      ?? workspacesQuery.data[0];
 
     if (!workspaceId) {
       setWorkspaceId(preferred.id);
@@ -2104,6 +2175,14 @@ function RemoteApplication({
             const sectionId = sectionIdFromRealtimeChange(payload);
             if (sectionId && hasRecentLocalChange(table, sectionId)) return;
           }
+          if (
+            table === "custom_task_views"
+            || table === "task_system_view_preferences"
+          ) {
+            if (pendingSmartViewMutationsRef.current > 0) return;
+            const entityId = smartViewIdFromRealtimeChange(payload);
+            if (entityId && hasRecentLocalChange(table, entityId)) return;
+          }
           void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
         },
       )
@@ -2183,6 +2262,22 @@ function RemoteApplication({
     } finally {
       setTasksLoadingMore(false);
     }
+  }
+
+  async function ensureTaskLoaded(targetWorkspaceId: string, taskId: string) {
+    if (targetWorkspaceId !== workspaceId) return null;
+    const queryKey = ["workspace-bundle", targetWorkspaceId];
+    const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const existing = current?.tasks.find((task) => task.id === taskId);
+    if (existing) return existing;
+    const task = await loadWorkspaceTask(client, targetWorkspaceId, taskId);
+    if (!task) return null;
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+      bundle && !bundle.tasks.some((item) => item.id === task.id)
+        ? { ...bundle, tasks: [...bundle.tasks, task] }
+        : bundle,
+    );
+    return task;
   }
 
   function rememberLocalRealtimeChanges(table: string, taskIds: Iterable<string>) {
@@ -2538,7 +2633,7 @@ function RemoteApplication({
   async function createSubtask(
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -2548,6 +2643,7 @@ function RemoteApplication({
       userId,
       title,
       position: task?.subtasks.length ?? 0,
+      priority: extras?.priority ?? "none",
       dueAt: extras?.due_at ?? null,
       assigneeId: extras?.assignee_id ?? null,
       cliAssignee: extras?.cli_assignee ?? null,
@@ -2562,6 +2658,7 @@ function RemoteApplication({
         title,
         position: optimistic.position,
         created_by: userId,
+        priority: extras?.priority ?? "none",
         due_at: extras?.due_at ?? null,
         assignee_id: extras?.assignee_id ?? null,
         cli_assignee: extras?.cli_assignee ?? null,
@@ -2601,7 +2698,7 @@ function RemoteApplication({
 
   async function updateSubtask(
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -2842,13 +2939,21 @@ function RemoteApplication({
     );
     if (created.kind === "focus" && created.task_id) {
       const delta = hoursFromFocusSeconds(created.elapsed_seconds);
-      if (delta != null) {
-        const currentHours = queryClient
+      const pomodoroDelta = isPomodoroCount(created) ? 1 : 0;
+      const currentTask = queryClient
           .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
-          ?.tasks.find((task) => task.id === created.task_id)
-          ?.actual_hours ?? null;
+          ?.tasks.find((task) => task.id === created.task_id);
+      if (delta != null || pomodoroDelta > 0) {
         await updateTask(created.task_id, {
-          actual_hours: appendActualHours(currentHours, delta),
+          ...(delta != null && {
+            actual_hours: appendActualHours(currentTask?.actual_hours, delta),
+          }),
+          ...(pomodoroDelta > 0 && {
+            actual_pomodoros: appendActualPomodoros(
+              currentTask?.actual_pomodoros,
+              pomodoroDelta,
+            ),
+          }),
         });
       }
     }
@@ -2924,6 +3029,8 @@ function RemoteApplication({
   async function removeCustomTaskView(viewId: string) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    rememberLocalRealtimeChanges("custom_task_views", [viewId]);
+    // Drop from the sidebar immediately; network delete runs in parallel.
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
       ? {
           ...bundle,
@@ -2939,11 +3046,17 @@ function RemoteApplication({
           ),
         }
       : bundle);
+    pendingSmartViewMutationsRef.current += 1;
     try {
       await deleteCustomTaskView(client, viewId);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
+    } finally {
+      pendingSmartViewMutationsRef.current = Math.max(
+        0,
+        pendingSmartViewMutationsRef.current - 1,
+      );
     }
   }
 
@@ -2961,6 +3074,7 @@ function RemoteApplication({
       visible,
       position: existing?.position ?? defaultSystemSmartViewPosition(viewKey),
     } satisfies TaskSystemViewPreference;
+    rememberLocalRealtimeChanges("task_system_view_preferences", [viewKey]);
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
       ? {
           ...bundle,
@@ -2970,17 +3084,24 @@ function RemoteApplication({
           ],
         }
       : bundle);
+    pendingSmartViewMutationsRef.current += 1;
     try {
       await saveTaskSystemViewPreference(client, next);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
+    } finally {
+      pendingSmartViewMutationsRef.current = Math.max(
+        0,
+        pendingSmartViewMutationsRef.current - 1,
+      );
     }
   }
 
   async function toggleCustomViewVisibility(viewId: string, visible: boolean) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    rememberLocalRealtimeChanges("custom_task_views", [viewId]);
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
       ? {
           ...bundle,
@@ -2988,6 +3109,7 @@ function RemoteApplication({
             view.id === viewId ? { ...view, visible } : view),
         }
       : bundle);
+    pendingSmartViewMutationsRef.current += 1;
     try {
       const { error } = await client
         .from("custom_task_views")
@@ -2997,6 +3119,11 @@ function RemoteApplication({
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
+    } finally {
+      pendingSmartViewMutationsRef.current = Math.max(
+        0,
+        pendingSmartViewMutationsRef.current - 1,
+      );
     }
   }
 
@@ -3008,14 +3135,24 @@ function RemoteApplication({
       orderedKeys,
       { userId, workspaceId: workspaceId! },
     );
+    rememberLocalRealtimeChanges(
+      "task_system_view_preferences",
+      orderedKeys,
+    );
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
       ? { ...bundle, taskSystemViewPreferences: next }
       : bundle);
+    pendingSmartViewMutationsRef.current += 1;
     try {
       await reorderSystemSmartViewsApi(client, next);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
+    } finally {
+      pendingSmartViewMutationsRef.current = Math.max(
+        0,
+        pendingSmartViewMutationsRef.current - 1,
+      );
     }
   }
 
@@ -3023,14 +3160,21 @@ function RemoteApplication({
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const next = applyCustomTaskViewOrder(previous?.customTaskViews ?? [], orderedIds);
+    rememberLocalRealtimeChanges("custom_task_views", orderedIds);
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
       ? { ...bundle, customTaskViews: next }
       : bundle);
+    pendingSmartViewMutationsRef.current += 1;
     try {
       await reorderCustomTaskViewsApi(client, orderedIds);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
+    } finally {
+      pendingSmartViewMutationsRef.current = Math.max(
+        0,
+        pendingSmartViewMutationsRef.current - 1,
+      );
     }
   }
 
@@ -3251,6 +3395,9 @@ function RemoteApplication({
       onNotice={setNotice}
       onLoadMoreTasks={loadMoreTasks}
       onWorkspaceChange={setWorkspaceId}
+      desktopDeepLinks={desktopDeepLinks}
+      onConsumeDesktopDeepLink={onConsumeDesktopDeepLink}
+      onEnsureTask={ensureTaskLoaded}
       quota={quotaQuery.data ?? {
         user_id: userId,
         workspace_limit: 3,
@@ -3392,7 +3539,13 @@ function RemoteApplication({
   );
 }
 
-function DemoApplication() {
+function DemoApplication({
+  desktopDeepLinks,
+  onConsumeDesktopDeepLink,
+}: {
+  desktopDeepLinks: DesktopDeepLinkEnvelope[];
+  onConsumeDesktopDeepLink: (id: number) => void;
+}) {
   const online = useOnline();
   const attachmentService = useMemo(() => createDemoAttachmentService(), []);
   const [workspaces, setWorkspaces] = useState(demoWorkspaces);
@@ -3661,6 +3814,12 @@ function DemoApplication() {
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onLoadMoreTasks={async () => undefined}
+      desktopDeepLinks={desktopDeepLinks}
+      onConsumeDesktopDeepLink={onConsumeDesktopDeepLink}
+      onEnsureTask={async (targetWorkspaceId, taskId) =>
+        targetWorkspaceId === workspaceId
+          ? bundle.tasks.find((task) => task.id === taskId) ?? null
+          : null}
       onWorkspaceChange={setWorkspaceId}
       quota={{
         user_id: "demo-user",
@@ -3750,6 +3909,8 @@ function DemoApplication() {
               recurrence: null,
               estimate_hours: input.estimateHours ?? null,
               actual_hours: null,
+              estimate_pomodoros: null,
+              actual_pomodoros: null,
             },
             ...current.tasks,
           ],
@@ -3883,9 +4044,12 @@ function DemoApplication() {
                       description: "",
                       completed: false,
                       position: task.subtasks.length,
+                      priority: extras?.priority ?? "none",
                       due_at: extras?.due_at ?? null,
                       estimate_hours: null,
                       actual_hours: null,
+                      estimate_pomodoros: null,
+                      actual_pomodoros: null,
                       assignee_id: extras?.assignee_id ?? null,
                       cli_assignee: extras?.cli_assignee ?? null,
                       created_by: "demo-user",
@@ -4347,11 +4511,19 @@ function DemoApplication() {
         setFocusSessions((current) => [created, ...current]);
         if (created.kind === "focus" && created.task_id) {
           const delta = hoursFromFocusSeconds(created.elapsed_seconds);
-          if (delta != null) {
-            const currentHours = bundle.tasks.find((task) => task.id === created.task_id)
-              ?.actual_hours ?? null;
+          const currentTask = bundle.tasks.find((task) => task.id === created.task_id);
+          const pomodoroDelta = isPomodoroCount(created) ? 1 : 0;
+          if (delta != null || pomodoroDelta > 0) {
             patchTask(created.task_id, {
-              actual_hours: appendActualHours(currentHours, delta),
+              ...(delta != null && {
+                actual_hours: appendActualHours(currentTask?.actual_hours, delta),
+              }),
+              ...(pomodoroDelta > 0 && {
+                actual_pomodoros: appendActualPomodoros(
+                  currentTask?.actual_pomodoros,
+                  pomodoroDelta,
+                ),
+              }),
             });
           }
         }
@@ -4548,6 +4720,9 @@ type WorkspaceAppProps = {
   onDismissNotice: () => void;
   onNotice: (message: string) => void;
   onLoadMoreTasks: () => Promise<void>;
+  desktopDeepLinks: DesktopDeepLinkEnvelope[];
+  onConsumeDesktopDeepLink: (id: number) => void;
+  onEnsureTask: (workspaceId: string, taskId: string) => Promise<Task | null>;
   onWorkspaceChange: (id: string) => void;
   onCreateWorkspace: (input: { name: string; slug: string }) => Promise<Workspace>;
   onCheckWorkspaceSlug: (slug: string) => Promise<boolean>;
@@ -4597,12 +4772,12 @@ type WorkspaceAppProps = {
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
@@ -4779,6 +4954,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       ? workspaceInitialRoute.kind
       : "tasks",
   );
+  const [focusDeepLink, setFocusDeepLink] = useState<DesktopFocusDeepLinkEnvelope | null>(null);
+  const deepLinkWorkspaceRequestsRef = useRef(new Set<number>());
+  const deepLinkProcessingRef = useRef<number | null>(null);
 
   useEffect(() => {
     const tray = window.anttodoDesktop?.platform === "darwin"
@@ -5140,6 +5318,104 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setMindMapCreateLabel(null);
   }
 
+  useEffect(() => {
+    const envelope = props.desktopDeepLinks[0];
+    if (!envelope) return;
+    const { command, id } = envelope;
+    const targetWorkspaceId = command.workspaceId ?? props.workspaceId;
+    if (!props.workspaces.some((item) => item.id === targetWorkspaceId)) {
+      props.onNotice("DeepLink 指定的团队空间不存在或无权访问。");
+      props.onConsumeDesktopDeepLink(id);
+      return;
+    }
+    if (targetWorkspaceId !== props.workspaceId) {
+      if (deepLinkWorkspaceRequestsRef.current.has(id)) return;
+      deepLinkWorkspaceRequestsRef.current.add(id);
+      props.onWorkspaceChange(targetWorkspaceId);
+      return;
+    }
+    if (command.type === "focus" && focusDeepLink?.id === id) return;
+    if (deepLinkProcessingRef.current === id) return;
+    deepLinkProcessingRef.current = id;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const taskId = command.type === "navigate"
+          ? command.target === "task" ? command.taskId : undefined
+          : command.taskId;
+        if (taskId && !props.bundle.tasks.some((task) => task.id === taskId)) {
+          const loaded = await props.onEnsureTask(targetWorkspaceId, taskId);
+          if (!loaded) {
+            props.onNotice("DeepLink 指定的任务不存在或无权访问。");
+            props.onConsumeDesktopDeepLink(id);
+            return;
+          }
+          if (cancelled) return;
+        }
+
+        if (command.type === "navigate") {
+          if (command.target === "view") {
+            const view = command.view as SmartView;
+            const customId = view.startsWith("custom:") ? view.slice("custom:".length) : null;
+            if (customId && !props.bundle.customTaskViews.some((item) => item.id === customId)) {
+              props.onNotice("DeepLink 指定的智能清单不存在。");
+              props.onConsumeDesktopDeepLink(id);
+              return;
+            }
+            setAppSection("tasks");
+            setSmartView(view);
+            setViewMode("list");
+            setSelectedLabelId(null);
+            setSelectedTaskId(null);
+            setSelectedSubtaskId(null);
+            writeRoute({ workspaceId: targetWorkspaceId, kind: "view", view, mode: "list" });
+          } else if (command.target === "task") {
+            const task = props.bundle.tasks.find((item) => item.id === command.taskId);
+            if (!task) {
+              props.onNotice("DeepLink 指定的任务仍未加载，请稍后重试。");
+              props.onConsumeDesktopDeepLink(id);
+              return;
+            }
+            const returnRoute = appSection === "tasks"
+              ? sectionRoute()
+              : { workspaceId: targetWorkspaceId, kind: "view" as const, view: DEFAULT_SMART_VIEW, mode: "list" as const };
+            setAppSection("tasks");
+            setSelectedTaskId(task.id);
+            setSelectedSubtaskId(null);
+            writeRoute({
+              workspaceId: targetWorkspaceId,
+              kind: "task",
+              taskId: task.id,
+              itemKind: task.kind === "note" ? "note" : "task",
+            }, false, { taskReturnRoute: returnRoute });
+          } else {
+            changeSection(command.target);
+          }
+          props.onConsumeDesktopDeepLink(id);
+          return;
+        }
+
+        setAppSection("focus");
+        setSelectedTaskId(null);
+        setSelectedSubtaskId(null);
+        writeRoute({ workspaceId: targetWorkspaceId, kind: "focus" });
+        setFocusDeepLink(envelope as DesktopFocusDeepLinkEnvelope);
+      } catch (error) {
+        props.onNotice(error instanceof Error ? error.message : "DeepLink 执行失败。");
+        props.onConsumeDesktopDeepLink(id);
+      } finally {
+        if (cancelled || command.type !== "focus" || focusDeepLink?.id === id) {
+          deepLinkProcessingRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [focusDeepLink, props.desktopDeepLinks, props.bundle, props.onEnsureTask, props.onNotice, props.onConsumeDesktopDeepLink, props.onWorkspaceChange, props.workspaceId, props.workspaces]);
+
   function openMobileNavigation() {
     if (window.matchMedia("(max-width: 640px)").matches) {
       setMobileAppSidebar(true);
@@ -5334,6 +5610,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         }}
         onSignOut={props.onSignOut}
         onCreateCustomTaskView={props.onCreateCustomTaskView}
+        onDeleteCustomTaskView={props.onDeleteCustomTaskView}
         onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
         onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
       />
@@ -5362,6 +5639,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onDeleteLabel={props.onDeleteLabel}
         onMoveLabelToInbox={props.onMoveLabelToInbox}
         onCreateCustomTaskView={props.onCreateCustomTaskView}
+        onDeleteCustomTaskView={props.onDeleteCustomTaskView}
         onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
         onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
       /> : appSection === "calendar" && !calendarSidebarCollapsed && <CalendarSidebar
@@ -5485,6 +5763,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onCreateSession={props.onCreateFocusSession}
           onNotice={props.onNotice}
           onMenu={openMobileNavigation}
+          deepLinkCommand={focusDeepLink}
+          onDeepLinkHandled={(id) => {
+            deepLinkProcessingRef.current = null;
+            setFocusDeepLink(null);
+            props.onConsumeDesktopDeepLink(id);
+          }}
         /> : <MindMapWorkspace
           workspaceId={props.workspaceId}
           bundle={props.bundle}
@@ -5521,6 +5805,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             attachmentService={props.attachmentService}
             now={now}
             dateTimePreferences={props.dateTimePreferences}
+            pomodoroMinutes={props.focusSettings.pomodoro_minutes}
             aiFeatureSettings={props.aiFeatureSettings}
             aiWorkSettings={props.aiWorkSettings}
             settingsLabelName={selectedLabelId
@@ -5554,6 +5839,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             })}
             onUpdateComment={props.onUpdateComment}
             onDeleteComment={props.onDeleteComment}
+            onNotice={props.onNotice}
           />
         </>
       )}
@@ -5568,6 +5854,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           attachmentService={props.attachmentService}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
+          pomodoroMinutes={props.focusSettings.pomodoro_minutes}
           aiFeatureSettings={props.aiFeatureSettings}
           aiWorkSettings={props.aiWorkSettings}
           settingsLabelName={selectedLabelId
@@ -5598,6 +5885,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           })}
           onUpdateComment={props.onUpdateComment}
           onDeleteComment={props.onDeleteComment}
+          onNotice={props.onNotice}
         />
       )}
       {mindMapCreateLabel && (
@@ -5669,11 +5957,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onReorderSystemSmartViews={props.onReorderSystemSmartViews}
         onReorderCustomTaskViews={props.onReorderCustomTaskViews}
         onDeleteCustomTaskView={async (view) => {
+          if (smartView === customTaskViewKey(view.id)) {
+            selectSmartView("assigned");
+          }
+          // Cache is updated optimistically in onDeleteCustomTaskView; only surface failures.
           try {
             await props.onDeleteCustomTaskView(view.id);
-            if (smartView === customTaskViewKey(view.id)) {
-              selectSmartView("assigned");
-            }
           } catch (error) {
             props.onNotice(error instanceof Error ? error.message : "删除视图失败，请稍后重试");
           }
@@ -5976,6 +6265,7 @@ function MobileAppSidebar({
   onDownloadClient,
   onSignOut,
   onCreateCustomTaskView,
+  onDeleteCustomTaskView,
   onToggleSystemViewVisibility,
   onToggleCustomViewVisibility,
 }: {
@@ -6015,6 +6305,7 @@ function MobileAppSidebar({
   onDownloadClient: () => void;
   onSignOut: () => unknown;
   onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onDeleteCustomTaskView: WorkspaceAppProps["onDeleteCustomTaskView"];
   onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
   onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
 }) {
@@ -6359,6 +6650,7 @@ function MobileAppSidebar({
                   showMoreMenu={false}
                   onSmartView={onSmartView}
                   onCreateCustomTaskView={onCreateCustomTaskView}
+                  onDeleteCustomTaskView={onDeleteCustomTaskView}
                   onToggleSystemViewVisibility={onToggleSystemViewVisibility}
                   onToggleCustomViewVisibility={onToggleCustomViewVisibility}
                 />
@@ -6674,6 +6966,7 @@ function Sidebar({
   onDeleteLabel,
   onMoveLabelToInbox,
   onCreateCustomTaskView,
+  onDeleteCustomTaskView,
   onToggleSystemViewVisibility,
   onToggleCustomViewVisibility,
 }: {
@@ -6695,6 +6988,7 @@ function Sidebar({
   onDeleteLabel: WorkspaceAppProps["onDeleteLabel"];
   onMoveLabelToInbox: WorkspaceAppProps["onMoveLabelToInbox"];
   onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onDeleteCustomTaskView: WorkspaceAppProps["onDeleteCustomTaskView"];
   onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
   onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
 }) {
@@ -6956,6 +7250,7 @@ function Sidebar({
             showMoreMenu
             onSmartView={onSmartView}
             onCreateCustomTaskView={onCreateCustomTaskView}
+            onDeleteCustomTaskView={onDeleteCustomTaskView}
             onToggleSystemViewVisibility={onToggleSystemViewVisibility}
             onToggleCustomViewVisibility={onToggleCustomViewVisibility}
           />
@@ -8023,6 +8318,7 @@ function SmartViewsSidebarList({
   showMoreMenu,
   onSmartView,
   onCreateCustomTaskView,
+  onDeleteCustomTaskView,
   onToggleSystemViewVisibility,
   onToggleCustomViewVisibility,
 }: {
@@ -8034,6 +8330,7 @@ function SmartViewsSidebarList({
   showMoreMenu: boolean;
   onSmartView: (view: SmartView) => void;
   onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
+  onDeleteCustomTaskView: WorkspaceAppProps["onDeleteCustomTaskView"];
   onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
   onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
 }) {
@@ -8071,16 +8368,30 @@ function SmartViewsSidebarList({
     return "all";
   }
 
-  async function hideView(view: SmartView) {
-    if (isHideableSystemSmartView(view)) {
-      await onToggleSystemViewVisibility(view, false);
-    } else {
-      const viewId = customTaskViewId(view);
-      if (viewId) await onToggleCustomViewVisibility(viewId, false);
-    }
+  function hideView(view: SmartView) {
+    // Leave the sticky active-view first so hide removes the item from the list immediately.
     if (!selectedLabelId && smartView === view) {
       onSmartView(fallbackSmartView(view));
     }
+    if (isHideableSystemSmartView(view)) {
+      void onToggleSystemViewVisibility(view, false);
+      return;
+    }
+    const viewId = customTaskViewId(view);
+    if (viewId) void onToggleCustomViewVisibility(viewId, false);
+  }
+
+  function deleteCustomView(view: SmartView) {
+    const viewId = customTaskViewId(view);
+    if (!viewId) return;
+    const custom = customViews.find((item) => item.id === viewId);
+    if (!custom) return;
+    if (!window.confirm(`确定删除自定义视图“${custom.name}”吗？`)) return;
+    // Switch away and drop from the list right away; network delete runs in parallel.
+    if (!selectedLabelId && smartView === view) {
+      onSmartView(fallbackSmartView(view));
+    }
+    void onDeleteCustomTaskView(viewId);
   }
 
   async function createViewFromSmart(name: string) {
@@ -8258,6 +8569,21 @@ function SmartViewsSidebarList({
             >
               创建新视图
             </button>
+            {isCustomTaskView(menu.view) && (
+              <button
+                type="button"
+                className="danger"
+                role="menuitem"
+                disabled={!online}
+                onClick={() => {
+                  const view = menu.view;
+                  setMenu(null);
+                  void deleteCustomView(view);
+                }}
+              >
+                删除
+              </button>
+            )}
           </div>
         </>
       )}
@@ -8739,6 +9065,7 @@ function TaskWorkspace({
   const filtersLocked = !selectedLabelId && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
 
   const groups = useMemo(() => {
+    if (viewMode === "kanban") return [];
     if (isTrashView) {
       return tasks.length > 0 ? [{ id: "trash", title: "", tasks }] : [];
     }
@@ -8770,10 +9097,11 @@ function TaskWorkspace({
     sections,
     selectedLabelId,
     tasks,
+    viewMode,
   ]);
   const completedTasks = useMemo(
     () => {
-      if (isTrashView) return [];
+      if (viewMode === "kanban" || isTrashView) return [];
       return sortTasks(
         tasks.filter(isCompletedTask),
         preference.sort,
@@ -8792,6 +9120,7 @@ function TaskWorkspace({
       preference.direction,
       preference.sort,
       tasks,
+      viewMode,
     ],
   );
   const kanbanColumns = useMemo(
@@ -9017,24 +9346,43 @@ function TaskWorkspace({
     const createdId = typeof created === "object" && created && "id" in created
       ? String(created.id)
       : null;
-    if (createdId && dueAt) {
-      await onSaveTaskSchedule(createdId, {
-        due_at: dueAt,
-        due_start_at: null,
-        due_is_all_day: true,
-        due_timezone: systemTimeZone(),
-      }, { reminders: [], persistent: false, recurrence: null });
-    }
-    if (createdId && cliAssignee) {
-      await onAssignTask(createdId, { kind: "cli", tool: cliAssignee });
-    }
-    if (createdId && sectionOrder) {
-      await onSetTaskListOrder(
-        sectionOrder.listKey,
-        sectionOrder.sectionId,
-        [createdId, ...sectionOrder.taskIds],
+    if (!createdId) return;
+
+    // Persist order / schedule / assign off the create hot path so the form stays responsive.
+    const followUps: Promise<void>[] = [];
+    if (dueAt) {
+      followUps.push(
+        onSaveTaskSchedule(createdId, {
+          due_at: dueAt,
+          due_start_at: null,
+          due_is_all_day: true,
+          due_timezone: systemTimeZone(),
+        }, { reminders: [], persistent: false, recurrence: null })
+          .catch((error) => {
+            onNotice(error instanceof Error ? error.message : "保存截止日期失败，请重试");
+          }),
       );
     }
+    if (cliAssignee) {
+      followUps.push(
+        onAssignTask(createdId, { kind: "cli", tool: cliAssignee })
+          .catch((error) => {
+            onNotice(error instanceof Error ? error.message : "指派失败，请重试");
+          }),
+      );
+    }
+    if (sectionOrder) {
+      followUps.push(
+        onSetTaskListOrder(
+          sectionOrder.listKey,
+          sectionOrder.sectionId,
+          [createdId, ...sectionOrder.taskIds],
+        ).catch((error) => {
+          onNotice(error instanceof Error ? error.message : "保存排序失败，请重试");
+        }),
+      );
+    }
+    if (followUps.length > 0) void Promise.all(followUps);
   }
 
   async function moveKanbanTask(task: Task, source: KanbanColumn, target: KanbanColumn) {
@@ -10423,6 +10771,15 @@ function TaskRow({
                   onContextMenu(event.clientX, event.clientY, subtask.id);
                 }}
               >
+                {subtask.priority && subtask.priority !== "none" && (
+                    <span
+                    className="task-list-subtask-priority"
+                    aria-hidden="true"
+                    style={{
+                      "--priority-color": getPriorityOption(subtask.priority).color,
+                    } as React.CSSProperties}
+                  />
+                )}
                 <button
                   type="button"
                   className="task-list-subtask-checkbox"

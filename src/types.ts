@@ -218,9 +218,12 @@ export type Subtask = {
   description: string;
   completed: boolean;
   position: number;
+  priority: TaskPriority;
   due_at: string | null;
   estimate_hours: number | null;
   actual_hours: number | null;
+  estimate_pomodoros: number | null;
+  actual_pomodoros: number | null;
   assignee_id: string | null;
   cli_assignee: AiCliTool | null;
   created_by: string | null;
@@ -272,6 +275,8 @@ export type Task = {
   recurrence: TaskRecurrence | null;
   estimate_hours: number | null;
   actual_hours: number | null;
+  estimate_pomodoros: number | null;
+  actual_pomodoros: number | null;
   assignee_id: string | null;
   cli_assignee: AiCliTool | null;
   created_by: string;

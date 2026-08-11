@@ -6740,12 +6740,23 @@ html.dark .kanban-card {
 }
 
 .task-list-subtask-row {
+  position: relative;
   min-height: 40px;
   display: flex;
   align-items: center;
   padding: 0 20px 0 58px;
   color: var(--text);
   box-shadow: inset 0 -1px var(--line);
+}
+
+.task-list-subtask-priority {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 48px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--priority-color);
 }
 
 .task-list-subtask-row:hover {
@@ -9714,6 +9725,15 @@ html.dark .task-detail {
   align-items: center;
 }
 
+.subtask-actions .priority-control {
+  height: 40px;
+}
+
+.subtask-actions .priority-trigger {
+  width: 28px;
+  height: 40px;
+}
+
 .subtask-assignee-control .task-assignee-trigger,
 .subtask-date-trigger,
 .subtask-terminal-trigger,
@@ -10902,6 +10922,35 @@ html.dark .task-detail {
   display: grid;
   gap: 16px;
   padding: 20px;
+}
+
+.task-hours-unit {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.task-hours-unit > span {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.task-hours-unit select {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.task-hours-unit select:focus {
+  outline: none;
+  border-color: #4772fa;
 }
 
 .task-hours-dialog-body > label {

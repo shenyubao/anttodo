@@ -179,6 +179,30 @@ try {
   runCli("task", "set-duetime", task.id, "2026-08-05T10:00:00+08:00", "--timezone", "Asia/Shanghai");
   runCli("task", "set-duetime", task.id, "--clear");
 
+  const pomodoro = runCli(
+    "pomodoro",
+    "--started-at", "2026-08-04T09:00:00+08:00",
+    "--ended-at", "2026-08-04T09:25:00+08:00",
+    "--planned-seconds", "1500",
+    "--task", task.id,
+    "--notes", "CLI pomodoro",
+  );
+  if (pomodoro.mode !== "pomodoro" || pomodoro.kind !== "focus"
+    || pomodoro.planned_seconds !== 1500 || pomodoro.elapsed_seconds !== 1500
+    || pomodoro.task_id !== task.id || pomodoro.notes !== "CLI pomodoro") {
+    throw new Error("CLI pomodoro session did not match the requested recording");
+  }
+  const stopwatch = runCli(
+    "stopwatch",
+    "--started-at", "2026-08-04T09:30:00+08:00",
+    "--ended-at", "2026-08-04T09:40:00+08:00",
+  );
+  if (stopwatch.mode !== "stopwatch" || stopwatch.kind !== "focus"
+    || stopwatch.planned_seconds !== 600 || stopwatch.elapsed_seconds !== 600
+    || stopwatch.task_id !== null || stopwatch.notes !== null) {
+    throw new Error("CLI stopwatch session did not match the requested recording");
+  }
+
   const subtask = runCli("subtask", "create", "--task", task.id, "--title", "CLI subtask");
   runCli("subtask", "list", "--task", task.id);
   runCli("subtask", "get", subtask.id);
@@ -198,7 +222,7 @@ try {
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    commands: 32,
+    commands: 34,
     deviceAuthorization: "approved-and-consumed",
     tokenRefresh: "verified",
   })}\n`);

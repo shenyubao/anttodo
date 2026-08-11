@@ -1,13 +1,39 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendActualPomodoros,
   appendActualHours,
+  coercePomodoros,
   formatHoursDetail,
   formatHoursList,
   formatHoursValue,
+  hoursFromPomodoros,
   hoursFromFocusSeconds,
   normalizeHoursInput,
+  normalizePomodorosInput,
   parseEstimateHoursText,
 } from "./taskHours";
+
+describe("pomodoro helpers", () => {
+  it("converts pomodoros to one-decimal hours", () => {
+    expect(hoursFromPomodoros(3, 25)).toBe(1.3);
+    expect(hoursFromPomodoros(3, 15)).toBe(0.8);
+    expect(hoursFromPomodoros(0, 25)).toBe(0);
+  });
+
+  it("coerces and appends only non-negative integers", () => {
+    expect(coercePomodoros("3")).toBe(3);
+    expect(coercePomodoros(3.5)).toBeNull();
+    expect(appendActualPomodoros(null, 1)).toBe(1);
+    expect(appendActualPomodoros(2, 1)).toBe(3);
+  });
+
+  it("validates pomodoro input", () => {
+    expect(normalizePomodorosInput("3")).toBe(3);
+    expect(normalizePomodorosInput("")).toBeNull();
+    expect(() => normalizePomodorosInput("3.5")).toThrow();
+    expect(() => normalizePomodorosInput("-1")).toThrow();
+  });
+});
 
 describe("hoursFromFocusSeconds", () => {
   it("rounds focus seconds to one-decimal hours", () => {
@@ -54,6 +80,8 @@ describe("formatHours", () => {
     expect(formatHoursValue(5)).toBe("5");
     expect(formatHoursValue(0.2)).toBe("0.2");
     expect(formatHoursDetail(5, 3)).toBe("预计：5小时，实际：3小时");
+    expect(formatHoursDetail(1.3, 0.8, 3, null))
+      .toBe("预计：3番茄(1.3小时)，实际：0.8小时");
     expect(formatHoursDetail(5, null)).toBe("预计：5小时");
     expect(formatHoursDetail(null, 3)).toBe("实际：3小时");
     expect(formatHoursDetail(null, null)).toBeNull();

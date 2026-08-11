@@ -8,6 +8,16 @@ const sidebars: SidebarsConfig = {
       label: '项目介绍',
     },
     {
+      type: 'doc',
+      id: 'changelog',
+      label: 'ChangeLog',
+    },
+    {
+      type: 'doc',
+      id: 'deep-links',
+      label: 'macOS DeepLink',
+    },
+    {
       type: 'category',
       label: '企业管理',
       items: [

@@ -50,6 +50,27 @@ export function parseDueTime(value: string | undefined, clear: boolean | undefin
   return new Date(value).toISOString();
 }
 
+export function parseFocusSessionInterval(startedAt: string, endedAt: string) {
+  const started = parseDueTime(startedAt, false)!;
+  const ended = parseDueTime(endedAt, false)!;
+  const elapsedSeconds = Math.floor((Date.parse(ended) - Date.parse(started)) / 1000);
+  if (elapsedSeconds <= 0) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_focus_session_interval",
+      message: "Focus session ended_at must be later than started_at",
+    });
+  }
+  if (elapsedSeconds < 60) {
+    throw new CliError({
+      type: "validation",
+      code: "focus_session_too_short",
+      message: "Focus session must last at least 60 seconds",
+    });
+  }
+  return { startedAt: started, endedAt: ended, elapsedSeconds };
+}
+
 export function parsePriority(value: string): TaskPriority {
   if (["none", "low", "medium", "high"].includes(value)) return value as TaskPriority;
   throw new CliError({ type: "validation", code: "invalid_priority", message: `Invalid priority: ${value}` });

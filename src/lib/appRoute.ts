@@ -112,3 +112,21 @@ export function appRoutePath(route: AppRoute) {
   }
   return `${base}/${route.kind}`;
 }
+
+/** Absolute URL for sharing a task/note; uses public app origin in the Electron file:// shell. */
+export function taskShareUrl(
+  workspaceId: string,
+  task: { id: string; kind: "todo" | "note" | string },
+) {
+  const path = appRoutePath({
+    workspaceId,
+    kind: "task",
+    taskId: task.id,
+    itemKind: task.kind === "note" ? "note" : "task",
+  });
+  let url = new URL(path, window.location.origin).toString();
+  if (window.location.protocol === "file:" && import.meta.env.VITE_PUBLIC_APP_URL) {
+    url = new URL(path, import.meta.env.VITE_PUBLIC_APP_URL).toString();
+  }
+  return url;
+}

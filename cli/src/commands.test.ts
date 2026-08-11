@@ -12,7 +12,7 @@ describe("command tree", () => {
     const program = buildProgram();
     expect(program.commands.map((command) => command.name())).toEqual([
       "auth", "workspace", "task", "subtask", "note", "tag", "user",
-      "group", "search", "comment", "activity", "attachment", "man",
+      "group", "search", "comment", "activity", "attachment", "pomodoro", "stopwatch", "man",
     ]);
   });
 
@@ -31,6 +31,27 @@ describe("command tree", () => {
       .find((command) => command.name === "create");
     expect(taskCreate?.command).toBe("anttodo task create");
     expect(taskCreate?.options?.length).toBeGreaterThan(0);
+  });
+
+  it("exposes completed focus session recording commands", () => {
+    const program = buildProgram();
+    const pomodoro = program.commands.find((command) => command.name() === "pomodoro");
+    const stopwatch = program.commands.find((command) => command.name() === "stopwatch");
+    expect(pomodoro?.options.map((option) => option.flags)).toEqual([
+      "--started-at <rfc3339>",
+      "--ended-at <rfc3339>",
+      "--planned-seconds <number>",
+      "--task <task-id>",
+      "--notes <text>",
+    ]);
+    expect(stopwatch?.options.map((option) => option.flags)).toEqual([
+      "--started-at <rfc3339>",
+      "--ended-at <rfc3339>",
+      "--task <task-id>",
+      "--notes <text>",
+    ]);
+    expect(commandTree(pomodoro!).risk).toBe("write");
+    expect(commandTree(stopwatch!).risk).toBe("write");
   });
 
   it("prints OpenInsight-style text for man --format pretty and JSON otherwise", async () => {

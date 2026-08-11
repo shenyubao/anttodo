@@ -8,6 +8,7 @@ import {
   Ellipsis,
   History,
   Inbox,
+  Link2,
   ListTodo,
   MessageCircle,
   NotebookPen,
@@ -56,6 +57,7 @@ import {
   type AiSuggestedSubtask,
 } from "./lib/aiSubtaskDecompose";
 import { decomposeSubtasks, formatTaskWithAi } from "./lib/api";
+import { taskShareUrl } from "./lib/appRoute";
 import { systemTimeZone } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
@@ -78,7 +80,10 @@ import { trackAiTerminalSession, untrackAiTerminalSession } from "./lib/aiTermin
 import {
   formatHoursDetail,
   formatHoursValue,
+  formatPomodorosValue,
+  hoursFromPomodoros,
   normalizeHoursInput,
+  normalizePomodorosInput,
 } from "./lib/taskHours";
 import {
   MOBILE_TASK_DETAIL_MEDIA,
@@ -130,6 +135,7 @@ export type TaskDetailProps = {
   attachmentService: AttachmentService;
   now: Date;
   dateTimePreferences: DateTimePreferences;
+  pomodoroMinutes: number;
   aiFeatureSettings: AiFeatureSettings;
   aiWorkSettings: AiWorkSettings;
   settingsLabelName?: string | null;
@@ -148,12 +154,12 @@ export type TaskDetailProps = {
   onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
   onCreateSubtask: (
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) => Promise<void>;
   focusedSubtaskId?: string | null;
   onClearFocusedSubtask?: () => void;
@@ -169,6 +175,7 @@ export type TaskDetailProps = {
   ) => Promise<void>;
   onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
   onDeleteComment: (comment: TaskComment) => Promise<void>;
+  onNotice?: (message: string) => void;
 };
 
 function TaskAssigneeControl({
@@ -777,6 +784,9 @@ function TaskHoursDialog({
   open,
   estimateHours,
   actualHours,
+  estimatePomodoros,
+  actualPomodoros,
+  pomodoroMinutes,
   resetKey,
   online,
   onOpenChange,
@@ -785,16 +795,22 @@ function TaskHoursDialog({
   open: boolean;
   estimateHours: number | null;
   actualHours: number | null;
+  estimatePomodoros: number | null;
+  actualPomodoros: number | null;
+  pomodoroMinutes: number;
   resetKey: string;
   online: boolean;
   onOpenChange: (open: boolean) => void;
   onUpdate: (patch: {
     estimate_hours: number | null;
     actual_hours: number | null;
+    estimate_pomodoros: number | null;
+    actual_pomodoros: number | null;
   }) => Promise<void>;
 }) {
   const [estimate, setEstimate] = useState("");
   const [actual, setActual] = useState("");
+  const [unit, setUnit] = useState<"hours" | "pomodoros">("hours");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -802,21 +818,54 @@ function TaskHoursDialog({
     if (!open) return;
     setEstimate(estimateHours == null ? "" : formatHoursValue(estimateHours));
     setActual(actualHours == null ? "" : formatHoursValue(actualHours));
+    setUnit("hours");
     setSaving(false);
     setError("");
   }, [open, actualHours, estimateHours, resetKey]);
+
+  function changeUnit(nextUnit: "hours" | "pomodoros") {
+    setUnit(nextUnit);
+    if (nextUnit === "hours") {
+      setEstimate(estimateHours == null ? "" : formatHoursValue(estimateHours));
+      setActual(actualHours == null ? "" : formatHoursValue(actualHours));
+      return;
+    }
+    setEstimate(
+      estimatePomodoros == null ? "" : formatPomodorosValue(estimatePomodoros),
+    );
+    setActual(
+      actualPomodoros == null ? "" : formatPomodorosValue(actualPomodoros),
+    );
+  }
 
   async function save() {
     if (!online || saving) return;
     setSaving(true);
     setError("");
     try {
-      const nextEstimate = normalizeHoursInput(estimate);
-      const nextActual = normalizeHoursInput(actual);
-      await onUpdate({
-        estimate_hours: nextEstimate,
-        actual_hours: nextActual,
-      });
+      if (unit === "hours") {
+        const nextEstimate = normalizeHoursInput(estimate);
+        const nextActual = normalizeHoursInput(actual);
+        await onUpdate({
+          estimate_hours: nextEstimate,
+          actual_hours: nextActual,
+          estimate_pomodoros: null,
+          actual_pomodoros: null,
+        });
+      } else {
+        const nextEstimate = normalizePomodorosInput(estimate);
+        const nextActual = normalizePomodorosInput(actual);
+        await onUpdate({
+          estimate_hours: nextEstimate == null
+            ? null
+            : hoursFromPomodoros(nextEstimate, pomodoroMinutes),
+          actual_hours: nextActual == null
+            ? null
+            : hoursFromPomodoros(nextActual, pomodoroMinutes),
+          estimate_pomodoros: nextEstimate,
+          actual_pomodoros: nextActual,
+        });
+      }
       onOpenChange(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "工时保存失败，请重试");
@@ -842,20 +891,31 @@ function TaskHoursDialog({
             </Dialog.Close>
           </header>
           <div className="task-hours-dialog-body">
+            <div className="task-hours-unit">
+              <span>单位</span>
+              <select
+                value={unit}
+                disabled={!online || saving}
+                onChange={(event) => changeUnit(event.target.value as "hours" | "pomodoros")}
+              >
+                <option value="hours">小时</option>
+                <option value="pomodoros">番茄数</option>
+              </select>
+            </div>
             <label>
               <span>预计工时</span>
               <div className="task-hours-field">
                 <input
                   type="number"
-                  inputMode="decimal"
+                  inputMode={unit === "hours" ? "decimal" : "numeric"}
                   min={0}
-                  step={0.1}
+                  step={unit === "hours" ? 0.1 : 1}
                   value={estimate}
                   disabled={!online || saving}
                   placeholder="可选"
                   onChange={(event) => setEstimate(event.target.value)}
                 />
-                <em>小时</em>
+                <em>{unit === "hours" ? "小时" : "番茄"}</em>
               </div>
             </label>
             <label>
@@ -863,15 +923,15 @@ function TaskHoursDialog({
               <div className="task-hours-field">
                 <input
                   type="number"
-                  inputMode="decimal"
+                  inputMode={unit === "hours" ? "decimal" : "numeric"}
                   min={0}
-                  step={0.1}
+                  step={unit === "hours" ? 0.1 : 1}
                   value={actual}
                   disabled={!online || saving}
                   placeholder="可选"
                   onChange={(event) => setActual(event.target.value)}
                 />
-                <em>小时</em>
+                <em>{unit === "hours" ? "小时" : "番茄"}</em>
               </div>
             </label>
             {error && <p role="alert">{error}</p>}
@@ -903,9 +963,11 @@ function TaskHoursDialog({
 function TaskMoreMenu({
   task,
   online,
+  pomodoroMinutes,
   onUpdate,
   onShowActivity,
-}: Pick<TaskDetailProps, "task" | "online" | "onUpdate"> & {
+  onNotice,
+}: Pick<TaskDetailProps, "task" | "online" | "pomodoroMinutes" | "onUpdate" | "onNotice"> & {
   onShowActivity: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -982,6 +1044,22 @@ function TaskMoreMenu({
     };
   }, [error, open]);
 
+  async function copyLink() {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await navigator.clipboard.writeText(taskShareUrl(task.workspace_id, task));
+      setOpen(false);
+      triggerRef.current?.focus();
+      onNotice?.("链接已复制");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "复制链接失败，请检查剪贴板权限");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function switchKind() {
     if (!online || saving) return;
     setSaving(true);
@@ -1046,6 +1124,15 @@ function TaskMoreMenu({
           <button
             type="button"
             role="menuitem"
+            disabled={saving}
+            onClick={() => void copyLink()}
+          >
+            <Link2 />
+            <span>复制链接</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             disabled={!online || saving}
             onClick={() => void switchKind()}
           >
@@ -1060,6 +1147,9 @@ function TaskMoreMenu({
         open={hoursOpen}
         estimateHours={task.estimate_hours}
         actualHours={task.actual_hours}
+        estimatePomodoros={task.estimate_pomodoros}
+        actualPomodoros={task.actual_pomodoros}
+        pomodoroMinutes={pomodoroMinutes}
         resetKey={task.id}
         online={online}
         onOpenChange={setHoursOpen}
@@ -1072,11 +1162,13 @@ function TaskMoreMenu({
 function SubtaskMoreMenu({
   subtask,
   online,
+  pomodoroMinutes,
   onUpdate,
 }: {
   subtask: Subtask;
   online: boolean;
-  onUpdate: (patch: Partial<Pick<Subtask, "estimate_hours" | "actual_hours">>) => Promise<void>;
+  pomodoroMinutes: number;
+  onUpdate: (patch: Partial<Pick<Subtask, "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros">>) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
@@ -1183,6 +1275,9 @@ function SubtaskMoreMenu({
         open={hoursOpen}
         estimateHours={subtask.estimate_hours}
         actualHours={subtask.actual_hours}
+        estimatePomodoros={subtask.estimate_pomodoros}
+        actualPomodoros={subtask.actual_pomodoros}
+        pomodoroMinutes={pomodoroMinutes}
         resetKey={subtask.id}
         online={online}
         onOpenChange={setHoursOpen}
@@ -1233,7 +1328,7 @@ function AiSmartProcessControl({
   editable: boolean;
   onCreateSubtask: (
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onEnsureSubtasksVisible?: () => void;
   onUpdate: (
@@ -1749,6 +1844,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   attachmentService,
   now,
   dateTimePreferences,
+  pomodoroMinutes,
   aiFeatureSettings,
   aiWorkSettings,
   settingsLabelName = null,
@@ -1773,6 +1869,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onCreateComment,
   onUpdateComment,
   onDeleteComment,
+  onNotice,
 }, forwardedRef) {
   const focusedSubtask = focusedSubtaskId
     ? task.subtasks.find((subtask) => subtask.id === focusedSubtaskId) ?? null
@@ -1799,6 +1896,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState("");
   const [draftSubtaskDueAt, setDraftSubtaskDueAt] = useState<string | null>(null);
+  const [draftSubtaskPriority, setDraftSubtaskPriority] = useState<Subtask["priority"]>("none");
   const [draftSubtaskCli, setDraftSubtaskCli] = useState<AiCliTool | null>(null);
   const assignableMembers = useMemo(
     () => getAssignableMembers(bundle, task, currentUserId),
@@ -1837,6 +1935,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const hoursLabel = formatHoursDetail(
     focusedSubtask ? focusedSubtask.estimate_hours : task.estimate_hours,
     focusedSubtask ? focusedSubtask.actual_hours : task.actual_hours,
+    focusedSubtask ? focusedSubtask.estimate_pomodoros : task.estimate_pomodoros,
+    focusedSubtask ? focusedSubtask.actual_pomodoros : task.actual_pomodoros,
   );
   const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
   activeTerminalRef.current = activeTerminal;
@@ -1899,6 +1999,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     setEditingSubtaskTitle("");
     subtaskTokens.reset();
     setDraftSubtaskDueAt(null);
+    setDraftSubtaskPriority("none");
     setDraftSubtaskCli(null);
     setToolbarOpen(false);
     setActivityOpen(false);
@@ -1995,7 +2096,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
 
   function scheduleSubtaskSave(
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) {
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
@@ -2042,14 +2143,17 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       ? draftSubtaskAssignee.tool
       : null;
     const dueAt = draftSubtaskDueAt;
+    const priority = draftSubtaskPriority;
     subtaskTokens.reset();
     setDraftSubtaskDueAt(null);
+    setDraftSubtaskPriority("none");
     setDraftSubtaskCli(null);
     try {
       await onCreateSubtask(payload.title, {
         assignee_id: assigneeId,
         cli_assignee: cliAssignee,
         due_at: dueAt,
+        priority,
       });
     } finally {
       committingDraftSubtaskRef.current = false;
@@ -2233,6 +2337,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           <SubtaskMoreMenu
             subtask={focusedSubtask}
             online={writable}
+            pomodoroMinutes={pomodoroMinutes}
             onUpdate={(patch) => onUpdateSubtask(focusedSubtask.id, patch)}
           />
         </header>
@@ -2502,7 +2607,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         <TaskMoreMenu
           task={task}
           online={writable}
+          pomodoroMinutes={pomodoroMinutes}
           onUpdate={onUpdate}
+          onNotice={onNotice}
           onShowActivity={() => {
             leaveCliView();
             setCliPickerOpen(false);
@@ -2659,6 +2766,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                       target={subtaskAssigneeTarget(subtask)}
                       compact
                     />
+                    <PriorityControl
+                      priority={subtask.priority ?? "none"}
+                      online={writable}
+                      onChange={(priority) => onUpdateSubtask(subtask.id, { priority })}
+                    />
                     <SubtaskDueDateControl
                       dueAt={subtask.due_at}
                       completed={subtask.completed}
@@ -2694,6 +2806,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                   (
                     Boolean(subtaskTokens.title.trim())
                     || Boolean(draftSubtaskDueAt)
+                    || draftSubtaskPriority !== "none"
                     || draftSubtaskAssignee.kind !== "none"
                   ) && "has-draft",
                 )}
@@ -2754,6 +2867,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     }}
                     target={draftSubtaskAssignee}
                     compact
+                  />
+                  <PriorityControl
+                    priority={draftSubtaskPriority}
+                    online={writable}
+                    onChange={async (priority) => setDraftSubtaskPriority(priority)}
                   />
                   <SubtaskDueDateControl
                     dueAt={draftSubtaskDueAt}

@@ -20,6 +20,14 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
       return () => ipcRenderer.removeListener("anttodo:auth-callback-available", handler);
     }
   }),
+  deepLinks: Object.freeze({
+    ready: () => ipcRenderer.send("anttodo:deep-links-ready"),
+    onCommand: (listener) => {
+      const handler = (_event, command) => listener(command);
+      ipcRenderer.on("anttodo:deep-link-command", handler);
+      return () => ipcRenderer.removeListener("anttodo:deep-link-command", handler);
+    }
+  }),
   reminders: Object.freeze({
     sync: (entries) => ipcRenderer.invoke("anttodo:reminders-sync", entries),
     acknowledge: (reminderId) => ipcRenderer.send("anttodo:reminders-acknowledge", reminderId),

@@ -55,6 +55,11 @@ const config: Config = {
           label: '项目介绍',
         },
         {
+          to: '/changelog',
+          label: 'ChangeLog',
+          position: 'left',
+        },
+        {
           href: 'https://app.anttodo.com',
           label: '打开应用',
           position: 'right',
@@ -70,6 +75,14 @@ const config: Config = {
             {
               label: '项目介绍',
               to: '/',
+            },
+            {
+              label: 'ChangeLog',
+              to: '/changelog',
+            },
+            {
+              label: 'macOS DeepLink',
+              to: '/deep-links',
             },
             {
               label: '单点登录',

@@ -3,6 +3,7 @@ import {
   assignTask,
   bulkTaskAction,
   createComment,
+  createFocusSession,
   createSubtask,
   createTag,
   createTask,
@@ -61,6 +62,7 @@ import {
   nonEmpty,
   parseExplicitAccessScope,
   parseDueTime,
+  parseFocusSessionInterval,
   parseLabelKind,
   parsePriority,
   parseRecurrence,
@@ -763,6 +765,52 @@ export function buildProgram() {
     const context = await authenticatedContext();
     emit(command, await deleteAttachment(context.client, uri));
   }), "high-risk-write");
+
+  setRisk(program.command("pomodoro").description("Record a completed pomodoro session")
+    .requiredOption("--started-at <rfc3339>")
+    .requiredOption("--ended-at <rfc3339>")
+    .requiredOption("--planned-seconds <number>")
+    .option("--task <task-id>")
+    .option("--notes <text>")
+    .action(async (options, command) => {
+      const interval = parseFocusSessionInterval(options.startedAt, options.endedAt);
+      const taskId = options.task ? assertUuid(options.task, "task") : null;
+      const plannedSeconds = positiveInteger(options.plannedSeconds, "planned-seconds", Number.MAX_SAFE_INTEGER, 1);
+      const context = await businessContext(command);
+      emit(command, await createFocusSession(context.client, {
+        userId: context.user.id,
+        workspaceId: context.workspace.id,
+        taskId,
+        mode: "pomodoro",
+        plannedSeconds,
+        elapsedSeconds: interval.elapsedSeconds,
+        notes: options.notes?.trim() || null,
+        startedAt: interval.startedAt,
+        endedAt: interval.endedAt,
+      }));
+    }), "write");
+
+  setRisk(program.command("stopwatch").description("Record a completed stopwatch session")
+    .requiredOption("--started-at <rfc3339>")
+    .requiredOption("--ended-at <rfc3339>")
+    .option("--task <task-id>")
+    .option("--notes <text>")
+    .action(async (options, command) => {
+      const interval = parseFocusSessionInterval(options.startedAt, options.endedAt);
+      const taskId = options.task ? assertUuid(options.task, "task") : null;
+      const context = await businessContext(command);
+      emit(command, await createFocusSession(context.client, {
+        userId: context.user.id,
+        workspaceId: context.workspace.id,
+        taskId,
+        mode: "stopwatch",
+        plannedSeconds: interval.elapsedSeconds,
+        elapsedSeconds: interval.elapsedSeconds,
+        notes: options.notes?.trim() || null,
+        startedAt: interval.startedAt,
+        endedAt: interval.endedAt,
+      }));
+    }), "write");
 
   setRisk(program.command("man").description("Return the complete command tree for agents").action(async (_options, command) => {
     if (formatFor(command) === "pretty") {

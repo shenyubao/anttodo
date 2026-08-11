@@ -5,6 +5,29 @@ export function coerceHours(value: unknown): number | null {
   return Math.round(number * 10) / 10;
 }
 
+export function coercePomodoros(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(number) || number < 0) return null;
+  return number;
+}
+
+export function hoursFromPomodoros(
+  pomodoros: number,
+  pomodoroMinutes: number,
+): number | null {
+  if (!Number.isInteger(pomodoros) || pomodoros < 0) return null;
+  if (!Number.isFinite(pomodoroMinutes) || pomodoroMinutes <= 0) return null;
+  return coerceHours((pomodoros * pomodoroMinutes) / 60);
+}
+
+export function appendActualPomodoros(
+  current: number | null | undefined,
+  delta: number,
+): number {
+  return coercePomodoros((current ?? 0) + delta) ?? delta;
+}
+
 /** Convert focus elapsed seconds to hours at 0.1 precision; null if too small to register. */
 export function hoursFromFocusSeconds(elapsedSeconds: number): number | null {
   if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) return null;
@@ -48,17 +71,46 @@ export function normalizeHoursInput(raw: string): number | null {
   return rounded;
 }
 
+export function normalizePomodorosInput(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("番茄数须为非负整数");
+  }
+  return value;
+}
+
 export function formatHoursValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+}
+
+export function formatPomodorosValue(value: number): string {
+  return String(value);
+}
+
+function formatEffortValue(
+  hours: number | null | undefined,
+  pomodoros: number | null | undefined,
+): string | null {
+  if (pomodoros != null) {
+    const tomato = `${formatPomodorosValue(pomodoros)}番茄`;
+    return hours == null ? tomato : `${tomato}(${formatHoursValue(hours)}小时)`;
+  }
+  return hours == null ? null : `${formatHoursValue(hours)}小时`;
 }
 
 export function formatHoursDetail(
   estimateHours: number | null | undefined,
   actualHours: number | null | undefined,
+  estimatePomodoros: number | null | undefined = null,
+  actualPomodoros: number | null | undefined = null,
 ): string | null {
   const parts: string[] = [];
-  if (estimateHours != null) parts.push(`预计：${formatHoursValue(estimateHours)}小时`);
-  if (actualHours != null) parts.push(`实际：${formatHoursValue(actualHours)}小时`);
+  const estimate = formatEffortValue(estimateHours, estimatePomodoros);
+  const actual = formatEffortValue(actualHours, actualPomodoros);
+  if (estimate) parts.push(`预计：${estimate}`);
+  if (actual) parts.push(`实际：${actual}`);
   return parts.length > 0 ? parts.join("，") : null;
 }
 

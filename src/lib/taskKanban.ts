@@ -199,30 +199,40 @@ export function buildKanbanColumns(input: {
       ? input.tasks
       : input.tasks.filter(isActiveTask);
     const placementByTask = new Map(input.placements.map((item) => [item.task_id, item]));
+    const buckets = new Map<string | null, Task[]>();
+    buckets.set(null, []);
+    for (const section of orderedTaskSections(input.sections)) {
+      buckets.set(section.id, []);
+    }
+    for (const task of tasks) {
+      const sectionId = placementByTask.get(task.id)?.section_id ?? null;
+      const bucket = buckets.get(sectionId) ?? buckets.get(null)!;
+      bucket.push(task);
+    }
     const sortGroup = (items: Task[]) =>
-      sortTasks(
-        items,
-        input.preference.sort,
-        input.preference.direction,
-        input.labels,
-        input.members,
-        input.placements,
-        input.userLabelOrder,
-      );
+      items.length === 0
+        ? items
+        : sortTasks(
+            items,
+            input.preference.sort,
+            input.preference.direction,
+            input.labels,
+            input.members,
+            input.placements,
+            input.userLabelOrder,
+          );
     return [
       {
         id: "section:ungrouped",
         title: "未分组",
         target: { kind: "section" as const, sectionId: null },
-        tasks: sortGroup(tasks.filter((task) => !placementByTask.get(task.id)?.section_id)),
+        tasks: sortGroup(buckets.get(null) ?? []),
       },
       ...orderedTaskSections(input.sections).map((section): KanbanColumn => ({
         id: `section:${section.id}`,
         title: section.name,
         target: { kind: "section", sectionId: section.id },
-        tasks: sortGroup(
-          tasks.filter((task) => placementByTask.get(task.id)?.section_id === section.id),
-        ),
+        tasks: sortGroup(buckets.get(section.id) ?? []),
       })),
     ] satisfies KanbanColumn[];
   }

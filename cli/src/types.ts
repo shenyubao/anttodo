@@ -4,6 +4,22 @@ export type TaskStatus = "open" | "completed" | "cancelled";
 export type LabelAccessScope = "inherit" | "all" | "users" | "groups";
 export type LabelKind = "private" | "team";
 export type TaskKind = "todo" | "note";
+export type FocusSessionMode = "pomodoro" | "stopwatch";
+export type FocusSessionKind = "focus" | "short_break" | "long_break";
+export type FocusSession = {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  task_id: string | null;
+  mode: FocusSessionMode;
+  kind: FocusSessionKind;
+  planned_seconds: number;
+  elapsed_seconds: number;
+  notes: string | null;
+  started_at: string;
+  ended_at: string;
+  created_at: string;
+};
 export type ReminderAnchor = "start" | "end";
 export type ReminderUnit = "minute" | "hour" | "day" | "week";
 export type ReminderRule = {
