@@ -2,6 +2,7 @@ import type {
   AiCliTool,
   Subtask,
   Task,
+  TaskDependency,
   TaskKind,
   TaskPlacement,
   TaskPriority,
@@ -9,6 +10,7 @@ import type {
   TaskSection,
   WorkspaceBundle,
 } from "../types";
+import { descendantIds } from "./subtaskTree";
 import { orderedTaskSections, taskSectionOrderAfterInsert } from "./taskList";
 
 export const OPTIMISTIC_TASK_ID_PREFIX = "optimistic-task:";
@@ -92,6 +94,7 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
     subtasks: [],
     reminders: [],
     reminder_persistent: false,
+    dependencies: [],
   };
 }
 
@@ -144,6 +147,7 @@ function taskFromCreatedRow(
     subtasks: [],
     reminders: [],
     reminder_persistent: false,
+    dependencies: created.dependencies ?? [],
   };
 }
 
@@ -183,7 +187,18 @@ export function replaceOptimisticTask(
 export function removeTaskFromBundle(bundle: WorkspaceBundle, taskId: string): WorkspaceBundle {
   return {
     ...bundle,
-    tasks: bundle.tasks.filter((task) => task.id !== taskId),
+    tasks: bundle.tasks
+      .filter((task) => task.id !== taskId)
+      .map((task) => ({
+        ...task,
+        dependencies: (task.dependencies ?? []).filter((item) =>
+          item.depends_on_task_id !== taskId && item.task_id !== taskId),
+        subtasks: task.subtasks.map((subtask) => ({
+          ...subtask,
+          dependencies: (subtask.dependencies ?? []).filter((item) =>
+            item.depends_on_task_id !== taskId && item.task_id !== taskId),
+        })),
+      })),
     taskPlacements: bundle.taskPlacements.filter((placement) => placement.task_id !== taskId),
   };
 }
@@ -450,6 +465,7 @@ export type OptimisticSubtaskInput = {
   userId: string;
   title: string;
   position: number;
+  parentSubtaskId?: string | null;
   priority?: TaskPriority;
   dueAt?: string | null;
   dueStartAt?: string | null;
@@ -468,6 +484,7 @@ export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask 
   return {
     id: input.optimisticId ?? `${OPTIMISTIC_SUBTASK_ID_PREFIX}${crypto.randomUUID()}`,
     task_id: input.taskId,
+    parent_subtask_id: input.parentSubtaskId ?? null,
     title: input.title,
     description: "",
     completed: false,
@@ -486,6 +503,7 @@ export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask 
     created_by: input.userId,
     reminders: [],
     reminder_persistent: false,
+    dependencies: [],
   };
 }
 
@@ -524,6 +542,55 @@ export function appendSubtaskInBundle(
   });
 }
 
+export function appendTaskDependenciesInBundle(
+  bundle: WorkspaceBundle,
+  taskId: string,
+  subtaskId: string | null,
+  rows: TaskDependency[],
+): WorkspaceBundle {
+  if (rows.length === 0) return bundle;
+  return patchTaskInBundle(bundle, taskId, (task) => {
+    if (!subtaskId) {
+      const existing = new Set((task.dependencies ?? []).map((item) => item.id));
+      return {
+        ...task,
+        dependencies: [...(task.dependencies ?? []), ...rows.filter((row) => !existing.has(row.id))],
+      };
+    }
+    return {
+      ...task,
+      subtasks: task.subtasks.map((subtask) => {
+        if (subtask.id !== subtaskId) return subtask;
+        const existing = new Set((subtask.dependencies ?? []).map((item) => item.id));
+        return {
+          ...subtask,
+          dependencies: [
+            ...(subtask.dependencies ?? []),
+            ...rows.filter((row) => !existing.has(row.id)),
+          ],
+        };
+      }),
+    };
+  });
+}
+
+export function removeTaskDependencyFromBundle(
+  bundle: WorkspaceBundle,
+  dependencyId: string,
+): WorkspaceBundle {
+  return {
+    ...bundle,
+    tasks: bundle.tasks.map((task) => ({
+      ...task,
+      dependencies: (task.dependencies ?? []).filter((item) => item.id !== dependencyId),
+      subtasks: task.subtasks.map((subtask) => ({
+        ...subtask,
+        dependencies: (subtask.dependencies ?? []).filter((item) => item.id !== dependencyId),
+      })),
+    })),
+  };
+}
+
 export function patchSubtaskInBundle(
   bundle: WorkspaceBundle,
   subtaskId: string,
@@ -551,9 +618,18 @@ export function removeSubtaskFromBundle(
     ...bundle,
     tasks: bundle.tasks.map((task) => {
       if (!task.subtasks.some((item) => item.id === subtaskId)) return task;
+      const removedIds = new Set([subtaskId, ...descendantIds(task.subtasks, subtaskId)]);
       return {
         ...task,
-        subtasks: task.subtasks.filter((item) => item.id !== subtaskId),
+        dependencies: (task.dependencies ?? []).filter((item) =>
+          !removedIds.has(item.depends_on_subtask_id ?? "") && !removedIds.has(item.subtask_id ?? "")),
+        subtasks: task.subtasks
+          .filter((item) => !removedIds.has(item.id))
+          .map((item) => ({
+            ...item,
+            dependencies: (item.dependencies ?? []).filter((dep) =>
+              !removedIds.has(dep.depends_on_subtask_id ?? "") && !removedIds.has(dep.subtask_id ?? "")),
+          })),
       };
     }),
   };

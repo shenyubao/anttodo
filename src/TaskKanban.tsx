@@ -129,6 +129,8 @@ export function TaskKanban({
   onCreateSubtask,
   onUpdateSubtask,
   onDeleteSubtask,
+  onAddTaskDependencies,
+  pickerTasks,
   onPurgeTask,
   onNotice,
 }: {
@@ -181,13 +183,19 @@ export function TaskKanban({
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "priority">>,
+    patch: Partial<Pick<Subtask, "due_at" | "title" | "priority" | "parent_subtask_id" | "position">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onAddTaskDependencies: (
+    taskId: string,
+    targets: import("./types").TaskDependencyTarget[],
+    subtaskId?: string | null,
+  ) => Promise<void>;
+  pickerTasks?: Task[];
   onPurgeTask: (taskId: string) => Promise<void>;
   onNotice: (message: string) => void;
 }) {
@@ -423,6 +431,9 @@ export function TaskKanban({
           onPurgeTask={onPurgeTask}
           onExpandSubtasks={() => undefined}
           onNotice={onNotice}
+          pickerTasks={pickerTasks ?? columns.flatMap((column) => column.tasks)}
+          onAddDependencies={(targets, subtaskId) =>
+            onAddTaskDependencies(taskMenu.task.id, targets, subtaskId)}
         />
       )}
     </div>

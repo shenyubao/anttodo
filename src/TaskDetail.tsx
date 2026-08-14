@@ -8,6 +8,7 @@ import {
   Clock,
   Ellipsis,
   Flag,
+  GitFork,
   History,
   Inbox,
   Link2,
@@ -38,7 +39,10 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { shouldDismissTaskDetailOnPointerDown } from "./lib/taskDetailDismiss";
 import { DueDateControl, dueTargetFromSubtask } from "./DueDateControl";
+import { TaskDependencyList } from "./TaskDependencyList";
+import { FocusTaskPicker } from "./FocusTaskPicker";
 import { AiCliAvatar } from "./AiCliAvatar";
 import { MemberAvatar } from "./MemberAvatar";
 import { getPriorityOption, PRIORITY_OPTIONS, PriorityControl } from "./PriorityControl";
@@ -65,6 +69,21 @@ import { formatDueWithPreferences, systemTimeZone, toDateInput } from "./lib/dat
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
+import {
+  dependencyTargetKey,
+  filterPickerTasksForDependency,
+  listItemDependencies,
+} from "./lib/taskDependencies";
+import {
+  ancestorChain,
+  canAddChild,
+  childrenOf,
+  indentSubtaskPatch,
+  outdentSubtaskPatch,
+  subtaskParentId,
+  subtaskProgress,
+  visibleFlattenedSubtasks,
+} from "./lib/subtaskTree";
 import { TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
 import { useTaskTitleTokens } from "./useTaskTitleTokens";
 import {
@@ -113,6 +132,7 @@ import type {
   Task,
   TaskActivityPage,
   TaskComment,
+  TaskDependencyTarget,
   WorkspaceBundle,
 } from "./types";
 
@@ -167,16 +187,20 @@ export type TaskDetailProps = {
   onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
   onCreateSubtask: (
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
   ) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
+    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority" | "parent_subtask_id" | "position">>,
   ) => Promise<void>;
   focusedSubtaskId?: string | null;
   onClearFocusedSubtask?: () => void;
+  onFocusSubtask?: (subtaskId: string | null) => void;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onAddDependencies: (targets: TaskDependencyTarget[], subtaskId?: string | null) => Promise<void>;
+  onRemoveDependency: (dependencyId: string) => Promise<void>;
+  onOpenDependency: (taskId: string, subtaskId?: string | null) => void;
   commentsRevision: number;
   activityRevision: number;
   onLoadActivity: (cursor?: TaskActivityPage["nextCursor"]) => Promise<TaskActivityPage>;
@@ -898,8 +922,10 @@ function TaskMoreMenu({
   onUpdate,
   onShowActivity,
   onNotice,
+  onMountDependencies,
 }: Pick<TaskDetailProps, "task" | "online" | "pomodoroMinutes" | "onUpdate" | "onNotice"> & {
   onShowActivity: () => void;
+  onMountDependencies?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
@@ -1061,6 +1087,20 @@ function TaskMoreMenu({
             <Link2 />
             <span>复制链接</span>
           </button>
+          {task.kind !== "note" && onMountDependencies && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!online || saving}
+              onClick={() => {
+                setOpen(false);
+                onMountDependencies();
+              }}
+            >
+              <GitFork />
+              <span>挂载依赖任务</span>
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"
@@ -1096,12 +1136,14 @@ function SubtaskMoreMenu({
   pomodoroMinutes,
   compact = false,
   onUpdate,
+  onMountDependencies,
 }: {
   subtask: Subtask;
   online: boolean;
   pomodoroMinutes: number;
   compact?: boolean;
   onUpdate: (patch: Partial<Pick<Subtask, "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>) => Promise<void>;
+  onMountDependencies?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
@@ -1241,6 +1283,20 @@ function SubtaskMoreMenu({
                 <Clock />
                 <span>登记工时</span>
               </button>
+              {onMountDependencies && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!online}
+                  onClick={() => {
+                    setOpen(false);
+                    onMountDependencies();
+                  }}
+                >
+                  <GitFork />
+                  <span>挂载依赖任务</span>
+                </button>
+              )}
             </>
           )}
         </div>,
@@ -1305,7 +1361,7 @@ function AiSmartProcessControl({
   editable: boolean;
   onCreateSubtask: (
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
   ) => Promise<void>;
   onEnsureSubtasksVisible?: () => void;
   onUpdate: (
@@ -1827,6 +1883,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   settingsLabelName = null,
   focusedSubtaskId = null,
   onClearFocusedSubtask,
+  onFocusSubtask,
   onClose,
   onUpdate,
   onSaveSchedule,
@@ -1839,6 +1896,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onToggleSubtask,
   onUpdateSubtask,
   onDeleteSubtask,
+  onAddDependencies,
+  onRemoveDependency,
+  onOpenDependency,
   commentsRevision,
   activityRevision,
   onLoadActivity,
@@ -1861,6 +1921,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const subtaskInputRef = useRef<HTMLInputElement>(null);
   const focusedSubtaskTitleRef = useRef<HTMLTextAreaElement>(null);
   const [subtaskTitleEditing, setSubtaskTitleEditing] = useState(false);
+  const [dependencyPickerFor, setDependencyPickerFor] = useState<string | null | undefined>(undefined);
   const [subtaskTitleEditingForId, setSubtaskTitleEditingForId] = useState<string | null>(null);
   const focusedSubtaskKey = focusedSubtask?.id ?? null;
   if (focusedSubtaskKey !== subtaskTitleEditingForId) {
@@ -1904,6 +1965,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [immersive, setImmersive] = useState(false);
   const [showSubtasks, setShowSubtasks] = useState(readDetailSubtasksVisible);
   const [showSubtaskDetails, setShowSubtaskDetails] = useState(false);
+  const [collapsedSubtaskIds, setCollapsedSubtaskIds] = useState<Set<string>>(new Set());
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [commentComposerOpen, setCommentComposerOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -1916,6 +1978,36 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
   const cliPickerRef = useRef<HTMLDivElement>(null);
   const writable = editable && (online || Boolean(window.anttodoDesktop?.sync));
+
+  function renderMenuDependencyPicker() {
+    if (dependencyPickerFor === undefined || task.kind === "note") return null;
+    const existing = listItemDependencies(task, dependencyPickerFor);
+    const source = { taskId: task.id, subtaskId: dependencyPickerFor };
+    return (
+      <FocusTaskPicker
+        open
+        mode="dependency"
+        tasks={filterPickerTasksForDependency(bundle.tasks, source, existing)}
+        selectedTaskId={null}
+        excludeKeys={[
+          dependencyTargetKey(source),
+          ...existing.map((row) => dependencyTargetKey({
+            taskId: row.depends_on_task_id,
+            subtaskId: row.depends_on_subtask_id,
+          })),
+        ]}
+        anchorPoint={{ left: 120, top: 96 }}
+        onOpenChange={(open) => {
+          if (!open) setDependencyPickerFor(undefined);
+        }}
+        onSelect={() => undefined}
+        onConfirm={(targets) => {
+          void onAddDependencies(targets, dependencyPickerFor);
+        }}
+      />
+    );
+  }
+
   const hoursLabel = formatHoursDetail(
     focusedSubtask ? focusedSubtask.estimate_hours : task.estimate_hours,
     focusedSubtask ? focusedSubtask.actual_hours : task.actual_hours,
@@ -2153,6 +2245,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     setDraftSubtaskCli(null);
     try {
       await onCreateSubtask(payload.title, {
+        parent_subtask_id: focusedSubtask?.id ?? null,
         assignee_id: assigneeId,
         cli_assignee: cliAssignee,
         due_at: dueAt,
@@ -2172,6 +2265,30 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     if (next && event.currentTarget.contains(next)) return;
     if (next instanceof Element && next.closest(".subtask-date-popover, .due-popover")) return;
     void commitDraftSubtask().catch(() => undefined);
+  }
+
+  function toggleCollapsedSubtask(subtaskId: string) {
+    setCollapsedSubtaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(subtaskId)) next.delete(subtaskId);
+      else next.add(subtaskId);
+      return next;
+    });
+  }
+
+  function nestSubtask(subtaskId: string, outdent: boolean) {
+    if (!writable) return;
+    const patch = outdent
+      ? outdentSubtaskPatch(task.subtasks, subtaskId)
+      : indentSubtaskPatch(task.subtasks, subtaskId);
+    if (!patch) return;
+    void onUpdateSubtask(subtaskId, patch).catch(() => undefined);
+  }
+
+  function focusParentOf(subtask: Subtask) {
+    const parentId = subtaskParentId(subtask);
+    if (parentId) onFocusSubtask?.(parentId);
+    else onClearFocusedSubtask?.();
   }
 
   function stopTerminalSession(sessionId: string) {
@@ -2299,11 +2416,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         <button
           type="button"
           className="detail-back-to-parent"
-          aria-label="返回父任务"
-          onClick={() => onClearFocusedSubtask?.()}
+          aria-label="返回父级"
+          onClick={() => focusParentOf(focusedSubtask)}
         >
           <ChevronLeft />
-          <span>返回父任务</span>
+          <span>返回父级</span>
         </button>
         <button
           className="detail-complete-trigger"
@@ -2347,6 +2464,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             online={writable}
             pomodoroMinutes={pomodoroMinutes}
             onUpdate={(patch) => onUpdateSubtask(focusedSubtask.id, patch)}
+            onMountDependencies={() => setDependencyPickerFor(focusedSubtask.id)}
           />
         </header>
         <div className="detail-body">
@@ -2392,13 +2510,25 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               </div>
             )}
             {hoursLabel && <p className="detail-subtask-hours">{hoursLabel}</p>}
-            <button
-              type="button"
-              className="detail-parent-task"
-              onClick={() => onClearFocusedSubtask?.()}
-            >
-              所属任务：{task.title}
-            </button>
+            <div className="detail-parent-task-chain">
+              <button
+                type="button"
+                className="detail-parent-task"
+                onClick={() => onClearFocusedSubtask?.()}
+              >
+                {task.title}
+              </button>
+              {ancestorChain(task.subtasks, focusedSubtask.id).slice(0, -1).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="detail-parent-task"
+                  onClick={() => onFocusSubtask?.(item.id)}
+                >
+                  {item.title}
+                </button>
+              ))}
+            </div>
           </div>
           <TaskRichTextEditor
             key={focusedSubtask.id}
@@ -2413,6 +2543,104 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             toolbarHost={toolbarHost}
             toolbarOpen={toolbarOpen}
           />
+          {task.kind !== "note" && (
+            <section className="detail-section">
+              <div className="detail-section-title">
+                <span>子任务</span>
+                <em>
+                  {subtaskProgress(visibleFlattenedSubtasks(task.subtasks, focusedSubtask.id, new Set()).map((row) => row.subtask)).completed}
+                  /
+                  {subtaskProgress(visibleFlattenedSubtasks(task.subtasks, focusedSubtask.id, new Set()).map((row) => row.subtask)).total}
+                </em>
+              </div>
+              <div className="subtask-list">
+                {visibleFlattenedSubtasks(task.subtasks, focusedSubtask.id, collapsedSubtaskIds).map(({ subtask, depth }) => {
+                  const childCount = childrenOf(task.subtasks, subtask.id).length;
+                  const collapsed = collapsedSubtaskIds.has(subtask.id);
+                  return (
+                    <div
+                      className="subtask-row"
+                      key={subtask.id}
+                      style={{ paddingLeft: 8 + (depth - 2) * 16 }}
+                    >
+                      {childCount > 0 ? (
+                        <button
+                          type="button"
+                          className="subtask-tree-expander"
+                          aria-label={`${collapsed ? "展开" : "收起"}子任务：${subtask.title}`}
+                          aria-expanded={!collapsed}
+                          onClick={() => toggleCollapsedSubtask(subtask.id)}
+                        >
+                          {collapsed ? <ChevronRight /> : <ChevronDown />}
+                        </button>
+                      ) : (
+                        <span className="subtask-tree-expander-slot" aria-hidden="true" />
+                      )}
+                      <input
+                        type="checkbox"
+                        aria-label={`完成子任务：${subtask.title}`}
+                        checked={subtask.completed}
+                        disabled={!writable}
+                        onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked).catch(() => {})}
+                      />
+                      <div className="subtask-main">
+                        <div className="subtask-headline">
+                          <button
+                            type="button"
+                            className={clsx("subtask-title", subtask.completed && "completed")}
+                            onClick={() => onFocusSubtask?.(subtask.id)}
+                          >
+                            {subtask.title}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {canAddChild(task.subtasks, focusedSubtask.id) && (
+                  <form
+                    className="subtask-add"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void commitDraftSubtask().catch(() => undefined);
+                    }}
+                    onBlur={handleDraftSubtaskFormBlur}
+                  >
+                    <span
+                      className="subtask-add-check"
+                      aria-hidden="true"
+                      onClick={() => subtaskInputRef.current?.focus()}
+                    />
+                    <div className="subtask-add-field task-title-token-field">
+                      <input
+                        ref={subtaskInputRef}
+                        value={subtaskTokens.title}
+                        onChange={subtaskTokens.handleChange}
+                        onKeyDown={(event) => {
+                          if (subtaskTokens.handleKeyDown(event)) return;
+                        }}
+                        placeholder="回车添加下一项"
+                        disabled={!writable}
+                        aria-label="添加子任务"
+                      />
+                    </div>
+                  </form>
+                )}
+              </div>
+            </section>
+          )}
+          {task.kind !== "note" && (
+            <TaskDependencyList
+              task={task}
+              subtaskId={focusedSubtask.id}
+              tasks={bundle.tasks}
+              writable={writable}
+              dateTimePreferences={dateTimePreferences}
+              onAdd={(targets) => onAddDependencies(targets, focusedSubtask.id)}
+              onRemove={onRemoveDependency}
+              onOpen={onOpenDependency}
+            />
+          )}
         </div>
         {!immersive && (comments.length > 0 || commentComposerOpen) && (
           <TaskComments
@@ -2472,6 +2700,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             <MessageCircle />
           </button>
         </footer>
+        {renderMenuDependencyPicker()}
       </div>
     );
   }
@@ -2621,6 +2850,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           pomodoroMinutes={pomodoroMinutes}
           onUpdate={onUpdate}
           onNotice={onNotice}
+          onMountDependencies={task.kind === "note" ? undefined : () => setDependencyPickerFor(null)}
           onShowActivity={() => {
             leaveCliView();
             setCliPickerOpen(false);
@@ -2732,10 +2962,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               >
                 {showSubtaskDetails ? <ChevronDown /> : <ChevronRight />}
               </button>
-              <em>{task.subtasks.filter((item) => item.completed).length}/{task.subtasks.length}</em>
+              <em>{subtaskProgress(task.subtasks).completed}/{subtaskProgress(task.subtasks).total}</em>
             </div>
             <div className="subtask-list">
-              {task.subtasks.map((subtask) => {
+              {visibleFlattenedSubtasks(task.subtasks, null, collapsedSubtaskIds).map(({ subtask, depth }) => {
+                const childCount = childrenOf(task.subtasks, subtask.id).length;
+                const collapsed = collapsedSubtaskIds.has(subtask.id);
                 const subtaskHoursLabel = showSubtaskDetails
                   ? formatHoursDetail(
                     subtask.estimate_hours,
@@ -2750,8 +2982,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     !subtask.due_is_all_day
                     || (
                       Boolean(subtask.due_start_at)
-                      && toDateInput(subtask.due_start_at, subtask.due_timezone)
-                        !== toDateInput(subtask.due_at, subtask.due_timezone)
+                      && toDateInput(subtask.due_start_at!, subtask.due_timezone)
+                        !== toDateInput(subtask.due_at!, subtask.due_timezone)
                     )
                   )
                   ? formatDueWithPreferences(subtask, dateTimePreferences)
@@ -2760,7 +2992,21 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 <div
                   className={clsx("subtask-row", editingSubtaskId === subtask.id && "editing")}
                   key={subtask.id}
+                  style={{ paddingLeft: 8 + (depth - 2) * 16 }}
                 >
+                  {childCount > 0 ? (
+                    <button
+                      type="button"
+                      className="subtask-tree-expander"
+                      aria-label={`${collapsed ? "展开" : "收起"}子任务：${subtask.title}`}
+                      aria-expanded={!collapsed}
+                      onClick={() => toggleCollapsedSubtask(subtask.id)}
+                    >
+                      {collapsed ? <ChevronRight /> : <ChevronDown />}
+                    </button>
+                  ) : (
+                    <span className="subtask-tree-expander-slot" aria-hidden="true" />
+                  )}
                   <input
                     type="checkbox"
                     aria-label={`完成子任务：${subtask.title}`}
@@ -2780,6 +3026,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                         onChange={(event) => setEditingSubtaskTitle(event.target.value)}
                         onBlur={() => commitEditSubtask()}
                         onKeyDown={(event) => {
+                          if (event.key === "Tab") {
+                            event.preventDefault();
+                            nestSubtask(subtask.id, event.shiftKey);
+                            return;
+                          }
                           if (event.key === "Enter") {
                             event.preventDefault();
                             commitEditSubtask();
@@ -2795,6 +3046,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                         className={clsx("subtask-title", subtask.completed && "completed")}
                         disabled={!writable}
                         onClick={() => beginEditSubtask(subtask)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Tab" && writable) {
+                            event.preventDefault();
+                            nestSubtask(subtask.id, event.shiftKey);
+                          }
+                        }}
                       >
                         {subtask.title}
                       </button>
@@ -2845,6 +3102,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                       compact
                       pomodoroMinutes={pomodoroMinutes}
                       onUpdate={(patch) => onUpdateSubtask(subtask.id, patch)}
+                      onMountDependencies={() => setDependencyPickerFor(subtask.id)}
                     />
                   </div>
                     </div>
@@ -2948,6 +3206,17 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               </form>
             </div>
           </section>
+        )}
+        {task.kind !== "note" && (
+          <TaskDependencyList
+            task={task}
+            tasks={bundle.tasks}
+            writable={writable}
+            dateTimePreferences={dateTimePreferences}
+            onAdd={(targets) => onAddDependencies(targets, null)}
+            onRemove={onRemoveDependency}
+            onOpen={onOpenDependency}
+          />
         )}
         {activityOpen && (
           <TaskActivity
@@ -3054,6 +3323,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           {task.deleted_at ? <RotateCcw /> : <Trash2 />}
         </button>
       </footer>
+      {renderMenuDependencyPicker()}
     </div>
   );
 });
@@ -3237,8 +3507,19 @@ function MobileTaskDetailSheet({
 export function TaskDetailPanel(props: TaskDetailProps) {
   const mobileSheet = useMobileTaskDetailSheet();
   const contentRef = useRef<TaskDetailContentHandle>(null);
+
+  useEffect(() => {
+    if (mobileSheet) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!shouldDismissTaskDetailOnPointerDown(event.target, event.button)) return;
+      void contentRef.current?.close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [mobileSheet]);
+
   if (!mobileSheet) {
-    return <TaskDetailContent {...props} presentation="panel" />;
+    return <TaskDetailContent ref={contentRef} {...props} presentation="panel" />;
   }
   return (
     <MobileTaskDetailSheet

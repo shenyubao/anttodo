@@ -1,5 +1,6 @@
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns";
 import type { Label, Task, WorkspaceBundle } from "../types";
+import { taskMatchesCalendarAssignees, taskMatchesCalendarLabels } from "./calendarVisibility";
 import { fromZonedDateTime, toDateInput } from "./dateTimePreferences";
 import { compareSiblingLabels, userLabelOrderMap } from "./labels";
 import { currentTaskPermissionLevel } from "./permissions";
@@ -72,15 +73,24 @@ export function buildScheduleTaskGroups(
   bundle: WorkspaceBundle,
   currentUserId: string,
   excludedTaskIds: ReadonlySet<string> = new Set(),
+  visibleCalendarIds?: ReadonlySet<string>,
+  visibleAssigneeIds?: ReadonlySet<string>,
 ): ScheduleTaskGroup[] {
   const tasks = bundle.tasks.filter((task) =>
-    !excludedTaskIds.has(task.id) && isSchedulableTask(bundle, task, currentUserId));
+    !excludedTaskIds.has(task.id)
+    && isSchedulableTask(bundle, task, currentUserId)
+    && (visibleCalendarIds == null || taskMatchesCalendarLabels(task, visibleCalendarIds))
+    && (visibleAssigneeIds == null || taskMatchesCalendarAssignees(task, visibleAssigneeIds)));
   const groups: ScheduleTaskGroup[] = [];
-  const inboxTasks = tasks.filter((task) => task.label_ids.length === 0);
+  const inboxVisible = visibleCalendarIds == null || visibleCalendarIds.has("inbox");
+  const inboxTasks = inboxVisible
+    ? tasks.filter((task) => task.label_ids.length === 0)
+    : [];
   if (inboxTasks.length > 0) {
     groups.push({ id: "inbox", label: null, depth: 0, tasks: inboxTasks });
   }
   for (const { label, depth } of orderedLabels(bundle.labels, bundle.userLabelOrder)) {
+    if (visibleCalendarIds && !visibleCalendarIds.has(label.id)) continue;
     const labelTasks = tasks.filter((task) => task.label_ids.includes(label.id));
     if (labelTasks.length > 0) groups.push({ id: label.id, label, depth, tasks: labelTasks });
   }

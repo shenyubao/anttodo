@@ -213,9 +213,27 @@ export type LabelAccessDraft = {
   manageSubjectIds: string[];
 };
 
+export type TaskDependency = {
+  id: string;
+  workspace_id: string;
+  task_id: string;
+  subtask_id: string | null;
+  depends_on_task_id: string;
+  depends_on_subtask_id: string | null;
+  position: number;
+  created_by: string | null;
+  created_at: string;
+};
+
+export type TaskDependencyTarget = {
+  taskId: string;
+  subtaskId: string | null;
+};
+
 export type Subtask = {
   id: string;
   task_id: string;
+  parent_subtask_id: string | null;
   title: string;
   description: string;
   completed: boolean;
@@ -234,6 +252,7 @@ export type Subtask = {
   created_by: string | null;
   reminders: TaskReminder[];
   reminder_persistent: boolean;
+  dependencies?: TaskDependency[];
 };
 
 export type ReminderRule = {
@@ -299,6 +318,7 @@ export type Task = {
   reminders: TaskReminder[];
   reminder_persistent: boolean;
   description_mentions: CommentMention[];
+  dependencies?: TaskDependency[];
 };
 
 export type CommentMention = {

@@ -25,6 +25,13 @@ test("demo task flow and details drawer", async ({ page }) => {
   await expect(page.locator(".detail-title")).toHaveValue(demoTaskTitle);
 });
 
+test("clicking outside the task detail panel closes it", async ({ page }) => {
+  await openDemoTask(page);
+  await expect(page.locator(".task-detail-panel")).toBeVisible();
+  await page.getByRole("heading", { name: "指派给我" }).click();
+  await expect(page.locator(".task-detail-panel")).toHaveCount(0);
+});
+
 test("task views switch per list and kanban supports column creation", async ({ page }) => {
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "更多操作" }).click();

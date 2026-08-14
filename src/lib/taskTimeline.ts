@@ -5,7 +5,7 @@ import {
   format,
   startOfDay,
 } from "date-fns";
-import type { Subtask, Task } from "../types";
+import type { Subtask, Task, TaskDependency } from "../types";
 import { fromZonedDateTime, toDateInput } from "./dateTimePreferences";
 import { schedulePatchFromDrop } from "./calendarScheduling";
 
@@ -30,7 +30,7 @@ export const TIMELINE_MAX_DAY_WIDTH = 120;
 export const TIMELINE_PAD_DAYS = 180;
 export const TIMELINE_TOTAL_DAYS = TIMELINE_PAD_DAYS * 2 + 1;
 
-export const TIMELINE_ROW_HEIGHT = 40;
+export const TIMELINE_ROW_HEIGHT = 52;
 export const TIMELINE_MONTH_AXIS_HEIGHT = 22;
 export const TIMELINE_DAY_HEADER_HEIGHT = 40;
 export const TIMELINE_HEADER_HEIGHT = TIMELINE_MONTH_AXIS_HEIGHT + TIMELINE_DAY_HEADER_HEIGHT;
@@ -274,13 +274,162 @@ export function dayOffsetToDate(origin: Date, dayOffset: number) {
   return addDays(origin, dayOffset);
 }
 
+export const TIMELINE_BAR_HEIGHT = 24;
+export const TIMELINE_BAR_TOP_INSET = 6;
+/** Minimum horizontal gap that can hold a finish-to-start curve. */
+export const TIMELINE_DEPENDENCY_CHANNEL = 12;
+
+export type TimelineBarBox = {
+  id: string;
+  left: number;
+  width: number;
+  top: number;
+  height: number;
+};
+
+export type TimelineDependencyPath = {
+  id: string;
+  d: string;
+  fromId: string;
+  toId: string;
+};
+
+export function timelineBarBox(
+  sourceId: string,
+  geometry: { left: number; width: number },
+  rowTop: number,
+  lane: number,
+): TimelineBarBox {
+  return {
+    id: sourceId,
+    left: geometry.left,
+    width: geometry.width,
+    top: rowTop + lane * TIMELINE_ROW_HEIGHT + TIMELINE_BAR_TOP_INSET,
+    height: TIMELINE_BAR_HEIGHT,
+  };
+}
+
+function barMidY(box: TimelineBarBox) {
+  return box.top + box.height / 2;
+}
+
+/** Horizontal corridor between two vertically stacked bars, or just above a shared lane. */
+function laneGutterY(from: TimelineBarBox, to: TimelineBarBox) {
+  const fromBottom = from.top + from.height;
+  const toBottom = to.top + to.height;
+  if (fromBottom <= to.top) return (fromBottom + to.top) / 2;
+  if (toBottom <= from.top) return (toBottom + from.top) / 2;
+  return Math.min(from.top, to.top) - 4;
+}
+
+function manhattanLink(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  viaY: number,
+  kick: number,
+) {
+  return [
+    `M ${startX} ${startY}`,
+    `L ${startX + kick} ${startY}`,
+    `L ${startX + kick} ${viaY}`,
+    `L ${endX - kick} ${viaY}`,
+    `L ${endX - kick} ${endY}`,
+    `L ${endX} ${endY}`,
+  ].join(" ");
+}
+
+/**
+ * Finish-to-start link: predecessor → successor, arrowhead on the dependent bar.
+ * Always enter the successor from its left so the marker points into 依赖方, not back at 被依赖方.
+ */
+export function buildTimelineDependencyPath(
+  from: TimelineBarBox,
+  to: TimelineBarBox,
+  corridorIndex = 0,
+) {
+  const startX = from.left + from.width;
+  const endX = to.left;
+  const startY = barMidY(from);
+  const endY = barMidY(to);
+  const stagger = corridorIndex * 6;
+  if (endX >= startX + TIMELINE_DEPENDENCY_CHANNEL) {
+    const midX = startX + (endX - startX) / 2;
+    return `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`;
+  }
+  if (endX >= startX) {
+    const gap = endX - startX;
+    const kick = Math.max(4, Math.min(8, gap / 2 || 4));
+    return manhattanLink(startX, startY, endX, endY, laneGutterY(from, to) - stagger, kick);
+  }
+  return manhattanLink(
+    startX,
+    startY,
+    endX,
+    endY,
+    Math.min(from.top, to.top) - 8 - stagger,
+    16,
+  );
+}
+
+export function timelineDependencyEndpointId(
+  taskId: string,
+  subtaskId: string | null,
+) {
+  return subtaskId ? `subtask:${subtaskId}` : taskId;
+}
+
+export function collectTimelineDependencyPaths(
+  boxes: readonly TimelineBarBox[],
+  dependencies: readonly Pick<
+    TaskDependency,
+    "id" | "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+  >[],
+): TimelineDependencyPath[] {
+  const byId = new Map(boxes.map((box) => [box.id, box]));
+  const corridorCount = new Map<string, number>();
+  const paths: TimelineDependencyPath[] = [];
+  for (const edge of dependencies) {
+    const fromId = timelineDependencyEndpointId(
+      edge.depends_on_task_id,
+      edge.depends_on_subtask_id,
+    );
+    const toId = timelineDependencyEndpointId(edge.task_id, edge.subtask_id);
+    const from = byId.get(fromId);
+    const to = byId.get(toId);
+    if (!from || !to) continue;
+    const startX = from.left + from.width;
+    const endX = to.left;
+    let corridorIndex = 0;
+    if (endX < startX + TIMELINE_DEPENDENCY_CHANNEL) {
+      const key = `${Math.round(Math.min(from.top, to.top) / 6)}:${endX < startX ? "bypass" : "tight"}`;
+      corridorIndex = corridorCount.get(key) ?? 0;
+      corridorCount.set(key, corridorIndex + 1);
+    }
+    paths.push({
+      id: edge.id,
+      d: buildTimelineDependencyPath(from, to, corridorIndex),
+      fromId,
+      toId,
+    });
+  }
+  return paths;
+}
+
+/** Per-side inset so adjacent-day bars leave a finish-to-start channel. */
+export function timelineBarDayInset(dayWidth: number) {
+  return Math.min(10, Math.max(6, Math.round(dayWidth * 0.12)));
+}
+
 export function barGeometry(
   range: TimelineBarRange,
   origin: Date,
   dayWidth: number,
 ) {
-  const left = dateToX(range.startDay, origin, dayWidth);
-  const width = Math.max(dayWidth * 0.6, range.dayCount * dayWidth - 2);
+  const inset = timelineBarDayInset(dayWidth);
+  const left = dateToX(range.startDay, origin, dayWidth) + inset;
+  const width = Math.max(dayWidth * 0.45, range.dayCount * dayWidth - inset * 2);
   return { left, width };
 }
 
@@ -482,10 +631,84 @@ export type TimelineLaneItem = {
   range: TimelineBarRange;
 };
 
+function makeUnionFind(ids: readonly string[]) {
+  const parent = new Map(ids.map((id) => [id, id]));
+  const find = (id: string) => {
+    let current = id;
+    while (parent.get(current) !== current) {
+      const next = parent.get(current);
+      if (!next) break;
+      parent.set(current, parent.get(next) ?? next);
+      current = parent.get(current) ?? current;
+    }
+    return current;
+  };
+  const union = (left: string, right: string) => {
+    const rootLeft = find(left);
+    const rootRight = find(right);
+    if (rootLeft !== rootRight) parent.set(rootRight, rootLeft);
+  };
+  return { find, union };
+}
+
+function linkDependencyNeighbors(
+  present: ReadonlySet<string>,
+  dependencies: readonly Pick<
+    TaskDependency,
+    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+  >[],
+) {
+  const neighbors = new Map<string, Set<string>>();
+  const { find, union } = makeUnionFind([...present]);
+  const link = (left: string, right: string) => {
+    if (!present.has(left) || !present.has(right) || left === right) return;
+    union(left, right);
+    if (!neighbors.has(left)) neighbors.set(left, new Set());
+    if (!neighbors.has(right)) neighbors.set(right, new Set());
+    neighbors.get(left)!.add(right);
+    neighbors.get(right)!.add(left);
+  };
+  for (const edge of dependencies) {
+    link(
+      timelineDependencyEndpointId(edge.depends_on_task_id, edge.depends_on_subtask_id),
+      timelineDependencyEndpointId(edge.task_id, edge.subtask_id),
+    );
+  }
+  return { find, neighbors };
+}
+
 function packRangedBars(
   ranged: Array<{ source: TimelineBarSource; range: TimelineBarRange }>,
+  dependencies: readonly Pick<
+    TaskDependency,
+    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+  >[] = [],
 ): { items: TimelineLaneItem[]; laneCount: number } {
+  const present = new Set(ranged.map((item) => item.source.id));
+  const { find, neighbors } = linkDependencyNeighbors(present, dependencies);
+  const componentMinStart = new Map<string, Date>();
+  const componentLinked = new Set<string>();
+  for (const item of ranged) {
+    const root = find(item.source.id);
+    const previous = componentMinStart.get(root);
+    if (!previous || differenceInCalendarDays(item.range.startDay, previous) < 0) {
+      componentMinStart.set(root, item.range.startDay);
+    }
+    if ((neighbors.get(item.source.id)?.size ?? 0) > 0) componentLinked.add(root);
+  }
+
   const sorted = [...ranged].sort((left, right) => {
+    const leftRoot = find(left.source.id);
+    const rightRoot = find(right.source.id);
+    const leftChain = componentLinked.has(leftRoot) ? 0 : 1;
+    const rightChain = componentLinked.has(rightRoot) ? 0 : 1;
+    if (leftChain !== rightChain) return leftChain - rightChain;
+    const componentStart = differenceInCalendarDays(
+      componentMinStart.get(leftRoot) ?? left.range.startDay,
+      componentMinStart.get(rightRoot) ?? right.range.startDay,
+    );
+    if (componentStart !== 0) return componentStart;
+    if (leftRoot !== rightRoot) return leftRoot.localeCompare(rightRoot);
     const start = differenceInCalendarDays(left.range.startDay, right.range.startDay);
     if (start !== 0) return start;
     const span = left.range.dayCount - right.range.dayCount;
@@ -495,17 +718,37 @@ function packRangedBars(
   });
 
   const laneExclusiveEnds: Date[] = [];
+  const placedLane = new Map<string, number>();
   const items: TimelineLaneItem[] = [];
-  for (const { source, range } of sorted) {
-    let lane = laneExclusiveEnds.findIndex(
-      (end) => differenceInCalendarDays(range.startDay, end) >= 0,
-    );
-    if (lane < 0) {
-      lane = laneExclusiveEnds.length;
+
+  const laneIsFree = (lane: number, range: TimelineBarRange) => {
+    const end = laneExclusiveEnds[lane];
+    return Boolean(end) && differenceInCalendarDays(range.startDay, end) >= 0;
+  };
+
+  const occupyLane = (lane: number, range: TimelineBarRange) => {
+    if (lane === laneExclusiveEnds.length) {
       laneExclusiveEnds.push(range.exclusiveEndDay);
-    } else {
-      laneExclusiveEnds[lane] = range.exclusiveEndDay;
+      return;
     }
+    laneExclusiveEnds[lane] = range.exclusiveEndDay;
+  };
+
+  for (const { source, range } of sorted) {
+    let lane = -1;
+    for (const neighbor of neighbors.get(source.id) ?? []) {
+      const preferred = placedLane.get(neighbor);
+      if (preferred === undefined || !laneIsFree(preferred, range)) continue;
+      lane = preferred;
+      break;
+    }
+    if (lane < 0) {
+      lane = laneExclusiveEnds.findIndex((end) =>
+        differenceInCalendarDays(range.startDay, end) >= 0);
+    }
+    if (lane < 0) lane = laneExclusiveEnds.length;
+    occupyLane(lane, range);
+    placedLane.set(source.id, lane);
     items.push({ source, task: source.task, lane, range });
   }
   return {
@@ -514,17 +757,66 @@ function packRangedBars(
   };
 }
 
+/**
+ * Move dependency-connected bars into the earliest group that contains any
+ * member, so a task and its predecessors share one timeline row.
+ */
+export function rehomeTimelineGroupBars<T extends { bars: TimelineBarSource[] }>(
+  groups: T[],
+  dependencies: readonly Pick<
+    TaskDependency,
+    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+  >[],
+): T[] {
+  if (groups.length <= 1 || dependencies.length === 0) {
+    return groups.filter((group) => group.bars.length > 0);
+  }
+  const home = new Map<string, { groupIndex: number; source: TimelineBarSource }>();
+  groups.forEach((group, groupIndex) => {
+    for (const source of group.bars) {
+      const existing = home.get(source.id);
+      if (!existing || groupIndex < existing.groupIndex) {
+        home.set(source.id, { groupIndex, source });
+      }
+    }
+  });
+  const present = new Set(home.keys());
+  const { find } = linkDependencyNeighbors(present, dependencies);
+  const rootGroup = new Map<string, number>();
+  for (const id of present) {
+    const root = find(id);
+    const groupIndex = home.get(id)!.groupIndex;
+    const previous = rootGroup.get(root);
+    if (previous === undefined || groupIndex < previous) rootGroup.set(root, groupIndex);
+  }
+  const nextBars = groups.map(() => [] as TimelineBarSource[]);
+  const seen = groups.map(() => new Set<string>());
+  for (const id of present) {
+    const target = rootGroup.get(find(id)) ?? home.get(id)!.groupIndex;
+    if (seen[target]?.has(id)) continue;
+    seen[target]?.add(id);
+    nextBars[target]?.push(home.get(id)!.source);
+  }
+  return groups
+    .map((group, index) => ({ ...group, bars: nextBars[index] ?? [] }))
+    .filter((group) => group.bars.length > 0);
+}
+
 /** Pack collected bars into non-overlapping horizontal lanes within a group row. */
 export function packTimelineBarLanes(
   bars: TimelineBarSource[],
   timeZone: string | null,
+  dependencies: readonly Pick<
+    TaskDependency,
+    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+  >[] = [],
 ): { items: TimelineLaneItem[]; laneCount: number } {
   const ranged: Array<{ source: TimelineBarSource; range: TimelineBarRange }> = [];
   for (const source of bars) {
     const range = timelineBarRange(source, timeZone);
     if (range) ranged.push({ source, range });
   }
-  return packRangedBars(ranged);
+  return packRangedBars(ranged, dependencies);
 }
 
 /** Pack scheduled tasks into non-overlapping horizontal lanes within a group row. */

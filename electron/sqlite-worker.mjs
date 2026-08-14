@@ -137,6 +137,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS subtasks (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
+    parent_subtask_id TEXT,
     title TEXT NOT NULL,
     completed INTEGER NOT NULL DEFAULT 0,
     position INTEGER NOT NULL DEFAULT 0,
@@ -180,6 +181,21 @@ database.exec(`
     PRIMARY KEY (workspace_id, list_key, task_id)
   );
 `);
+
+function applySqliteMigrations() {
+  const applied = new Set(
+    rows("SELECT version FROM _schema_migrations").map((item) => String(item.version)),
+  );
+  if (!applied.has("nested_subtasks_v1")) {
+    const columns = rows("PRAGMA table_info(subtasks)").map((item) => String(item.name));
+    if (!columns.includes("parent_subtask_id")) {
+      run("ALTER TABLE subtasks ADD COLUMN parent_subtask_id TEXT");
+    }
+    run("INSERT INTO _schema_migrations(version) VALUES (?)", ["nested_subtasks_v1"]);
+  }
+}
+
+applySqliteMigrations();
 
 function rows(sql, params = []) {
   return database.prepare(sql).all(...params);

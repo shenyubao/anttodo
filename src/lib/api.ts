@@ -20,6 +20,7 @@ import type {
   SyncConflict,
   SyncRun,
   Task,
+  TaskDependency,
   TaskReminder,
   TaskActivityEvent,
   TaskActivityPage,
@@ -61,6 +62,8 @@ import {
 
 export type { AiSuggestedSubtask };
 
+const TASK_DETAIL_SELECT = "*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent), task_dependencies(*)";
+
 type TaskRow = Omit<
   Task,
   | "label_ids"
@@ -69,6 +72,7 @@ type TaskRow = Omit<
   | "reminders"
   | "reminder_persistent"
   | "description_mentions"
+  | "dependencies"
 > & {
   task_labels?: Array<{ label_id: string }>;
   task_participants?: Array<{ user_id: string }>;
@@ -80,6 +84,7 @@ type TaskRow = Omit<
   >;
   task_reminders?: Task["reminders"];
   task_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
+  task_dependencies?: TaskDependency[];
 };
 
 export const WORKSPACE_TASK_PAGE_SIZE = 1000;
@@ -95,6 +100,7 @@ function normalizeTaskRow(row: TaskRow): Task {
     : row.task_reminder_settings;
   const allReminders = [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position);
   const parentReminders = allReminders.filter((reminder) => !reminder.subtask_id);
+  const allDependencies = [...(row.task_dependencies ?? [])].sort((a, b) => a.position - b.position);
   return {
     ...row,
     kind: row.kind ?? "todo",
@@ -106,6 +112,7 @@ function normalizeTaskRow(row: TaskRow): Task {
     label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
     participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
     description_mentions: row.task_description_mentions ?? [],
+    dependencies: allDependencies.filter((item) => !item.subtask_id),
     subtasks: [...(row.subtasks ?? [])]
       .sort((a, b) => a.position - b.position)
       .map((subtask) => {
@@ -115,6 +122,7 @@ function normalizeTaskRow(row: TaskRow): Task {
           : nestedSettings;
         return {
           ...rest,
+          parent_subtask_id: rest.parent_subtask_id ?? null,
           description: rest.description ?? "",
           priority: rest.priority ?? "none",
           due_start_at: rest.due_start_at ?? null,
@@ -126,6 +134,7 @@ function normalizeTaskRow(row: TaskRow): Task {
           actual_pomodoros: coercePomodoros(rest.actual_pomodoros),
           reminders: allReminders.filter((reminder) => reminder.subtask_id === rest.id),
           reminder_persistent: subtaskSettings?.persistent ?? false,
+          dependencies: allDependencies.filter((item) => item.subtask_id === rest.id),
         };
       }),
     reminders: parentReminders,
@@ -694,7 +703,7 @@ export async function loadWorkspaceBundle(
     client.from("labels").select("*").eq("workspace_id", workspaceId).order("position"),
     client
       .from("tasks")
-      .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)")
+      .select(TASK_DETAIL_SELECT)
       .eq("workspace_id", workspaceId)
       .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
       .order("created_at", { ascending: false })
@@ -854,7 +863,7 @@ export async function loadWorkspaceTasksPage(
 ): Promise<WorkspaceTaskPage> {
   const { data, error } = await client
     .from("tasks")
-    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)")
+    .select(TASK_DETAIL_SELECT)
     .eq("workspace_id", workspaceId)
     .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
     .order("created_at", { ascending: false })
@@ -876,7 +885,7 @@ export async function loadWorkspaceTask(
 ): Promise<Task | null> {
   const { data, error } = await client
     .from("tasks")
-    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)")
+    .select(TASK_DETAIL_SELECT)
     .eq("workspace_id", workspaceId)
     .eq("id", taskId)
     .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
@@ -1314,6 +1323,38 @@ export async function toggleTaskParticipant(
         .delete()
         .eq("task_id", taskId)
         .eq("user_id", userId);
+  assertNoError(error);
+}
+
+export async function insertTaskDependency(
+  client: SupabaseClient,
+  row: {
+    id: string;
+    workspaceId: string;
+    taskId: string;
+    subtaskId: string | null;
+    dependsOnTaskId: string;
+    dependsOnSubtaskId: string | null;
+  },
+) {
+  const { data, error } = await client
+    .from("task_dependencies")
+    .insert({
+      id: row.id,
+      workspace_id: row.workspaceId,
+      task_id: row.taskId,
+      subtask_id: row.subtaskId,
+      depends_on_task_id: row.dependsOnTaskId,
+      depends_on_subtask_id: row.dependsOnSubtaskId,
+    })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as TaskDependency;
+}
+
+export async function deleteTaskDependency(client: SupabaseClient, dependencyId: string) {
+  const { error } = await client.from("task_dependencies").delete().eq("id", dependencyId);
   assertNoError(error);
 }
 

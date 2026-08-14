@@ -121,6 +121,7 @@ const task = (
   reminder_persistent: false,
   participant_ids: [],
   description_mentions: [],
+  dependencies: [],
   ...options,
 });
 
@@ -135,6 +136,7 @@ const tasks: Task[] = [
       {
         id: "sub-1",
         task_id: "task-1",
+        parent_subtask_id: null,
         title: "运行数据库安全测试",
         description: "",
         completed: true,
@@ -153,10 +155,12 @@ const tasks: Task[] = [
         due_timezone: null,
         reminders: [],
         reminder_persistent: false,
+        dependencies: [],
       },
       {
         id: "sub-2",
         task_id: "task-1",
+        parent_subtask_id: null,
         title: "检查 Mac 安装包",
         description: "",
         completed: false,
@@ -175,6 +179,7 @@ const tasks: Task[] = [
         due_timezone: null,
         reminders: [],
         reminder_persistent: false,
+        dependencies: [],
       },
     ],
   }),

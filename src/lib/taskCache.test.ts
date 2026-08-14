@@ -388,6 +388,7 @@ describe("task cache updates", () => {
     const subtask = {
       id: "sub-1",
       task_id: task.id,
+      parent_subtask_id: null,
       title: "子任务",
       description: "",
       completed: false,
@@ -406,6 +407,7 @@ describe("task cache updates", () => {
       due_timezone: null,
       reminders: [],
       reminder_persistent: false,
+      dependencies: [],
     };
     bundle = appendSubtaskInBundle(bundle, task.id, subtask);
     expect(findTaskIdForSubtask(bundle, "sub-1")).toBe(task.id);
@@ -421,6 +423,33 @@ describe("task cache updates", () => {
     });
     bundle = removeSubtaskFromBundle(bundle, "sub-1");
     expect(bundle.tasks[0].subtasks).toEqual([]);
+  });
+
+  it("removes nested descendants when deleting a parent subtask", () => {
+    const task = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "父任务",
+      labelIds: [],
+    });
+    let bundle = appendTaskToBundle(emptyBundle(), task);
+    bundle = appendSubtaskInBundle(bundle, task.id, createOptimisticSubtask({
+      taskId: task.id,
+      userId: "user",
+      title: "L2",
+      position: 0,
+      optimisticId: "l2",
+    }));
+    bundle = appendSubtaskInBundle(bundle, task.id, createOptimisticSubtask({
+      taskId: task.id,
+      userId: "user",
+      title: "L3",
+      position: 0,
+      parentSubtaskId: "l2",
+      optimisticId: "l3",
+    }));
+    bundle = removeSubtaskFromBundle(bundle, "l2");
+    expect(bundle.tasks[0]?.subtasks).toEqual([]);
   });
 
   it("creates and replaces optimistic subtasks without duplicates", () => {

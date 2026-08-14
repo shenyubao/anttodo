@@ -393,6 +393,7 @@ function pickerSubtask(id: string, taskId: string, title: string, position: numb
   return {
     id,
     task_id: taskId,
+    parent_subtask_id: null,
     title,
     description: "",
     completed: false,

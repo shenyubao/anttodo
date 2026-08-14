@@ -4,6 +4,7 @@ import {
   CalendarX2,
   Copy,
   Flag,
+  GitFork,
   Link2,
   ListPlus,
   ListTodo,
@@ -16,16 +17,24 @@ import {
 import { useEffect, useState, type CSSProperties } from "react";
 import clsx from "clsx";
 import { DueDateControl, dueTargetFromSubtask } from "./DueDateControl";
+import { FocusTaskPicker } from "./FocusTaskPicker";
 import { PRIORITY_OPTIONS } from "./PriorityControl";
 import { taskShareUrl } from "./lib/appRoute";
 import { clearSchedulePatch, schedulePatchFromDrop } from "./lib/calendarScheduling";
 import { systemTimeZone } from "./lib/dateTimePreferences";
 import { getPresetDate, type DuePreset } from "./lib/dueTime";
+import {
+  dependencyTargetKey,
+  filterPickerTasksForDependency,
+  listItemDependencies,
+} from "./lib/taskDependencies";
+import { canAddChild } from "./lib/subtaskTree";
 import type {
   DateTimePreferences,
   ReminderSchedule,
   Subtask,
   Task,
+  TaskDependencyTarget,
   TaskPriority,
 } from "./types";
 
@@ -91,6 +100,8 @@ export function TaskContextMenu({
   onPurgeTask,
   onExpandSubtasks,
   onNotice,
+  pickerTasks = [],
+  onAddDependencies,
 }: {
   task: Task;
   subtask?: Subtask | null;
@@ -124,7 +135,7 @@ export function TaskContextMenu({
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
@@ -134,9 +145,12 @@ export function TaskContextMenu({
   onPurgeTask: (taskId: string) => Promise<void>;
   onExpandSubtasks: () => void;
   onNotice: (message: string) => void;
+  pickerTasks?: Task[];
+  onAddDependencies?: (targets: TaskDependencyTarget[], subtaskId?: string | null) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [duePickerOpen, setDuePickerOpen] = useState(false);
+  const [dependencyPickerOpen, setDependencyPickerOpen] = useState(false);
   const writable = online && !busy;
   const isSubtask = Boolean(subtask);
   const isNote = !isSubtask && task.kind === "note";
@@ -150,11 +164,11 @@ export function TaskContextMenu({
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !duePickerOpen) onClose();
+      if (event.key === "Escape" && !duePickerOpen && !dependencyPickerOpen) onClose();
     };
     window.addEventListener("keydown", closeOnEscape, true);
     return () => window.removeEventListener("keydown", closeOnEscape, true);
-  }, [duePickerOpen, onClose]);
+  }, [dependencyPickerOpen, duePickerOpen, onClose]);
 
   async function run(
     action: () => Promise<void>,
@@ -215,10 +229,12 @@ export function TaskContextMenu({
   }
 
   async function addSubtask() {
-    if (isSubtask) return;
+    if (subtask && !canAddChild(task.subtasks, subtask.id)) return;
     await run(async () => {
       onExpandSubtasks();
-      await onCreateSubtask(task.id, "新子任务");
+      await onCreateSubtask(task.id, "新子任务", subtask
+        ? { parent_subtask_id: subtask.id }
+        : undefined);
     });
   }
 
@@ -226,6 +242,7 @@ export function TaskContextMenu({
     await run(async () => {
       if (subtask) {
         await onCreateSubtask(task.id, subtask.title, {
+          parent_subtask_id: subtask.parent_subtask_id,
           due_at: subtask.due_at,
           due_start_at: subtask.due_start_at,
           due_is_all_day: subtask.due_is_all_day,
@@ -381,6 +398,38 @@ export function TaskContextMenu({
     );
   }
 
+  if (dependencyPickerOpen && onAddDependencies) {
+    return (
+      <FocusTaskPicker
+        open
+        mode="dependency"
+        tasks={filterPickerTasksForDependency(
+          pickerTasks,
+          { taskId: task.id, subtaskId: subtask?.id ?? null },
+          listItemDependencies(task, subtask?.id ?? null),
+        )}
+        selectedTaskId={null}
+        excludeKeys={[
+          dependencyTargetKey({ taskId: task.id, subtaskId: subtask?.id ?? null }),
+          ...listItemDependencies(task, subtask?.id ?? null).map((row) =>
+            dependencyTargetKey({
+              taskId: row.depends_on_task_id,
+              subtaskId: row.depends_on_subtask_id,
+            })),
+        ]}
+        anchorPoint={{ left: menuLeft, top: menuTop }}
+        onOpenChange={(nextOpen) => {
+          setDependencyPickerOpen(nextOpen);
+          if (!nextOpen) onClose();
+        }}
+        onSelect={() => undefined}
+        onConfirm={(targets) => {
+          void onAddDependencies(targets, subtask?.id ?? null);
+        }}
+      />
+    );
+  }
+
   return (
     <>
       <button
@@ -480,11 +529,22 @@ export function TaskContextMenu({
           <button
             type="button"
             role="menuitem"
-            disabled={!writable || isSubtask}
+            disabled={!writable || (subtask ? !canAddChild(task.subtasks, subtask.id) : false)}
             onClick={() => void addSubtask()}
           >
             <ListPlus />
             <span>添加子任务</span>
+          </button>
+        )}
+        {!isNote && onAddDependencies && (
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!writable}
+            onClick={() => setDependencyPickerOpen(true)}
+          >
+            <GitFork />
+            <span>挂载依赖任务</span>
           </button>
         )}
         <button

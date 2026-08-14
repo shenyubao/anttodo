@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   allDayRangePatch,
   barGeometry,
+  buildTimelineDependencyPath,
   buildTimelineMonthSegments,
   clampTimelineLabelWidth,
   dateToX,
@@ -9,14 +10,18 @@ import {
   dayWidthForZoom,
   defaultTimelineLabelWidth,
   collectTimelineBars,
+  collectTimelineDependencyPaths,
   packTimelineBarLanes,
   packTimelineLanes,
+  rehomeTimelineGroupBars,
   schedulePatchForTimelineDrop,
   schedulePatchForTimelineMove,
   schedulePatchForTimelineResize,
   shouldPlaceTimelineBarTitleOutside,
   splitTimelineTasks,
   taskBarRange,
+  TIMELINE_BAR_HEIGHT,
+  TIMELINE_DEPENDENCY_CHANNEL,
   TIMELINE_LABEL_MAX_WIDTH,
   TIMELINE_LABEL_MIN_WIDTH,
   TIMELINE_PAD_DAYS,
@@ -25,6 +30,8 @@ import {
   timelineDayHeader,
   timelineDayIsRest,
   timelineDays,
+  timelineBarBox,
+  timelineBarDayInset,
   timelineOrigin,
   xToDayOffset,
 } from "./taskTimeline";
@@ -71,6 +78,7 @@ function subtask(patch: Partial<Subtask> = {}): Subtask {
   return {
     id: "s1",
     task_id: "t1",
+    parent_subtask_id: null,
     title: "子任务",
     description: "",
     completed: false,
@@ -128,13 +136,37 @@ describe("taskTimeline", () => {
     const mid = dayOffsetToDate(origin, 10);
     expect(dateToX(mid, origin, 48)).toBe(480);
     expect(xToDayOffset(500, 48)).toBe(10);
-    expect(barGeometry({
+    const geometry = barGeometry({
       startDay: mid,
       endDay: dayOffsetToDate(origin, 12),
       exclusiveEndDay: dayOffsetToDate(origin, 13),
       dayCount: 3,
       allDay: true,
-    }, origin, 48).left).toBe(480);
+    }, origin, 48);
+    expect(geometry.left).toBe(480 + timelineBarDayInset(48));
+  });
+
+  it("leaves a finish-to-start channel between adjacent-day bars", () => {
+    const origin = new Date(2026, 7, 1);
+    for (const dayWidth of [30, 80] as const) {
+      const first = barGeometry({
+        startDay: origin,
+        endDay: origin,
+        exclusiveEndDay: dayOffsetToDate(origin, 1),
+        dayCount: 1,
+        allDay: true,
+      }, origin, dayWidth);
+      const second = barGeometry({
+        startDay: dayOffsetToDate(origin, 1),
+        endDay: dayOffsetToDate(origin, 1),
+        exclusiveEndDay: dayOffsetToDate(origin, 2),
+        dayCount: 1,
+        allDay: true,
+      }, origin, dayWidth);
+      expect(second.left - (first.left + first.width)).toBeGreaterThanOrEqual(
+        TIMELINE_DEPENDENCY_CHANNEL,
+      );
+    }
   });
 
   it("builds all-day drop patch and move/resize patches", () => {
@@ -207,6 +239,94 @@ describe("taskTimeline", () => {
     expect(packed.items.find((item) => item.task.id === "a")?.lane).toBe(0);
     expect(packed.items.find((item) => item.task.id === "b")?.lane).toBe(1);
     expect(packed.items.find((item) => item.task.id === "c")?.lane).toBe(0);
+  });
+
+  it("keeps a task and its predecessor on the same lane", () => {
+    const predecessor = task({
+      id: "pred",
+      title: "前置",
+      ...allDayRangePatch(new Date(2026, 7, 1), new Date(2026, 7, 3), null),
+    });
+    const unrelated = task({
+      id: "other",
+      title: "无关",
+      ...allDayRangePatch(new Date(2026, 7, 4), new Date(2026, 7, 6), null),
+    });
+    const successor = task({
+      id: "succ",
+      title: "后续",
+      ...allDayRangePatch(new Date(2026, 7, 5), new Date(2026, 7, 7), null),
+    });
+    const edges = [{
+      id: "edge",
+      task_id: "succ",
+      subtask_id: null,
+      depends_on_task_id: "pred",
+      depends_on_subtask_id: null,
+    }];
+    const packed = packTimelineBarLanes(
+      collectTimelineBars([predecessor, unrelated, successor], false),
+      null,
+      edges,
+    );
+    expect(packed.items.find((item) => item.task.id === "pred")?.lane).toBe(0);
+    expect(packed.items.find((item) => item.task.id === "succ")?.lane).toBe(0);
+    expect(packed.items.find((item) => item.task.id === "other")?.lane).toBe(1);
+  });
+
+  it("still splits overlapping predecessor and successor", () => {
+    const predecessor = task({
+      id: "pred",
+      title: "前置",
+      ...allDayRangePatch(new Date(2026, 7, 1), new Date(2026, 7, 5), null),
+    });
+    const successor = task({
+      id: "succ",
+      title: "后续",
+      ...allDayRangePatch(new Date(2026, 7, 3), new Date(2026, 7, 6), null),
+    });
+    const packed = packTimelineBarLanes(
+      collectTimelineBars([predecessor, successor], false),
+      null,
+      [{
+        task_id: "succ",
+        subtask_id: null,
+        depends_on_task_id: "pred",
+        depends_on_subtask_id: null,
+      }],
+    );
+    expect(packed.laneCount).toBe(2);
+    expect(packed.items.find((item) => item.task.id === "pred")?.lane).not.toBe(
+      packed.items.find((item) => item.task.id === "succ")?.lane,
+    );
+  });
+
+  it("moves a dependency chain into the earliest group row", () => {
+    const predecessor = task({
+      id: "pred",
+      title: "前置",
+      ...allDayRangePatch(new Date(2026, 7, 1), new Date(2026, 7, 2), null),
+    });
+    const successor = task({
+      id: "succ",
+      title: "后续",
+      ...allDayRangePatch(new Date(2026, 7, 4), new Date(2026, 7, 5), null),
+    });
+    const groups = rehomeTimelineGroupBars(
+      [
+        { id: "g1", bars: collectTimelineBars([predecessor], false) },
+        { id: "g2", bars: collectTimelineBars([successor], false) },
+      ],
+      [{
+        task_id: "succ",
+        subtask_id: null,
+        depends_on_task_id: "pred",
+        depends_on_subtask_id: null,
+      }],
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.id).toBe("g1");
+    expect(groups[0]?.bars.map((item) => item.id).sort()).toEqual(["pred", "succ"]);
   });
 
   it("includes dated subtasks even when the parent has no due date", () => {
@@ -339,6 +459,103 @@ describe("taskTimeline", () => {
   it("places long titles outside narrow bars", () => {
     expect(shouldPlaceTimelineBarTitleOutside("完成 AntTodo 项目框架验收", 70)).toBe(true);
     expect(shouldPlaceTimelineBarTitleOutside("短", 120)).toBe(false);
+  });
+
+  it("draws dashed dependency paths only when both bars exist", () => {
+    const predecessor = timelineBarBox("a", { left: 0, width: 80 }, 0, 0);
+    const successor = timelineBarBox("b", { left: 200, width: 80 }, 40, 0);
+    const paths = collectTimelineDependencyPaths(
+      [predecessor, successor],
+      [
+        {
+          id: "edge-1",
+          task_id: "b",
+          subtask_id: null,
+          depends_on_task_id: "a",
+          depends_on_subtask_id: null,
+        },
+        {
+          id: "edge-missing",
+          task_id: "c",
+          subtask_id: null,
+          depends_on_task_id: "a",
+          depends_on_subtask_id: null,
+        },
+        {
+          id: "edge-sub",
+          task_id: "parent",
+          subtask_id: "s1",
+          depends_on_task_id: "parent",
+          depends_on_subtask_id: "s0",
+        },
+      ],
+    );
+    expect(paths).toHaveLength(1);
+    expect(paths[0]?.id).toBe("edge-1");
+    expect(paths[0]?.fromId).toBe("a");
+    expect(paths[0]?.toId).toBe("b");
+    expect(paths[0]?.d.startsWith(`M ${predecessor.left + predecessor.width} `)).toBe(true);
+    expect(paths[0]?.d.endsWith(` ${successor.left} ${successor.top + successor.height / 2}`)).toBe(true);
+    expect(paths[0]?.d).toContain(" C ");
+    expect(paths[0]?.d).not.toContain(" L ");
+    const subPaths = collectTimelineDependencyPaths(
+      [
+        timelineBarBox("subtask:s0", { left: 10, width: 40 }, 0, 0),
+        timelineBarBox("subtask:s1", { left: 90, width: 40 }, 0, 1),
+      ],
+      [{
+        id: "edge-sub",
+        task_id: "parent",
+        subtask_id: "s1",
+        depends_on_task_id: "parent",
+        depends_on_subtask_id: "s0",
+      }],
+    );
+    expect(subPaths).toHaveLength(1);
+  });
+
+  it("keeps the arrowhead on the dependent bar even when it starts earlier", () => {
+    const predecessor = timelineBarBox("pred", { left: 200, width: 80 }, 0, 0);
+    const successor = timelineBarBox("succ", { left: 40, width: 80 }, 40, 0);
+    const d = buildTimelineDependencyPath(predecessor, successor);
+    expect(d.startsWith(`M ${predecessor.left + predecessor.width} `)).toBe(true);
+    expect(d.endsWith(` ${successor.left} ${successor.top + successor.height / 2}`)).toBe(true);
+    expect(d).toContain(`L ${successor.left} `);
+  });
+
+  it("routes adjacent-day links through the channel instead of over the bars", () => {
+    const origin = new Date(2026, 7, 1);
+    const dayWidth = 30;
+    const first = barGeometry({
+      startDay: origin,
+      endDay: origin,
+      exclusiveEndDay: dayOffsetToDate(origin, 1),
+      dayCount: 1,
+      allDay: true,
+    }, origin, dayWidth);
+    const second = barGeometry({
+      startDay: dayOffsetToDate(origin, 1),
+      endDay: dayOffsetToDate(origin, 1),
+      exclusiveEndDay: dayOffsetToDate(origin, 2),
+      dayCount: 1,
+      allDay: true,
+    }, origin, dayWidth);
+    const predecessor = {
+      id: "a",
+      ...first,
+      top: 6,
+      height: TIMELINE_BAR_HEIGHT,
+    };
+    const successor = {
+      id: "b",
+      ...second,
+      top: 6,
+      height: TIMELINE_BAR_HEIGHT,
+    };
+    const d = buildTimelineDependencyPath(predecessor, successor);
+    expect(d).toContain(" C ");
+    expect(d).not.toContain(" L ");
+    expect(d.endsWith(` ${successor.left} ${successor.top + successor.height / 2}`)).toBe(true);
   });
 });
 

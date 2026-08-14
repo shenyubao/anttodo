@@ -137,4 +137,68 @@ describe("parseTaskDateText", () => {
     const result = parse("明天帮我订机票")!;
     expect(matchKey(result.match)).toBe("0:2:明天");
   });
+
+  it("parses next Friday as next week's Friday", () => {
+    const nextFriday = parse("下周五提交");
+    expect(nextFriday!.match.text).toBe("下周五");
+    expect(toDateInput(nextFriday!.due.due_at!, ZONE)).toBe("2026-08-14");
+
+    const afterNext = parse("下下星期五评审");
+    expect(afterNext!.match.text).toBe("下下星期五");
+    expect(toDateInput(afterNext!.due.due_at!, ZONE)).toBe("2026-08-21");
+  });
+
+  it("parses a month-day range and strips it from the title", () => {
+    const result = parse("出差 8月5日到9月3日");
+    expect(result).not.toBeNull();
+    expect(result!.match.text).toBe("8月5日到9月3日");
+    expect(result!.title).toBe("出差");
+    expect(result!.due.due_is_all_day).toBe(true);
+    expect(toDateInput(result!.due.due_start_at!, ZONE)).toBe("2026-08-05");
+    expect(toDateInput(result!.due.due_at!, ZONE)).toBe("2026-09-03");
+  });
+
+  it("parses a weekday range across calendar weeks", () => {
+    const result = parse("下星期一到下下星期五开会");
+    expect(result!.match.text).toBe("下星期一到下下星期五");
+    expect(result!.title).toBe("开会");
+    expect(result!.due.due_is_all_day).toBe(true);
+    expect(toDateInput(result!.due.due_start_at!, ZONE)).toBe("2026-08-10");
+    expect(toDateInput(result!.due.due_at!, ZONE)).toBe("2026-08-21");
+  });
+
+  it("parses a relative range with an optional 从 prefix", () => {
+    const result = parse("从明天到周五整理材料");
+    expect(result!.match.text).toBe("从明天到周五");
+    expect(result!.title).toBe("整理材料");
+    expect(toDateInput(result!.due.due_start_at!, ZONE)).toBe("2026-08-04");
+    expect(toDateInput(result!.due.due_at!, ZONE)).toBe("2026-08-07");
+  });
+
+  it("parses a cross-year month-day range", () => {
+    const result = parse("12月1日到1月5日盘点");
+    expect(result!.match.text).toBe("12月1日到1月5日");
+    expect(toDateInput(result!.due.due_start_at!, ZONE)).toBe("2026-12-01");
+    expect(toDateInput(result!.due.due_at!, ZONE)).toBe("2027-01-05");
+  });
+
+  it("parses a same-day timed range", () => {
+    const result = parse("8月5日下午3点到8月5日晚上8点开会");
+    expect(result!.match.text).toBe("8月5日下午3点到8月5日晚上8点");
+    expect(result!.title).toBe("开会");
+    expect(result!.due.due_is_all_day).toBe(false);
+    expect(toDateInput(result!.due.due_start_at!, ZONE)).toBe("2026-08-05");
+    expect(toTimeInput(result!.due.due_start_at!, ZONE)).toBe("15:00");
+    expect(toDateInput(result!.due.due_at!, ZONE)).toBe("2026-08-05");
+    expect(toTimeInput(result!.due.due_at!, ZONE)).toBe("20:00");
+  });
+
+  it("does not treat 到办公室 as a date range", () => {
+    const result = parse("8月5日到办公室");
+    expect(result!.match.text).toBe("8月5日");
+    expect(result!.title).toBe("到办公室");
+    expect(result!.due.due_is_all_day).toBe(true);
+    expect(toDateInput(result!.due.due_at!, ZONE)).toBe("2026-08-05");
+    expect(toDateInput(result!.due.due_start_at!, ZONE)).toBe("2026-08-05");
+  });
 });

@@ -46,6 +46,7 @@ import {
   type DueFields,
   type DuePreset,
 } from "./lib/dueTime";
+import { DateSegmentField } from "./DateSegmentField";
 import {
   chineseCalendarDetail,
   formatDueWithPreferences,
@@ -138,11 +139,6 @@ function initialPoint(task: DueDateTarget) {
   return roundUpToHalfHour(task.due_start_at
     ? new Date(task.due_start_at)
     : task.due_at ? new Date(task.due_at) : new Date());
-}
-
-function formatDateField(value: string, preferences: DateTimePreferences) {
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? "" : formatPreferenceDate(date, preferences);
 }
 
 function timeOptionLabel(value: string, preferences: DateTimePreferences) {
@@ -786,19 +782,20 @@ export function DueDateControl({
             </div>
           ) : (
             <div className="due-range-panel">
-              <label>
+              <div className="due-range-row">
                 <span>开始</span>
-                <span className="due-date-input">
-                  <span aria-hidden="true">{formatDateField(startDate, preferences)}</span>
-                  <input
-                    aria-label="开始日期"
-                    type="date"
-                    value={startDate}
-                    onChange={(event) => setStartDate(event.target.value)}
-                  />
-                </span>
+                <DateSegmentField
+                  aria-label="开始日期"
+                  dateFormat={preferences.dateFormat}
+                  value={startDate}
+                  onChange={setStartDate}
+                />
                 {!allDay && (
-                  <select value={startTime} onChange={(event) => setStartTime(event.target.value)}>
+                  <select
+                    aria-label="开始时间"
+                    value={startTime}
+                    onChange={(event) => setStartTime(event.target.value)}
+                  >
                     {HALF_HOUR_OPTIONS.map((time) => (
                       <option key={time} value={time}>
                         {timeOptionLabel(time, preferences)}
@@ -806,20 +803,21 @@ export function DueDateControl({
                     ))}
                   </select>
                 )}
-              </label>
-              <label>
+              </div>
+              <div className="due-range-row">
                 <span>结束</span>
-                <span className="due-date-input">
-                  <span aria-hidden="true">{formatDateField(endDate, preferences)}</span>
-                  <input
-                    aria-label="结束日期"
-                    type="date"
-                    value={endDate}
-                    onChange={(event) => setEndDate(event.target.value)}
-                  />
-                </span>
+                <DateSegmentField
+                  aria-label="结束日期"
+                  dateFormat={preferences.dateFormat}
+                  value={endDate}
+                  onChange={setEndDate}
+                />
                 {!allDay && (
-                  <select value={endTime} onChange={(event) => setEndTime(event.target.value)}>
+                  <select
+                    aria-label="结束时间"
+                    value={endTime}
+                    onChange={(event) => setEndTime(event.target.value)}
+                  >
                     {HALF_HOUR_OPTIONS.map((time) => (
                       <option key={time} value={time}>
                         {timeOptionLabel(time, preferences)}
@@ -827,7 +825,7 @@ export function DueDateControl({
                     ))}
                   </select>
                 )}
-              </label>
+              </div>
               <label className="due-all-day">
                 <span>全天</span>
                 <input

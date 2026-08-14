@@ -29,6 +29,8 @@ export type ParsedTaskDue = DueFields & { due_timezone: string };
 
 type TimeParts = { hours: number; minutes: number };
 
+type FloatingMonthDay = { month: number | null; day: number };
+
 type Candidate = {
   start: number;
   end: number;
@@ -36,7 +38,11 @@ type Candidate = {
   date: Date;
   time: TimeParts | null;
   label: string;
+  floating?: FloatingMonthDay;
+  rangeEnd?: { date: Date; time: TimeParts | null };
 };
+
+const RANGE_SEPARATOR = /^\s*(?:到|至|~|～|—|–)\s*$/;
 
 const WEEKDAY_MAP: Record<string, number> = {
   日: 0,
@@ -183,12 +189,89 @@ function formatTimeLabel(time: TimeParts) {
 
 function nextWeekday(from: Date, targetWeekday: number, nextWeeks: number) {
   const current = getDay(from);
-  let delta = (targetWeekday - current + 7) % 7;
-  if (nextWeeks > 0) {
-    if (delta === 0) delta = 7;
-    delta += 7 * (nextWeeks - 1);
-  }
+  const delta = (targetWeekday - current + 7) % 7 + 7 * nextWeeks;
   return addDays(startOfDay(from), delta);
+}
+
+function calendarDate(year: number, month: number, day: number): Date | null {
+  const candidate = new Date(year, month - 1, day);
+  if (Number.isNaN(candidate.getTime()) || candidate.getDate() !== day) return null;
+  if (candidate.getFullYear() !== year || candidate.getMonth() !== month - 1) return null;
+  return startOfDay(candidate);
+}
+
+function resolveRangeMonthDays(
+  now: Date,
+  start: FloatingMonthDay,
+  end: FloatingMonthDay,
+): { startDate: Date; endDate: Date } | null {
+  const year = now.getFullYear();
+  const startMonth = start.month ?? now.getMonth() + 1;
+  const endMonth = end.month ?? now.getMonth() + 1;
+  let startDate = calendarDate(year, startMonth, start.day);
+  let endDate = calendarDate(year, endMonth, end.day);
+  if (!startDate || !endDate) return null;
+  if (startDate.getTime() > endDate.getTime()) {
+    endDate = calendarDate(year + 1, endMonth, end.day);
+    if (!endDate) return null;
+  } else if (endDate.getTime() < startOfDay(now).getTime()) {
+    startDate = calendarDate(year + 1, startMonth, start.day);
+    endDate = calendarDate(year + 1, endMonth, end.day);
+    if (!startDate || !endDate) return null;
+  }
+  return { startDate, endDate };
+}
+
+function formatCandidateLabel(date: Date, time: TimeParts | null) {
+  const dayLabel = format(date, "M月d日");
+  return time ? `${dayLabel} ${formatTimeLabel(time)}` : dayLabel;
+}
+
+function isChronologicalRange(
+  startDate: Date,
+  endDate: Date,
+  startTime: TimeParts | null,
+  endTime: TimeParts | null,
+) {
+  if (startDate.getTime() < endDate.getTime()) return true;
+  if (startDate.getTime() > endDate.getTime()) return false;
+  const startMinutes = startTime ? startTime.hours * 60 + startTime.minutes : 0;
+  const endMinutes = endTime ? endTime.hours * 60 + endTime.minutes : 23 * 60 + 59;
+  return startMinutes <= endMinutes;
+}
+
+function rangeDue(
+  startDate: Date,
+  endDate: Date,
+  startTime: TimeParts | null,
+  endTime: TimeParts | null,
+  timeZone: string,
+): ParsedTaskDue | null {
+  const startKey = toDateInput(startDate, timeZone);
+  const endKey = toDateInput(endDate, timeZone);
+  const allDay = !startTime && !endTime;
+  const start = startTime
+    ? fromZonedDateTime(
+      startKey,
+      `${String(startTime.hours).padStart(2, "0")}:${String(startTime.minutes).padStart(2, "0")}`,
+      timeZone,
+    )
+    : fromZonedDateTime(startKey, "00:00", timeZone);
+  const end = endTime
+    ? fromZonedDateTime(
+      endKey,
+      `${String(endTime.hours).padStart(2, "0")}:${String(endTime.minutes).padStart(2, "0")}`,
+      timeZone,
+    )
+    : fromZonedDateTime(endKey, "23:59", timeZone);
+  if (!endTime) end.setSeconds(59, 999);
+  if (start.getTime() > end.getTime()) return null;
+  return {
+    due_start_at: start.toISOString(),
+    due_at: end.toISOString(),
+    due_is_all_day: allDay,
+    due_timezone: timeZone,
+  };
 }
 
 function resolveMonthDay(now: Date, month: number | null, day: number) {
@@ -348,6 +431,7 @@ function findMonthDayCandidates(text: string, now: Date): Candidate[] {
     const date = resolveMonthDay(now, month, day);
     if (!date) return null;
     const timeRaw = match[4];
+    const floating = { month, day };
     if (timeRaw) {
       const time = parseClock(timeRaw);
       if (!time) return null;
@@ -358,6 +442,7 @@ function findMonthDayCandidates(text: string, now: Date): Candidate[] {
         date,
         time,
         label: `${format(date, "M月d日")} ${formatTimeLabel(time)}`,
+        floating,
       };
     }
     return {
@@ -367,6 +452,7 @@ function findMonthDayCandidates(text: string, now: Date): Candidate[] {
       date,
       time: null,
       label: format(date, "M月d日"),
+      floating,
     };
   });
 }
@@ -496,6 +582,51 @@ function findStandaloneTimeCandidates(text: string, now: Date): Candidate[] {
   return results;
 }
 
+function rangePrefixStart(text: string, start: number) {
+  const prefix = text.slice(0, start);
+  const match = prefix.match(/从\s*$/);
+  return match ? start - match[0].length : start;
+}
+
+function findRangeCandidates(text: string, now: Date, points: Candidate[]): Candidate[] {
+  const results: Candidate[] = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const left = points[i]!;
+    for (let j = 0; j < points.length; j += 1) {
+      if (i === j) continue;
+      const right = points[j]!;
+      if (left.end > right.start) continue;
+      if (!RANGE_SEPARATOR.test(text.slice(left.end, right.start))) continue;
+
+      let startDate = left.date;
+      let endDate = right.date;
+      let leftLabel = left.label;
+      let rightLabel = right.label;
+      if (left.floating && right.floating) {
+        const resolved = resolveRangeMonthDays(now, left.floating, right.floating);
+        if (!resolved) continue;
+        startDate = resolved.startDate;
+        endDate = resolved.endDate;
+        leftLabel = formatCandidateLabel(startDate, left.time);
+        rightLabel = formatCandidateLabel(endDate, right.time);
+      }
+      if (!isChronologicalRange(startDate, endDate, left.time, right.time)) continue;
+
+      const start = rangePrefixStart(text, left.start);
+      results.push({
+        start,
+        end: right.end,
+        text: text.slice(start, right.end),
+        date: startDate,
+        time: left.time,
+        label: `${leftLabel}–${rightLabel}`,
+        rangeEnd: { date: endDate, time: right.time },
+      });
+    }
+  }
+  return results;
+}
+
 function pickBest(candidates: Candidate[]): Candidate | null {
   if (candidates.length === 0) return null;
   const ranked = [...candidates].sort((a, b) => {
@@ -528,7 +659,7 @@ export function parseTaskDateText(
   // browser/server process zone. This matters around Shanghai midnight.
   const now = zonedDate(options?.now ?? new Date(), timeZone);
 
-  const candidates = [
+  const points = [
     ...findRelativeDayCandidates(text, now),
     ...findDaysLaterCandidates(text, now),
     ...findWeekdayCandidates(text, now),
@@ -537,24 +668,34 @@ export function parseTaskDateText(
     ...findStandaloneTimeCandidates(text, now),
   ];
 
-  // Drop shorter candidates fully covered by a longer one so pickBest is stable
-  const filtered = candidates.filter((candidate, index) => {
-    return !candidates.some((other, otherIndex) => {
-      if (index === otherIndex) return false;
-      const otherLen = other.end - other.start;
-      const selfLen = candidate.end - candidate.start;
-      return otherLen > selfLen
-        && other.start <= candidate.start
-        && other.end >= candidate.end;
+  const dropCovered = (candidates: Candidate[]) =>
+    candidates.filter((candidate, index) => {
+      return !candidates.some((other, otherIndex) => {
+        if (index === otherIndex) return false;
+        const otherLen = other.end - other.start;
+        const selfLen = candidate.end - candidate.start;
+        return otherLen > selfLen
+          && other.start <= candidate.start
+          && other.end >= candidate.end;
+      });
     });
-  });
 
-  const best = pickBest(filtered);
+  // Drop nested point matches first so ranges pair the longest date tokens.
+  const pointCandidates = dropCovered(points);
+  const candidates = dropCovered([
+    ...pointCandidates,
+    ...findRangeCandidates(text, now, pointCandidates),
+  ]);
+
+  const best = pickBest(candidates);
   if (!best) return null;
 
-  const due = best.time
+  const due = best.rangeEnd
+    ? rangeDue(best.date, best.rangeEnd.date, best.time, best.rangeEnd.time, timeZone)
+    : best.time
     ? timedDue(best.date, best.time, timeZone)
     : allDayDue(best.date, timeZone);
+  if (!due) return null;
 
   return {
     match: {

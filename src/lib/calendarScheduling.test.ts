@@ -47,6 +47,80 @@ describe("calendar task scheduling", () => {
       .toContain("multi-unscheduled");
   });
 
+  it("keeps unfiltered grouping when calendar visibility is omitted", () => {
+    const bundle = createDemoBundle();
+    bundle.labelPermissionLevels.inbox = 2;
+    const groups = buildScheduleTaskGroups(bundle, "demo-user");
+    expect(groups.map((group) => group.id)).toContain("inbox");
+    expect(groups.find((group) => group.id === "inbox")?.tasks.map((task) => task.id))
+      .toEqual(["task-5"]);
+  });
+
+  it("hides inbox tasks and keeps multi-label tasks only under visible labels", () => {
+    const bundle = createDemoBundle();
+    const multiLabel = {
+      ...bundle.tasks[0],
+      id: "multi-unscheduled",
+      title: "多标签未安排任务",
+      due_at: null,
+      due_start_at: null,
+      status: "open" as const,
+      assignee_id: "demo-user",
+      label_ids: ["product", "urgent"],
+    };
+    bundle.tasks = [...bundle.tasks, multiLabel];
+    bundle.labelPermissionLevels.product = 2;
+    bundle.labelPermissionLevels.urgent = 2;
+
+    const groups = buildScheduleTaskGroups(
+      bundle,
+      "demo-user",
+      new Set(),
+      new Set(["product"]),
+      new Set(["demo-user", "unassigned"]),
+    );
+    expect(groups.map((group) => group.id)).toEqual(["product"]);
+    expect(groups[0].tasks.map((task) => task.id)).toContain("multi-unscheduled");
+    expect(groups.find((group) => group.id === "inbox")).toBeUndefined();
+    expect(groups.find((group) => group.id === "urgent")).toBeUndefined();
+  });
+
+  it("hides unscheduled tasks whose assignee is not visible", () => {
+    const bundle = createDemoBundle();
+    const assigned = {
+      ...bundle.tasks[0],
+      id: "assigned-unscheduled",
+      title: "已指派未安排任务",
+      due_at: null,
+      due_start_at: null,
+      status: "open" as const,
+      assignee_id: "demo-user",
+      label_ids: ["product"],
+    };
+    bundle.tasks = [assigned, bundle.tasks.find((task) => task.id === "task-5")!];
+    bundle.labelPermissionLevels.product = 2;
+
+    const withoutAssignee = buildScheduleTaskGroups(
+      bundle,
+      "demo-user",
+      new Set(),
+      new Set(["inbox", "product"]),
+      new Set(["unassigned"]),
+    );
+    expect(withoutAssignee.map((group) => group.id)).toEqual(["inbox"]);
+    expect(withoutAssignee[0].tasks.map((task) => task.id)).toEqual(["task-5"]);
+
+    const withoutUnassigned = buildScheduleTaskGroups(
+      bundle,
+      "demo-user",
+      new Set(),
+      new Set(["inbox", "product"]),
+      new Set(["demo-user"]),
+    );
+    expect(withoutUnassigned.map((group) => group.id)).toEqual(["product"]);
+    expect(withoutUnassigned[0].tasks.map((task) => task.id)).toEqual(["assigned-unscheduled"]);
+  });
+
   it("excludes scheduled, completed, note, deleted, readonly, and pending tasks", () => {
     const bundle = createDemoBundle();
     const base = bundle.tasks.find((task) => task.id === "task-5")!;

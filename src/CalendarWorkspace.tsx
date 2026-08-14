@@ -583,6 +583,8 @@ function ScheduleTaskPanel({
   online,
   pendingTaskIds,
   optimisticallyUnscheduledTaskIds,
+  visibleCalendarIds,
+  visibleAssigneeIds,
   calendarTaskDragging,
   panelRef,
   onClose,
@@ -593,6 +595,8 @@ function ScheduleTaskPanel({
   online: boolean;
   pendingTaskIds: ReadonlySet<string>;
   optimisticallyUnscheduledTaskIds: ReadonlySet<string>;
+  visibleCalendarIds: Set<string>;
+  visibleAssigneeIds: Set<string>;
   calendarTaskDragging: boolean;
   panelRef: React.RefObject<HTMLDivElement | null>;
   onClose: () => void;
@@ -608,8 +612,14 @@ function ScheduleTaskPanel({
         : task),
     }, [bundle, optimisticallyUnscheduledTaskIds]);
   const groups = useMemo(
-    () => buildScheduleTaskGroups(panelBundle, currentUserId, pendingTaskIds),
-    [currentUserId, panelBundle, pendingTaskIds],
+    () => buildScheduleTaskGroups(
+      panelBundle,
+      currentUserId,
+      pendingTaskIds,
+      visibleCalendarIds,
+      visibleAssigneeIds,
+    ),
+    [currentUserId, panelBundle, pendingTaskIds, visibleAssigneeIds, visibleCalendarIds],
   );
 
   return (
@@ -1140,6 +1150,8 @@ export function CalendarWorkspace({
             online={online}
             pendingTaskIds={pendingTaskIds}
             optimisticallyUnscheduledTaskIds={optimisticallyUnscheduledTaskIds}
+            visibleCalendarIds={visibleCalendarIds}
+            visibleAssigneeIds={visibleAssigneeIds}
             calendarTaskDragging={draggingCalendarTaskId !== null}
             panelRef={schedulePanelRef}
             onClose={() => setSchedulePanelVisibility(false)}

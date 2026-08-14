@@ -30,17 +30,21 @@ import {
   barGeometry,
   buildTimelineMonthSegments,
   clampTimelineLabelWidth,
+  collectTimelineDependencyPaths,
   dayOffsetToDate,
   dayWidthForZoom,
   defaultTimelineLabelWidth,
   isSameCalendarDay,
   collectTimelineBars,
   packTimelineBarLanes,
+  rehomeTimelineGroupBars,
   schedulePatchForTimelineDrop,
   schedulePatchForTimelineMove,
   schedulePatchForTimelineResize,
   shouldPlaceTimelineBarTitleOutside,
   taskBarRange,
+  timelineBarBox,
+  TIMELINE_BAR_TOP_INSET,
   TIMELINE_HEADER_HEIGHT,
   TIMELINE_LABEL_MAX_WIDTH,
   TIMELINE_LABEL_MIN_WIDTH,
@@ -55,6 +59,7 @@ import {
   xToDayOffset,
   type TimelineZoom,
 } from "./lib/taskTimeline";
+import { collectWorkspaceDependencies } from "./lib/taskDependencies";
 import { isLocalFirstHost, offlineCacheBannerText } from "./lib/local-first/localStore";
 import type {
   Label,
@@ -191,6 +196,7 @@ export function TaskTimeline({
   const pointerDragRef = useRef<PointerDrag | null>(null);
   const suppressBarClickRef = useRef(false);
   const [draggingScheduleTaskId, setDraggingScheduleTaskId] = useState<string | null>(null);
+  const [hoveredBarId, setHoveredBarId] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const labelsRowsRef = useRef<HTMLDivElement>(null);
@@ -231,18 +237,29 @@ export function TaskTimeline({
     });
   }
 
+  const dependencyEdges = useMemo(
+    () => collectWorkspaceDependencies(bundle.tasks),
+    [bundle.tasks],
+  );
+
   const timelineRows = useMemo(() => {
+    const grouped = rehomeTimelineGroupBars(
+      groups.map((group) => ({
+        id: group.id,
+        title: group.title || "全部",
+        bars: collectTimelineBars(group.tasks, showCompleted),
+      })),
+      dependencyEdges,
+    );
     const rows: TimelineRow[] = [];
     let top = 0;
-    for (const group of groups) {
-      const bars = collectTimelineBars(group.tasks, showCompleted);
-      if (bars.length === 0) continue;
-      const { laneCount } = packTimelineBarLanes(bars, timeZone);
+    for (const group of grouped) {
+      const { laneCount } = packTimelineBarLanes(group.bars, timeZone, dependencyEdges);
       const height = timelineGroupRowHeight(laneCount);
       rows.push({
         id: group.id,
-        title: group.title || "全部",
-        bars,
+        title: group.title,
+        bars: group.bars,
         laneCount,
         height,
         top,
@@ -250,7 +267,7 @@ export function TaskTimeline({
       top += height;
     }
     return rows;
-  }, [groups, showCompleted, timeZone]);
+  }, [dependencyEdges, groups, showCompleted, timeZone]);
 
   const autoLabelWidth = useMemo(
     () => defaultTimelineLabelWidth(timelineRows.map((row) => row.title)),
@@ -270,10 +287,24 @@ export function TaskTimeline({
   const packedByGroup = useMemo(() => {
     const map = new Map<string, ReturnType<typeof packTimelineBarLanes>>();
     for (const row of timelineRows) {
-      map.set(row.id, packTimelineBarLanes(row.bars, timeZone));
+      map.set(row.id, packTimelineBarLanes(row.bars, timeZone, dependencyEdges));
     }
     return map;
-  }, [timelineRows, timeZone]);
+  }, [dependencyEdges, timelineRows, timeZone]);
+
+  const dependencyPaths = useMemo(() => {
+    const boxes = timelineRows.flatMap((row) => {
+      const packed = packedByGroup.get(row.id);
+      if (!packed) return [];
+      return packed.items.map(({ source, lane, range }) =>
+        timelineBarBox(source.id, barGeometry(range, origin, dayWidth), row.top, lane),
+      );
+    });
+    return collectTimelineDependencyPaths(boxes, dependencyEdges);
+  }, [dayWidth, dependencyEdges, origin, packedByGroup, timelineRows]);
+
+  const focusedBarId = hoveredBarId
+    ?? (selectedSubtaskId ? `subtask:${selectedSubtaskId}` : selectedTaskId);
 
   const schedulePanelBundle = useMemo(() => ({
     ...bundle,
@@ -664,6 +695,54 @@ export function TaskTimeline({
                     style={{ top: row.top, height: row.height }}
                   />
                 ))}
+                {dependencyPaths.length > 0 && (
+                  <svg
+                    className={clsx(
+                      "timeline-dependency-layer",
+                      focusedBarId && "has-focus",
+                    )}
+                    width={canvasWidth}
+                    height={bodyHeight}
+                    aria-hidden="true"
+                  >
+                    <defs>
+                      <marker
+                        id="timeline-dependency-arrow"
+                        viewBox="0 0 10 10"
+                        refX="9"
+                        refY="5"
+                        markerWidth="8"
+                        markerHeight="8"
+                        orient="auto"
+                        markerUnits="userSpaceOnUse"
+                      >
+                        <path d="M 0 0 L 10 5 L 0 10 z" />
+                      </marker>
+                    </defs>
+                    {dependencyPaths.map((path) => {
+                      const isActive = Boolean(
+                        focusedBarId
+                        && (path.fromId === focusedBarId || path.toId === focusedBarId),
+                      );
+                      return (
+                        <g
+                          key={path.id}
+                          className={clsx(
+                            "timeline-dependency-link",
+                            isActive && "is-active",
+                          )}
+                        >
+                          <path className="timeline-dependency-edge-halo" d={path.d} />
+                          <path
+                            className="timeline-dependency-edge"
+                            d={path.d}
+                            markerEnd="url(#timeline-dependency-arrow)"
+                          />
+                        </g>
+                      );
+                    })}
+                  </svg>
+                )}
                 {timelineRows.flatMap((row) => {
                   const packed = packedByGroup.get(row.id);
                   if (!packed) return [];
@@ -715,12 +794,16 @@ export function TaskTimeline({
                           titleOutside && "title-outside",
                         )}
                         style={{
-                          top: row.top + lane * TIMELINE_ROW_HEIGHT + 6,
+                          top: row.top + lane * TIMELINE_ROW_HEIGHT + TIMELINE_BAR_TOP_INSET,
                           left,
                           width,
                           backgroundColor: barBackground(color, isSubtask),
                         }}
                         title={source.title}
+                        onMouseEnter={() => setHoveredBarId(source.id)}
+                        onMouseLeave={() => setHoveredBarId((current) => (
+                          current === source.id ? null : current
+                        ))}
                         onClick={(event) => openBar(source, event)}
                         onPointerDown={(event) => {
                           if (isSubtask) return;
