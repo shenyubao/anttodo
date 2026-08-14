@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { del, get, set } from "idb-keyval";
 
 export const TASK_ATTACHMENT_BUCKET = "task-attachments";
 export const COMMENT_IMAGE_BUCKET = "comment-images";
@@ -199,11 +200,30 @@ export function createSupabaseAttachmentService(
   client: SupabaseClient,
 ): AttachmentService {
   const previewUrls = new Map<string, string>();
+  const localPendingKey = (uri: string) => `anttodo:local-attachment:${uri}`;
 
   return {
     async upload(context, file) {
       const metadata = validateAttachment(file);
       const path = buildAttachmentPath(context, metadata.extension);
+      const uri = buildAttachmentUri(path);
+      if (!navigator.onLine) {
+        await set(localPendingKey(uri), {
+          blob: file,
+          contentType: metadata.contentType,
+          fileName: file.name,
+          image: metadata.image,
+          path,
+          uri,
+        });
+        return {
+          contentType: metadata.contentType,
+          fileName: file.name,
+          image: metadata.image,
+          path,
+          uri,
+        };
+      }
       const { error } = await client.storage
         .from(TASK_ATTACHMENT_BUCKET)
         .upload(path, file, {
@@ -225,6 +245,24 @@ export function createSupabaseAttachmentService(
     async uploadCommentImage(context, file) {
       const metadata = validateCommentImage(file);
       const path = buildCommentImagePath(context, metadata.extension);
+      const uri = buildCommentImageUri(path);
+      if (!navigator.onLine) {
+        await set(localPendingKey(uri), {
+          blob: file,
+          contentType: metadata.contentType,
+          fileName: file.name,
+          image: true,
+          path,
+          uri,
+        });
+        return {
+          contentType: metadata.contentType,
+          fileName: file.name,
+          image: true,
+          path,
+          uri,
+        };
+      }
       const { error } = await client.storage
         .from(COMMENT_IMAGE_BUCKET)
         .upload(path, file, {
@@ -245,6 +283,12 @@ export function createSupabaseAttachmentService(
     async resolveImage(uri) {
       const cached = previewUrls.get(uri);
       if (cached) return cached;
+      const local = await get<{ blob: Blob }>(localPendingKey(uri));
+      if (local?.blob) {
+        const previewUrl = URL.createObjectURL(local.blob);
+        previewUrls.set(uri, previewUrl);
+        return previewUrl;
+      }
       const parsed = parseAttachmentUri(uri);
       if (!parsed) return uri;
 
@@ -258,6 +302,13 @@ export function createSupabaseAttachmentService(
     },
 
     async open(uri) {
+      const local = await get<{ blob: Blob }>(localPendingKey(uri));
+      if (local?.blob) {
+        const objectUrl = URL.createObjectURL(local.blob);
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+        return;
+      }
       const parsed = parseAttachmentUri(uri);
       if (!parsed) {
         if (!isSafeEditorUrl(uri)) throw new Error("链接地址不安全");
@@ -273,8 +324,14 @@ export function createSupabaseAttachmentService(
     },
 
     async remove(uri) {
+      await del(localPendingKey(uri));
       const parsed = parseAttachmentUri(uri);
-      if (!parsed) return;
+      if (!parsed || !navigator.onLine) {
+        const previewUrl = previewUrls.get(uri);
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrls.delete(uri);
+        return;
+      }
       const { error } = await client.storage
         .from(parsed.bucket)
         .remove([parsed.path]);

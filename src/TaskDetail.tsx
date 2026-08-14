@@ -1,11 +1,13 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import clsx from "clsx";
 import {
-  CalendarDays,
   Check,
+  ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Clock,
   Ellipsis,
+  Flag,
   History,
   Inbox,
   Link2,
@@ -13,6 +15,7 @@ import {
   MessageCircle,
   NotebookPen,
   RotateCcw,
+  Search,
   Sparkles,
   SquareTerminal,
   Trash2,
@@ -35,10 +38,10 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { DueDateControl } from "./DueDateControl";
+import { DueDateControl, dueTargetFromSubtask } from "./DueDateControl";
 import { AiCliAvatar } from "./AiCliAvatar";
 import { MemberAvatar } from "./MemberAvatar";
-import { getPriorityOption, PriorityControl } from "./PriorityControl";
+import { getPriorityOption, PRIORITY_OPTIONS, PriorityControl } from "./PriorityControl";
 import { TaskComments, type CreateCommentInput } from "./TaskComments";
 import { TaskActivity } from "./TaskActivity";
 import { TaskCliTerminal } from "./TaskCliTerminal";
@@ -58,7 +61,7 @@ import {
 } from "./lib/aiSubtaskDecompose";
 import { decomposeSubtasks, formatTaskWithAi } from "./lib/api";
 import { taskShareUrl } from "./lib/appRoute";
-import { systemTimeZone } from "./lib/dateTimePreferences";
+import { formatDueWithPreferences, systemTimeZone, toDateInput } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
@@ -78,12 +81,17 @@ import {
 } from "./lib/aiWork";
 import { trackAiTerminalSession, untrackAiTerminalSession } from "./lib/aiTerminalSessions";
 import {
+  formatContactDisplayName,
+  useShowContactNames,
+} from "./lib/displayPreference";
+import {
   formatHoursDetail,
   formatHoursValue,
   formatPomodorosValue,
   hoursFromPomodoros,
   normalizeHoursInput,
   normalizePomodorosInput,
+  sumHours,
 } from "./lib/taskHours";
 import {
   MOBILE_TASK_DETAIL_MEDIA,
@@ -148,18 +156,23 @@ export type TaskDetailProps = {
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
+  onSaveSubtaskSchedule: (
+    subtaskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
   onAssign: (target: AssigneeTarget) => Promise<void>;
   onAssignSubtask: (subtaskId: string, target: AssigneeTarget) => Promise<void>;
   onToggleLabel: (taskId: string, labelId: string, selected: boolean) => Promise<void>;
   onToggleParticipant: (taskId: string, userId: string, selected: boolean) => Promise<void>;
   onCreateSubtask: (
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
+    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) => Promise<void>;
   focusedSubtaskId?: string | null;
   onClearFocusedSubtask?: () => void;
@@ -198,10 +211,13 @@ function TaskAssigneeControl({
   compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const showContactNames = useShowContactNames();
   const assignee = target.kind === "user"
     ? bundle.members.find((member) => member.user_id === target.userId)
     : undefined;
@@ -211,6 +227,25 @@ function TaskAssigneeControl({
     () => getAssignableMembers(bundle, task, currentUserId),
     [bundle, currentUserId, task],
   );
+  const needle = query.trim().toLowerCase();
+  const matchesQuery = (labels: string[]) =>
+    !needle || labels.some((label) => label.toLowerCase().includes(needle));
+  const showUnassigned = matchesQuery(["不指派"]);
+  const filteredCliTools = cliTools.filter((tool) => matchesQuery([aiCliLabel(tool), tool]));
+  const filteredCandidates = candidates.filter((member) => {
+    const displayName = member.profile?.display_name ?? "团队成员";
+    const labels = member.user_id === currentUserId
+      ? [displayName, "我"]
+      : [displayName];
+    return matchesQuery(labels);
+  });
+  const pinnedCandidate = target.kind === "user"
+    ? filteredCandidates.find((member) => member.user_id === target.userId)
+    : undefined;
+  const restCandidates = pinnedCandidate
+    ? filteredCandidates.filter((member) => member.user_id !== pinnedCandidate.user_id)
+    : filteredCandidates;
+  const hasMatches = showUnassigned || filteredCliTools.length > 0 || filteredCandidates.length > 0;
 
   useEffect(() => {
     setOpen(false);
@@ -218,9 +253,12 @@ function TaskAssigneeControl({
   }, [task.id]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setQuery("");
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
-      rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.focus();
+      searchRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
@@ -284,12 +322,42 @@ function TaskAssigneeControl({
   const assigneeName = target.kind === "cli"
     ? aiCliLabel(target.tool)
     : assignee?.profile?.display_name ?? "未指派";
+  const showAssigneeName = showContactNames && Boolean(assignee);
+
+  function renderMemberOption(member: (typeof candidates)[number]) {
+    return (
+      <button
+        key={member.user_id}
+        type="button"
+        role="menuitemradio"
+        aria-checked={target.kind === "user" && target.userId === member.user_id}
+        disabled={saving}
+        onClick={() => void choose({ kind: "user", userId: member.user_id })}
+      >
+        <MemberAvatar member={member} className="assignee-menu-avatar" />
+        <span>{member.user_id === currentUserId ? "我" : member.profile?.display_name ?? "团队成员"}</span>
+        <Check className="assignee-selected-icon" />
+      </button>
+    );
+  }
+
   return (
-    <div className={clsx("task-assignee-control", compact && "subtask-assignee-control")} ref={rootRef}>
+    <div
+      className={clsx(
+        "task-assignee-control",
+        compact && "subtask-assignee-control",
+        showAssigneeName && "has-contact-name",
+      )}
+      ref={rootRef}
+    >
       <button
         ref={triggerRef}
         type="button"
-        className={clsx("task-assignee-trigger", open && "active")}
+        className={clsx(
+          "task-assignee-trigger",
+          open && "active",
+          showAssigneeName && "has-contact-name",
+        )}
         aria-label={`负责人：${assigneeName}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -303,6 +371,11 @@ function TaskAssigneeControl({
         ) : (
           <UserRound />
         )}
+        {showAssigneeName && assignee ? (
+          <span className="task-assignee-name">
+            {formatContactDisplayName(assignee.profile?.display_name ?? "团队成员")}
+          </span>
+        ) : null}
       </button>
       {open && (
         <div
@@ -311,50 +384,62 @@ function TaskAssigneeControl({
           aria-label="选择负责人"
           onKeyDown={moveMenuFocus}
         >
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={target.kind === "none"}
-            disabled={saving}
-            onClick={() => void choose({ kind: "none" })}
-          >
-            <UserRound className="assignee-none-icon" />
-            <span>不指派</span>
-            <Check className="assignee-selected-icon" />
-          </button>
-          {cliTools.map((tool) => (
-            <button
-              key={tool}
-              type="button"
-              role="menuitemradio"
-              aria-checked={target.kind === "cli" && target.tool === tool}
-              disabled={saving}
-              onClick={() => void choose({ kind: "cli", tool })}
-            >
-              <AiCliAvatar tool={tool} className="assignee-menu-avatar" />
-              <span>{aiCliLabel(tool)}</span>
-              <Check className="assignee-selected-icon" />
-            </button>
-          ))}
-          {cliTools.length > 0 && <div className="task-assignee-divider" aria-hidden="true" />}
-          {candidates.map((member) => (
-            <button
-              key={member.user_id}
-              type="button"
-              role="menuitemradio"
-              aria-checked={target.kind === "user" && target.userId === member.user_id}
-              disabled={saving}
-              onClick={() => void choose({ kind: "user", userId: member.user_id })}
-            >
-              <MemberAvatar member={member} className="assignee-menu-avatar" />
-              <span>{member.user_id === currentUserId ? "我" : member.profile?.display_name ?? "团队成员"}</span>
-              <Check className="assignee-selected-icon" />
-            </button>
-          ))}
-          {candidates.length === 0 && (
-            <p className="task-assignee-status">暂无可指派成员</p>
-          )}
-          {error && <p className="task-assignee-error" role="alert">{error}</p>}
+          <label className="task-assignee-search">
+            <Search aria-hidden="true" />
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              placeholder="搜索"
+              aria-label="搜索负责人"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Escape") {
+                  return;
+                }
+                event.stopPropagation();
+              }}
+            />
+          </label>
+          <div className="task-assignee-menu-list">
+            {showUnassigned && (
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={target.kind === "none"}
+                disabled={saving}
+                onClick={() => void choose({ kind: "none" })}
+              >
+                <UserRound className="assignee-none-icon" />
+                <span>不指派</span>
+                <Check className="assignee-selected-icon" />
+              </button>
+            )}
+            {pinnedCandidate && renderMemberOption(pinnedCandidate)}
+            {filteredCliTools.map((tool) => (
+              <button
+                key={tool}
+                type="button"
+                role="menuitemradio"
+                aria-checked={target.kind === "cli" && target.tool === tool}
+                disabled={saving}
+                onClick={() => void choose({ kind: "cli", tool })}
+              >
+                <AiCliAvatar tool={tool} className="assignee-menu-avatar" />
+                <span>{aiCliLabel(tool)}</span>
+                <Check className="assignee-selected-icon" />
+              </button>
+            ))}
+            {filteredCliTools.length > 0 && <div className="task-assignee-divider" aria-hidden="true" />}
+            {restCandidates.map((member) => renderMemberOption(member))}
+            {!needle && candidates.length === 0 && (
+              <p className="task-assignee-status">暂无可指派成员</p>
+            )}
+            {needle && !hasMatches && (
+              <p className="task-assignee-status">未找到匹配成员</p>
+            )}
+            {error && <p className="task-assignee-error" role="alert">{error}</p>}
+          </div>
         </div>
       )}
     </div>
@@ -501,160 +586,6 @@ function TaskParticipantsControl({
           )}
           {error && <p className="task-participants-error" role="alert">{error}</p>}
         </div>
-      )}
-    </div>
-  );
-}
-
-function SubtaskDueDateControl({
-  dueAt,
-  completed = false,
-  online,
-  onSave,
-}: {
-  dueAt: string | null;
-  completed?: boolean;
-  online: boolean;
-  onSave: (dueAt: string | null) => Promise<void> | void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [date, setDate] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [position, setPosition] = useState<CSSProperties>({});
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const initial = dueAt ? new Date(dueAt) : new Date();
-    const offset = initial.getTimezoneOffset() * 60_000;
-    setDate(new Date(initial.getTime() - offset).toISOString().slice(0, 10));
-    const close = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (rootRef.current?.contains(target) || popoverRef.current?.contains(target)) {
-        return;
-      }
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open, dueAt]);
-
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current || !popoverRef.current) return;
-
-    const positionPopover = () => {
-      const trigger = triggerRef.current!.getBoundingClientRect();
-      const popover = popoverRef.current!;
-      const gap = 8;
-      const inset = 12;
-      const width = Math.min(260, window.innerWidth - inset * 2);
-      const height = popover.offsetHeight;
-      const left = Math.min(
-        Math.max(trigger.left, inset),
-        Math.max(inset, window.innerWidth - width - inset),
-      );
-      const preferredTop = trigger.bottom + gap;
-      const top = preferredTop + height <= window.innerHeight - inset
-        ? preferredTop
-        : Math.max(inset, trigger.top - height - gap);
-      setPosition({ width, left, top });
-    };
-
-    positionPopover();
-    window.addEventListener("resize", positionPopover);
-    window.addEventListener("scroll", positionPopover, true);
-    return () => {
-      window.removeEventListener("resize", positionPopover);
-      window.removeEventListener("scroll", positionPopover, true);
-    };
-  }, [open, date]);
-
-  const dueDate = dueAt ? new Date(dueAt) : null;
-  const formatted = dueDate
-    ? `${dueDate.getMonth() + 1}月${dueDate.getDate()}日`
-    : "";
-  const overdue = Boolean(
-    dueAt
-    && !completed
-    && new Date(dueAt).getTime() < Date.now(),
-  );
-
-  async function save(value: string | null) {
-    setSaving(true);
-    try {
-      const nextDueAt = value
-        ? new Date(`${value}T23:59:59.999`).toISOString()
-        : null;
-      await onSave(nextDueAt);
-      setOpen(false);
-      triggerRef.current?.focus();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="subtask-date-control" ref={rootRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={clsx("subtask-date-trigger", dueAt && "has-date", overdue && "overdue")}
-        aria-label={dueAt ? `截止时间：${formatted}` : "设置子任务截止时间"}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        disabled={!online || saving}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <CalendarDays />
-        {formatted && <span>{formatted}</span>}
-      </button>
-      {open && createPortal(
-        <div
-          ref={popoverRef}
-          className="subtask-date-popover"
-          role="dialog"
-          aria-label="设置子任务截止时间"
-          style={position}
-        >
-          <strong>截止时间</strong>
-          <input
-            type="date"
-            aria-label="子任务截止日期"
-            value={date}
-            onChange={(event) => setDate(event.target.value)}
-          />
-          <div className="subtask-date-quick-actions">
-            <button type="button" onClick={() => {
-              const today = new Date();
-              const offset = today.getTimezoneOffset() * 60_000;
-              setDate(new Date(today.getTime() - offset).toISOString().slice(0, 10));
-            }}>今天</button>
-            <button type="button" onClick={() => {
-              const tomorrow = new Date();
-              tomorrow.setDate(tomorrow.getDate() + 1);
-              const offset = tomorrow.getTimezoneOffset() * 60_000;
-              setDate(new Date(tomorrow.getTime() - offset).toISOString().slice(0, 10));
-            }}>明天</button>
-          </div>
-          <div className="subtask-date-footer">
-            <button type="button" disabled={saving} onClick={() => void save(null)}>清除</button>
-            <button type="button" disabled={saving || !date} onClick={() => void save(date)}>确定</button>
-          </div>
-        </div>,
-        document.body,
       )}
     </div>
   );
@@ -1163,27 +1094,35 @@ function SubtaskMoreMenu({
   subtask,
   online,
   pomodoroMinutes,
+  compact = false,
   onUpdate,
 }: {
   subtask: Subtask;
   online: boolean;
   pomodoroMinutes: number;
-  onUpdate: (patch: Partial<Pick<Subtask, "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros">>) => Promise<void>;
+  compact?: boolean;
+  onUpdate: (patch: Partial<Pick<Subtask, "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [priorityOpen, setPriorityOpen] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const currentPriority = getPriorityOption(subtask.priority ?? "none");
 
   useEffect(() => {
     setOpen(false);
     setHoursOpen(false);
+    setPriorityOpen(false);
   }, [subtask.id]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setPriorityOpen(false);
+      return;
+    }
     const closeOnOutside = (event: PointerEvent) => {
       const target = event.target as Node;
       if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) {
@@ -1194,6 +1133,10 @@ function SubtaskMoreMenu({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
+      if (priorityOpen) {
+        setPriorityOpen(false);
+        return;
+      }
       setOpen(false);
       triggerRef.current?.focus();
     };
@@ -1203,7 +1146,7 @@ function SubtaskMoreMenu({
       document.removeEventListener("pointerdown", closeOnOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open]);
+  }, [open, priorityOpen]);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current || !menuRef.current) return;
@@ -1234,13 +1177,14 @@ function SubtaskMoreMenu({
       window.removeEventListener("resize", positionMenu);
       window.removeEventListener("scroll", positionMenu, true);
     };
-  }, [open]);
+  }, [open, priorityOpen]);
 
   return (
-    <div className="task-more-control" ref={rootRef}>
+    <div className={clsx("task-more-control", compact && "subtask-more-control")} ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
+        className={compact ? "subtask-more-trigger" : undefined}
         aria-label="更多子任务操作"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -1253,21 +1197,52 @@ function SubtaskMoreMenu({
           ref={menuRef}
           className="task-more-menu"
           role="menu"
-          aria-label="更多操作"
+          aria-label={priorityOpen ? "设置优先级" : "更多操作"}
           style={position}
         >
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!online}
-            onClick={() => {
-              setOpen(false);
-              setHoursOpen(true);
-            }}
-          >
-            <Clock />
-            <span>登记工时</span>
-          </button>
+          {priorityOpen ? PRIORITY_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitem"
+              disabled={!online}
+              aria-checked={(subtask.priority ?? "none") === option.value}
+              onClick={() => {
+                void onUpdate({ priority: option.value });
+                setOpen(false);
+                setPriorityOpen(false);
+              }}
+            >
+              <Flag style={{ color: option.color }} />
+              <span>{option.label}</span>
+            </button>
+          )) : (
+            <>
+              <button
+                type="button"
+                className="has-submenu"
+                role="menuitem"
+                disabled={!online}
+                onClick={() => setPriorityOpen(true)}
+              >
+                <Flag style={{ color: currentPriority.color }} />
+                <span>优先级</span>
+                <ChevronRight />
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!online}
+                onClick={() => {
+                  setOpen(false);
+                  setHoursOpen(true);
+                }}
+              >
+                <Clock />
+                <span>登记工时</span>
+              </button>
+            </>
+          )}
         </div>,
         document.body,
       )}
@@ -1281,7 +1256,9 @@ function SubtaskMoreMenu({
         resetKey={subtask.id}
         online={online}
         onOpenChange={setHoursOpen}
-        onUpdate={onUpdate}
+        onUpdate={async (patch) => {
+          await onUpdate(patch);
+        }}
       />
     </div>
   );
@@ -1328,7 +1305,7 @@ function AiSmartProcessControl({
   editable: boolean;
   onCreateSubtask: (
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onEnsureSubtasksVisible?: () => void;
   onUpdate: (
@@ -1341,7 +1318,7 @@ function AiSmartProcessControl({
   ) => Promise<void>;
   onFormatApplied: (title: string, description: string) => void;
 }) {
-  const writable = online && editable;
+  const writable = editable && (online || Boolean(window.anttodoDesktop?.sync));
   const [panel, setPanel] = useState<AiSmartPanel>(null);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1853,6 +1830,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onClose,
   onUpdate,
   onSaveSchedule,
+  onSaveSubtaskSchedule,
   onAssign,
   onAssignSubtask,
   onToggleLabel,
@@ -1895,7 +1873,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const commitDraftSubtaskRef = useRef<() => Promise<void>>(async () => undefined);
   const [editingSubtaskId, setEditingSubtaskId] = useState<string | null>(null);
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState("");
-  const [draftSubtaskDueAt, setDraftSubtaskDueAt] = useState<string | null>(null);
+  const [draftSubtaskDue, setDraftSubtaskDue] = useState({
+    due_at: null as string | null,
+    due_start_at: null as string | null,
+    due_is_all_day: false,
+    due_timezone: null as string | null,
+  });
   const [draftSubtaskPriority, setDraftSubtaskPriority] = useState<Subtask["priority"]>("none");
   const [draftSubtaskCli, setDraftSubtaskCli] = useState<AiCliTool | null>(null);
   const assignableMembers = useMemo(
@@ -1920,6 +1903,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
   const [immersive, setImmersive] = useState(false);
   const [showSubtasks, setShowSubtasks] = useState(readDetailSubtasksVisible);
+  const [showSubtaskDetails, setShowSubtaskDetails] = useState(false);
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [commentComposerOpen, setCommentComposerOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -1931,13 +1915,19 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const startedTerminalsRef = useRef(new Map<string, AiCliTool>());
   const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
   const cliPickerRef = useRef<HTMLDivElement>(null);
-  const writable = online && editable;
+  const writable = editable && (online || Boolean(window.anttodoDesktop?.sync));
   const hoursLabel = formatHoursDetail(
     focusedSubtask ? focusedSubtask.estimate_hours : task.estimate_hours,
     focusedSubtask ? focusedSubtask.actual_hours : task.actual_hours,
     focusedSubtask ? focusedSubtask.estimate_pomodoros : task.estimate_pomodoros,
     focusedSubtask ? focusedSubtask.actual_pomodoros : task.actual_pomodoros,
   );
+  const subtaskHoursSummary = !focusedSubtask
+    ? formatHoursDetail(
+      sumHours(task.subtasks.map((subtask) => subtask.estimate_hours)),
+      sumHours(task.subtasks.map((subtask) => subtask.actual_hours)),
+    )
+    : null;
   const desktopAiAvailable = Boolean(window.anttodoDesktop?.aiWork);
   activeTerminalRef.current = activeTerminal;
 
@@ -1998,7 +1988,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     setEditingSubtaskId(null);
     setEditingSubtaskTitle("");
     subtaskTokens.reset();
-    setDraftSubtaskDueAt(null);
+    setDraftSubtaskDue({
+      due_at: null,
+      due_start_at: null,
+      due_is_all_day: false,
+      due_timezone: null,
+    });
     setDraftSubtaskPriority("none");
     setDraftSubtaskCli(null);
     setToolbarOpen(false);
@@ -2096,7 +2091,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
 
   function scheduleSubtaskSave(
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
+    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) {
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
@@ -2142,10 +2137,18 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     const cliAssignee = draftSubtaskAssignee.kind === "cli"
       ? draftSubtaskAssignee.tool
       : null;
-    const dueAt = draftSubtaskDueAt;
+    const dueAt = draftSubtaskDue.due_at;
+    const dueStartAt = draftSubtaskDue.due_start_at;
+    const dueIsAllDay = draftSubtaskDue.due_is_all_day;
+    const dueTimezone = draftSubtaskDue.due_timezone;
     const priority = draftSubtaskPriority;
     subtaskTokens.reset();
-    setDraftSubtaskDueAt(null);
+    setDraftSubtaskDue({
+      due_at: null,
+      due_start_at: null,
+      due_is_all_day: false,
+      due_timezone: null,
+    });
     setDraftSubtaskPriority("none");
     setDraftSubtaskCli(null);
     try {
@@ -2153,6 +2156,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         assignee_id: assigneeId,
         cli_assignee: cliAssignee,
         due_at: dueAt,
+        due_start_at: dueStartAt,
+        due_is_all_day: dueIsAllDay,
+        due_timezone: dueTimezone,
         priority,
       });
     } finally {
@@ -2164,7 +2170,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   function handleDraftSubtaskFormBlur(event: FocusEvent<HTMLFormElement>) {
     const next = event.relatedTarget as Node | null;
     if (next && event.currentTarget.contains(next)) return;
-    if (next instanceof Element && next.closest(".subtask-date-popover")) return;
+    if (next instanceof Element && next.closest(".subtask-date-popover, .due-popover")) return;
     void commitDraftSubtask().catch(() => undefined);
   }
 
@@ -2318,11 +2324,13 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       <div className={clsx("task-detail", `task-detail-${presentation}`, "task-detail-subtask")}>
         <header className="detail-toolbar">
           {subtaskToolbarLeading}
-          <SubtaskDueDateControl
-            dueAt={focusedSubtask.due_at}
-            completed={focusedSubtask.completed}
+          <DueDateControl
+            task={dueTargetFromSubtask(focusedSubtask)}
             online={writable}
-            onSave={(dueAt) => onUpdateSubtask(focusedSubtask.id, { due_at: dueAt })}
+            now={now}
+            preferences={dateTimePreferences}
+            allowRecurrence={false}
+            onSave={(patch, schedule) => onSaveSubtaskSchedule(focusedSubtask.id, patch, schedule)}
           />
           <div className="detail-toolbar-spacer" />
           <TaskAssigneeControl
@@ -2383,6 +2391,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 {draftTitle}
               </div>
             )}
+            {hoursLabel && <p className="detail-subtask-hours">{hoursLabel}</p>}
             <button
               type="button"
               className="detail-parent-task"
@@ -2417,7 +2426,12 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             onLoadCandidates={onLoadCommentCandidates}
             onCreate={async (input) => {
               await onCreateComment(input, { subtaskId: focusedSubtask.id });
-              setComments(await onLoadComments({ subtaskId: focusedSubtask.id }));
+              try {
+                setComments(await onLoadComments({ subtaskId: focusedSubtask.id }));
+              } catch {
+                // An offline comment is already queued locally; remote history
+                // will be refreshed after the next successful sync.
+              }
             }}
             onUpdate={async (comment, input) => {
               await onUpdateComment(comment, input);
@@ -2433,9 +2447,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           ref={setToolbarHost}
           className={clsx("detail-editor-toolbar-dock", toolbarOpen && "open")}
         />
-        {!immersive && hoursLabel && (
-          <p className="detail-hours">{hoursLabel}</p>
-        )}
         <footer className="detail-footer">
           <button
             className={clsx("detail-text-style-trigger", toolbarOpen && "active")}
@@ -2711,10 +2722,41 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           <section className="detail-section">
             <div className="detail-section-title">
               <span>子任务</span>
+              <button
+                type="button"
+                className="detail-section-title-toggle"
+                title={showSubtaskDetails ? "隐藏子任务详情" : "显示子任务详情"}
+                aria-label={showSubtaskDetails ? "隐藏子任务详情" : "显示子任务详情"}
+                aria-expanded={showSubtaskDetails}
+                onClick={() => setShowSubtaskDetails((current) => !current)}
+              >
+                {showSubtaskDetails ? <ChevronDown /> : <ChevronRight />}
+              </button>
               <em>{task.subtasks.filter((item) => item.completed).length}/{task.subtasks.length}</em>
             </div>
             <div className="subtask-list">
-              {task.subtasks.map((subtask) => (
+              {task.subtasks.map((subtask) => {
+                const subtaskHoursLabel = showSubtaskDetails
+                  ? formatHoursDetail(
+                    subtask.estimate_hours,
+                    subtask.actual_hours,
+                    subtask.estimate_pomodoros,
+                    subtask.actual_pomodoros,
+                  )
+                  : null;
+                const subtaskDueLabel = showSubtaskDetails
+                  && subtask.due_at
+                  && (
+                    !subtask.due_is_all_day
+                    || (
+                      Boolean(subtask.due_start_at)
+                      && toDateInput(subtask.due_start_at, subtask.due_timezone)
+                        !== toDateInput(subtask.due_at, subtask.due_timezone)
+                    )
+                  )
+                  ? formatDueWithPreferences(subtask, dateTimePreferences)
+                  : null;
+                return (
                 <div
                   className={clsx("subtask-row", editingSubtaskId === subtask.id && "editing")}
                   key={subtask.id}
@@ -2726,36 +2768,38 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     disabled={!writable}
                     onChange={(event) => void onToggleSubtask(subtask.id, event.target.checked).catch(() => {})}
                   />
-                  {editingSubtaskId === subtask.id ? (
-                    <input
-                      ref={editingSubtaskInputRef}
-                      className="subtask-title-input"
-                      value={editingSubtaskTitle}
-                      disabled={!writable}
-                      aria-label={`编辑子任务：${subtask.title}`}
-                      onChange={(event) => setEditingSubtaskTitle(event.target.value)}
-                      onBlur={() => commitEditSubtask()}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          commitEditSubtask();
-                        } else if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelEditSubtask();
-                        }
-                      }}
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className={clsx("subtask-title", subtask.completed && "completed")}
-                      disabled={!writable}
-                      onClick={() => beginEditSubtask(subtask)}
-                    >
-                      {subtask.title}
-                    </button>
-                  )}
-                  <div className="subtask-actions">
+                  <div className="subtask-main">
+                    <div className="subtask-headline">
+                    {editingSubtaskId === subtask.id ? (
+                      <input
+                        ref={editingSubtaskInputRef}
+                        className="subtask-title-input"
+                        value={editingSubtaskTitle}
+                        disabled={!writable}
+                        aria-label={`编辑子任务：${subtask.title}`}
+                        onChange={(event) => setEditingSubtaskTitle(event.target.value)}
+                        onBlur={() => commitEditSubtask()}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            commitEditSubtask();
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelEditSubtask();
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className={clsx("subtask-title", subtask.completed && "completed")}
+                        disabled={!writable}
+                        onClick={() => beginEditSubtask(subtask)}
+                      >
+                        {subtask.title}
+                      </button>
+                    )}
+                    <div className="subtask-actions">
                     <TaskAssigneeControl
                       task={task}
                       bundle={bundle}
@@ -2766,16 +2810,14 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                       target={subtaskAssigneeTarget(subtask)}
                       compact
                     />
-                    <PriorityControl
-                      priority={subtask.priority ?? "none"}
+                    <DueDateControl
+                      task={dueTargetFromSubtask(subtask)}
                       online={writable}
-                      onChange={(priority) => onUpdateSubtask(subtask.id, { priority })}
-                    />
-                    <SubtaskDueDateControl
-                      dueAt={subtask.due_at}
-                      completed={subtask.completed}
-                      online={writable}
-                      onSave={(dueAt) => onUpdateSubtask(subtask.id, { due_at: dueAt })}
+                      now={now}
+                      preferences={dateTimePreferences}
+                      allowRecurrence={false}
+                      compact
+                      onSave={(patch, schedule) => onSaveSubtaskSchedule(subtask.id, patch, schedule)}
                     />
                     {desktopAiAvailable && subtask.cli_assignee && (
                       <button
@@ -2797,15 +2839,31 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     >
                       <Trash2 />
                     </button>
+                    <SubtaskMoreMenu
+                      subtask={subtask}
+                      online={writable}
+                      compact
+                      pomodoroMinutes={pomodoroMinutes}
+                      onUpdate={(patch) => onUpdateSubtask(subtask.id, patch)}
+                    />
+                  </div>
+                    </div>
+                    {subtaskDueLabel && (
+                      <p className="subtask-due">{subtaskDueLabel}</p>
+                    )}
+                    {subtaskHoursLabel && (
+                      <p className="subtask-hours">{subtaskHoursLabel}</p>
+                    )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
               <form
                 className={clsx(
                   "subtask-add",
                   (
                     Boolean(subtaskTokens.title.trim())
-                    || Boolean(draftSubtaskDueAt)
+                    || Boolean(draftSubtaskDue.due_at)
                     || draftSubtaskPriority !== "none"
                     || draftSubtaskAssignee.kind !== "none"
                   ) && "has-draft",
@@ -2868,16 +2926,22 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     target={draftSubtaskAssignee}
                     compact
                   />
-                  <PriorityControl
-                    priority={draftSubtaskPriority}
+                  <DueDateControl
+                    task={{
+                      id: "draft-subtask",
+                      ...draftSubtaskDue,
+                      reminders: [],
+                      reminder_persistent: false,
+                      recurrence: null,
+                      status: "open",
+                    }}
                     online={writable}
-                    onChange={async (priority) => setDraftSubtaskPriority(priority)}
-                  />
-                  <SubtaskDueDateControl
-                    dueAt={draftSubtaskDueAt}
-                    online={writable}
-                    onSave={(dueAt) => {
-                      setDraftSubtaskDueAt(dueAt);
+                    now={now}
+                    preferences={dateTimePreferences}
+                    allowRecurrence={false}
+                    compact
+                    onSave={async (patch) => {
+                      setDraftSubtaskDue(patch);
                     }}
                   />
                 </div>
@@ -2910,7 +2974,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           onLoadCandidates={onLoadCommentCandidates}
           onCreate={async (input) => {
             await onCreateComment(input);
-            setComments(await onLoadComments());
+            try {
+              setComments(await onLoadComments());
+            } catch {
+              // An offline comment is already queued locally.
+            }
           }}
           onUpdate={async (comment, input) => {
             await onUpdateComment(comment, input);
@@ -2926,8 +2994,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         ref={setToolbarHost}
         className={clsx("detail-editor-toolbar-dock", !activeTerminal && toolbarOpen && "open")}
       />
-      {!activeTerminal && !immersive && !activityOpen && hoursLabel && (
-        <p className="detail-hours">{hoursLabel}</p>
+      {!activeTerminal && !immersive && !activityOpen && (hoursLabel || subtaskHoursSummary) && (
+        <div className="detail-hours">
+          {hoursLabel && <p>{hoursLabel}</p>}
+          {subtaskHoursSummary && <p>子任务汇总：{subtaskHoursSummary}</p>}
+        </div>
       )}
       <footer className="detail-footer">
         <TaskLabelControl

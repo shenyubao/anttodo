@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(17);
+select plan(20);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -44,6 +44,25 @@ values (
   'Focus task',
   'Task for focus',
   '16000000-0000-0000-0000-000000000001'
+), (
+  '46000000-0000-0000-0000-000000000002',
+  '26000000-0000-0000-0000-000000000001',
+  'Other task',
+  'Another task',
+  '16000000-0000-0000-0000-000000000001'
+);
+
+insert into public.subtasks(id, task_id, title, position)
+values (
+  '56000000-0000-0000-0000-000000000001',
+  '46000000-0000-0000-0000-000000000001',
+  'Focus subtask',
+  0
+), (
+  '56000000-0000-0000-0000-000000000002',
+  '46000000-0000-0000-0000-000000000002',
+  'Other subtask',
+  0
 );
 
 select has_table('public', 'focus_sessions', 'focus_sessions table exists');
@@ -214,6 +233,79 @@ select throws_ok(
   '42501',
   null,
   'outsider cannot insert focus settings'
+);
+
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"16000000-0000-0000-0000-000000000001","role":"authenticated"}',
+  true
+);
+
+select lives_ok(
+  $$
+    insert into public.focus_sessions(
+      user_id, workspace_id, task_id, subtask_id, mode, kind,
+      planned_seconds, elapsed_seconds, started_at, ended_at
+    ) values (
+      '16000000-0000-0000-0000-000000000001',
+      '26000000-0000-0000-0000-000000000001',
+      '46000000-0000-0000-0000-000000000001',
+      '56000000-0000-0000-0000-000000000001',
+      'pomodoro',
+      'focus',
+      1500,
+      1500,
+      now() - interval '25 minutes',
+      now()
+    )
+  $$,
+  'owner can insert a focus session linked to a subtask'
+);
+
+select throws_ok(
+  $$
+    insert into public.focus_sessions(
+      user_id, workspace_id, task_id, subtask_id, mode, kind,
+      planned_seconds, elapsed_seconds, started_at, ended_at
+    ) values (
+      '16000000-0000-0000-0000-000000000001',
+      '26000000-0000-0000-0000-000000000001',
+      null,
+      '56000000-0000-0000-0000-000000000001',
+      'pomodoro',
+      'focus',
+      1500,
+      1500,
+      now() - interval '25 minutes',
+      now()
+    )
+  $$,
+  '23514',
+  null,
+  'focus session subtask requires a parent task_id'
+);
+
+select throws_ok(
+  $$
+    insert into public.focus_sessions(
+      user_id, workspace_id, task_id, subtask_id, mode, kind,
+      planned_seconds, elapsed_seconds, started_at, ended_at
+    ) values (
+      '16000000-0000-0000-0000-000000000001',
+      '26000000-0000-0000-0000-000000000001',
+      '46000000-0000-0000-0000-000000000001',
+      '56000000-0000-0000-0000-000000000002',
+      'pomodoro',
+      'focus',
+      1500,
+      1500,
+      now() - interval '25 minutes',
+      now()
+    )
+  $$,
+  '23514',
+  null,
+  'focus session subtask must belong to the linked task'
 );
 
 select * from finish();

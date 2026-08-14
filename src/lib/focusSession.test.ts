@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { FocusSession } from "../types";
+import type { FocusSession, Subtask, Task } from "../types";
 import {
   buildFocusDayTimeline,
+  buildFocusPickerTrees,
+  buildRecentFocusPickerTrees,
   applyFocusSettingsToRuntime,
   claimFocusRuntimeCompletion,
   formatFocusTrayTitle,
@@ -10,6 +12,8 @@ import {
   groupFocusSessionsByDay,
   isPomodoroCount,
   nextBreakKind,
+  resolveFocusRecordTitle,
+  resolveFocusTargetTitle,
   summarizeFocusSessions,
   switchFocusTask,
   totalElapsedSeconds,
@@ -23,6 +27,7 @@ function session(partial: Partial<FocusSession> & Pick<FocusSession, "started_at
     user_id: "u1",
     workspace_id: "w1",
     task_id: partial.task_id ?? null,
+    subtask_id: partial.subtask_id ?? null,
     mode: partial.mode ?? "pomodoro",
     kind: partial.kind ?? "focus",
     planned_seconds: partial.planned_seconds ?? 1500,
@@ -42,6 +47,7 @@ function createRuntime(
     phase,
     mode: "pomodoro",
     taskId: null,
+    subtaskId: null,
     notes: "",
     plannedSeconds: 1500,
     elapsedSeconds: 0,
@@ -74,7 +80,7 @@ describe("focusSession helpers", () => {
 
     expect(totalElapsedSeconds(state, now)).toBe(150);
 
-    const result = switchFocusTask(state, "task-b", now);
+    const result = switchFocusTask(state, { taskId: "task-b" }, now);
     expect(result.sessionToPersist).toEqual({
       mode: "stopwatch",
       kind: "focus",
@@ -84,11 +90,13 @@ describe("focusSession helpers", () => {
       endedAt: new Date(now).toISOString(),
       notes: "keep",
       taskId: "task-a",
+      subtaskId: null,
     });
     expect(result.nextRuntime).toMatchObject({
       phase: "stopwatch",
       mode: "stopwatch",
       taskId: "task-b",
+      subtaskId: null,
       plannedSeconds: 0,
       elapsedSeconds: 0,
       startedAt: new Date(now).toISOString(),
@@ -103,7 +111,7 @@ describe("focusSession helpers", () => {
       taskId: "task-a",
       startedAt: new Date(now - 45_000).toISOString(),
     });
-    const result = switchFocusTask(state, "task-b", now);
+    const result = switchFocusTask(state, { taskId: "task-b" }, now);
     expect(result.sessionToPersist).toBeNull();
     expect(result.nextRuntime.taskId).toBe("task-b");
     expect(result.nextRuntime.phase).toBe("stopwatch");
@@ -112,12 +120,26 @@ describe("focusSession helpers", () => {
 
   it("only updates taskId outside stopwatch phase", () => {
     const focusing = createRuntime("focusing", { taskId: "task-a", mode: "pomodoro" });
-    const result = switchFocusTask(focusing, "task-b");
+    const result = switchFocusTask(focusing, { taskId: "task-b" });
     expect(result.sessionToPersist).toBeNull();
-    expect(result.nextRuntime).toEqual({ ...focusing, taskId: "task-b" });
+    expect(result.nextRuntime).toEqual({ ...focusing, taskId: "task-b", subtaskId: null });
 
-    const same = switchFocusTask(focusing, "task-a");
+    const same = switchFocusTask(focusing, { taskId: "task-a" });
     expect(same.nextRuntime).toBe(focusing);
+  });
+
+  it("treats a different subtask on the same parent as a switch", () => {
+    const focusing = createRuntime("focusing", {
+      taskId: "task-a",
+      subtaskId: "sub-1",
+    });
+    const result = switchFocusTask(focusing, { taskId: "task-a", subtaskId: "sub-2" });
+    expect(result.sessionToPersist).toBeNull();
+    expect(result.nextRuntime).toEqual({
+      ...focusing,
+      taskId: "task-a",
+      subtaskId: "sub-2",
+    });
   });
 
   it("formats the macOS tray title for active pomodoro and stopwatch sessions", () => {
@@ -313,4 +335,117 @@ describe("focusSession helpers", () => {
     expect(layout.blocks.find((block) => block.id === "work")?.segment).toBe("work");
     expect(layout.blocks.find((block) => block.id === "break")?.segment).toBe("break");
   });
+
+  it("builds picker trees with searchable nested subtasks", () => {
+    const parent = pickerTask("parent", "完成框架验收", {
+      subtasks: [
+        pickerSubtask("child-a", "parent", "补齐 RLS 测试", 0),
+        pickerSubtask("child-b", "parent", "整理字段映射", 1),
+      ],
+    });
+    const note = pickerTask("note", "笔记", { kind: "note" });
+    const trees = buildFocusPickerTrees([parent, note], "RLS");
+    expect(trees).toHaveLength(1);
+    expect(trees[0]?.task.id).toBe("parent");
+    expect(trees[0]?.subtasks.map((item) => item.id)).toEqual(["child-a"]);
+
+    const all = buildFocusPickerTrees([parent], "");
+    expect(all[0]?.subtasks).toHaveLength(2);
+  });
+
+  it("nests recently focused subtasks under their parent", () => {
+    const parent = pickerTask("parent", "完成框架验收", {
+      subtasks: [
+        pickerSubtask("child-a", "parent", "补齐 RLS 测试", 0),
+        pickerSubtask("child-b", "parent", "整理字段映射", 1),
+      ],
+    });
+    const extra = pickerTask("extra", "其他任务", {
+      updated_at: "2026-08-01T00:00:00.000Z",
+    });
+    const trees = buildRecentFocusPickerTrees(
+      [parent, extra],
+      [
+        session({
+          task_id: "parent",
+          subtask_id: "child-b",
+          started_at: "2026-08-14T01:00:00.000Z",
+        }),
+      ],
+    );
+    expect(trees[0]?.task.id).toBe("parent");
+    expect(trees[0]?.subtasks.map((item) => item.id)).toEqual(["child-b"]);
+    expect(trees.some((tree) => tree.task.id === "extra")).toBe(true);
+  });
+
+  it("resolves timer and record titles for subtasks", () => {
+    const parent = pickerTask("parent", "完成框架验收", {
+      subtasks: [pickerSubtask("child-a", "parent", "补齐 RLS 测试", 0)],
+    });
+    expect(resolveFocusTargetTitle([parent], "parent", "child-a")).toBe("补齐 RLS 测试");
+    expect(resolveFocusTargetTitle([parent], "parent")).toBe("完成框架验收");
+    expect(resolveFocusRecordTitle([parent], "parent", "child-a")).toBe("完成框架验收 · 补齐 RLS 测试");
+    expect(resolveFocusRecordTitle([parent], null)).toBe("未关联任务");
+  });
 });
+
+function pickerSubtask(id: string, taskId: string, title: string, position: number): Subtask {
+  return {
+    id,
+    task_id: taskId,
+    title,
+    description: "",
+    completed: false,
+    position,
+    priority: "none",
+    due_at: null,
+    due_start_at: null,
+    due_is_all_day: false,
+    due_timezone: null,
+    estimate_hours: null,
+    actual_hours: null,
+    estimate_pomodoros: null,
+    actual_pomodoros: null,
+    assignee_id: null,
+    cli_assignee: null,
+    created_by: "u1",
+    reminders: [],
+    reminder_persistent: false,
+  };
+}
+
+function pickerTask(id: string, title: string, patch: Partial<Task> = {}): Task {
+  return {
+    id,
+    workspace_id: "w1",
+    title,
+    description: "",
+    kind: "todo",
+    status: "open",
+    priority: "none",
+    due_at: null,
+    due_start_at: null,
+    due_is_all_day: false,
+    due_timezone: null,
+    recurrence: null,
+    estimate_hours: null,
+    actual_hours: null,
+    estimate_pomodoros: null,
+    actual_pomodoros: null,
+    assignee_id: null,
+    cli_assignee: null,
+    created_by: "u1",
+    completed_at: null,
+    deleted_at: null,
+    version: 1,
+    created_at: "2026-08-01T00:00:00.000Z",
+    updated_at: "2026-08-01T00:00:00.000Z",
+    label_ids: [],
+    participant_ids: [],
+    subtasks: [],
+    reminders: [],
+    reminder_persistent: false,
+    description_mentions: [],
+    ...patch,
+  };
+}

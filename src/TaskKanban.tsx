@@ -124,6 +124,7 @@ export function TaskKanban({
   onSelectTask,
   onUpdateTask,
   onSaveTaskSchedule,
+  onSaveSubtaskSchedule,
   onCreateTask,
   onCreateSubtask,
   onUpdateSubtask,
@@ -171,11 +172,16 @@ export function TaskKanban({
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
+  onSaveSubtaskSchedule: (
+    subtaskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
   onCreateTask: (input: CreateTaskInput) => Promise<unknown>;
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
@@ -409,6 +415,7 @@ export function TaskKanban({
           onClose={() => setTaskMenu(null)}
           onUpdateTask={onUpdateTask}
           onSaveTaskSchedule={onSaveTaskSchedule}
+          onSaveSubtaskSchedule={onSaveSubtaskSchedule}
           onCreateTask={onCreateTask}
           onCreateSubtask={onCreateSubtask}
           onUpdateSubtask={onUpdateSubtask}
@@ -829,23 +836,21 @@ const KanbanCard = memo(function KanbanCard({
         transition,
         "--priority-color": getPriorityOption(task.priority).color,
       } as CSSProperties}
+      aria-label={draggable
+        ? `拖动${task.kind === "note" ? "笔记" : "任务"}“${task.title}”`
+        : undefined}
       onClick={() => onSelectTask(task.id)}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(task, event.clientX, event.clientY);
       }}
+      {...(draggable ? attributes : {})}
+      {...(draggable ? listeners : {})}
     >
       {draggable && (
-        <button
-          type="button"
-          className="kanban-card-drag"
-          aria-label={`拖动${task.kind === "note" ? "笔记" : "任务"}“${task.title}”`}
-          {...attributes}
-          {...listeners}
-          onClick={(event) => event.stopPropagation()}
-        >
+        <span className="kanban-card-drag" aria-hidden="true">
           <GripVertical />
-        </button>
+        </span>
       )}
       <div className="kanban-card-main">
         {task.kind === "note" ? (
@@ -869,16 +874,9 @@ const KanbanCard = memo(function KanbanCard({
             {task.status === "completed" ? <Check /> : <Circle />}
           </button>
         )}
-        <button
-          type="button"
-          className="kanban-card-content"
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelectTask(task.id);
-          }}
-        >
+        <span className="kanban-card-content">
           <span className="kanban-card-title">{task.title}</span>
-        </button>
+        </span>
       </div>
       <div className="kanban-card-meta">
         {dueStatus && <time className={dueStatus.overdue ? "overdue" : ""}>{dueStatus.label}</time>}

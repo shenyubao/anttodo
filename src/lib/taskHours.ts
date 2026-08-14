@@ -124,6 +124,17 @@ export function formatHoursList(
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
+export function sumHours(values: Array<number | null | undefined>): number | null {
+  let total = 0;
+  let seen = false;
+  for (const value of values) {
+    if (value == null) continue;
+    seen = true;
+    total += value;
+  }
+  return seen ? coerceHours(total) : null;
+}
+
 export function parseEstimateHoursText(title: string): ParsedEstimateHours | null {
   const match = ESTIMATE_HOURS_PATTERN.exec(title);
   if (!match || match.index == null) return null;

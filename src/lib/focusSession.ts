@@ -1,4 +1,5 @@
-import type { FocusSession, FocusSettings } from "../types";
+import { isBefore, isToday, startOfDay } from "date-fns";
+import type { FocusSession, FocusSettings, Subtask, Task } from "../types";
 
 export type FocusTimerPhase =
   | "idle"
@@ -13,6 +14,7 @@ export type FocusRuntimeState = {
   phase: FocusTimerPhase;
   mode: FocusTimerMode;
   taskId: string | null;
+  subtaskId: string | null;
   notes: string;
   plannedSeconds: number;
   elapsedSeconds: number;
@@ -60,6 +62,7 @@ export function createIdleRuntimeState(
     phase: "idle",
     mode: "pomodoro",
     taskId: null,
+    subtaskId: null,
     notes: "",
     plannedSeconds: settings.pomodoro_minutes * 60,
     elapsedSeconds: 0,
@@ -136,6 +139,11 @@ export function totalElapsedSeconds(state: FocusRuntimeState, nowMs = Date.now()
   return Math.max(0, state.elapsedSeconds + runningDeltaSeconds(state, nowMs));
 }
 
+export type FocusTarget = {
+  taskId: string | null;
+  subtaskId?: string | null;
+};
+
 export type SwitchFocusTaskSession = {
   mode: "stopwatch";
   kind: "focus";
@@ -145,6 +153,7 @@ export type SwitchFocusTaskSession = {
   endedAt: string;
   notes: string;
   taskId: string | null;
+  subtaskId: string | null;
 };
 
 export type SwitchFocusTaskResult = {
@@ -152,24 +161,42 @@ export type SwitchFocusTaskResult = {
   nextRuntime: FocusRuntimeState;
 };
 
+export function normalizeFocusTarget(target: FocusTarget): {
+  taskId: string | null;
+  subtaskId: string | null;
+} {
+  const taskId = target.taskId;
+  const subtaskId = taskId ? (target.subtaskId ?? null) : null;
+  return { taskId, subtaskId };
+}
+
+export function sameFocusTarget(
+  left: { taskId: string | null; subtaskId?: string | null },
+  right: FocusTarget,
+) {
+  const next = normalizeFocusTarget(right);
+  return left.taskId === next.taskId && (left.subtaskId ?? null) === next.subtaskId;
+}
+
 /**
  * When the linked task changes during an active stopwatch, settle the previous
  * segment onto the old task (if long enough) and start a fresh stopwatch for the
- * new task. Other phases only update taskId.
+ * new task. Other phases only update taskId/subtaskId.
  */
 export function switchFocusTask(
   state: FocusRuntimeState,
-  nextTaskId: string | null,
+  nextTarget: FocusTarget,
   nowMs = Date.now(),
 ): SwitchFocusTaskResult {
-  if (state.taskId === nextTaskId) {
+  const next = normalizeFocusTarget(nextTarget);
+  if (sameFocusTarget(state, next)) {
     return { sessionToPersist: null, nextRuntime: state };
   }
 
   if (state.phase !== "stopwatch") {
     return {
       sessionToPersist: null,
-      nextRuntime: { ...state, taskId: nextTaskId },
+      nextRuntime: { ...state, taskId: next.taskId, subtaskId: next.subtaskId },
     };
   }
 
@@ -187,6 +214,7 @@ export function switchFocusTask(
         endedAt,
         notes: state.notes,
         taskId: state.taskId,
+        subtaskId: state.subtaskId,
       }
     : null;
 
@@ -194,7 +222,8 @@ export function switchFocusTask(
     sessionToPersist,
     nextRuntime: {
       ...state,
-      taskId: nextTaskId,
+      taskId: next.taskId,
+      subtaskId: next.subtaskId,
       phase: "stopwatch",
       mode: "stopwatch",
       plannedSeconds: 0,
@@ -204,6 +233,136 @@ export function switchFocusTask(
       breakKind: null,
     },
   };
+}
+
+export function resolveFocusTargetTitle(
+  tasks: Task[],
+  taskId: string | null,
+  subtaskId?: string | null,
+): string | null {
+  if (!taskId) return null;
+  const task = tasks.find((item) => item.id === taskId);
+  if (!task) return null;
+  if (subtaskId) {
+    const subtask = task.subtasks.find((item) => item.id === subtaskId);
+    if (subtask) return subtask.title;
+  }
+  return task.title;
+}
+
+export function resolveFocusRecordTitle(
+  tasks: Task[],
+  taskId: string | null,
+  subtaskId?: string | null,
+): string {
+  if (!taskId) return "未关联任务";
+  const task = tasks.find((item) => item.id === taskId);
+  if (!task) return "未关联任务";
+  if (subtaskId) {
+    const subtask = task.subtasks.find((item) => item.id === subtaskId);
+    if (subtask) return `${task.title} · ${subtask.title}`;
+  }
+  return task.title;
+}
+
+export type FocusPickerTree = {
+  task: Task;
+  subtasks: Subtask[];
+};
+
+export function listFocusableTasks(tasks: Task[]) {
+  return tasks.filter((task) => !task.deleted_at && task.kind !== "note");
+}
+
+function sortedSubtasks(task: Task) {
+  return [...task.subtasks].sort((a, b) => a.position - b.position || a.title.localeCompare(b.title));
+}
+
+function matchesFocusQuery(title: string, needle: string) {
+  return !needle || title.toLowerCase().includes(needle);
+}
+
+export function buildFocusPickerTree(task: Task, query = ""): FocusPickerTree | null {
+  const needle = query.trim().toLowerCase();
+  const subtasks = sortedSubtasks(task);
+  const parentHit = matchesFocusQuery(task.title, needle);
+  if (parentHit) return { task, subtasks };
+  const matching = subtasks.filter((item) => matchesFocusQuery(item.title, needle));
+  if (matching.length === 0) return null;
+  return { task, subtasks: matching };
+}
+
+export function buildFocusPickerTrees(tasks: Task[], query = "") {
+  return listFocusableTasks(tasks)
+    .map((task) => buildFocusPickerTree(task, query))
+    .filter((tree): tree is FocusPickerTree => Boolean(tree));
+}
+
+export function partitionFocusPickerTrees(trees: FocusPickerTree[], now = new Date()) {
+  const start = startOfDay(now);
+  const overdue: FocusPickerTree[] = [];
+  const today: FocusPickerTree[] = [];
+  const rest: FocusPickerTree[] = [];
+  for (const tree of trees) {
+    const dueAt = tree.task.due_at;
+    if (dueAt && tree.task.status !== "completed" && isBefore(new Date(dueAt), start)) {
+      overdue.push(tree);
+      continue;
+    }
+    if (dueAt && tree.task.status !== "completed" && isToday(new Date(dueAt))) {
+      today.push(tree);
+      continue;
+    }
+    rest.push(tree);
+  }
+  return { overdue, today, rest };
+}
+
+export function buildRecentFocusPickerTrees(
+  tasks: Task[],
+  sessions: FocusSession[],
+  query = "",
+): FocusPickerTree[] {
+  const list = listFocusableTasks(tasks);
+  const byId = new Map(list.map((task) => [task.id, task]));
+  const recentTaskIds: string[] = [];
+  const recentSubtaskIds = new Map<string, string[]>();
+
+  for (const session of sessions) {
+    if (!session.task_id) continue;
+    const task = byId.get(session.task_id);
+    if (!task) continue;
+    if (!recentTaskIds.includes(session.task_id)) recentTaskIds.push(session.task_id);
+    if (!session.subtask_id) continue;
+    if (!task.subtasks.some((item) => item.id === session.subtask_id)) continue;
+    const ids = recentSubtaskIds.get(session.task_id) ?? [];
+    if (!ids.includes(session.subtask_id)) {
+      ids.push(session.subtask_id);
+      recentSubtaskIds.set(session.task_id, ids);
+    }
+  }
+
+  const recent = recentTaskIds.flatMap((taskId) => {
+    const task = byId.get(taskId);
+    if (!task) return [];
+    const ids = recentSubtaskIds.get(taskId) ?? [];
+    const subtasks = ids
+      .map((id) => task.subtasks.find((item) => item.id === id))
+      .filter((item): item is Subtask => Boolean(item));
+    const tree = buildFocusPickerTree({ ...task, subtasks }, query);
+    return tree ? [tree] : [];
+  });
+
+  const extras = list
+    .filter((task) => !recentTaskIds.includes(task.id))
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .slice(0, 12)
+    .flatMap((task) => {
+      const tree = buildFocusPickerTree(task, query);
+      return tree ? [tree] : [];
+    });
+
+  return [...recent, ...extras].slice(0, 20);
 }
 
 function runningDeltaSeconds(state: FocusRuntimeState, nowMs: number) {
@@ -239,6 +398,7 @@ export type FocusTimelineBlock = {
   endMs: number;
   segment: FocusTimelineSegment;
   taskId?: string | null;
+  subtaskId?: string | null;
   live?: boolean;
 };
 
@@ -269,6 +429,7 @@ export function buildFocusDayTimeline(input: {
     elapsedSeconds: number;
     segment: FocusTimelineSegment;
     taskId?: string | null;
+    subtaskId?: string | null;
   } | null;
 }): FocusTimelineLayout {
   const now = new Date(input.nowMs);
@@ -286,6 +447,7 @@ export function buildFocusDayTimeline(input: {
       endMs: Math.min(endMs, dayEnd),
       segment: focusTimelineSegment(session.kind),
       taskId: session.task_id,
+      subtaskId: session.subtask_id,
     });
   }
 
@@ -299,6 +461,7 @@ export function buildFocusDayTimeline(input: {
         endMs: Math.min(endMs, dayEnd),
         segment: input.liveSession.segment,
         taskId: input.liveSession.taskId ?? null,
+        subtaskId: input.liveSession.subtaskId ?? null,
         live: true,
       });
     }
@@ -469,7 +632,10 @@ export function loadFocusRuntimeState(
     if (!raw) return null;
     const parsed = JSON.parse(raw) as FocusRuntimeState;
     if (!parsed || typeof parsed !== "object" || !parsed.phase) return null;
-    return parsed;
+    return {
+      ...parsed,
+      subtaskId: parsed.subtaskId ?? null,
+    };
   } catch {
     return null;
   }

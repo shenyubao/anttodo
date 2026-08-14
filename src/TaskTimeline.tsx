@@ -34,7 +34,8 @@ import {
   dayWidthForZoom,
   defaultTimelineLabelWidth,
   isSameCalendarDay,
-  packTimelineLanes,
+  collectTimelineBars,
+  packTimelineBarLanes,
   schedulePatchForTimelineDrop,
   schedulePatchForTimelineMove,
   schedulePatchForTimelineResize,
@@ -54,6 +55,7 @@ import {
   xToDayOffset,
   type TimelineZoom,
 } from "./lib/taskTimeline";
+import { isLocalFirstHost, offlineCacheBannerText } from "./lib/local-first/localStore";
 import type {
   Label,
   ReminderSchedule,
@@ -106,6 +108,11 @@ function labelColor(task: Task, labels: Label[]) {
   return labels.find((label) => task.label_ids.includes(label.id))?.color ?? "#9EB3FC";
 }
 
+function barBackground(color: string, isSubtask: boolean) {
+  if (!isSubtask) return color;
+  return `color-mix(in srgb, ${color} 42%, white)`;
+}
+
 const BAR_DRAG_CLICK_THRESHOLD_PX = 4;
 
 type PointerDrag =
@@ -126,7 +133,7 @@ type PointerDrag =
 type TimelineRow = {
   id: string;
   title: string;
-  scheduled: Task[];
+  bars: ReturnType<typeof collectTimelineBars>;
   laneCount: number;
   height: number;
   top: number;
@@ -140,8 +147,10 @@ export function TaskTimeline({
   online,
   now,
   selectedTaskId,
+  selectedSubtaskId,
   showCompleted,
   onSelectTask,
+  onSelectSubtask,
   onSaveTaskSchedule,
   onCreateOnDay,
   onNotice,
@@ -153,8 +162,10 @@ export function TaskTimeline({
   online: boolean;
   now: Date;
   selectedTaskId: string | null;
+  selectedSubtaskId: string | null;
   showCompleted: boolean;
   onSelectTask: (taskId: string) => void;
+  onSelectSubtask: (taskId: string, subtaskId: string) => void;
   onSaveTaskSchedule: (
     taskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
@@ -163,6 +174,7 @@ export function TaskTimeline({
   onCreateOnDay: (day: Date) => Promise<void>;
   onNotice: (message: string) => void;
 }) {
+  const writable = online || isLocalFirstHost();
   const timeZone = systemTimeZone();
   const [zoom, setZoom] = useState<TimelineZoom>(readZoom);
   const origin = useMemo(() => timelineOrigin(now), [now]);
@@ -223,18 +235,14 @@ export function TaskTimeline({
     const rows: TimelineRow[] = [];
     let top = 0;
     for (const group of groups) {
-      const scheduled = group.tasks.filter((task) => {
-        if (task.deleted_at || !task.due_at) return false;
-        if (!showCompleted && task.status === "completed") return false;
-        return true;
-      });
-      if (scheduled.length === 0) continue;
-      const { laneCount } = packTimelineLanes(scheduled, timeZone);
+      const bars = collectTimelineBars(group.tasks, showCompleted);
+      if (bars.length === 0) continue;
+      const { laneCount } = packTimelineBarLanes(bars, timeZone);
       const height = timelineGroupRowHeight(laneCount);
       rows.push({
         id: group.id,
         title: group.title || "全部",
-        scheduled,
+        bars,
         laneCount,
         height,
         top,
@@ -260,9 +268,9 @@ export function TaskTimeline({
   );
 
   const packedByGroup = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof packTimelineLanes>>();
+    const map = new Map<string, ReturnType<typeof packTimelineBarLanes>>();
     for (const row of timelineRows) {
-      map.set(row.id, packTimelineLanes(row.scheduled, timeZone));
+      map.set(row.id, packTimelineBarLanes(row.bars, timeZone));
     }
     return map;
   }, [timelineRows, timeZone]);
@@ -351,7 +359,7 @@ export function TaskTimeline({
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     failureMessage: string,
   ) {
-    if (!online || pendingIds.has(task.id) || !canRescheduleTask(bundle, task, currentUserId)) {
+    if (!writable || pendingIds.has(task.id) || !canRescheduleTask(bundle, task, currentUserId)) {
       return;
     }
     setPendingIds((current) => new Set(current).add(task.id));
@@ -378,7 +386,7 @@ export function TaskTimeline({
   }
 
   function startMove(task: Task, event: ReactPointerEvent) {
-    if (!online || !canRescheduleTask(bundle, task, currentUserId)) return;
+    if (!writable || !canRescheduleTask(bundle, task, currentUserId)) return;
     event.preventDefault();
     event.stopPropagation();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -393,7 +401,7 @@ export function TaskTimeline({
   }
 
   function startResize(task: Task, edge: "start" | "end", event: ReactPointerEvent) {
-    if (!online || !canRescheduleTask(bundle, task, currentUserId)) return;
+    if (!writable || !canRescheduleTask(bundle, task, currentUserId)) return;
     event.preventDefault();
     event.stopPropagation();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -441,17 +449,24 @@ export function TaskTimeline({
     );
   }
 
-  function openTaskFromBar(taskId: string, event: ReactMouseEvent) {
+  function openBar(
+    source: { kind: "task" | "subtask"; task: Task; subtask: { id: string } | null },
+    event: ReactMouseEvent,
+  ) {
     event.stopPropagation();
     if (suppressBarClickRef.current) {
       suppressBarClickRef.current = false;
       return;
     }
-    onSelectTask(taskId);
+    if (source.kind === "subtask" && source.subtask) {
+      onSelectSubtask(source.task.id, source.subtask.id);
+      return;
+    }
+    onSelectTask(source.task.id);
   }
 
   async function onGridDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
-    if (!online || event.button !== 0) return;
+    if (!writable || event.button !== 0) return;
     if ((event.target as HTMLElement).closest(".timeline-bar")) return;
     const day = dayFromClientX(event.clientX);
     if (!day) return;
@@ -463,7 +478,7 @@ export function TaskTimeline({
   }
 
   function onScheduleDragStart(taskId: string, event: ReactDragEvent) {
-    if (!online) {
+    if (!writable) {
       event.preventDefault();
       return;
     }
@@ -480,7 +495,7 @@ export function TaskTimeline({
     event.preventDefault();
     const taskId = event.dataTransfer.getData("text/anttodo-task-id");
     setDraggingScheduleTaskId(null);
-    if (!taskId || !online) return;
+    if (!taskId || !writable) return;
     const task = bundle.tasks.find((item) => item.id === taskId);
     const day = dayFromClientX(event.clientX);
     if (!task || !day || !isSchedulableTask(bundle, task, currentUserId)) return;
@@ -500,7 +515,7 @@ export function TaskTimeline({
       {!online && (
         <div className="offline-banner">
           <CloudOff size={16} />
-          当前显示离线缓存，恢复网络后会自动刷新
+          {offlineCacheBannerText()}
         </div>
       )}
       <header className="timeline-toolbar">
@@ -652,9 +667,10 @@ export function TaskTimeline({
                 {timelineRows.flatMap((row) => {
                   const packed = packedByGroup.get(row.id);
                   if (!packed) return [];
-                  return packed.items.map(({ task, lane, range }) => {
+                  return packed.items.map(({ source, task, lane, range }) => {
+                    const isSubtask = source.kind === "subtask";
                     let displayRange = range;
-                    if (pointerDrag?.taskId === task.id) {
+                    if (!isSubtask && pointerDrag?.taskId === task.id) {
                       if (pointerDrag.kind === "move" && pointerDrag.dayDelta !== 0) {
                         const patch = schedulePatchForTimelineMove(
                           task,
@@ -677,31 +693,37 @@ export function TaskTimeline({
                       }
                     }
                     const { left, width } = barGeometry(displayRange, origin, dayWidth);
-                    const titleOutside = shouldPlaceTimelineBarTitleOutside(task.title, width);
+                    const titleOutside = shouldPlaceTimelineBarTitleOutside(source.title, width);
                     const color = labelColor(task, bundle.labels);
-                    const editable = online
+                    const editable = !isSubtask
+                      && writable
                       && canRescheduleTask(bundle, task, currentUserId)
                       && !pendingIds.has(task.id);
+                    const selected = isSubtask
+                      ? selectedSubtaskId === source.subtask?.id
+                      : selectedTaskId === task.id && !selectedSubtaskId;
                     return (
                       <div
-                        key={task.id}
+                        key={source.id}
                         className={clsx(
                           "timeline-bar",
-                          selectedTaskId === task.id && "selected",
-                          task.status === "completed" && "completed",
+                          isSubtask && "is-subtask",
+                          selected && "selected",
+                          source.completed && "completed",
                           editable && "editable",
-                          pendingIds.has(task.id) && "pending",
+                          !isSubtask && pendingIds.has(task.id) && "pending",
                           titleOutside && "title-outside",
                         )}
                         style={{
                           top: row.top + lane * TIMELINE_ROW_HEIGHT + 6,
                           left,
                           width,
-                          backgroundColor: color,
+                          backgroundColor: barBackground(color, isSubtask),
                         }}
-                        title={task.title}
-                        onClick={(event) => openTaskFromBar(task.id, event)}
+                        title={source.title}
+                        onClick={(event) => openBar(source, event)}
                         onPointerDown={(event) => {
+                          if (isSubtask) return;
                           if ((event.target as HTMLElement).closest(".timeline-bar-handle")) {
                             return;
                           }
@@ -724,9 +746,9 @@ export function TaskTimeline({
                             "timeline-bar-title",
                             titleOutside && "timeline-bar-title-outside",
                           )}
-                          onClick={(event) => openTaskFromBar(task.id, event)}
+                          onClick={(event) => openBar(source, event)}
                         >
-                          {task.title}
+                          {source.title}
                         </span>
                         {editable && (
                           <span
@@ -762,7 +784,7 @@ export function TaskTimeline({
                   <span className="timeline-group-title" title={row.title}>
                     {row.title}
                   </span>
-                  <em className="timeline-group-count">{row.scheduled.length}</em>
+                  <em className="timeline-group-count">{row.bars.length}</em>
                 </div>
               ))}
               {timelineRows.length === 0 && (
@@ -788,7 +810,7 @@ export function TaskTimeline({
         {panelOpen && (
           <SchedulePanel
             groups={scheduleGroups}
-            online={online}
+            online={writable}
             draggingTaskId={draggingScheduleTaskId}
             onClose={() => setPanelOpen(false)}
             onSelectTask={onSelectTask}

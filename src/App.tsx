@@ -124,6 +124,11 @@ import type {
 } from "./lib/desktopUpdate";
 import { formatUpdateProgressLabel } from "./lib/desktopUpdate";
 import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
+import { createSyncController } from "./lib/local-first/syncController";
+import { createRemoteSyncAdapter, deviceIdForUser, nextDeviceSeq } from "./lib/local-first/remoteSync";
+import { createLocalFirstStore, isLocalFirstHost, offlineCacheBannerText } from "./lib/local-first/localStore";
+import type { LocalCommand } from "./lib/local-first/repository";
+import { IDLE_SYNC_STATUS, type SyncStatus } from "./lib/local-first/types";
 import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
 import {
   assignSubtask as assignSubtaskApi,
@@ -164,6 +169,7 @@ import {
   saveFocusSettings,
   saveNotificationPreference,
   saveTaskSchedule as saveTaskScheduleApi,
+  saveSubtaskSchedule as saveSubtaskScheduleApi,
   saveTaskListPreference,
   saveTaskSystemViewPreference,
   setTaskListOrder,
@@ -196,6 +202,10 @@ import {
 import { createDefaultAiFeatureSettings } from "./lib/aiFeatureSettings";
 import { FocusWorkspace } from "./FocusWorkspace";
 import { getDueStatus } from "./lib/dueTime";
+import {
+  formatContactDisplayName,
+  useShowContactNames,
+} from "./lib/displayPreference";
 import {
   appendActualPomodoros,
   appendActualHours,
@@ -236,10 +246,13 @@ import {
   applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
+  applySubtaskScheduleToBundle,
   appendSubtaskInBundle,
   appendTaskToBundle,
   createOptimisticSubtask,
   createOptimisticTask,
+  createLocalSubtask,
+  createLocalTask,
   createOptimisticTaskSection,
   findTaskIdForSubtask,
   isOptimisticTaskId,
@@ -1860,12 +1873,82 @@ function RemoteApplication({
   const client = supabase!;
   const queryClient = useQueryClient();
   const online = useOnline();
+  const localStore = useMemo(
+    () => createLocalFirstStore(userId, isLocalFirstHost()),
+    [userId],
+  );
+  const localWritable = online || localStore.enabled;
+  useEffect(() => {
+    void localStore.open();
+  }, [localStore]);
   const attachmentService = useMemo(
     () => createSupabaseAttachmentService(client),
     [client],
   );
+  const remoteSync = useMemo(
+    () => createRemoteSyncAdapter(client, userId, localStore),
+    [client, localStore, userId],
+  );
+  const runRemoteSync = useMemo(
+    () => async (targetWorkspaceId: string, reason: import("./lib/local-first/types").SyncReason) => {
+      const result = await remoteSync.run(targetWorkspaceId, reason);
+      if (localStore.enabled && result.status !== "failed" && online) {
+        try {
+          const freshBundle = await loadWorkspaceBundle(client, targetWorkspaceId);
+          await localStore.saveBundle(targetWorkspaceId, freshBundle);
+          queryClient.setQueryData(
+            ["workspace-bundle", targetWorkspaceId],
+            normalizeWorkspaceBundle(freshBundle),
+          );
+        } catch {
+          // The local commit and Outbox result remain durable; a later sync retries hydration.
+        }
+      }
+      return result;
+    },
+    [client, localStore, online, queryClient, remoteSync],
+  );
   const requestedWorkspaceId = currentApplicationRoute()?.workspaceId ?? null;
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(IDLE_SYNC_STATUS);
+  const syncController = useMemo(
+    () => createSyncController({
+      workspaceId,
+      online,
+      runRemote: runRemoteSync,
+      onOnlineChange: (listener) => {
+        const handleOnline = () => listener();
+        const handleOffline = () => listener();
+        window.addEventListener("online", handleOnline);
+        window.addEventListener("offline", handleOffline);
+        return () => {
+          window.removeEventListener("online", handleOnline);
+          window.removeEventListener("offline", handleOffline);
+        };
+      },
+    }),
+    [online, runRemoteSync, workspaceId],
+  );
+
+  useEffect(() => {
+    const unsubscribe = syncController.subscribe(setSyncStatus);
+    return () => {
+      unsubscribe();
+      syncController.dispose();
+    };
+  }, [syncController]);
+
+  useEffect(() => {
+    void localStore.open();
+  }, [localStore]);
+
+  useEffect(() => {
+    if (!workspaceId || !online) return;
+    const timer = window.setInterval(() => {
+      void syncController.syncNow("timer");
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [online, syncController, workspaceId]);
   const [notice, setNotice] = useState("");
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [activityRevision, setActivityRevision] = useState(0);
@@ -1887,12 +1970,42 @@ function RemoteApplication({
 
   const workspacesQuery = useQuery({
     queryKey: ["workspaces", userId],
-    queryFn: () => loadWorkspaces(client, userId),
+    queryFn: async () => {
+      if (localStore.enabled) {
+        const cached = await localStore.getWorkspaces();
+        if (cached?.length) return cached;
+      }
+      try {
+        const value = await loadWorkspaces(client, userId);
+        await localStore.saveWorkspaces(value);
+        window.localStorage.setItem(`anttodo:workspaces:${userId}`, JSON.stringify(value));
+        return value;
+      } catch (error) {
+        if (!localStore.enabled || online) throw error;
+        const cached = window.localStorage.getItem(`anttodo:workspaces:${userId}`);
+        if (!cached) throw error;
+        return JSON.parse(cached) as Workspace[];
+      }
+    },
+    meta: { localFirst: localStore.enabled },
   });
   const quotaQuery = useQuery({
     queryKey: ["user-quota", userId],
     queryFn: () => loadUserQuota(client, userId),
   });
+
+  useEffect(() => {
+    if (!localStore.enabled || !online) return;
+    let cancelled = false;
+    void loadWorkspaces(client, userId).then(async (value) => {
+      if (cancelled) return;
+      await localStore.saveWorkspaces(value);
+      queryClient.setQueryData(["workspaces", userId], value);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [client, localStore, online, queryClient, userId]);
 
   useEffect(() => {
     return () => attachmentService.dispose();
@@ -1971,10 +2084,31 @@ function RemoteApplication({
 
   const bundleQuery = useQuery({
     queryKey: ["workspace-bundle", workspaceId],
-    queryFn: () => loadWorkspaceBundle(client, workspaceId!),
+    queryFn: async () => {
+      await localStore.open();
+      if (localStore.enabled) {
+        const cached = await localStore.getBundle(workspaceId!);
+        if (cached) return cached;
+      }
+      try {
+        const value = await loadWorkspaceBundle(client, workspaceId!);
+        await localStore.saveBundle(workspaceId!, value);
+        return value;
+      } catch (error) {
+        if (!localStore.enabled || online) throw error;
+        const cached = await localStore.getBundle(workspaceId!);
+        if (!cached) throw error;
+        return cached;
+      }
+    },
     enabled: Boolean(workspaceId),
     select: normalizeWorkspaceBundle,
   });
+
+  useEffect(() => {
+    if (!online || !workspaceId || bundleQuery.isLoading) return;
+    void syncController.syncNow("reconnect");
+  }, [bundleQuery.isLoading, online, syncController, workspaceId]);
 
   useEffect(() => {
     taskPageWorkspaceRef.current = workspaceId;
@@ -2120,6 +2254,13 @@ function RemoteApplication({
       }, 50);
       realtimeRefreshTimersRef.current.add(timer);
     };
+    const syncMetaTables = new Set([
+      "client_devices",
+      "client_device_cursors",
+      "client_sync_ticks",
+      "client_sync_conflicts",
+      "attachment_cleanup_queue",
+    ]);
     const channel = client
       .channel(`anttodo:${workspaceId}`)
       .on(
@@ -2127,6 +2268,10 @@ function RemoteApplication({
         { event: "*", schema: "public" },
         (payload) => {
           const table = (payload as { table?: string }).table;
+          // Sync RPCs touch client_* tables; reacting to them re-enters sync forever.
+          if (table && !syncMetaTables.has(table)) {
+            void syncController.syncNow("realtime");
+          }
           if (table === "task_comments") {
             setCommentsRevision((value) => value + 1);
             void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
@@ -2195,7 +2340,7 @@ function RemoteApplication({
       recentLocalRealtimeChangesRef.current.clear();
       void client.removeChannel(channel);
     };
-  }, [client, queryClient, workspaceId]);
+  }, [client, queryClient, syncController, workspaceId]);
 
   const refresh = () =>
     Promise.all([
@@ -2289,6 +2434,40 @@ function RemoteApplication({
     }
   }
 
+  async function enqueueLocalOperation(input: {
+    entityType: string;
+    entityId: string;
+    payload: Record<string, unknown>;
+    baseVersion?: number | null;
+    dependsOn?: string[];
+    bundle?: WorkspaceBundle;
+  }) {
+    if (!localStore.enabled) return false;
+    const command: LocalCommand = {
+      operationId: crypto.randomUUID(),
+      workspaceId: activeWorkspaceId,
+      deviceId: deviceIdForUser(userId),
+      deviceSeq: nextDeviceSeq(userId),
+      entityType: input.entityType,
+      entityId: input.entityId,
+      baseVersion: input.baseVersion ?? null,
+      payload: input.payload,
+      dependsOn: input.dependsOn,
+    };
+    const localBundle = input.bundle ?? queryClient.getQueryData<WorkspaceBundle>([
+      "workspace-bundle",
+      activeWorkspaceId,
+    ]);
+    if (!localBundle) throw new Error("本地工作区尚未加载");
+    await localStore.commitBundle({
+      workspaceId: activeWorkspaceId,
+      bundle: localBundle,
+      command,
+    });
+    if (online) void syncController.syncNow("local-write");
+    return true;
+  }
+
   async function updateTask(
     taskId: string,
     patch: Partial<Task>,
@@ -2337,42 +2516,58 @@ function RemoteApplication({
             display_name_snapshot: member.profile?.display_name?.trim() || "团队成员",
           }))
       : null;
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle
-        ? {
-            ...bundle,
-            tasks: bundle.tasks.map((task) => {
-              if (task.id !== taskId) return task;
-              return rolled
-                ? {
-                    ...task,
-                    status: "open",
-                    completed_at: null,
-                    due_at: rolled.due_at,
-                    due_start_at: rolled.due_start_at,
-                    updated_at: new Date().toISOString(),
-                    version: task.version + 1,
-                  }
-                : {
-                    ...task,
-                    ...normalizedPatch,
-                    ...(nextDescriptionMentions
-                      ? { description_mentions: nextDescriptionMentions }
-                      : {}),
-                    ...(normalizedPatch.kind === "note" ? {
-                      subtasks: task.subtasks.map((subtask) => ({
-                        ...subtask,
-                        assignee_id: null,
-                        cli_assignee: null,
-                      })),
-                    } : {}),
-                    updated_at: new Date().toISOString(),
-                    version: task.version + 1,
-                  };
-            }),
-          }
-        : bundle);
+    const nextBundle: WorkspaceBundle | null = previous
+      ? {
+          ...previous,
+          tasks: previous.tasks.map((task) => {
+            if (task.id !== taskId) return task;
+            return rolled
+              ? {
+                  ...task,
+                  status: "open",
+                  completed_at: null,
+                  due_at: rolled.due_at,
+                  due_start_at: rolled.due_start_at,
+                  updated_at: new Date().toISOString(),
+                  version: task.version + 1,
+                }
+              : {
+                  ...task,
+                  ...normalizedPatch,
+                  ...(nextDescriptionMentions ? { description_mentions: nextDescriptionMentions } : {}),
+                  ...(normalizedPatch.kind === "note" ? {
+                    subtasks: task.subtasks.map((subtask) => ({
+                      ...subtask,
+                      assignee_id: null,
+                      cli_assignee: null,
+                    })),
+                  } : {}),
+                  updated_at: new Date().toISOString(),
+                  version: task.version + 1,
+                };
+          }),
+        }
+      : null;
     rememberLocalRealtimeChanges("tasks", [taskId]);
+    if (localStore.enabled) {
+      if (!nextBundle) throw new Error("本地工作区尚未加载");
+      await enqueueLocalOperation({
+        entityType: "tasks",
+        entityId: taskId,
+        baseVersion: current?.version ?? null,
+        payload: {
+          ...payload,
+          ...(descriptionUpdate ? {
+            description: descriptionUpdate.description,
+            mentionedUserIds: descriptionUpdate.mentionedUserIds,
+          } : {}),
+        },
+        bundle: nextBundle,
+      });
+      queryClient.setQueryData(queryKey, nextBundle);
+      return;
+    }
+    queryClient.setQueryData(queryKey, nextBundle);
     try {
       if (descriptionUpdate) {
         await updateTaskDescriptionApi(client, {
@@ -2402,6 +2597,21 @@ function RemoteApplication({
     rememberLocalRealtimeChanges("tasks", [taskId]);
     rememberLocalRealtimeChanges("task_reminders", [taskId]);
     rememberLocalRealtimeChanges("task_reminder_settings", [taskId]);
+    if (localStore.enabled) {
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle ? applyTaskScheduleToBundle(bundle, taskId, patch, {
+          reminders: [],
+          reminderPersistent: schedule.persistent,
+          recurrence: nextRecurrence,
+        }) : bundle,
+      );
+      await enqueueLocalOperation({
+        entityType: "task_schedule",
+        entityId: taskId,
+        payload: { ...patch, schedule },
+      });
+      return;
+    }
     try {
       const reminders = await saveTaskScheduleApi(client, taskId, patch, schedule);
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
@@ -2410,6 +2620,56 @@ function RemoteApplication({
               reminders,
               reminderPersistent: schedule.persistent && reminders.length > 0,
               recurrence: nextRecurrence,
+            })
+          : bundle,
+      );
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+    if (schedule.reminders.length > 0 && !window.anttodoDesktop) {
+      void ensureWebPushSubscription(client).catch((cause) => {
+        setNotice(cause instanceof Error ? cause.message : "浏览器通知订阅失败");
+      });
+    }
+  }
+
+  async function saveSubtaskSchedule(
+    subtaskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) {
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const taskId = previous ? findTaskIdForSubtask(previous, subtaskId) : null;
+    if (taskId) {
+      rememberLocalRealtimeChanges("subtasks", [taskId]);
+      rememberLocalRealtimeChanges("task_reminders", [taskId]);
+    }
+    if (localStore.enabled) {
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle ? applySubtaskScheduleToBundle(bundle, subtaskId, patch, {
+          reminders: [],
+          reminderPersistent: schedule.persistent,
+        }) : bundle,
+      );
+      await enqueueLocalOperation({
+        entityType: "subtask_schedule",
+        entityId: subtaskId,
+        payload: { ...patch, schedule: { ...schedule, recurrence: null } },
+      });
+      return;
+    }
+    try {
+      const reminders = await saveSubtaskScheduleApi(client, subtaskId, patch, {
+        ...schedule,
+        recurrence: null,
+      });
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle
+          ? applySubtaskScheduleToBundle(bundle, subtaskId, patch, {
+              reminders,
+              reminderPersistent: schedule.persistent && reminders.length > 0,
             })
           : bundle,
       );
@@ -2436,6 +2696,16 @@ function RemoteApplication({
       }) : current,
     );
     rememberLocalRealtimeChanges("tasks", [taskId]);
+
+    if (localStore.enabled) {
+      await enqueueLocalOperation({
+        entityType: "tasks",
+        entityId: taskId,
+        baseVersion: previous?.tasks.find((item) => item.id === taskId)?.version ?? null,
+        payload: { assignee_id: assigneeId, cli_assignee: cliAssignee },
+      });
+      return;
+    }
 
     try {
       const updated = await assignTaskApi(client, taskId, target);
@@ -2478,6 +2748,14 @@ function RemoteApplication({
     );
 
     try {
+      if (localStore.enabled) {
+        await enqueueLocalOperation({
+          entityType: selected ? "task_labels" : "task_labels",
+          entityId: `${taskId}:${labelId}`,
+          payload: { taskId, labelId, selected },
+        });
+        return;
+      }
       await toggleTaskLabelApi(client, taskId, labelId, selected);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
@@ -2507,6 +2785,15 @@ function RemoteApplication({
           }
         : current,
     );
+
+    if (localStore.enabled) {
+      await enqueueLocalOperation({
+        entityType: "task_participants",
+        entityId: `${taskId}:${userId}`,
+        payload: { taskId, userId, selected },
+      });
+      return;
+    }
 
     try {
       await toggleTaskParticipantApi(client, taskId, userId, selected);
@@ -2647,18 +2934,60 @@ function RemoteApplication({
   async function createSubtask(
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const task = previous?.tasks.find((item) => item.id === taskId);
+    if (localStore.enabled) {
+      const localSubtask = createLocalSubtask({
+        taskId,
+        userId,
+        title,
+        position: task?.subtasks.length ?? 0,
+        priority: extras?.priority ?? "none",
+        dueAt: extras?.due_at ?? null,
+        dueStartAt: extras?.due_start_at ?? null,
+        dueIsAllDay: extras?.due_is_all_day ?? false,
+        dueTimezone: extras?.due_timezone ?? null,
+        assigneeId: extras?.assignee_id ?? null,
+        cliAssignee: extras?.cli_assignee ?? null,
+      });
+      const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+      const next = current ? appendSubtaskInBundle(current, taskId, localSubtask) : current;
+      if (!next) throw new Error("本地工作区尚未加载");
+      rememberLocalRealtimeChanges("subtasks", [taskId]);
+      await enqueueLocalOperation({
+        entityType: "subtasks",
+        entityId: localSubtask.id,
+        bundle: next,
+        payload: {
+          taskId,
+          title,
+          position: localSubtask.position,
+          priority: extras?.priority ?? "none",
+          due_at: extras?.due_at ?? null,
+          due_start_at: extras?.due_start_at ?? null,
+          due_is_all_day: extras?.due_is_all_day ?? false,
+          due_timezone: extras?.due_timezone ?? null,
+          assignee_id: extras?.assignee_id ?? null,
+          cli_assignee: extras?.cli_assignee ?? null,
+        },
+      });
+      queryClient.setQueryData(queryKey, next);
+      return;
+    }
     const optimistic = createOptimisticSubtask({
       taskId,
       userId,
+      optimisticId: crypto.randomUUID(),
       title,
       position: task?.subtasks.length ?? 0,
       priority: extras?.priority ?? "none",
       dueAt: extras?.due_at ?? null,
+      dueStartAt: extras?.due_start_at ?? null,
+      dueIsAllDay: extras?.due_is_all_day ?? false,
+      dueTimezone: extras?.due_timezone ?? null,
       assigneeId: extras?.assignee_id ?? null,
       cliAssignee: extras?.cli_assignee ?? null,
     });
@@ -2668,19 +2997,30 @@ function RemoteApplication({
     rememberLocalRealtimeChanges("subtasks", [taskId]);
     try {
       const { data, error } = await client.from("subtasks").insert({
+        id: optimistic.id,
         task_id: taskId,
         title,
         position: optimistic.position,
         created_by: userId,
         priority: extras?.priority ?? "none",
         due_at: extras?.due_at ?? null,
+        due_start_at: extras?.due_start_at ?? null,
+        due_is_all_day: extras?.due_is_all_day ?? false,
+        due_timezone: extras?.due_timezone ?? null,
         assignee_id: extras?.assignee_id ?? null,
         cli_assignee: extras?.cli_assignee ?? null,
       }).select("*").single();
       if (error) throw error;
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
         bundle
-          ? replaceOptimisticSubtask(bundle, taskId, optimistic.id, data as Subtask)
+          ? replaceOptimisticSubtask(bundle, taskId, optimistic.id, {
+              ...(data as Subtask),
+              due_start_at: extras?.due_start_at ?? null,
+              due_is_all_day: extras?.due_is_all_day ?? false,
+              due_timezone: extras?.due_timezone ?? null,
+              reminders: [],
+              reminder_persistent: false,
+            })
           : bundle,
       );
     } catch (error) {
@@ -2699,6 +3039,14 @@ function RemoteApplication({
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
       bundle ? patchSubtaskInBundle(bundle, subtaskId, { completed }) : bundle,
     );
+    if (localStore.enabled) {
+      await enqueueLocalOperation({
+        entityType: "subtasks",
+        entityId: subtaskId,
+        payload: { completed },
+      });
+      return;
+    }
     const { error } = await client
       .from("subtasks")
       .update({ completed })
@@ -2712,7 +3060,7 @@ function RemoteApplication({
 
   async function updateSubtask(
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
+    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -2721,6 +3069,14 @@ function RemoteApplication({
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
       bundle ? patchSubtaskInBundle(bundle, subtaskId, patch) : bundle,
     );
+    if (localStore.enabled) {
+      await enqueueLocalOperation({
+        entityType: "subtasks",
+        entityId: subtaskId,
+        payload: patch,
+      });
+      return;
+    }
     const { error } = await client.from("subtasks").update(patch).eq("id", subtaskId);
     if (error) {
       queryClient.setQueryData(queryKey, previous);
@@ -2740,6 +3096,14 @@ function RemoteApplication({
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
       bundle ? patchSubtaskInBundle(bundle, subtaskId, patch) : bundle,
     );
+    if (localStore.enabled) {
+      await enqueueLocalOperation({
+        entityType: "subtasks",
+        entityId: subtaskId,
+        payload: patch,
+      });
+      return;
+    }
     try {
       const updated = await assignSubtaskApi(client, subtaskId, target);
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
@@ -2762,6 +3126,14 @@ function RemoteApplication({
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
       bundle ? removeSubtaskFromBundle(bundle, subtaskId) : bundle,
     );
+    if (localStore.enabled) {
+      await enqueueLocalOperation({
+        entityType: "subtasks",
+        entityId: subtaskId,
+        payload: { deleted: true },
+      });
+      return;
+    }
     const { error } = await client.from("subtasks").delete().eq("id", subtaskId);
     if (error) {
       queryClient.setQueryData(queryKey, previous);
@@ -2954,21 +3326,39 @@ function RemoteApplication({
     if (created.kind === "focus" && created.task_id) {
       const delta = hoursFromFocusSeconds(created.elapsed_seconds);
       const pomodoroDelta = isPomodoroCount(created) ? 1 : 0;
-      const currentTask = queryClient
-          .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
-          ?.tasks.find((task) => task.id === created.task_id);
       if (delta != null || pomodoroDelta > 0) {
-        await updateTask(created.task_id, {
-          ...(delta != null && {
-            actual_hours: appendActualHours(currentTask?.actual_hours, delta),
-          }),
-          ...(pomodoroDelta > 0 && {
-            actual_pomodoros: appendActualPomodoros(
-              currentTask?.actual_pomodoros,
-              pomodoroDelta,
-            ),
-          }),
-        });
+        if (created.subtask_id) {
+          const currentSubtask = queryClient
+            .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
+            ?.tasks.find((task) => task.id === created.task_id)
+            ?.subtasks.find((item) => item.id === created.subtask_id);
+          await updateSubtask(created.subtask_id, {
+            ...(delta != null && {
+              actual_hours: appendActualHours(currentSubtask?.actual_hours, delta),
+            }),
+            ...(pomodoroDelta > 0 && {
+              actual_pomodoros: appendActualPomodoros(
+                currentSubtask?.actual_pomodoros,
+                pomodoroDelta,
+              ),
+            }),
+          });
+        } else {
+          const currentTask = queryClient
+            .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
+            ?.tasks.find((task) => task.id === created.task_id);
+          await updateTask(created.task_id, {
+            ...(delta != null && {
+              actual_hours: appendActualHours(currentTask?.actual_hours, delta),
+            }),
+            ...(pomodoroDelta > 0 && {
+              actual_pomodoros: appendActualPomodoros(
+                currentTask?.actual_pomodoros,
+                pomodoroDelta,
+              ),
+            }),
+          });
+        }
       }
     }
     return created;
@@ -3196,6 +3586,53 @@ function RemoteApplication({
     taskId: string,
     input: CreateCommentInput & { subtaskId?: string | null },
   ) {
+    if (localStore.enabled) {
+      const existing = (await localStore.getComments(taskId, input.subtaskId)) ?? [];
+      const createdAt = new Date().toISOString();
+      const commentId = crypto.randomUUID();
+      const memberById = new Map(activeBundle.members.map((member) => [member.user_id, member]));
+      const localComment: TaskComment = {
+        id: commentId,
+        workspace_id: activeWorkspaceId,
+        task_id: taskId,
+        subtask_id: input.subtaskId ?? null,
+        author_id: userId,
+        body: input.body,
+        image_uris: input.imageUris,
+        created_at: createdAt,
+        updated_at: createdAt,
+        author: memberById.get(userId)?.profile,
+        mentions: input.mentionedUserIds
+          .filter((id) => memberById.has(id))
+          .map((id) => ({
+            user_id: id,
+            display_name_snapshot: memberById.get(id)?.profile?.display_name || "团队成员",
+          })),
+      };
+      await localStore.commitComments({
+        taskId,
+        subtaskId: input.subtaskId,
+        comments: [...existing, localComment],
+        command: {
+          operationId: crypto.randomUUID(),
+          workspaceId: activeWorkspaceId,
+          deviceId: deviceIdForUser(userId),
+          deviceSeq: nextDeviceSeq(userId),
+          entityType: "task_comments",
+          entityId: commentId,
+          baseVersion: null,
+          payload: {
+            taskId,
+            subtaskId: input.subtaskId ?? null,
+            body: input.body,
+            imageUris: input.imageUris,
+            mentionedUserIds: input.mentionedUserIds,
+          },
+        },
+      });
+      if (online) void syncController.syncNow("local-write");
+      return;
+    }
     try {
       await createTaskCommentApi(client, {
         taskId,
@@ -3211,11 +3648,67 @@ function RemoteApplication({
   }
 
   async function deleteComment(comment: TaskComment) {
+    if (localStore.enabled) {
+      const comments = (await localStore.getComments(comment.task_id, comment.subtask_id)) ?? [];
+      await localStore.commitComments({
+        taskId: comment.task_id,
+        subtaskId: comment.subtask_id,
+        comments: comments.filter((item) => item.id !== comment.id),
+        command: {
+          operationId: crypto.randomUUID(),
+          workspaceId: activeWorkspaceId,
+          deviceId: deviceIdForUser(userId),
+          deviceSeq: nextDeviceSeq(userId),
+          entityType: "task_comments",
+          entityId: comment.id,
+          baseVersion: null,
+          payload: { deleted: true },
+        },
+      });
+      if (online) void syncController.syncNow("local-write");
+      return;
+    }
     await deleteTaskCommentApi(client, comment.id);
     await Promise.allSettled(comment.image_uris.map((uri) => attachmentService.remove(uri)));
   }
 
   async function updateComment(comment: TaskComment, input: CreateCommentInput) {
+    if (localStore.enabled) {
+      const comments = (await localStore.getComments(comment.task_id, comment.subtask_id)) ?? [];
+      const memberById = new Map(activeBundle.members.map((member) => [member.user_id, member]));
+      const nextComments = comments.map((item) => item.id === comment.id
+        ? {
+            ...item,
+            body: input.body,
+            image_uris: input.imageUris,
+            updated_at: new Date().toISOString(),
+            mentions: input.mentionedUserIds.filter((id) => memberById.has(id)).map((id) => ({
+              user_id: id,
+              display_name_snapshot: memberById.get(id)?.profile?.display_name || "团队成员",
+            })),
+          }
+        : item);
+      await localStore.commitComments({
+        taskId: comment.task_id,
+        subtaskId: comment.subtask_id,
+        comments: nextComments,
+        command: {
+          operationId: crypto.randomUUID(),
+          workspaceId: activeWorkspaceId,
+          deviceId: deviceIdForUser(userId),
+          deviceSeq: nextDeviceSeq(userId),
+          entityType: "task_comments",
+          entityId: comment.id,
+          baseVersion: null,
+          payload: {
+            body: input.body,
+            imageUris: input.imageUris,
+            mentionedUserIds: input.mentionedUserIds,
+          },
+        },
+      });
+      return;
+    }
     await updateTaskCommentApi(client, { commentId: comment.id, ...input });
     await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
   }
@@ -3380,6 +3873,20 @@ function RemoteApplication({
       currentUserEmail={email}
       currentUserPhone={phone}
       online={online}
+      localWritable={localWritable}
+      syncStatus={syncStatus}
+      onSync={async () => {
+        const result = await syncController.syncNow("manual");
+        if (result.status === "failed") {
+          setNotice(result.errorMessage ?? "同步失败，请稍后重试");
+          return;
+        }
+        if (result.status === "conflict") {
+          setNotice(`同步完成，但有 ${result.conflicts} 个冲突待处理。`);
+        }
+        await queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+        await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
+      }}
       dateTimePreferences={
         dateTimePreferencesQuery.data ?? DEFAULT_DATE_TIME_PREFERENCES
       }
@@ -3442,6 +3949,46 @@ function RemoteApplication({
       }}
       onCreateTask={async (input) => {
         const queryKey = ["workspace-bundle", workspaceId];
+        if (localStore.enabled) {
+            const localTask = createLocalTask({
+            workspaceId,
+            userId,
+            ...input,
+          });
+          const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+          const appended = current ? appendTaskToBundle(current, localTask) : current;
+          const next = appended && input.optimisticOrder
+            ? applyTaskListOrderToBundle(appended, {
+                workspaceId,
+                listKey: input.optimisticOrder.listKey,
+                sectionId: input.optimisticOrder.sectionId,
+                taskIds: [localTask.id, ...input.optimisticOrder.taskIds],
+              })
+            : appended;
+          if (!next) throw new Error("本地工作区尚未加载");
+          const command: LocalCommand = {
+            operationId: crypto.randomUUID(),
+            workspaceId,
+            deviceId: deviceIdForUser(userId),
+            deviceSeq: nextDeviceSeq(userId),
+            entityType: "tasks",
+            entityId: localTask.id,
+            baseVersion: null,
+            payload: {
+              title: localTask.title,
+              description: localTask.description,
+              status: localTask.status,
+              priority: localTask.priority,
+              due_at: localTask.due_at,
+              assignee_id: localTask.assignee_id,
+              label_ids: localTask.label_ids,
+            },
+          };
+          await localStore.commitBundle({ workspaceId, bundle: next, command });
+          queryClient.setQueryData(queryKey, next);
+          if (online) void syncController.syncNow("local-write");
+          return localTask;
+        }
         const optimisticTask = createOptimisticTask({
           workspaceId,
           userId,
@@ -3487,6 +4034,7 @@ function RemoteApplication({
       }}
       onUpdateTask={updateTask}
       onSaveTaskSchedule={saveTaskSchedule}
+      onSaveSubtaskSchedule={saveSubtaskSchedule}
       onToggleTaskLabel={toggleTaskLabel}
       onToggleTaskParticipant={toggleTaskParticipant}
       onAssignTask={assignTask}
@@ -3496,7 +4044,17 @@ function RemoteApplication({
       onUpdateSubtask={updateSubtask}
       onDeleteSubtask={deleteSubtask}
       onPurgeTask={purgeTrashedTask}
-      onLoadTaskComments={(taskId, options) => loadTaskComments(client, taskId, options)}
+      onLoadTaskComments={async (taskId, options) => {
+        if (localStore.enabled) {
+          const cached = await localStore.getComments(taskId, options?.subtaskId);
+          if (cached) return cached;
+        }
+        const comments = await loadTaskComments(client, taskId, options);
+        if (localStore.enabled) {
+          await localStore.saveComments(taskId, options?.subtaskId, comments);
+        }
+        return comments;
+      }}
       onLoadTaskActivity={(taskId, cursor) => loadTaskActivity(client, taskId, cursor)}
       onLoadCommentCandidates={(taskId) => listTaskCommentCandidateIds(client, taskId)}
       onCreateComment={createComment}
@@ -3810,6 +4368,9 @@ function DemoApplication({
       currentUserEmail=""
       currentUserPhone="+8613800138000"
       online={online}
+      localWritable={online}
+      syncStatus={IDLE_SYNC_STATUS}
+      onSync={async () => undefined}
       dateTimePreferences={dateTimePreferences}
       notificationPreferences={notificationPreferences}
       attachmentService={attachmentService}
@@ -3951,6 +4512,7 @@ function DemoApplication({
               created_by: "demo-user",
               created_at: createdAt,
               updated_at: createdAt,
+              subtask_id: null,
             })),
             reminder_persistent: schedule.persistent,
             updated_at: createdAt,
@@ -3972,6 +4534,39 @@ function DemoApplication({
           appendDemoActivity(taskId, "task.recurrence_changed", {
             before: task?.recurrence ?? null,
             after: nextRecurrence,
+          });
+        }
+      }}
+      onSaveSubtaskSchedule={async (subtaskId, patch, schedule) => {
+        const createdAt = new Date().toISOString();
+        const parent = bundle.tasks.find((task) =>
+          task.subtasks.some((item) => item.id === subtaskId),
+        );
+        setBundle((current) => ({
+          ...current,
+          tasks: current.tasks.map((task) => ({
+            ...task,
+            subtasks: task.subtasks.map((subtask) => subtask.id !== subtaskId ? subtask : {
+              ...subtask,
+              ...patch,
+              reminders: schedule.reminders.map((rule, position) => ({
+                id: `${subtaskId}:demo-reminder:${position}`,
+                task_id: task.id,
+                subtask_id: subtaskId,
+                ...rule,
+                trigger_at: reminderTriggerAt({ ...task, ...patch }, rule) ?? createdAt,
+                position,
+                created_by: "demo-user",
+                created_at: createdAt,
+                updated_at: createdAt,
+              })),
+              reminder_persistent: schedule.persistent,
+            }),
+          })),
+        }));
+        if (parent) {
+          appendDemoActivity(parent.id, "task.updated", {
+            changes: { subtask_id: subtaskId, ...patch },
           });
         }
       }}
@@ -4060,6 +4655,9 @@ function DemoApplication({
                       position: task.subtasks.length,
                       priority: extras?.priority ?? "none",
                       due_at: extras?.due_at ?? null,
+                      due_start_at: null,
+                      due_is_all_day: false,
+                      due_timezone: null,
                       estimate_hours: null,
                       actual_hours: null,
                       estimate_pomodoros: null,
@@ -4067,6 +4665,8 @@ function DemoApplication({
                       assignee_id: extras?.assignee_id ?? null,
                       cli_assignee: extras?.cli_assignee ?? null,
                       created_by: "demo-user",
+                      reminders: [],
+                      reminder_persistent: false,
                     },
                   ],
                 }
@@ -4518,20 +5118,48 @@ function DemoApplication({
         setFocusSessions((current) => [created, ...current]);
         if (created.kind === "focus" && created.task_id) {
           const delta = hoursFromFocusSeconds(created.elapsed_seconds);
-          const currentTask = bundle.tasks.find((task) => task.id === created.task_id);
           const pomodoroDelta = isPomodoroCount(created) ? 1 : 0;
           if (delta != null || pomodoroDelta > 0) {
-            patchTask(created.task_id, {
-              ...(delta != null && {
-                actual_hours: appendActualHours(currentTask?.actual_hours, delta),
-              }),
-              ...(pomodoroDelta > 0 && {
-                actual_pomodoros: appendActualPomodoros(
-                  currentTask?.actual_pomodoros,
-                  pomodoroDelta,
-                ),
-              }),
-            });
+            if (created.subtask_id) {
+              const currentSubtask = bundle.tasks
+                .find((task) => task.id === created.task_id)
+                ?.subtasks.find((item) => item.id === created.subtask_id);
+              setBundle((current) => ({
+                ...current,
+                tasks: current.tasks.map((task) => task.id !== created.task_id
+                  ? task
+                  : {
+                      ...task,
+                      subtasks: task.subtasks.map((subtask) => subtask.id !== created.subtask_id
+                        ? subtask
+                        : {
+                            ...subtask,
+                            ...(delta != null && {
+                              actual_hours: appendActualHours(currentSubtask?.actual_hours, delta),
+                            }),
+                            ...(pomodoroDelta > 0 && {
+                              actual_pomodoros: appendActualPomodoros(
+                                currentSubtask?.actual_pomodoros,
+                                pomodoroDelta,
+                              ),
+                            }),
+                          }),
+                    }),
+              }));
+            } else {
+              const currentTask = bundle.tasks.find((task) => task.id === created.task_id);
+              patchTask(created.task_id, {
+                ...(delta != null && {
+                  actual_hours: appendActualHours(currentTask?.actual_hours, delta),
+                }),
+                ...(pomodoroDelta > 0 && {
+                  actual_pomodoros: appendActualPomodoros(
+                    currentTask?.actual_pomodoros,
+                    pomodoroDelta,
+                  ),
+                }),
+              });
+            }
           }
         }
         return created;
@@ -4710,6 +5338,9 @@ type WorkspaceAppProps = {
   currentUserEmail: string;
   currentUserPhone: string;
   online: boolean;
+  localWritable?: boolean;
+  syncStatus?: SyncStatus;
+  onSync?: () => Promise<unknown>;
   dateTimePreferences: DateTimePreferences;
   notificationPreferences: NotificationPreferences;
   attachmentService: AttachmentService;
@@ -4764,6 +5395,11 @@ type WorkspaceAppProps = {
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
+  onSaveSubtaskSchedule: (
+    subtaskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
   onToggleTaskLabel: (
     taskId: string,
     labelId: string,
@@ -4779,12 +5415,12 @@ type WorkspaceAppProps = {
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
+    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>,
   ) => Promise<void>;
   onDeleteSubtask: (subtaskId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
@@ -5056,6 +5692,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const selectedTaskEditable = selectedTask
     ? currentTaskPermissionLevel(props.bundle, selectedTask, props.currentUserId) >= 2
     : false;
+  const localWritable = props.localWritable ?? props.online;
 
   function writeRoute(route: AppRoute, replace = false, state: unknown = null) {
     const path = appRoutePath(route);
@@ -5482,7 +6119,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       settingsOpen={settingsDialogOpen}
       smartView={smartView}
       selectedTask={selectedTask}
-      online={props.online}
+      online={localWritable}
       onOpenSearch={() => setSearchDialogOpen(true)}
       onOpenSettings={() => openSettings("account")}
       onOpenShortcutsSettings={() => openSettings("shortcuts")}
@@ -5510,6 +6147,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       <NavigationRail
         activeSection={appSection}
         online={props.online}
+        syncStatus={props.syncStatus ?? IDLE_SYNC_STATUS}
+        onSync={props.onSync ?? (async () => undefined)}
         userName={props.currentUserName}
         avatarUrl={
           props.bundle.members.find((member) => member.user_id === props.currentUserId)
@@ -5538,7 +6177,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       <MobileAppSidebar
         open={mobileAppSidebar}
         activeSection={appSection}
-        online={props.online}
+        online={localWritable}
         userName={props.currentUserName}
         currentUserId={props.currentUserId}
         avatarUrl={
@@ -5719,6 +6358,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
+          onSaveSubtaskSchedule={props.onSaveSubtaskSchedule}
           tasksHasMore={props.tasksHasMore}
           tasksLoadingMore={props.tasksLoadingMore}
           onLoadMoreTasks={props.onLoadMoreTasks}
@@ -5749,7 +6389,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : appSection === "calendar" ? <CalendarWorkspace
           bundle={props.bundle}
           currentUserId={props.currentUserId}
-          online={props.online}
+          online={localWritable}
           visibleCalendarIds={visibleCalendarIds}
           visibleAssigneeIds={visibleAssigneeIds}
           dateTimePreferences={props.dateTimePreferences}
@@ -5764,7 +6404,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : appSection === "focus" ? <FocusWorkspace
           workspaceId={props.workspaceId}
           userId={props.currentUserId}
-          online={props.online}
+          online={localWritable}
           tasks={props.bundle.tasks}
           settings={props.focusSettings}
           sessions={props.focusSessions}
@@ -5809,7 +6449,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             task={selectedTask}
             bundle={props.bundle}
             currentUserId={props.currentUserId}
-            online={props.online}
+            online={localWritable}
             editable={selectedTaskEditable}
             attachmentService={props.attachmentService}
             now={now}
@@ -5827,6 +6467,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               props.onUpdateTask(selectedTask.id, patch, options)}
             onSaveSchedule={(patch, schedule) =>
               props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
+            onSaveSubtaskSchedule={props.onSaveSubtaskSchedule}
             onAssign={(assigneeId) =>
               props.onAssignTask(selectedTask.id, assigneeId)}
             onAssignSubtask={props.onAssignSubtask}
@@ -5858,7 +6499,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           task={selectedTask}
           bundle={props.bundle}
           currentUserId={props.currentUserId}
-          online={props.online}
+          online={localWritable}
           editable={selectedTaskEditable}
           attachmentService={props.attachmentService}
           now={now}
@@ -5874,6 +6515,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             props.onUpdateTask(selectedTask.id, patch, options)}
           onSaveSchedule={(patch, schedule) =>
             props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
+          onSaveSubtaskSchedule={props.onSaveSubtaskSchedule}
           onAssign={(assigneeId) => props.onAssignTask(selectedTask.id, assigneeId)}
           onAssignSubtask={props.onAssignSubtask}
           onToggleLabel={props.onToggleTaskLabel}
@@ -6019,6 +6661,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 function NavigationRail({
   activeSection,
   online,
+  syncStatus,
+  onSync,
   userName,
   avatarUrl,
   workspaces,
@@ -6038,6 +6682,8 @@ function NavigationRail({
 }: {
   activeSection: AppSection;
   online: boolean;
+  syncStatus: SyncStatus;
+  onSync: () => Promise<unknown>;
   userName: string;
   avatarUrl: string | null;
   workspaces: Workspace[];
@@ -6059,6 +6705,7 @@ function NavigationRail({
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const showDownloadClient = !window.anttodoDesktop;
+  const showSync = isLocalFirstHost();
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -6215,7 +6862,40 @@ function NavigationRail({
         <Search />
       </button>
       <div className="rail-spacer" />
-      <div className={clsx("connection-dot", !online && "offline")} title={online ? "在线" : "离线"} />
+      {showSync && (
+        <button
+          type="button"
+          className={clsx(
+            "rail-button",
+            "sync-button",
+            syncStatus.phase === "syncing" && "running",
+            syncStatus.phase === "error" && "error",
+            syncStatus.conflictCount > 0 && "has-conflicts",
+          )}
+          aria-label={syncStatus.phase === "syncing" ? "正在同步" : "立即同步"}
+          aria-busy={syncStatus.phase === "syncing"}
+          disabled={syncStatus.phase === "syncing" || syncStatus.phase === "offline"}
+          title={
+            syncStatus.phase === "offline"
+              ? "离线，联网后自动同步"
+              : syncStatus.phase === "error"
+              ? (syncStatus.errorMessage ?? "同步失败，点击重试")
+              : syncStatus.conflictCount > 0
+              ? `有 ${syncStatus.conflictCount} 个待处理冲突`
+              : syncStatus.pendingCount > 0
+              ? `有 ${syncStatus.pendingCount} 个待同步操作`
+              : "立即同步"
+          }
+          onClick={() => {
+            void onSync();
+          }}
+        >
+          <RefreshCw aria-hidden="true" />
+          {syncStatus.conflictCount > 0 && (
+            <span className="sync-conflict-badge" aria-label="有待处理冲突">!</span>
+          )}
+        </button>
+      )}
       {showDownloadClient && (
         <button
           className="rail-button"
@@ -8820,6 +9500,7 @@ function TaskWorkspace({
   onCreateTask,
   onUpdateTask,
   onSaveTaskSchedule,
+  onSaveSubtaskSchedule,
   tasksHasMore,
   tasksLoadingMore,
   onLoadMoreTasks,
@@ -8861,6 +9542,7 @@ function TaskWorkspace({
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
+  onSaveSubtaskSchedule: WorkspaceAppProps["onSaveSubtaskSchedule"];
   tasksHasMore: boolean;
   tasksLoadingMore: boolean;
   onLoadMoreTasks: WorkspaceAppProps["onLoadMoreTasks"];
@@ -8886,6 +9568,7 @@ function TaskWorkspace({
   onNotice: WorkspaceAppProps["onNotice"];
 }) {
   const [busy, setBusy] = useState(false);
+  const localWritable = online || isLocalFirstHost();
   const initialQuickSettings = useMemo(
     () => readQuickAddSettings(workspaceId),
     [workspaceId],
@@ -9653,7 +10336,7 @@ function TaskWorkspace({
             <TaskRecommendationButton
               tasks={bundle.tasks}
               currentUserId={currentUserId}
-              online={online}
+              online={localWritable}
               now={now}
               weekStartsOn={dateTimePreferences.weekStartsOn}
               onUpdateTask={onUpdateTask}
@@ -9662,7 +10345,7 @@ function TaskWorkspace({
           <TaskViewMenu
             preference={preference}
             viewMode={viewMode}
-            online={online}
+            online={localWritable}
             onChange={savePreference}
           />
           {!isTrashView && (
@@ -9670,7 +10353,7 @@ function TaskWorkspace({
               <TaskFilterMenu
                 preference={preference}
                 members={bundle.members}
-                online={online}
+                online={localWritable}
                 locked={filtersLocked}
                 onChange={savePreference}
               />
@@ -9681,7 +10364,7 @@ function TaskWorkspace({
                 showLabels={preference.show_labels}
                 showCompleted={preference.show_completed}
                 showHours={preference.show_hours}
-                online={online}
+                online={localWritable}
                 aiWorkAvailable={desktopAiAvailable}
                 onChangeViewMode={(mode) => {
                   void changeViewMode(mode).catch(() => onNotice("视图切换失败，请重试"));
@@ -9704,11 +10387,11 @@ function TaskWorkspace({
       </header>
       {!isTrashView && viewMode === "list" && (
       <QuickAddForm
-        online={online}
+        online={localWritable}
         canManage={canManageSelectedLabel}
         busy={busy}
         kind={quickKind}
-        placeholder={online
+        placeholder={localWritable
           ? `添加${quickKind === "note" ? "笔记" : "任务"}至“${selectedLabel?.name ?? title}”`
           : "离线状态下不可新增任务"}
         now={now}
@@ -9723,7 +10406,7 @@ function TaskWorkspace({
         defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
         settings={(
           <QuickAddSettings
-            online={online && !busy}
+            online={localWritable && !busy}
             kind={quickKind}
             priority={quickPriority}
             onKindChange={changeQuickKind}
@@ -9738,7 +10421,7 @@ function TaskWorkspace({
           {!online && (
             <div className="offline-banner">
               <CloudOff size={16} />
-              当前显示离线缓存，恢复网络后会自动刷新
+              {offlineCacheBannerText()}
             </div>
           )}
           <TaskKanban
@@ -9751,7 +10434,7 @@ function TaskWorkspace({
             currentUserId={currentUserId}
             defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
             selectedTaskId={selectedTaskId}
-            online={online}
+            online={localWritable}
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
@@ -9783,6 +10466,7 @@ function TaskWorkspace({
             onSelectTask={onSelectTask}
             onUpdateTask={onUpdateTask}
             onSaveTaskSchedule={onSaveTaskSchedule}
+            onSaveSubtaskSchedule={onSaveSubtaskSchedule}
             onCreateTask={onCreateTask}
             onCreateSubtask={onCreateSubtask}
             onUpdateSubtask={onUpdateSubtask}
@@ -9800,12 +10484,14 @@ function TaskWorkspace({
           online={online}
           now={now}
           selectedTaskId={selectedTaskId}
+          selectedSubtaskId={selectedSubtaskId}
           showCompleted={preference.show_completed}
           onSelectTask={onSelectTask}
+          onSelectSubtask={onSelectSubtask}
           onSaveTaskSchedule={onSaveTaskSchedule}
           onCreateOnDay={async (day) => {
-            if (!online || !canManageSelectedLabel) {
-              throw new Error(online ? "没有创建任务的权限" : "离线模式下不可新增任务");
+            if (!localWritable || !canManageSelectedLabel) {
+              throw new Error(localWritable ? "没有创建任务的权限" : "离线模式下不可新增任务");
             }
             const timeZone = systemTimeZone();
             const patch = schedulePatchForTimelineDrop(day, timeZone);
@@ -9837,7 +10523,7 @@ function TaskWorkspace({
         {!online && (
           <div className="offline-banner">
             <CloudOff size={16} />
-            当前显示离线缓存，恢复网络后会自动刷新
+            {offlineCacheBannerText()}
           </div>
         )}
         {groups.length === 0
@@ -9887,7 +10573,7 @@ function TaskWorkspace({
                       selectedTaskId={selectedTaskId}
                       selectedSubtaskId={selectedSubtaskId}
                       workspaceId={workspaceId}
-                      online={online}
+                      online={localWritable}
                       now={now}
                       dateTimePreferences={dateTimePreferences}
                       showLabels={preference.show_labels}
@@ -9920,6 +10606,7 @@ function TaskWorkspace({
                       onToggleSubtask={onToggleSubtask}
                       onUpdateTask={onUpdateTask}
                       onSaveTaskSchedule={onSaveTaskSchedule}
+                      onSaveSubtaskSchedule={onSaveSubtaskSchedule}
                       onCreateTask={onCreateTask}
                       onCreateSubtask={onCreateSubtask}
                       onUpdateSubtask={onUpdateSubtask}
@@ -9965,7 +10652,7 @@ function TaskWorkspace({
             selectedTaskId={selectedTaskId}
             selectedSubtaskId={selectedSubtaskId}
             workspaceId={workspaceId}
-            online={online}
+            online={localWritable}
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
@@ -9981,6 +10668,7 @@ function TaskWorkspace({
             onToggleSubtask={onToggleSubtask}
             onUpdateTask={onUpdateTask}
             onSaveTaskSchedule={onSaveTaskSchedule}
+            onSaveSubtaskSchedule={onSaveSubtaskSchedule}
             onCreateTask={onCreateTask}
             onCreateSubtask={onCreateSubtask}
             onUpdateSubtask={onUpdateSubtask}
@@ -10006,7 +10694,7 @@ function TaskWorkspace({
           bundle={bundle}
           currentUserId={currentUserId}
           parentId={selectedLabel.parent_id}
-          online={online}
+          online={localWritable}
           onClose={() => setLabelSettingsOpen(false)}
           onCreate={async () => undefined}
           onSave={onSaveLabelAccess}
@@ -10017,7 +10705,7 @@ function TaskWorkspace({
           open={aiSettingsOpen}
           title={aiSettingsTitle}
           settings={aiWorkSettings}
-          online={online}
+          online={localWritable}
           onOpenChange={setAiSettingsOpen}
           onSave={onSaveAiWorkSettings}
         />
@@ -10255,6 +10943,7 @@ function TaskGroup({
   onToggleSubtask,
   onUpdateTask,
   onSaveTaskSchedule,
+  onSaveSubtaskSchedule,
   onCreateTask,
   onCreateSubtask,
   onUpdateSubtask,
@@ -10291,6 +10980,7 @@ function TaskGroup({
   onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
+  onSaveSubtaskSchedule: WorkspaceAppProps["onSaveSubtaskSchedule"];
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onCreateSubtask: WorkspaceAppProps["onCreateSubtask"];
   onUpdateSubtask: WorkspaceAppProps["onUpdateSubtask"];
@@ -10530,6 +11220,7 @@ function TaskGroup({
           onClose={() => setTaskMenu(null)}
           onUpdateTask={onUpdateTask}
           onSaveTaskSchedule={onSaveTaskSchedule}
+          onSaveSubtaskSchedule={onSaveSubtaskSchedule}
           onCreateTask={onCreateTask}
           onCreateSubtask={onCreateSubtask}
           onUpdateSubtask={onUpdateSubtask}
@@ -10596,6 +11287,7 @@ function TaskRow({
   const optimistic = isOptimisticTaskId(task.id);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
   const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
+  const showContactNames = useShowContactNames();
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
     : null;
@@ -10726,11 +11418,18 @@ function TaskRow({
             )}
             {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
             {assignee && (
-              <MemberAvatar
-                member={assignee}
-                className="task-assignee-avatar"
-                title={`负责人：${assignee.profile?.display_name ?? "团队成员"}`}
-              />
+              <span className="task-assignee">
+                <MemberAvatar
+                  member={assignee}
+                  className="task-assignee-avatar"
+                  title={`负责人：${assignee.profile?.display_name ?? "团队成员"}`}
+                />
+                {showContactNames && (
+                  <span className="task-assignee-name">
+                    {formatContactDisplayName(assignee.profile?.display_name ?? "团队成员")}
+                  </span>
+                )}
+              </span>
             )}
             {task.cli_assignee && (
               <AiCliAvatar
@@ -10825,11 +11524,20 @@ function TaskRow({
                         <span className="task-hours">{subtaskHoursLabel}</span>
                       )}
                       {subtaskAssignee && (
-                        <MemberAvatar
-                          member={subtaskAssignee}
-                          className="task-assignee-avatar"
-                          title={`负责人：${subtaskAssignee.profile?.display_name ?? "团队成员"}`}
-                        />
+                        <span className="task-assignee">
+                          <MemberAvatar
+                            member={subtaskAssignee}
+                            className="task-assignee-avatar"
+                            title={`负责人：${subtaskAssignee.profile?.display_name ?? "团队成员"}`}
+                          />
+                          {showContactNames && (
+                            <span className="task-assignee-name">
+                              {formatContactDisplayName(
+                                subtaskAssignee.profile?.display_name ?? "团队成员",
+                              )}
+                            </span>
+                          )}
+                        </span>
                       )}
                       {subtask.cli_assignee && (
                         <AiCliAvatar

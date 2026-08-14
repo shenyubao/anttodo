@@ -21,6 +21,7 @@ import {
 import { createDesktopAutoUpdater } from "./auto-updater.mjs";
 import { createAiTerminalManager } from "./ai-terminal.mjs";
 import { createTrayController } from "./tray.mjs";
+import { createLocalStore } from "./local-store.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -29,6 +30,42 @@ const deepLinkQueue = createDeepLinkQueue(20);
 let mainWindow = null;
 let isQuitting = false;
 let deepLinksReady = false;
+let localStore = null;
+let localStoreUserId = null;
+let localStoreGate = Promise.resolve();
+let quittingAfterCleanup = false;
+
+async function getLocalStore(userId) {
+  if (typeof userId !== "string" || !/^[0-9a-f-]{20,}$/i.test(userId)) {
+    throw new Error("Invalid local store user id");
+  }
+  const run = localStoreGate.then(async () => {
+    if (localStore && localStoreUserId === userId) return localStore;
+    if (localStore) {
+      await localStore.dispose();
+      localStore = null;
+      localStoreUserId = null;
+    }
+    let lastError;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        localStore = await createLocalStore({
+          userDataPath: path.join(app.getPath("userData"), "users", userId),
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      }
+    }
+    if (!localStore) throw lastError ?? new Error("Failed to open local store");
+    localStoreUserId = userId;
+    return localStore;
+  });
+  localStoreGate = run.then(() => undefined, () => undefined);
+  return run;
+}
 const trayController = createTrayController({
   isDev,
   restoreMainWindow: () => restoreMainWindow(),
@@ -238,6 +275,98 @@ ipcMain.handle("anttodo:notifications-show", (_event, payload) => {
   });
 });
 
+ipcMain.handle("anttodo:sync-open", async (_event, userId) => {
+  await getLocalStore(userId);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-status", async (_event, workspaceId) => {
+  if (!localStore || typeof workspaceId !== "string") {
+    return {
+      phase: "idle",
+      pendingCount: 0,
+      conflictCount: 0,
+      lastSyncedAt: null,
+      errorMessage: null,
+    };
+  }
+  return localStore.getStatus({ workspaceId });
+});
+
+ipcMain.handle("anttodo:sync-save-bundle", async (_event, input) => {
+  if (!localStore || !input || typeof input.workspaceId !== "string") return false;
+  await localStore.saveBundle(input);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-commit-bundle", async (_event, input) => {
+  if (!localStore || !input || typeof input.workspaceId !== "string") return false;
+  await localStore.commitBundle(input);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-save-workspaces", async (_event, input) => {
+  if (!localStore || !Array.isArray(input?.workspaces)) return false;
+  await localStore.saveWorkspaces(input);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-get-workspaces", async () => {
+  if (!localStore) return null;
+  return localStore.getWorkspaces();
+});
+
+ipcMain.handle("anttodo:sync-get-bundle", async (_event, workspaceId) => {
+  if (!localStore || typeof workspaceId !== "string") return null;
+  return localStore.getBundle({ workspaceId });
+});
+
+ipcMain.handle("anttodo:sync-get-comments", async (_event, commentKey) => {
+  if (!localStore || typeof commentKey !== "string") return null;
+  return localStore.getComments(commentKey);
+});
+
+ipcMain.handle("anttodo:sync-save-comments", async (_event, input) => {
+  if (!localStore || typeof input?.commentKey !== "string") return false;
+  await localStore.saveComments(input);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-commit-comments", async (_event, input) => {
+  if (!localStore || !input || typeof input.commentKey !== "string") return false;
+  await localStore.commitComments(input);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-enqueue", async (_event, operation) => {
+  if (!localStore || !operation || typeof operation !== "object") return false;
+  await localStore.enqueue({ operation });
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-list-outbox", async (_event, input) => {
+  if (!localStore || !input || typeof input.workspaceId !== "string") return [];
+  return localStore.listOutbox(input);
+});
+
+ipcMain.handle("anttodo:sync-mark-outbox", async (_event, input) => {
+  if (!localStore || !input || typeof input.operationId !== "string") return false;
+  await localStore.markOutbox(input);
+  return true;
+});
+
+ipcMain.handle("anttodo:sync-now", async (_event, input) => {
+  if (!localStore || !input || typeof input.workspaceId !== "string") {
+    return { status: "succeeded", applied: 0, conflicts: 0 };
+  }
+  const status = await localStore.getStatus({ workspaceId: input.workspaceId });
+  return {
+    status: status.conflictCount > 0 ? "conflict" : "succeeded",
+    applied: 0,
+    conflicts: status.conflictCount,
+  };
+});
+
 ipcMain.handle("anttodo:app-version", () => app.getVersion());
 
 ipcMain.handle("anttodo:check-for-update", async () => {
@@ -371,11 +500,22 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   isQuitting = true;
+  if (quittingAfterCleanup) return;
+  event.preventDefault();
   trayController.dispose();
   for (const window of BrowserWindow.getAllWindows()) {
     aiTerminalManager.stopOwner(window.webContents.id);
   }
   reminderScheduler.dispose();
+  const closing = localStoreGate.then(async () => {
+    if (localStore) await localStore.dispose();
+  });
+  void closing.finally(() => {
+    localStore = null;
+    localStoreUserId = null;
+    quittingAfterCleanup = true;
+    app.quit();
+  });
 });

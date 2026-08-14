@@ -8,6 +8,8 @@ import {
   dayOffsetToDate,
   dayWidthForZoom,
   defaultTimelineLabelWidth,
+  collectTimelineBars,
+  packTimelineBarLanes,
   packTimelineLanes,
   schedulePatchForTimelineDrop,
   schedulePatchForTimelineMove,
@@ -26,7 +28,7 @@ import {
   timelineOrigin,
   xToDayOffset,
 } from "./taskTimeline";
-import type { Task } from "../types";
+import type { Subtask, Task } from "../types";
 
 function task(patch: Partial<Task> = {}): Task {
   return {
@@ -63,6 +65,32 @@ function task(patch: Partial<Task> = {}): Task {
     watcher_ids: [],
     ...patch,
   } as Task;
+}
+
+function subtask(patch: Partial<Subtask> = {}): Subtask {
+  return {
+    id: "s1",
+    task_id: "t1",
+    title: "子任务",
+    description: "",
+    completed: false,
+    position: 0,
+    priority: "none",
+    due_at: null,
+    estimate_hours: null,
+    actual_hours: null,
+    estimate_pomodoros: null,
+    actual_pomodoros: null,
+    assignee_id: null,
+    cli_assignee: null,
+    created_by: "u1",
+    due_start_at: null,
+    due_is_all_day: false,
+    due_timezone: null,
+    reminders: [],
+    reminder_persistent: false,
+    ...patch,
+  };
 }
 
 describe("taskTimeline", () => {
@@ -179,6 +207,78 @@ describe("taskTimeline", () => {
     expect(packed.items.find((item) => item.task.id === "a")?.lane).toBe(0);
     expect(packed.items.find((item) => item.task.id === "b")?.lane).toBe(1);
     expect(packed.items.find((item) => item.task.id === "c")?.lane).toBe(0);
+  });
+
+  it("includes dated subtasks even when the parent has no due date", () => {
+    const parent = task({
+      id: "parent",
+      due_at: null,
+      subtasks: [
+        subtask({ id: "dated", task_id: "parent", title: "有日期", due_at: "2026-08-10T12:00:00.000Z" }),
+        subtask({ id: "open", task_id: "parent", title: "无日期", due_at: null }),
+      ],
+    });
+    const deleted = task({
+      id: "gone",
+      deleted_at: "2026-08-02T00:00:00.000Z",
+      subtasks: [
+        subtask({ id: "orphan", task_id: "gone", due_at: "2026-08-10T12:00:00.000Z" }),
+      ],
+    });
+    const bars = collectTimelineBars([parent, deleted], false);
+    expect(bars.map((item) => item.id)).toEqual(["subtask:dated"]);
+    expect(bars[0]?.kind).toBe("subtask");
+    const packed = packTimelineBarLanes(bars, null);
+    expect(packed.items).toHaveLength(1);
+    expect(packed.items[0]?.range.dayCount).toBe(1);
+  });
+
+  it("hides completed parent and subtask bars unless showCompleted", () => {
+    const parent = task({
+      id: "parent",
+      due_at: "2026-08-09T12:00:00.000Z",
+      status: "completed",
+      subtasks: [
+        subtask({
+          id: "done",
+          task_id: "parent",
+          due_at: "2026-08-10T12:00:00.000Z",
+          completed: true,
+        }),
+        subtask({
+          id: "open",
+          task_id: "parent",
+          due_at: "2026-08-11T12:00:00.000Z",
+          completed: false,
+        }),
+      ],
+    });
+    expect(collectTimelineBars([parent], false).map((item) => item.id)).toEqual(["subtask:open"]);
+    expect(collectTimelineBars([parent], true).map((item) => item.id)).toEqual([
+      "parent",
+      "subtask:done",
+      "subtask:open",
+    ]);
+  });
+
+  it("packs a parent task and overlapping subtask into separate lanes", () => {
+    const parent = task({
+      id: "parent",
+      title: "主任务",
+      due_at: "2026-08-10T02:00:00.000Z",
+      subtasks: [
+        subtask({
+          id: "child",
+          task_id: "parent",
+          title: "子任务",
+          due_at: "2026-08-10T03:00:00.000Z",
+        }),
+      ],
+    });
+    const packed = packTimelineBarLanes(collectTimelineBars([parent], false), null);
+    expect(packed.laneCount).toBe(2);
+    expect(packed.items.find((item) => item.source.kind === "task")?.lane).toBe(0);
+    expect(packed.items.find((item) => item.source.kind === "subtask")?.lane).toBe(1);
   });
 
   it("defaults label width from the longest group title", () => {

@@ -1,6 +1,10 @@
 import { Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
+  saveDisplayPreference,
+  useShowContactNames,
+} from "./lib/displayPreference";
+import {
   applyThemePreference,
   loadThemePreference,
   saveThemePreference,
@@ -15,6 +19,7 @@ const THEME_OPTIONS: Array<{ id: ThemeId; label: string }> = [
 
 export function AppearanceSettingsPanel() {
   const [preference, setPreference] = useState<ThemePreference>(() => loadThemePreference());
+  const showContactNames = useShowContactNames();
 
   useEffect(() => {
     applyThemePreference(preference);
@@ -82,6 +87,32 @@ export function AppearanceSettingsPanel() {
               </button>
             );
           })}
+        </div>
+      </div>
+
+      <div className="appearance-theme-section">
+        <h2 className="appearance-theme-section-title">显示</h2>
+        <div className="appearance-settings-card">
+          <label className="date-time-setting-row">
+            <span>展示联系人名称</span>
+            <span className="date-time-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="展示联系人名称"
+                checked={showContactNames}
+                onChange={(event) => {
+                  saveDisplayPreference({
+                    showContactNames: event.target.checked,
+                  });
+                }}
+              />
+              <i aria-hidden="true" />
+            </span>
+          </label>
+          <p className="appearance-settings-hint">
+            开启后，任务列表与详情中的负责人头像后会显示联系人名称。
+          </p>
         </div>
       </div>
     </section>

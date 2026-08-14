@@ -24,7 +24,12 @@ export function FocusDayTimeline({
 
   const taskTitleById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const task of tasks) map.set(task.id, task.title);
+    for (const task of tasks) {
+      map.set(task.id, task.title);
+      for (const subtask of task.subtasks) {
+        map.set(`${task.id}:${subtask.id}`, subtask.title);
+      }
+    }
     return map;
   }, [tasks]);
 
@@ -47,6 +52,7 @@ export function FocusDayTimeline({
       elapsedSeconds: safeElapsed,
       segment: isBreak ? "break" as const : "work" as const,
       taskId: runtime.taskId,
+      subtaskId: runtime.subtaskId,
     };
   }, [nowMs, runtime]);
 
@@ -103,7 +109,11 @@ export function FocusDayTimeline({
               new Date(block.startMs).toISOString(),
               new Date(block.endMs).toISOString(),
             );
-            const taskTitle = block.taskId
+            const taskTitle = block.subtaskId && block.taskId
+              ? taskTitleById.get(`${block.taskId}:${block.subtaskId}`)
+                ?? taskTitleById.get(block.taskId)
+                ?? null
+              : block.taskId
               ? taskTitleById.get(block.taskId) ?? null
               : null;
             const segmentLabel = block.segment === "break" ? "休息" : "工作";

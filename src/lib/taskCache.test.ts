@@ -372,6 +372,7 @@ describe("task cache updates", () => {
         created_by: "user",
         created_at: "2026-08-03T00:00:00.000Z",
         updated_at: "2026-08-03T00:00:00.000Z",
+        subtask_id: null,
       }],
       reminderPersistent: true,
       recurrence: { freq: "daily", interval: 1, mode: "due" },
@@ -400,6 +401,11 @@ describe("task cache updates", () => {
       assignee_id: null,
       cli_assignee: null,
       created_by: "user",
+      due_start_at: null,
+      due_is_all_day: false,
+      due_timezone: null,
+      reminders: [],
+      reminder_persistent: false,
     };
     bundle = appendSubtaskInBundle(bundle, task.id, subtask);
     expect(findTaskIdForSubtask(bundle, "sub-1")).toBe(task.id);

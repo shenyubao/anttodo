@@ -71,6 +71,7 @@ describe("desktopNotifications", () => {
           reminders: [{
             id: "reminder-1",
             task_id: "task-1",
+            subtask_id: null,
             position: 0,
             anchor: "start",
             offset_value: 0,
@@ -89,6 +90,7 @@ describe("desktopNotifications", () => {
           reminders: [{
             id: "reminder-2",
             task_id: "task-2",
+            subtask_id: null,
             position: 0,
             anchor: "start",
             offset_value: 0,

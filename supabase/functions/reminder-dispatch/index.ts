@@ -60,25 +60,30 @@ export default {
     const recent = new Date(now.getTime() - 90_000).toISOString();
     const { data: dueReminders, error: dueError } = await ctx.supabaseAdmin
       .from("task_reminders")
-      .select("id, task_id, trigger_at, tasks!inner(id, title, description, status, deleted_at, assignee_id, created_by, workspace_id, task_reminder_settings(persistent))")
+      .select("id, task_id, subtask_id, trigger_at, tasks!inner(id, title, description, status, deleted_at, assignee_id, created_by, workspace_id, task_reminder_settings(persistent)), subtasks(id, title, description, completed, assignee_id, subtask_reminder_settings(persistent))")
       .gte("trigger_at", recent)
       .lte("trigger_at", now.toISOString());
     if (dueError) return Response.json({ error: dueError.message }, { status: 500 });
 
     for (const reminder of dueReminders ?? []) {
       const task = Array.isArray(reminder.tasks) ? reminder.tasks[0] : reminder.tasks;
+      const subtask = Array.isArray(reminder.subtasks) ? reminder.subtasks[0] : reminder.subtasks;
       if (!task || task.status !== "open" || task.deleted_at) continue;
+      if (reminder.subtask_id && (!subtask || subtask.completed)) continue;
       const id = crypto.randomUUID();
       const token = await tokenFor(id, acknowledgementSecret);
-      const settings = Array.isArray(task.task_reminder_settings)
+      const parentSettings = Array.isArray(task.task_reminder_settings)
         ? task.task_reminder_settings[0]
         : task.task_reminder_settings;
+      const subtaskSettings = Array.isArray(subtask?.subtask_reminder_settings)
+        ? subtask.subtask_reminder_settings[0]
+        : subtask?.subtask_reminder_settings;
       await ctx.supabaseAdmin.from("reminder_delivery_states").upsert({
         id,
         reminder_id: reminder.id,
         scheduled_for: reminder.trigger_at,
-        recipient_id: task.assignee_id ?? task.created_by,
-        persistent: settings?.persistent ?? false,
+        recipient_id: subtask?.assignee_id ?? task.assignee_id ?? task.created_by,
+        persistent: (reminder.subtask_id ? subtaskSettings?.persistent : parentSettings?.persistent) ?? false,
         next_delivery_at: reminder.trigger_at,
         acknowledgement_token_hash: await sha256(token),
       }, { onConflict: "reminder_id,scheduled_for,recipient_id", ignoreDuplicates: true });
@@ -86,7 +91,7 @@ export default {
 
     const { data: deliveries, error: deliveryError } = await ctx.supabaseAdmin
       .from("reminder_delivery_states")
-      .select("*, task_reminders!inner(id, task_id, tasks!inner(id, title, description, status, deleted_at, workspace_id, due_at, due_start_at, due_is_all_day, due_timezone))")
+      .select("*, task_reminders!inner(id, task_id, subtask_id, tasks!inner(id, title, description, status, deleted_at, workspace_id, due_at, due_start_at, due_is_all_day, due_timezone), subtasks(id, title, description, completed, due_at, due_start_at, due_is_all_day, due_timezone))")
       .is("acknowledged_at", null)
       .is("cancelled_at", null)
       .lte("next_delivery_at", now.toISOString())
@@ -98,11 +103,15 @@ export default {
       const reminder = Array.isArray(delivery.task_reminders)
         ? delivery.task_reminders[0] : delivery.task_reminders;
       const task = Array.isArray(reminder?.tasks) ? reminder.tasks[0] : reminder?.tasks;
-      if (!task || task.status !== "open" || task.deleted_at) {
+      const subtask = Array.isArray(reminder?.subtasks) ? reminder.subtasks[0] : reminder?.subtasks;
+      if (!task || task.status !== "open" || task.deleted_at || (reminder?.subtask_id && (!subtask || subtask.completed))) {
         await ctx.supabaseAdmin.from("reminder_delivery_states")
           .update({ cancelled_at: now.toISOString() }).eq("id", delivery.id);
         continue;
       }
+      const reminderTitle = subtask?.title || task.title;
+      const reminderDescription = subtask?.description || task.description;
+      const reminderDue = subtask ?? task;
       const token = await tokenFor(delivery.id, acknowledgementSecret);
       const systemOn = await dueReminderPrefEnabled(
         ctx.supabaseAdmin,
@@ -122,8 +131,8 @@ export default {
           .eq("user_id", delivery.recipient_id)
           .is("disabled_at", null);
         const payload = JSON.stringify({
-          title: task.title || "AntTodo 提醒",
-          body: task.description?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
+          title: reminderTitle || "AntTodo 提醒",
+          body: reminderDescription?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
           tag: `task-reminder:${delivery.id}`,
           url: `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`,
           acknowledgeUrl: functionUrl,
@@ -149,12 +158,12 @@ export default {
       if (dingtalkOn) {
         const openUrl = `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`;
         const card = buildDueReminderCard({
-          taskTitle: task.title,
-          description: task.description,
-          dueAt: task.due_at,
-          dueStartAt: task.due_start_at,
-          allDay: task.due_is_all_day,
-          timeZone: task.due_timezone,
+          taskTitle: reminderTitle,
+          description: reminderDescription,
+          dueAt: reminderDue.due_at,
+          dueStartAt: reminderDue.due_start_at,
+          allDay: reminderDue.due_is_all_day,
+          timeZone: reminderDue.due_timezone,
           openUrl,
         });
         const { data: provider } = await ctx.supabaseAdmin

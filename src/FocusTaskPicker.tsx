@@ -1,7 +1,13 @@
 import clsx from "clsx";
-import { isBefore, isToday, startOfDay } from "date-fns";
 import { CalendarDays, Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildFocusPickerTrees,
+  buildRecentFocusPickerTrees,
+  partitionFocusPickerTrees,
+  sameFocusTarget,
+  type FocusPickerTree,
+} from "./lib/focusSession";
 import type { FocusSession, Task } from "./types";
 
 type PickerTab = "recent" | "tasks";
@@ -11,6 +17,7 @@ export function FocusTaskPicker({
   tasks,
   sessions,
   selectedTaskId,
+  selectedSubtaskId,
   onOpenChange,
   onSelect,
 }: {
@@ -18,8 +25,9 @@ export function FocusTaskPicker({
   tasks: Task[];
   sessions: FocusSession[];
   selectedTaskId: string | null;
+  selectedSubtaskId?: string | null;
   onOpenChange: (open: boolean) => void;
-  onSelect: (taskId: string | null) => void;
+  onSelect: (taskId: string | null, subtaskId?: string | null) => void;
 }) {
   const [tab, setTab] = useState<PickerTab>("tasks");
   const [query, setQuery] = useState("");
@@ -44,47 +52,19 @@ export function FocusTaskPicker({
     };
   }, [open, onOpenChange]);
 
-  const focusableTasks = useMemo(
-    () => tasks.filter((task) => !task.deleted_at && task.kind !== "note"),
-    [tasks],
-  );
+  const trees = useMemo(() => {
+    if (tab === "recent") return buildRecentFocusPickerTrees(tasks, sessions, query);
+    return buildFocusPickerTrees(tasks, query);
+  }, [query, sessions, tab, tasks]);
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const list = focusableTasks.filter((task) =>
-      !needle || task.title.toLowerCase().includes(needle)
-    );
-    if (tab === "recent") {
-      const recentIds = [
-        ...new Set(
-          sessions
-            .map((session) => session.task_id)
-            .filter((id): id is string => Boolean(id)),
-        ),
-      ];
-      const byId = new Map(list.map((task) => [task.id, task]));
-      const recent = recentIds
-        .map((id) => byId.get(id))
-        .filter((task): task is Task => Boolean(task));
-      const extras = list
-        .filter((task) => !recentIds.includes(task.id))
-        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-        .slice(0, 12);
-      return [...recent, ...extras].slice(0, 20);
-    }
-    return list;
-  }, [focusableTasks, query, sessions, tab]);
-
-  const overdue = filtered.filter((task) => {
-    if (!task.due_at || task.status === "completed") return false;
-    return isBefore(new Date(task.due_at), startOfDay(new Date()));
-  });
-  const today = filtered.filter((task) =>
-    task.due_at && isToday(new Date(task.due_at)) && task.status !== "completed"
-  );
-  const rest = filtered.filter((task) => !overdue.includes(task) && !today.includes(task));
+  const grouped = useMemo(() => partitionFocusPickerTrees(trees), [trees]);
 
   if (!open) return null;
+
+  const select = (taskId: string | null, subtaskId: string | null = null) => {
+    onSelect(taskId, subtaskId);
+    onOpenChange(false);
+  };
 
   return (
     <div className="focus-task-picker" ref={rootRef} role="dialog" aria-label="选择专注任务">
@@ -117,10 +97,7 @@ export function FocusTaskPicker({
         <button
           type="button"
           className={clsx("focus-task-picker-item", !selectedTaskId && "selected")}
-          onClick={() => {
-            onSelect(null);
-            onOpenChange(false);
-          }}
+          onClick={() => select(null)}
         >
           <span className={clsx("focus-task-picker-check", !selectedTaskId && "checked")}>
             {!selectedTaskId && <Check />}
@@ -129,54 +106,46 @@ export function FocusTaskPicker({
         </button>
         {tab === "tasks" ? (
           <>
-            {today.length > 0 && (
+            {grouped.today.length > 0 && (
               <TaskGroup
                 title="今天"
                 icon
-                tasks={today}
+                trees={grouped.today}
                 selectedTaskId={selectedTaskId}
-                onSelect={(taskId) => {
-                  onSelect(taskId);
-                  onOpenChange(false);
-                }}
+                selectedSubtaskId={selectedSubtaskId}
+                onSelect={select}
               />
             )}
-            {overdue.length > 0 && (
+            {grouped.overdue.length > 0 && (
               <TaskGroup
                 title="已过期"
-                tasks={overdue}
+                trees={grouped.overdue}
                 selectedTaskId={selectedTaskId}
+                selectedSubtaskId={selectedSubtaskId}
                 overdue
-                onSelect={(taskId) => {
-                  onSelect(taskId);
-                  onOpenChange(false);
-                }}
+                onSelect={select}
               />
             )}
-            {rest.length > 0 && (
+            {grouped.rest.length > 0 && (
               <TaskGroup
-                title={today.length || overdue.length ? "其他" : "全部任务"}
-                tasks={rest}
+                title={grouped.today.length || grouped.overdue.length ? "其他" : "全部任务"}
+                trees={grouped.rest}
                 selectedTaskId={selectedTaskId}
-                onSelect={(taskId) => {
-                  onSelect(taskId);
-                  onOpenChange(false);
-                }}
+                selectedSubtaskId={selectedSubtaskId}
+                onSelect={select}
               />
             )}
           </>
         ) : (
           <TaskGroup
             title="最近"
-            tasks={filtered}
+            trees={trees}
             selectedTaskId={selectedTaskId}
-            onSelect={(taskId) => {
-              onSelect(taskId);
-              onOpenChange(false);
-            }}
+            selectedSubtaskId={selectedSubtaskId}
+            onSelect={select}
           />
         )}
-        {filtered.length === 0 && (
+        {trees.length === 0 && (
           <p className="focus-task-picker-empty">没有可关联的任务</p>
         )}
       </div>
@@ -194,18 +163,20 @@ export function FocusTaskPicker({
 
 function TaskGroup({
   title,
-  tasks,
+  trees,
   selectedTaskId,
+  selectedSubtaskId,
   overdue,
   icon,
   onSelect,
 }: {
   title: string;
-  tasks: Task[];
+  trees: FocusPickerTree[];
   selectedTaskId: string | null;
+  selectedSubtaskId?: string | null;
   overdue?: boolean;
   icon?: boolean;
-  onSelect: (taskId: string) => void;
+  onSelect: (taskId: string, subtaskId?: string | null) => void;
 }) {
   return (
     <div className="focus-task-picker-group">
@@ -213,28 +184,98 @@ function TaskGroup({
         {icon && <CalendarDays />}
         <span>{title}</span>
       </div>
-      {tasks.map((task) => {
-        const selected = task.id === selectedTaskId;
-        return (
-          <button
-            key={task.id}
-            type="button"
-            className={clsx("focus-task-picker-item", selected && "selected")}
-            onClick={() => onSelect(task.id)}
-          >
-            <span className={clsx("focus-task-picker-check", selected && "checked")}>
-              {selected && <Check />}
-            </span>
-            <span className="focus-task-picker-title">{task.title}</span>
-            {task.due_at && (
-              <span className={clsx("focus-task-picker-due", overdue && "overdue")}>
-                {formatDue(task.due_at)}
-              </span>
-            )}
-          </button>
-        );
-      })}
+      {trees.map((tree) => (
+        <PickerTree
+          key={tree.task.id}
+          tree={tree}
+          selectedTaskId={selectedTaskId}
+          selectedSubtaskId={selectedSubtaskId}
+          overdue={overdue}
+          onSelect={onSelect}
+        />
+      ))}
     </div>
+  );
+}
+
+function PickerTree({
+  tree,
+  selectedTaskId,
+  selectedSubtaskId,
+  overdue,
+  onSelect,
+}: {
+  tree: FocusPickerTree;
+  selectedTaskId: string | null;
+  selectedSubtaskId?: string | null;
+  overdue?: boolean;
+  onSelect: (taskId: string, subtaskId?: string | null) => void;
+}) {
+  return (
+    <div className="focus-task-picker-tree">
+      <PickerRow
+        title={tree.task.title}
+        dueAt={tree.task.due_at}
+        overdue={overdue}
+        selected={sameFocusTarget(
+          { taskId: selectedTaskId, subtaskId: selectedSubtaskId },
+          { taskId: tree.task.id, subtaskId: null },
+        )}
+        onSelect={() => onSelect(tree.task.id, null)}
+      />
+      {tree.subtasks.map((subtask) => (
+        <PickerRow
+          key={subtask.id}
+          title={subtask.title}
+          dueAt={subtask.due_at}
+          overdue={overdue}
+          nested
+          selected={sameFocusTarget(
+            { taskId: selectedTaskId, subtaskId: selectedSubtaskId },
+            { taskId: tree.task.id, subtaskId: subtask.id },
+          )}
+          onSelect={() => onSelect(tree.task.id, subtask.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PickerRow({
+  title,
+  dueAt,
+  overdue,
+  nested,
+  selected,
+  onSelect,
+}: {
+  title: string;
+  dueAt: string | null;
+  overdue?: boolean;
+  nested?: boolean;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={clsx(
+        "focus-task-picker-item",
+        nested && "nested",
+        selected && "selected",
+      )}
+      onClick={onSelect}
+    >
+      <span className={clsx("focus-task-picker-check", selected && "checked")}>
+        {selected && <Check />}
+      </span>
+      <span className="focus-task-picker-title">{title}</span>
+      {dueAt && (
+        <span className={clsx("focus-task-picker-due", overdue && "overdue")}>
+          {formatDue(dueAt)}
+        </span>
+      )}
+    </button>
   );
 }
 

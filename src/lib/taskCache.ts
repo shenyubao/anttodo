@@ -95,6 +95,14 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
   };
 }
 
+/** Create a task owned by the local database. The UUID is final and is never replaced by a server ID. */
+export function createLocalTask(input: Omit<OptimisticTaskInput, "optimisticId"> & { id?: string }): Task {
+  return createOptimisticTask({
+    ...input,
+    optimisticId: input.id ?? crypto.randomUUID(),
+  });
+}
+
 function taskFromCreatedRow(
   created: Partial<Task> & Pick<
     Task,
@@ -412,6 +420,22 @@ export function applyTaskScheduleToBundle(
   }));
 }
 
+export function applySubtaskScheduleToBundle(
+  bundle: WorkspaceBundle,
+  subtaskId: string,
+  patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+  input: {
+    reminders: TaskReminder[];
+    reminderPersistent: boolean;
+  },
+): WorkspaceBundle {
+  return patchSubtaskInBundle(bundle, subtaskId, {
+    ...patch,
+    reminders: input.reminders,
+    reminder_persistent: input.reminderPersistent,
+  });
+}
+
 export function findTaskIdForSubtask(
   bundle: WorkspaceBundle,
   subtaskId: string,
@@ -428,6 +452,9 @@ export type OptimisticSubtaskInput = {
   position: number;
   priority?: TaskPriority;
   dueAt?: string | null;
+  dueStartAt?: string | null;
+  dueIsAllDay?: boolean;
+  dueTimezone?: string | null;
   assigneeId?: string | null;
   cliAssignee?: AiCliTool | null;
   optimisticId?: string;
@@ -447,6 +474,9 @@ export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask 
     position: input.position,
     priority: input.priority ?? "none",
     due_at: input.dueAt ?? null,
+    due_start_at: input.dueStartAt ?? null,
+    due_is_all_day: input.dueIsAllDay ?? false,
+    due_timezone: input.dueTimezone ?? null,
     estimate_hours: null,
     actual_hours: null,
     estimate_pomodoros: null,
@@ -454,7 +484,17 @@ export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask 
     assignee_id: input.assigneeId ?? null,
     cli_assignee: input.cliAssignee ?? null,
     created_by: input.userId,
+    reminders: [],
+    reminder_persistent: false,
   };
+}
+
+/** Create a subtask owned by the local database. The UUID is final and is never replaced by a server ID. */
+export function createLocalSubtask(input: Omit<OptimisticSubtaskInput, "optimisticId"> & { id?: string }): Subtask {
+  return createOptimisticSubtask({
+    ...input,
+    optimisticId: input.id ?? crypto.randomUUID(),
+  });
 }
 
 export function replaceOptimisticSubtask(

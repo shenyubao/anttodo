@@ -86,6 +86,7 @@ export type FocusSession = {
   user_id: string;
   workspace_id: string;
   task_id: string | null;
+  subtask_id: string | null;
   mode: FocusSessionMode;
   kind: FocusSessionKind;
   planned_seconds: number;
@@ -221,6 +222,9 @@ export type Subtask = {
   position: number;
   priority: TaskPriority;
   due_at: string | null;
+  due_start_at: string | null;
+  due_is_all_day: boolean;
+  due_timezone: string | null;
   estimate_hours: number | null;
   actual_hours: number | null;
   estimate_pomodoros: number | null;
@@ -228,6 +232,8 @@ export type Subtask = {
   assignee_id: string | null;
   cli_assignee: AiCliTool | null;
   created_by: string | null;
+  reminders: TaskReminder[];
+  reminder_persistent: boolean;
 };
 
 export type ReminderRule = {
@@ -240,6 +246,7 @@ export type ReminderRule = {
 export type TaskReminder = ReminderRule & {
   id: string;
   task_id: string;
+  subtask_id: string | null;
   trigger_at: string;
   position: number;
   created_by: string;

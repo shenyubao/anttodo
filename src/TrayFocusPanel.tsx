@@ -8,6 +8,8 @@ import {
   formatFocusDuration,
   formatFocusTimeRange,
   groupFocusSessionsByDay,
+  resolveFocusRecordTitle,
+  resolveFocusTargetTitle,
 } from "./lib/focusSession";
 import { useFocusRuntime } from "./useFocusRuntime";
 import type { FocusSession, FocusSettings, Task } from "./types";
@@ -56,9 +58,9 @@ export function TrayFocusPanel({
     },
   });
 
-  const selectedTask = useMemo(
-    () => tasks.find((task) => task.id === runtime.taskId) ?? null,
-    [runtime.taskId, tasks],
+  const selectedTitle = useMemo(
+    () => resolveFocusTargetTitle(tasks, runtime.taskId, runtime.subtaskId),
+    [runtime.subtaskId, runtime.taskId, tasks],
   );
   const groups = useMemo(() => groupFocusSessionsByDay(sessions), [sessions]);
   const canSwitchMode = runtime.phase === "idle" || runtime.phase === "harvested";
@@ -120,7 +122,7 @@ export function TrayFocusPanel({
             variant="tray"
             state={runtime}
             nowMs={nowMs}
-            taskTitle={selectedTask?.title ?? null}
+            taskTitle={selectedTitle}
             online={online}
             onOpenTaskPicker={() => setPickerOpen(true)}
             onStart={startTimer}
@@ -137,8 +139,9 @@ export function TrayFocusPanel({
               tasks={tasks}
               sessions={sessions}
               selectedTaskId={runtime.taskId}
+              selectedSubtaskId={runtime.subtaskId}
               onOpenChange={setPickerOpen}
-              onSelect={(taskId) => void selectFocusTask(taskId)}
+              onSelect={(taskId, subtaskId) => void selectFocusTask(taskId, subtaskId ?? null)}
             />
           )}
           {notice && (
@@ -159,7 +162,6 @@ export function TrayFocusPanel({
                 <div key={group.dateKey} className="tray-focus-records-group">
                   <div className="tray-focus-records-day">{formatFocusDayLabel(group.dateKey)}</div>
                   {group.sessions.map((session) => {
-                    const task = tasks.find((item) => item.id === session.task_id);
                     return (
                       <div key={session.id} className="tray-focus-record">
                         <Target aria-hidden="true" />
@@ -168,7 +170,7 @@ export function TrayFocusPanel({
                             {formatFocusTimeRange(session.started_at, session.ended_at)}
                           </div>
                           <div className="tray-focus-record-title">
-                            {task?.title ?? "未关联任务"}
+                            {resolveFocusRecordTitle(tasks, session.task_id, session.subtask_id)}
                           </div>
                           {session.notes && (
                             <div className="tray-focus-record-notes">{session.notes}</div>

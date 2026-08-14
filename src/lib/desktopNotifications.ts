@@ -67,28 +67,47 @@ export function buildDesktopReminderEntries(
 
   for (const task of tasks) {
     if (task.status !== "open" || task.deleted_at) continue;
-    const recipientId = task.assignee_id ?? task.created_by;
-    if (recipientId !== userId) continue;
 
-    for (const reminder of task.reminders ?? []) {
-      for (const occurrence of desktopReminderOccurrences(
-        reminder,
-        task.reminder_persistent,
-      )) {
-        const at = new Date(occurrence.triggerAt).getTime();
-        if (!Number.isFinite(at)) continue;
-        if (at < now - DESKTOP_REMINDER_RECOVERY_MS) continue;
-        if (at > now + DESKTOP_REMINDER_HORIZON_MS) continue;
-        entries.push({
-          id: occurrence.id,
-          reminderId: occurrence.reminderId,
-          taskId: task.id,
-          workspaceId,
-          title: task.title.trim() || "AntTodo 提醒",
-          body: plainNotificationBody(task.description) || "任务时间到了",
-          triggerAt: occurrence.triggerAt,
-        });
-        if (entries.length >= MAX_DESKTOP_REMINDER_ENTRIES) return entries;
+    const reminderSources = [
+      {
+        title: task.title,
+        body: task.description,
+        recipientId: task.assignee_id ?? task.created_by,
+        reminders: task.reminders ?? [],
+        persistent: task.reminder_persistent,
+        skip: false,
+      },
+      ...task.subtasks.map((subtask) => ({
+        title: subtask.title,
+        body: subtask.description,
+        recipientId: subtask.assignee_id ?? task.assignee_id ?? task.created_by,
+        reminders: subtask.reminders ?? [],
+        persistent: subtask.reminder_persistent,
+        skip: subtask.completed,
+      })),
+    ];
+    for (const source of reminderSources) {
+      if (source.skip || source.recipientId !== userId) continue;
+      for (const reminder of source.reminders) {
+        for (const occurrence of desktopReminderOccurrences(
+          reminder,
+          source.persistent,
+        )) {
+          const at = new Date(occurrence.triggerAt).getTime();
+          if (!Number.isFinite(at)) continue;
+          if (at < now - DESKTOP_REMINDER_RECOVERY_MS) continue;
+          if (at > now + DESKTOP_REMINDER_HORIZON_MS) continue;
+          entries.push({
+            id: occurrence.id,
+            reminderId: occurrence.reminderId,
+            taskId: task.id,
+            workspaceId,
+            title: source.title.trim() || "AntTodo 提醒",
+            body: plainNotificationBody(source.body) || "任务时间到了",
+            triggerAt: occurrence.triggerAt,
+          });
+          if (entries.length >= MAX_DESKTOP_REMINDER_ENTRIES) return entries;
+        }
       }
     }
   }

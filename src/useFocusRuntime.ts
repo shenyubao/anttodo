@@ -34,6 +34,7 @@ type PersistFocusSessionInput = {
   endedAt: string;
   notes: string;
   taskId: string | null;
+  subtaskId: string | null;
 };
 
 export function useFocusRuntime({
@@ -105,6 +106,7 @@ export function useFocusRuntime({
         user_id: userId,
         workspace_id: workspaceId,
         task_id: partial.taskId,
+        subtask_id: partial.subtaskId,
         mode: partial.mode,
         kind: partial.kind,
         planned_seconds: partial.plannedSeconds,
@@ -137,6 +139,7 @@ export function useFocusRuntime({
         endedAt,
         notes: current.notes,
         taskId: current.taskId,
+        subtaskId: current.subtaskId,
       });
       const completedPomodoros = current.completedPomodoros + 1;
       const breakKind = nextBreakKind(completedPomodoros, settings.long_break_interval);
@@ -168,6 +171,7 @@ export function useFocusRuntime({
         endedAt,
         notes: "",
         taskId: current.taskId,
+        subtaskId: current.subtaskId,
       });
       const idle = createIdleRuntimeState(settings);
       completionHandledRef.current = false;
@@ -177,6 +181,7 @@ export function useFocusRuntime({
             phase: "focusing",
             mode: "pomodoro",
             taskId: current.taskId,
+            subtaskId: current.subtaskId,
             plannedSeconds: settings.pomodoro_minutes * 60,
             startedAt: new Date().toISOString(),
             completedPomodoros: current.completedPomodoros,
@@ -184,6 +189,7 @@ export function useFocusRuntime({
         : {
             ...idle,
             taskId: current.taskId,
+            subtaskId: current.subtaskId,
             completedPomodoros: current.completedPomodoros,
           });
     }
@@ -272,6 +278,7 @@ export function useFocusRuntime({
           endedAt,
           notes: current.notes,
           taskId: current.taskId,
+        subtaskId: current.subtaskId,
         });
       }
     } else if (current.phase === "breaking" && elapsed >= 60) {
@@ -286,6 +293,7 @@ export function useFocusRuntime({
         endedAt,
         notes: "",
         taskId: current.taskId,
+        subtaskId: current.subtaskId,
       });
     }
 
@@ -294,14 +302,15 @@ export function useFocusRuntime({
       ...idle,
       mode: current.mode,
       taskId: current.taskId,
+      subtaskId: current.subtaskId,
       completedPomodoros: current.completedPomodoros,
     });
     clearFocusRuntimeState(userId, workspaceId);
   }
 
-  async function selectFocusTask(taskId: string | null) {
+  async function selectFocusTask(taskId: string | null, subtaskId: string | null = null) {
     const current = runtimeRef.current;
-    const { sessionToPersist, nextRuntime } = switchFocusTask(current, taskId);
+    const { sessionToPersist, nextRuntime } = switchFocusTask(current, { taskId, subtaskId });
     if (nextRuntime === current) return;
     setRuntime(nextRuntime);
     if (sessionToPersist) {
@@ -328,6 +337,7 @@ export function useFocusRuntime({
     setRuntime({
       ...idle,
       taskId: current.taskId,
+      subtaskId: current.subtaskId,
       completedPomodoros: current.completedPomodoros,
     });
   }

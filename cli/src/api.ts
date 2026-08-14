@@ -132,14 +132,27 @@ export async function useWorkspace(context: ApiContext, idOrSlug: string) {
   return workspace;
 }
 
-const taskSelect = "*, task_labels(label_id), task_participants(user_id), subtasks(*), task_reminders(*), task_reminder_settings(persistent)";
+const taskSelect = "*, task_labels(label_id), task_participants(user_id), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)";
 
 function normalizeTask(row: Record<string, unknown>) {
+  const allReminders = (row.task_reminders ?? []) as Array<{ subtask_id?: string | null }>;
+  const parentReminders = allReminders.filter((reminder) => !reminder.subtask_id);
+  const subtasks = ((row.subtasks ?? []) as Array<Record<string, unknown>>).map((subtask) => {
+    const nestedSettings = subtask.subtask_reminder_settings;
+    const settings = Array.isArray(nestedSettings) ? nestedSettings[0] : nestedSettings;
+    const { subtask_reminder_settings: _settings, ...rest } = subtask;
+    return {
+      ...rest,
+      reminders: allReminders.filter((reminder) => reminder.subtask_id === rest.id),
+      reminder_persistent: Boolean((settings as { persistent?: boolean } | null)?.persistent),
+    };
+  });
   return {
     ...row,
     label_ids: ((row.task_labels ?? []) as Array<{ label_id: string }>).map((item) => item.label_id),
     participant_ids: ((row.task_participants ?? []) as Array<{ user_id: string }>).map((item) => item.user_id),
-    reminders: row.task_reminders ?? [],
+    subtasks,
+    reminders: parentReminders,
     reminder_persistent: Array.isArray(row.task_reminder_settings)
       ? Boolean((row.task_reminder_settings as Array<{ persistent: boolean }>)[0]?.persistent)
       : Boolean((row.task_reminder_settings as { persistent?: boolean } | null)?.persistent),

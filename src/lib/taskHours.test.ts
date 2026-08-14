@@ -11,6 +11,7 @@ import {
   normalizeHoursInput,
   normalizePomodorosInput,
   parseEstimateHoursText,
+  sumHours,
 } from "./taskHours";
 
 describe("pomodoro helpers", () => {
@@ -88,6 +89,11 @@ describe("formatHours", () => {
     expect(formatHoursList(45, 43)).toBe("预:45小时 耗:43小时");
     expect(formatHoursList(0.2, null)).toBe("预:0.2小时");
     expect(formatHoursList(null, null)).toBeNull();
+  });
+
+  it("sums subtask hours and ignores empty values", () => {
+    expect(sumHours([1, null, 2.3, undefined])).toBe(3.3);
+    expect(sumHours([null, undefined])).toBeNull();
   });
 });
 

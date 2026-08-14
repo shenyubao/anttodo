@@ -5,7 +5,7 @@ import {
   format,
   startOfDay,
 } from "date-fns";
-import type { Task } from "../types";
+import type { Subtask, Task } from "../types";
 import { fromZonedDateTime, toDateInput } from "./dateTimePreferences";
 import { schedulePatchFromDrop } from "./calendarScheduling";
 
@@ -412,35 +412,91 @@ export function isSameCalendarDay(left: Date, right: Date) {
   return differenceInCalendarDays(startOfDay(left), startOfDay(right)) === 0;
 }
 
+export type TimelineBarSource = {
+  id: string;
+  kind: "task" | "subtask";
+  task: Task;
+  subtask: Subtask | null;
+  title: string;
+  completed: boolean;
+};
+
+/** Visible timeline bars for a group: dated parent tasks and dated subtasks. */
+export function collectTimelineBars(
+  tasks: readonly Task[],
+  showCompleted: boolean,
+): TimelineBarSource[] {
+  const bars: TimelineBarSource[] = [];
+  for (const task of tasks) {
+    if (task.deleted_at) continue;
+    if (task.due_at && (showCompleted || task.status !== "completed")) {
+      bars.push({
+        id: task.id,
+        kind: "task",
+        task,
+        subtask: null,
+        title: task.title,
+        completed: task.status === "completed",
+      });
+    }
+    for (const subtask of task.subtasks) {
+      if (!subtask.due_at) continue;
+      if (!showCompleted && subtask.completed) continue;
+      bars.push({
+        id: `subtask:${subtask.id}`,
+        kind: "subtask",
+        task,
+        subtask,
+        title: subtask.title,
+        completed: subtask.completed,
+      });
+    }
+  }
+  return bars;
+}
+
+export function timelineBarRange(
+  source: TimelineBarSource,
+  timeZone: string | null,
+): TimelineBarRange | null {
+  if (source.kind === "subtask") {
+    const dueAt = source.subtask?.due_at;
+    if (!dueAt) return null;
+    const zone = timeZone ?? source.task.due_timezone;
+    const day = taskDayValue(dueAt, zone);
+    return {
+      startDay: day,
+      endDay: day,
+      exclusiveEndDay: addDays(day, 1),
+      dayCount: 1,
+      allDay: true,
+    };
+  }
+  return taskBarRange(source.task, timeZone);
+}
+
 export type TimelineLaneItem = {
+  source: TimelineBarSource;
   task: Task;
   lane: number;
   range: TimelineBarRange;
 };
 
-/** Pack scheduled tasks into non-overlapping horizontal lanes within a group row. */
-export function packTimelineLanes(
-  tasks: Task[],
-  timeZone: string | null,
+function packRangedBars(
+  ranged: Array<{ source: TimelineBarSource; range: TimelineBarRange }>,
 ): { items: TimelineLaneItem[]; laneCount: number } {
-  const ranged = tasks
-    .map((task) => {
-      const range = taskBarRange(task, timeZone ?? task.due_timezone);
-      return range ? { task, range } : null;
-    })
-    .filter((item): item is { task: Task; range: TimelineBarRange } => item !== null)
-    .sort((left, right) => {
-      const start = differenceInCalendarDays(left.range.startDay, right.range.startDay);
-      if (start !== 0) return start;
-      const span = left.range.dayCount - right.range.dayCount;
-      if (span !== 0) return span;
-      return left.task.title.localeCompare(right.task.title, "zh-CN")
-        || left.task.id.localeCompare(right.task.id);
-    });
+  const sorted = [...ranged].sort((left, right) => {
+    const start = differenceInCalendarDays(left.range.startDay, right.range.startDay);
+    if (start !== 0) return start;
+    const span = left.range.dayCount - right.range.dayCount;
+    if (span !== 0) return span;
+    return left.source.title.localeCompare(right.source.title, "zh-CN")
+      || left.source.id.localeCompare(right.source.id);
+  });
 
   const laneExclusiveEnds: Date[] = [];
   const items: TimelineLaneItem[] = [];
-  for (const { task, range } of ranged) {
+  for (const { source, range } of sorted) {
     let lane = laneExclusiveEnds.findIndex(
       (end) => differenceInCalendarDays(range.startDay, end) >= 0,
     );
@@ -450,12 +506,45 @@ export function packTimelineLanes(
     } else {
       laneExclusiveEnds[lane] = range.exclusiveEndDay;
     }
-    items.push({ task, lane, range });
+    items.push({ source, task: source.task, lane, range });
   }
   return {
     items,
     laneCount: Math.max(1, laneExclusiveEnds.length),
   };
+}
+
+/** Pack collected bars into non-overlapping horizontal lanes within a group row. */
+export function packTimelineBarLanes(
+  bars: TimelineBarSource[],
+  timeZone: string | null,
+): { items: TimelineLaneItem[]; laneCount: number } {
+  const ranged: Array<{ source: TimelineBarSource; range: TimelineBarRange }> = [];
+  for (const source of bars) {
+    const range = timelineBarRange(source, timeZone);
+    if (range) ranged.push({ source, range });
+  }
+  return packRangedBars(ranged);
+}
+
+/** Pack scheduled tasks into non-overlapping horizontal lanes within a group row. */
+export function packTimelineLanes(
+  tasks: Task[],
+  timeZone: string | null,
+): { items: TimelineLaneItem[]; laneCount: number } {
+  const bars: TimelineBarSource[] = [];
+  for (const task of tasks) {
+    if (task.deleted_at || !task.due_at) continue;
+    bars.push({
+      id: task.id,
+      kind: "task",
+      task,
+      subtask: null,
+      title: task.title,
+      completed: task.status === "completed",
+    });
+  }
+  return packTimelineBarLanes(bars, timeZone);
 }
 
 export function timelineGroupRowHeight(laneCount: number) {

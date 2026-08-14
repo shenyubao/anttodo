@@ -73,7 +73,11 @@ type TaskRow = Omit<
   task_labels?: Array<{ label_id: string }>;
   task_participants?: Array<{ user_id: string }>;
   task_description_mentions?: Array<{ user_id: string; display_name_snapshot: string }>;
-  subtasks?: Task["subtasks"];
+  subtasks?: Array<
+    Task["subtasks"][number] & {
+      subtask_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
+    }
+  >;
   task_reminders?: Task["reminders"];
   task_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
 };
@@ -89,6 +93,8 @@ function normalizeTaskRow(row: TaskRow): Task {
   const settings = Array.isArray(row.task_reminder_settings)
     ? row.task_reminder_settings[0]
     : row.task_reminder_settings;
+  const allReminders = [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position);
+  const parentReminders = allReminders.filter((reminder) => !reminder.subtask_id);
   return {
     ...row,
     kind: row.kind ?? "todo",
@@ -102,16 +108,27 @@ function normalizeTaskRow(row: TaskRow): Task {
     description_mentions: row.task_description_mentions ?? [],
     subtasks: [...(row.subtasks ?? [])]
       .sort((a, b) => a.position - b.position)
-      .map((subtask) => ({
-        ...subtask,
-        description: subtask.description ?? "",
-        priority: subtask.priority ?? "none",
-        estimate_hours: coerceHours(subtask.estimate_hours),
-        actual_hours: coerceHours(subtask.actual_hours),
-        estimate_pomodoros: coercePomodoros(subtask.estimate_pomodoros),
-        actual_pomodoros: coercePomodoros(subtask.actual_pomodoros),
-      })),
-    reminders: [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position),
+      .map((subtask) => {
+        const { subtask_reminder_settings: nestedSettings, ...rest } = subtask;
+        const subtaskSettings = Array.isArray(nestedSettings)
+          ? nestedSettings[0]
+          : nestedSettings;
+        return {
+          ...rest,
+          description: rest.description ?? "",
+          priority: rest.priority ?? "none",
+          due_start_at: rest.due_start_at ?? null,
+          due_is_all_day: Boolean(rest.due_is_all_day),
+          due_timezone: rest.due_timezone ?? null,
+          estimate_hours: coerceHours(rest.estimate_hours),
+          actual_hours: coerceHours(rest.actual_hours),
+          estimate_pomodoros: coercePomodoros(rest.estimate_pomodoros),
+          actual_pomodoros: coercePomodoros(rest.actual_pomodoros),
+          reminders: allReminders.filter((reminder) => reminder.subtask_id === rest.id),
+          reminder_persistent: subtaskSettings?.persistent ?? false,
+        };
+      }),
+    reminders: parentReminders,
     reminder_persistent: settings?.persistent ?? false,
   };
 }
@@ -620,6 +637,7 @@ export async function createFocusSession(
       user_id: input.user_id,
       workspace_id: input.workspace_id,
       task_id: input.task_id,
+      subtask_id: input.subtask_id ?? null,
       mode: input.mode,
       kind: input.kind,
       planned_seconds: input.planned_seconds,
@@ -676,7 +694,7 @@ export async function loadWorkspaceBundle(
     client.from("labels").select("*").eq("workspace_id", workspaceId).order("position"),
     client
       .from("tasks")
-      .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+      .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)")
       .eq("workspace_id", workspaceId)
       .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
       .order("created_at", { ascending: false })
@@ -836,7 +854,7 @@ export async function loadWorkspaceTasksPage(
 ): Promise<WorkspaceTaskPage> {
   const { data, error } = await client
     .from("tasks")
-    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)")
     .eq("workspace_id", workspaceId)
     .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
     .order("created_at", { ascending: false })
@@ -858,7 +876,7 @@ export async function loadWorkspaceTask(
 ): Promise<Task | null> {
   const { data, error } = await client
     .from("tasks")
-    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*), task_reminders(*), task_reminder_settings(persistent)")
+    .select("*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)")
     .eq("workspace_id", workspaceId)
     .eq("id", taskId)
     .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
@@ -906,6 +924,25 @@ export async function saveTaskSchedule(
     p_reminders: schedule.reminders,
     p_persistent: schedule.persistent,
     p_recurrence: schedule.recurrence,
+  });
+  assertNoError(error);
+  return (data ?? []) as TaskReminder[];
+}
+
+export async function saveSubtaskSchedule(
+  client: SupabaseClient,
+  subtaskId: string,
+  patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+  schedule: ReminderSchedule,
+) {
+  const { data, error } = await client.rpc("save_subtask_schedule", {
+    p_subtask_id: subtaskId,
+    p_due_at: patch.due_at,
+    p_due_start_at: patch.due_start_at,
+    p_due_is_all_day: patch.due_is_all_day,
+    p_due_timezone: patch.due_timezone,
+    p_reminders: schedule.reminders,
+    p_persistent: schedule.persistent,
   });
   assertNoError(error);
   return (data ?? []) as TaskReminder[];

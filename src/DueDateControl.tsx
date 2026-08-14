@@ -85,9 +85,38 @@ import type {
   ReminderRule,
   ReminderSchedule,
   ReminderUnit,
+  Subtask,
   Task,
   TaskRecurrence,
+  TaskReminder,
+  TaskStatus,
 } from "./types";
+
+export type DueDateTarget = {
+  id: string;
+  due_at: string | null;
+  due_start_at: string | null;
+  due_is_all_day: boolean;
+  due_timezone: string | null;
+  reminders: TaskReminder[];
+  reminder_persistent: boolean;
+  recurrence?: TaskRecurrence | null;
+  status?: TaskStatus | "open" | "completed";
+};
+
+export function dueTargetFromSubtask(subtask: Subtask): DueDateTarget {
+  return {
+    id: subtask.id,
+    due_at: subtask.due_at,
+    due_start_at: subtask.due_start_at,
+    due_is_all_day: subtask.due_is_all_day,
+    due_timezone: subtask.due_timezone,
+    reminders: subtask.reminders,
+    reminder_persistent: subtask.reminder_persistent,
+    recurrence: null,
+    status: subtask.completed ? "completed" : "open",
+  };
+}
 
 function calendarDays(
   month: Date,
@@ -105,7 +134,7 @@ function calendarDays(
   return days;
 }
 
-function initialPoint(task: Task) {
+function initialPoint(task: DueDateTarget) {
   return roundUpToHalfHour(task.due_start_at
     ? new Date(task.due_start_at)
     : task.due_at ? new Date(task.due_at) : new Date());
@@ -131,10 +160,12 @@ export function DueDateControl({
   onSave,
   autoOpen = false,
   showTrigger = true,
+  allowRecurrence = true,
+  compact = false,
   anchorPoint,
   onClose,
 }: {
-  task: Task;
+  task: DueDateTarget;
   online: boolean;
   now: Date;
   preferences: DateTimePreferences;
@@ -147,6 +178,8 @@ export function DueDateControl({
   ) => Promise<void>;
   autoOpen?: boolean;
   showTrigger?: boolean;
+  allowRecurrence?: boolean;
+  compact?: boolean;
   anchorPoint?: { left: number; top: number };
   onClose?: () => void;
 }) {
@@ -204,7 +237,11 @@ export function DueDateControl({
     setTab(task.due_start_at && !singleAllDay ? "range" : "point");
     setPointDate(toDateInput(point, zone));
     setPointTime(toTimeInput(point, zone));
-    setPointHasTime(!singleAllDay);
+    setPointHasTime(
+      allowRecurrence
+        ? !singleAllDay
+        : Boolean(task.due_at) && !task.due_is_all_day && !task.due_start_at,
+    );
     setStartDate(toDateInput(start, zone));
     setStartTime(toTimeInput(start, zone));
     setEndDate(toDateInput(end, zone));
@@ -431,16 +468,17 @@ export function DueDateControl({
     cancelReminderPanel();
     setRepeatOpen(false);
     setTab("point");
+    const nextHasTime = allowRecurrence;
     setPointDate(nextDate);
     setPointTime(nextTime);
-    setPointHasTime(true);
+    setPointHasTime(nextHasTime);
     setDisplayedMonth(date);
     setError("");
     void save({
       tab: "point",
       pointDate: nextDate,
       pointTime: nextTime,
-      pointHasTime: true,
+      pointHasTime: nextHasTime,
     });
   }
 
@@ -546,7 +584,7 @@ export function DueDateControl({
     const schedule = {
       reminders: normalizedReminders,
       persistent: persistent && normalizedReminders.length > 0,
-      recurrence: normalizedRecurrence,
+      recurrence: allowRecurrence ? normalizedRecurrence : null,
     };
     const hasExpiredReminder = normalizedReminders.some((rule) => {
       const trigger = reminderTriggerAt({ ...task, ...patch }, rule);
@@ -581,21 +619,36 @@ export function DueDateControl({
   }
 
   return (
-    <div className="detail-due-control" ref={rootRef}>
+    <div className={clsx("detail-due-control", compact && "subtask-date-control")} ref={rootRef}>
       {showTrigger && (
         <button
           ref={triggerRef}
           type="button"
-          className={status?.overdue ? "detail-due-trigger overdue" : "detail-due-trigger"}
-          aria-label="设置到期时间"
+          className={compact
+            ? clsx(
+              "subtask-date-trigger",
+              task.due_at && "has-date",
+              !task.due_at && "icon-only",
+              status?.overdue && "overdue",
+            )
+            : (status?.overdue ? "detail-due-trigger overdue" : "detail-due-trigger")}
+          aria-label={compact
+            ? (task.due_at ? `截止时间：${formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}` : "设置子任务截止时间")
+            : "设置到期时间"}
           aria-haspopup="dialog"
           aria-expanded={open}
           disabled={!online}
           onClick={() => setPopoverOpen(!open)}
         >
           <CalendarDays />
-          <span>{formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}</span>
-          {status && <em>{status.label}</em>}
+          {compact ? (task.due_at && (
+            <span>
+              {formatPreferenceDate(task.due_at, preferences, task.due_timezone)}
+            </span>
+          )) : (
+            <span>{formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}</span>
+          )}
+          {!compact && status && <em>{status.label}</em>}
         </button>
       )}
       {open && createPortal(
@@ -825,6 +878,7 @@ export function DueDateControl({
               {displayedReminders.length > 0 && <em>{displayedReminders.length}</em>}
               <ChevronDown />
             </button>
+            {allowRecurrence && (
             <button
               type="button"
               aria-label="重复"
@@ -839,8 +893,9 @@ export function DueDateControl({
               <span>{recurrenceSummary(recurrence, draftDueAnchor, timeZone)}</span>
               <ChevronDown />
             </button>
+            )}
           </div>
-          {repeatOpen && (
+          {allowRecurrence && repeatOpen && (
             <section className="due-repeat-panel" aria-label="重复设置">
               <div className="due-reminder-options">
                 {RECURRENCE_PRESETS.map((preset) => {

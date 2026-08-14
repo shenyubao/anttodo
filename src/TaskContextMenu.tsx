@@ -15,10 +15,10 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 import clsx from "clsx";
-import { DueDateControl } from "./DueDateControl";
+import { DueDateControl, dueTargetFromSubtask } from "./DueDateControl";
 import { PRIORITY_OPTIONS } from "./PriorityControl";
 import { taskShareUrl } from "./lib/appRoute";
-import { clearSchedulePatch } from "./lib/calendarScheduling";
+import { clearSchedulePatch, schedulePatchFromDrop } from "./lib/calendarScheduling";
 import { systemTimeZone } from "./lib/dateTimePreferences";
 import { getPresetDate, type DuePreset } from "./lib/dueTime";
 import type {
@@ -42,8 +42,9 @@ function scheduleForTask(task: Task): ReminderSchedule {
   };
 }
 
-function duePatchFromPreset(preset: DuePreset) {
+function duePatchFromPreset(preset: DuePreset, allDay = false) {
   const dueAt = getPresetDate(preset);
+  if (allDay) return schedulePatchFromDrop(dueAt, true, systemTimeZone());
   return {
     due_at: dueAt.toISOString(),
     due_start_at: null,
@@ -52,18 +53,17 @@ function duePatchFromPreset(preset: DuePreset) {
   };
 }
 
-function subtaskDueFromPreset(preset: DuePreset) {
-  const date = getPresetDate(preset);
-  const endOfDay = new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-    23,
-    59,
-    59,
-    999,
-  );
-  return endOfDay.toISOString();
+function subtaskScheduleFromSubtask(subtask: Subtask): ReminderSchedule {
+  return {
+    reminders: subtask.reminders.map((reminder) => ({
+      anchor: reminder.anchor,
+      offset_value: reminder.offset_value,
+      offset_unit: reminder.offset_unit,
+      local_time: reminder.local_time,
+    })),
+    persistent: subtask.reminder_persistent,
+    recurrence: null,
+  };
 }
 
 async function copyTaskLink(workspaceId: string, task: Task) {
@@ -83,6 +83,7 @@ export function TaskContextMenu({
   onClose,
   onUpdateTask,
   onSaveTaskSchedule,
+  onSaveSubtaskSchedule,
   onCreateTask,
   onCreateSubtask,
   onUpdateSubtask,
@@ -107,6 +108,11 @@ export function TaskContextMenu({
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
+  onSaveSubtaskSchedule: (
+    subtaskId: string,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) => Promise<void>;
   onCreateTask: (input: {
     title: string;
     labelIds: string[];
@@ -118,7 +124,7 @@ export function TaskContextMenu({
   onCreateSubtask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "assignee_id" | "cli_assignee" | "priority">>,
+    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority">>,
   ) => Promise<void>;
   onUpdateSubtask: (
     subtaskId: string,
@@ -131,7 +137,6 @@ export function TaskContextMenu({
 }) {
   const [busy, setBusy] = useState(false);
   const [duePickerOpen, setDuePickerOpen] = useState(false);
-  const [subtaskDate, setSubtaskDate] = useState("");
   const writable = online && !busy;
   const isSubtask = Boolean(subtask);
   const isNote = !isSubtask && task.kind === "note";
@@ -150,13 +155,6 @@ export function TaskContextMenu({
     window.addEventListener("keydown", closeOnEscape, true);
     return () => window.removeEventListener("keydown", closeOnEscape, true);
   }, [duePickerOpen, onClose]);
-
-  useEffect(() => {
-    if (!duePickerOpen || !subtask) return;
-    const initial = subtask.due_at ? new Date(subtask.due_at) : new Date();
-    const offset = initial.getTimezoneOffset() * 60_000;
-    setSubtaskDate(new Date(initial.getTime() - offset).toISOString().slice(0, 10));
-  }, [duePickerOpen, subtask]);
 
   async function run(
     action: () => Promise<void>,
@@ -179,7 +177,7 @@ export function TaskContextMenu({
   async function applyDuePreset(preset: DuePreset) {
     await run(async () => {
       if (subtask) {
-        await onUpdateSubtask(subtask.id, { due_at: subtaskDueFromPreset(preset) });
+        await onSaveSubtaskSchedule(subtask.id, duePatchFromPreset(preset, true), subtaskScheduleFromSubtask(subtask));
         return;
       }
       await onSaveTaskSchedule(task.id, duePatchFromPreset(preset), scheduleForTask(task));
@@ -189,7 +187,11 @@ export function TaskContextMenu({
   async function clearDue() {
     await run(async () => {
       if (subtask) {
-        await onUpdateSubtask(subtask.id, { due_at: null });
+        await onSaveSubtaskSchedule(subtask.id, clearSchedulePatch(), {
+          reminders: [],
+          persistent: false,
+          recurrence: null,
+        });
         return;
       }
       await onSaveTaskSchedule(task.id, clearSchedulePatch(), {
@@ -197,16 +199,6 @@ export function TaskContextMenu({
         persistent: false,
         recurrence: null,
       });
-    });
-  }
-
-  async function saveSubtaskDate(value: string | null) {
-    await run(async () => {
-      if (!subtask) return;
-      const dueAt = value
-        ? new Date(`${value}T23:59:59.999`).toISOString()
-        : null;
-      await onUpdateSubtask(subtask.id, { due_at: dueAt });
     });
   }
 
@@ -235,6 +227,9 @@ export function TaskContextMenu({
       if (subtask) {
         await onCreateSubtask(task.id, subtask.title, {
           due_at: subtask.due_at,
+          due_start_at: subtask.due_start_at,
+          due_is_all_day: subtask.due_is_all_day,
+          due_timezone: subtask.due_timezone,
           assignee_id: subtask.assignee_id,
           cli_assignee: subtask.cli_assignee,
           priority: subtask.priority,
@@ -353,7 +348,7 @@ export function TaskContextMenu({
     );
   }
 
-  if (duePickerOpen && !isSubtask) {
+  if (duePickerOpen) {
     return (
       <>
         <button
@@ -367,16 +362,18 @@ export function TaskContextMenu({
           }}
         />
         <DueDateControl
-          task={task}
+          task={subtask ? dueTargetFromSubtask(subtask) : task}
           online={online}
           now={now}
           preferences={dateTimePreferences}
           autoOpen
           showTrigger={false}
+          allowRecurrence={!subtask}
           anchorPoint={{ left: menuLeft, top: Math.min(y, window.innerHeight - 560) }}
           onClose={onClose}
           onSave={async (patch, schedule) => {
-            await onSaveTaskSchedule(task.id, patch, schedule);
+            if (subtask) await onSaveSubtaskSchedule(subtask.id, patch, schedule);
+            else await onSaveTaskSchedule(task.id, patch, schedule);
             onClose();
           }}
         />
@@ -451,33 +448,6 @@ export function TaskContextMenu({
               <CalendarX2 />
             </button>
           </div>
-          {duePickerOpen && isSubtask && (
-            <div className="task-context-subtask-date">
-              <input
-                type="date"
-                aria-label="子任务截止日期"
-                value={subtaskDate}
-                onChange={(event) => setSubtaskDate(event.target.value)}
-              />
-              <div className="task-context-subtask-date-actions">
-                <button
-                  type="button"
-                  disabled={!writable}
-                  onClick={() => void saveSubtaskDate(null)}
-                >
-                  清除
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={!writable || !subtaskDate}
-                  onClick={() => void saveSubtaskDate(subtaskDate)}
-                >
-                  确定
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
         {!isNote && (

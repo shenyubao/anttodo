@@ -255,7 +255,7 @@ export function TaskComments({
   }
 
   async function saveEdit(comment: TaskComment) {
-    if (!online || savingEdit || (!editBody.trim() && comment.image_uris.length === 0)) return;
+    if (savingEdit || (!editBody.trim() && comment.image_uris.length === 0)) return;
     setSavingEdit(true);
     setError("");
     try {
@@ -273,7 +273,7 @@ export function TaskComments({
   }
 
   async function submit() {
-    if (!online || posting || uploading || (!body.trim() && images.length === 0)) return;
+    if (posting || uploading || (!body.trim() && images.length === 0)) return;
     setPosting(true);
     setError("");
     try {
@@ -321,7 +321,7 @@ export function TaskComments({
   async function chooseImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file || !online || images.length >= 8) return;
+    if (!file || images.length >= 8) return;
     setUploading(true);
     setError("");
     try {
@@ -369,10 +369,10 @@ export function TaskComments({
                   {comment.author_id === currentUserId && (
                     <span className="comment-actions">
                       <button type="button" aria-label="修改评论"
-                        disabled={!online || savingEdit || deletingId === comment.id}
+                        disabled={savingEdit || deletingId === comment.id}
                         onClick={() => beginEdit(comment)}><Pencil /></button>
                       <button type="button" aria-label="删除评论"
-                        disabled={!online || deletingId === comment.id}
+                        disabled={deletingId === comment.id}
                         onClick={async () => {
                           setDeletingId(comment.id);
                           setError("");
@@ -387,7 +387,7 @@ export function TaskComments({
                 {editingId === comment.id ? (
                   <div className="comment-edit">
                     <textarea ref={editRef} rows={2} maxLength={10000} value={editBody}
-                      aria-label="编辑评论" disabled={!online || savingEdit}
+                        aria-label="编辑评论" disabled={savingEdit}
                       onChange={changeEditBody}
                       onKeyDown={(event) => {
                         if (editMention && editCandidates.length > 0 && event.key === "Enter") {
@@ -465,15 +465,15 @@ export function TaskComments({
         )}
         <div className="comment-input-shell">
           <textarea ref={textareaRef} value={body} rows={1} maxLength={10000}
-            placeholder={online ? "添加评论" : "离线模式下不可评论"}
-            aria-label="添加评论" disabled={!online || posting}
+            placeholder={online ? "添加评论" : "离线评论会在联网后同步"}
+            aria-label="添加评论" disabled={posting}
             onChange={changeBody} onKeyDown={handleKeyDown} />
-          <button type="button" aria-label="上传评论图片" disabled={!online || uploading || images.length >= 8}
+          <button type="button" aria-label="上传评论图片" disabled={uploading || images.length >= 8}
             onClick={() => fileRef.current?.click()}>
             {uploading ? <LoaderCircle className="spin" /> : <ImagePlus />}
           </button>
           <button type="button" className="comment-send" aria-label="发布评论"
-            disabled={!online || posting || uploading || (!body.trim() && images.length === 0)}
+            disabled={posting || uploading || (!body.trim() && images.length === 0)}
             onClick={() => void submit()}><Send /></button>
           <input ref={fileRef} className="comment-file-input" type="file" accept="image/*"
             onChange={(event) => void chooseImage(event)} />

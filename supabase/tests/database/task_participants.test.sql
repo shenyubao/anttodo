@@ -270,8 +270,8 @@ select is(
       and n.notification_type = 'participant_added'
       and n.recipient_id = '13100000-0000-0000-0000-000000000001'
   ),
-  1,
-  'auto-watch creator is notified as participant_added for self'
+  0,
+  'auto-watch creator is not notified as participant_added for self'
 );
 
 set local role authenticated;

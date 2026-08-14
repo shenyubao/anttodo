@@ -11,6 +11,7 @@ export type FocusSession = {
   user_id: string;
   workspace_id: string;
   task_id: string | null;
+  subtask_id: string | null;
   mode: FocusSessionMode;
   kind: FocusSessionKind;
   planned_seconds: number;
