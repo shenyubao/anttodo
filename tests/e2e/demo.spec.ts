@@ -292,7 +292,7 @@ test("offline mode disables note creation and type switching", async ({ page, co
   await page.getByText(demoTaskTitle, { exact: true }).click();
   const detail = page.locator(".task-detail-panel");
   await detail.getByRole("button", { name: "更多任务操作" }).click();
-  await expect(detail.getByRole("menuitem", { name: "切换为笔记" })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "切换为笔记" })).toBeDisabled();
 });
 
 test("notes hide and restore preserved task state across every entry surface", async ({ page }) => {
@@ -1119,8 +1119,6 @@ test("offline account settings keep profile editing read-only", async ({ context
   const settings = page.getByRole("dialog", { name: "设置" });
   await expect(settings.getByRole("button", { name: "修改头像" })).toBeDisabled();
   await expect(settings.locator(".account-setting-row").filter({ hasText: "昵称" })
-    .getByRole("button", { name: "修改" })).toBeDisabled();
-  await expect(settings.locator(".account-setting-row").filter({ hasText: "头像" })
     .getByRole("button", { name: "修改" })).toBeDisabled();
 });
 

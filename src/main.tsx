@@ -83,18 +83,11 @@ async function bootstrap() {
         client={queryClient}
         persistOptions={{
           persister: queryPersister,
-        buster: "workspace-bundle-unified-task-tree-v1",
-        maxAge: 24 * 60 * 60 * 1000,
-        dehydrateOptions: {
-          shouldDehydrateQuery: (query) => {
-            if (query.state.status !== "success") return false;
-            if ((window.anttodoDesktop || Capacitor.isNativePlatform())
-              && query.queryKey[0] === "workspace-bundle") {
-              return false;
-            }
-            return true;
+          buster: "workspace-bundle-unified-task-tree-v1",
+          maxAge: 24 * 60 * 60 * 1000,
+          dehydrateOptions: {
+            shouldDehydrateQuery: (query) => query.state.status === "success",
           },
-        },
         }}
       >
       {!window.anttodoDesktop || isTraySurface ? null : window.anttodoDesktop.platform === "darwin" ? (

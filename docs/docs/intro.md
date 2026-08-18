@@ -6,8 +6,8 @@ title: 项目介绍
 
 # 项目介绍
 
-AntTodo 是一款面向团队的待办应用。Web 与 macOS 桌面端共用同一套 React
-源码，Electron 仅作为轻量且安全的外壳。后端由 Supabase 提供身份认证、
+AntTodo 是一款面向团队的待办应用。Web、macOS 与 iOS 共用同一套 React
+源码，Electron 仅作为轻量且安全的外壳。各客户端直接访问 Supabase；后端提供身份认证、
 Postgres、行级安全（RLS）、实时能力、Vault、Edge Functions 以及连接器定时任务。
 
 ## 核心能力
@@ -45,7 +45,8 @@ Postgres、行级安全（RLS）、实时能力、Vault、Edge Functions 以及�
 
 ### 离线可用
 
-查询结果会缓存到 IndexedDB。断网时仍可阅读已缓存内容；写操作必须在网络可用时执行。
+查询结果会缓存到 IndexedDB。断网时仍可阅读最近 24 小时内的已缓存内容；
+所有写操作直接提交到服务端，并且必须在网络可用时执行，不会在本地排队等待同步。
 
 ### 连接器同步
 

@@ -123,14 +123,6 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
   };
 }
 
-/** Create a task owned by the local database. The UUID is final and is never replaced by a server ID. */
-export function createLocalTask(input: Omit<OptimisticTaskInput, "optimisticId"> & { id?: string }): Task {
-  return createOptimisticTask({
-    ...input,
-    optimisticId: input.id ?? crypto.randomUUID(),
-  });
-}
-
 function taskFromCreatedRow(
   created: Partial<Task> & Pick<
     Task,
@@ -522,14 +514,6 @@ export function createOptimisticChildTask(input: OptimisticChildTaskInput): Task
     due_timezone: input.dueTimezone ?? null,
     cli_assignee: input.cliAssignee ?? null,
   };
-}
-
-/** Create a childTask owned by the local database. The UUID is final and is never replaced by a server ID. */
-export function createLocalChildTask(input: Omit<OptimisticChildTaskInput, "optimisticId"> & { id?: string }): Task {
-  return createOptimisticChildTask({
-    ...input,
-    optimisticId: input.id ?? crypto.randomUUID(),
-  });
 }
 
 export function replaceOptimisticChildTask(

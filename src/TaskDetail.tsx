@@ -1368,7 +1368,7 @@ function AiSmartProcessControl({
   ) => Promise<void>;
   onFormatApplied: (title: string, description: string) => void;
 }) {
-  const writable = editable && (online || Boolean(window.anttodoDesktop?.sync));
+  const writable = editable && online;
   const [panel, setPanel] = useState<AiSmartPanel>(null);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1956,7 +1956,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const startedTerminalsRef = useRef(new Map<string, AiCliTool>());
   const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
   const cliPickerRef = useRef<HTMLDivElement>(null);
-  const writable = editable && (online || Boolean(window.anttodoDesktop?.sync));
+  const writable = editable && online;
 
   function renderMenuDependencyPicker() {
     if (dependencyPickerFor === undefined || task.kind === "note") return null;

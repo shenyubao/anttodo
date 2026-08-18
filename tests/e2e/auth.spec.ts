@@ -19,17 +19,17 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("uses a two-step mainland phone OTP flow", async ({ page }) => {
-  await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "手机号登录" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "企业单点登录" })).toHaveAttribute(
     "aria-selected",
     "false",
   );
-  await page.getByRole("tab", { name: "主账户登录" }).focus();
+  await page.getByRole("tab", { name: "手机号登录" }).focus();
   await page.keyboard.press("ArrowRight");
-  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "企业单点登录" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
@@ -88,9 +88,9 @@ test("switches to enterprise login, validates slug, and opens the canonical team
       }),
     });
   });
-  const enterpriseTab = page.getByRole("tab", { name: "企业联合登录" });
+  const enterpriseTab = page.getByRole("tab", { name: "企业单点登录" });
   await enterpriseTab.click();
-  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "企业单点登录" })).toBeVisible();
   await page.getByPlaceholder("例如 yucekj").fill("Team_Name");
   await page.getByRole("button", { name: "确认并继续" }).click();
   await expect(page.getByRole("alert")).toContainText("小写字母、数字和连字符");
@@ -99,7 +99,7 @@ test("switches to enterprise login, validates slug, and opens the canonical team
   await page.getByPlaceholder("例如 yucekj").fill(" YuCeKJ ");
   await page.getByRole("button", { name: "确认并继续" }).click();
   await expect(page).toHaveURL(/\/team\/yucekj$/);
-  await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "手机号登录" })).toHaveCount(0);
   await expect(page.getByText("宇策科技", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "跳转到钉钉授权" })).toBeVisible();
   await expect(page.getByLabel("钉钉登录二维码")).toBeVisible();
@@ -181,7 +181,7 @@ test("desktop enterprise login requests a desktop state and opens DingTalk exter
   });
   await page.reload();
 
-  await page.getByRole("tab", { name: "企业联合登录" }).click();
+  await page.getByRole("tab", { name: "企业单点登录" }).click();
   await page.getByPlaceholder("例如 yucekj").fill("yucekj");
   await page.getByRole("button", { name: "确认并继续" }).click();
 
@@ -208,7 +208,7 @@ test("direct team links show a uniform unavailable SSO state without login tabs"
   });
   await page.goto("/team/yucekj");
 
-  await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "手机号登录" })).toHaveCount(0);
   await expect(page.getByText("暂时无法登录", { exact: true })).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("未找到可用的企业联合登录配置");
   await expect(page.getByRole("link", { name: "返回主站登录" })).toBeVisible();
@@ -218,20 +218,20 @@ test("keeps the login card usable on a narrow viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByLabel("手机号验证码登录")).toBeVisible();
   await expect(page.getByPlaceholder("请输入手机号")).toBeVisible();
-  await page.getByRole("tab", { name: "企业联合登录" }).click();
+  await page.getByRole("tab", { name: "企业单点登录" }).click();
   await expect(page.getByPlaceholder("例如 yucekj")).toBeVisible();
   await expect(page.locator(".auth-preview")).toBeHidden();
 });
 
 test("keeps the current login tab after reload", async ({ page }) => {
-  await page.getByRole("tab", { name: "企业联合登录" }).click();
-  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+  await page.getByRole("tab", { name: "企业单点登录" }).click();
+  await expect(page.getByRole("form", { name: "企业单点登录" })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "企业单点登录" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "企业单点登录" })).toBeVisible();
 });
 
 test("keeps the current login tab when switching desktop services", async ({ page }) => {
@@ -269,11 +269,11 @@ test("keeps the current login tab when switching desktop services", async ({ pag
   });
   await page.reload();
 
-  await page.getByRole("tab", { name: "企业联合登录" }).click();
-  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+  await page.getByRole("tab", { name: "企业单点登录" }).click();
+  await expect(page.getByRole("form", { name: "企业单点登录" })).toBeVisible();
 
   await page.getByLabel("当前服务", { exact: true }).selectOption("custom");
-  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "企业单点登录" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
@@ -288,11 +288,11 @@ test("keeps the current login tab when switching desktop services", async ({ pag
     select.dispatchEvent(new Event("change", { bubbles: true }));
     accountTab.click();
   });
-  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "企业单点登录" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "企业单点登录" })).toBeVisible();
 });
 
 test("desktop validates, remembers, and restores a custom service", async ({ page }) => {
@@ -367,8 +367,9 @@ test("desktop validates, remembers, and restores a custom service", async ({ pag
     window as typeof window & { __serviceOrigins: string[] }
   ).__serviceOrigins.includes("https://todo.yuce-tech.cn"))).toBe(true);
 
-  await page.getByRole("tab", { name: "企业联合登录" }).click();
-  await expect(page.getByText("已从当前服务自动识别企业，无需填写 Slug。")).toBeVisible();
+  await page.getByRole("tab", { name: "企业单点登录" }).click();
+  await expect(page.getByText("当前企业名称：宇策科技 AntTodo")).toBeVisible();
+  await expect(page.getByText("当前企业Slug：yucekj")).toBeVisible();
   await expect(page.getByPlaceholder("例如 yucekj")).toHaveCount(0);
   await expect(page.getByLabel("企业 Slug")).toHaveCount(0);
 
@@ -458,7 +459,7 @@ test("forces DingTalk SSO when the invited workspace has SSO enabled", async ({
   await expect(page.getByRole("heading", { name: "预测科技" })).toBeVisible();
   await page.getByRole("button", { name: "钉钉登录并加入" }).click();
   await expect(page.getByLabel("手机号验证码登录")).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "手机号登录" })).toHaveCount(0);
   await expect(page.getByText("预测科技", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "跳转到钉钉授权" })).toBeVisible();
 });

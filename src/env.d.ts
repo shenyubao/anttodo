@@ -90,43 +90,6 @@ interface Window {
         taskId?: string;
       }) => Promise<boolean>;
     };
-    sync: {
-      open: (namespace: string, userId: string) => Promise<boolean>;
-      getStatus: (workspaceId: string | null) => Promise<import("./lib/local-first/types").SyncStatus>;
-      saveBundle: (input: { workspaceId: string; bundle: import("./types").WorkspaceBundle }) => Promise<boolean>;
-      getBundle: (workspaceId: string) => Promise<import("./types").WorkspaceBundle | null>;
-      getComments: (commentKey: string) => Promise<import("./types").TaskComment[] | null>;
-      saveComments: (input: { commentKey: string; comments: import("./types").TaskComment[] }) => Promise<boolean>;
-      commitComments: (input: {
-        commentKey: string;
-        comments: import("./types").TaskComment[];
-        operation: import("./lib/local-first/repository").LocalCommand;
-      }) => Promise<boolean>;
-      commitBundle: (input: {
-        workspaceId: string;
-        bundle: import("./types").WorkspaceBundle;
-        operation: import("./lib/local-first/repository").LocalCommand;
-      }) => Promise<boolean>;
-      saveWorkspaces: (input: { workspaces: import("./types").Workspace[] }) => Promise<boolean>;
-      getWorkspaces: () => Promise<import("./types").Workspace[] | null>;
-      syncNow: (input: {
-        workspaceId: string;
-        reason: import("./lib/local-first/types").SyncReason;
-      }) => Promise<import("./lib/local-first/types").SyncRunResult>;
-      enqueue: (operation: {
-        operationId: string;
-        workspaceId: string;
-        deviceId: string;
-        deviceSeq: number;
-        entityType: string;
-        entityId: string;
-        baseVersion?: number | null;
-        payload: unknown;
-        dependsOn?: string[];
-      }) => Promise<boolean>;
-      listOutbox: (input: { workspaceId: string; limit?: number }) => Promise<unknown[]>;
-      markOutbox: (input: { operationId: string; state: string; error?: string }) => Promise<boolean>;
-    };
     updates: {
       getAppVersion: () => Promise<string>;
       check: () => Promise<DesktopUpdateCheckResult>;

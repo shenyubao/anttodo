@@ -41,22 +41,6 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
   notifications: Object.freeze({
     show: (payload) => ipcRenderer.invoke("anttodo:notifications-show", payload)
   }),
-  sync: Object.freeze({
-    open: (namespace, userId) => ipcRenderer.invoke("anttodo:sync-open", { namespace, userId }),
-    getStatus: (workspaceId) => ipcRenderer.invoke("anttodo:sync-status", workspaceId),
-    saveBundle: (input) => ipcRenderer.invoke("anttodo:sync-save-bundle", input),
-    commitBundle: (input) => ipcRenderer.invoke("anttodo:sync-commit-bundle", input),
-    saveWorkspaces: (input) => ipcRenderer.invoke("anttodo:sync-save-workspaces", input),
-    getWorkspaces: () => ipcRenderer.invoke("anttodo:sync-get-workspaces"),
-    getBundle: (workspaceId) => ipcRenderer.invoke("anttodo:sync-get-bundle", workspaceId),
-    getComments: (commentKey) => ipcRenderer.invoke("anttodo:sync-get-comments", commentKey),
-    saveComments: (input) => ipcRenderer.invoke("anttodo:sync-save-comments", input),
-    commitComments: (input) => ipcRenderer.invoke("anttodo:sync-commit-comments", input),
-    syncNow: (input) => ipcRenderer.invoke("anttodo:sync-now", input),
-    enqueue: (operation) => ipcRenderer.invoke("anttodo:sync-enqueue", operation),
-    listOutbox: (input) => ipcRenderer.invoke("anttodo:sync-list-outbox", input),
-    markOutbox: (input) => ipcRenderer.invoke("anttodo:sync-mark-outbox", input)
-  }),
 
   updates: Object.freeze({
     getAppVersion: () => ipcRenderer.invoke("anttodo:app-version"),

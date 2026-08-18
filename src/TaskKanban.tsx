@@ -39,6 +39,7 @@ import { TaskContextMenu } from "./TaskContextMenu";
 import { TaskSectionComposer } from "./TaskSectionComposer";
 import { getPriorityOption } from "./PriorityControl";
 import { getDueStatus } from "./lib/dueTime";
+import { formatContactDisplayName, useShowContactNames } from "./lib/displayPreference";
 import { formatHoursList, parseEstimateHoursText } from "./lib/taskHours";
 import { aiCliLabel } from "./lib/aiWork";
 import type { KanbanColumn } from "./lib/taskKanban";
@@ -787,6 +788,25 @@ function resolveTaskLabels(task: Task, labelById: Map<string, Label>) {
   return result;
 }
 
+function KanbanCardAssignee({ member }: { member: Member }) {
+  const showContactNames = useShowContactNames();
+  const name = member.profile?.display_name ?? "团队成员";
+  return (
+    <span className="task-assignee kanban-card-assignee">
+      <MemberAvatar
+        member={member}
+        className="kanban-card-avatar"
+        title={`负责人：${name}`}
+      />
+      {showContactNames && (
+        <span className="task-assignee-name">
+          {formatContactDisplayName(name)}
+        </span>
+      )}
+    </span>
+  );
+}
+
 const KanbanCard = memo(function KanbanCard({
   columnId,
   task,
@@ -902,13 +922,7 @@ const KanbanCard = memo(function KanbanCard({
             <i />{label.name}
           </span>
         ))}
-        {assignee && (
-          <MemberAvatar
-            member={assignee}
-            className="kanban-card-avatar"
-            title={`负责人：${assignee.profile?.display_name ?? "团队成员"}`}
-          />
-        )}
+        {assignee && <KanbanCardAssignee member={assignee} />}
         {task.cli_assignee && (
           <AiCliAvatar
             tool={task.cli_assignee}
@@ -981,13 +995,7 @@ function KanbanCardOverlay({
             <i />{label.name}
           </span>
         ))}
-        {assignee && (
-          <MemberAvatar
-            member={assignee}
-            className="kanban-card-avatar"
-            title={`负责人：${assignee.profile?.display_name ?? "团队成员"}`}
-          />
-        )}
+        {assignee && <KanbanCardAssignee member={assignee} />}
         {task.cli_assignee && (
           <AiCliAvatar
             tool={task.cli_assignee}

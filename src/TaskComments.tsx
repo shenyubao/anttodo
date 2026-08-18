@@ -465,7 +465,7 @@ export function TaskComments({
         )}
         <div className="comment-input-shell">
           <textarea ref={textareaRef} value={body} rows={1} maxLength={10000}
-            placeholder={online ? "添加评论" : "离线评论会在联网后同步"}
+            placeholder={online ? "添加评论" : "离线状态下不可评论"}
             aria-label="添加评论" disabled={posting}
             onChange={changeBody} onKeyDown={handleKeyDown} />
           <button type="button" aria-label="上传评论图片" disabled={uploading || images.length >= 8}

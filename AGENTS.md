@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-AntTodo 是一款面向 Web 和 macOS 的团队待办应用。两端共用同一套 React
+AntTodo 是一款面向 Web、macOS 和 iOS 的团队待办应用。各端共用同一套 React
 应用，Electron 仅作为轻量且安全的外壳。Supabase 负责身份认证（Auth）、
 Postgres、行级安全（RLS）、实时能力（Realtime）、Vault、Edge Functions
 以及连接器的定时任务。
@@ -38,24 +38,20 @@ Postgres、行级安全（RLS）、实时能力（Realtime）、Vault、Edge Fun
 - 编辑迁移前，必须先使用 `supabase migration new <name>` 创建迁移文件。
 - Edge Functions 的共享代码应放在 `supabase/functions/_shared/`。
 - 不得为 Electron 重复实现 React 页面或业务逻辑。
-- macOS 桌面端拥有独立的本地存储（SQLite），不得假设改完云端或 React 层即覆盖桌面端。
 
-## 桌面端本地存储
+## 客户端数据访问与缓存
 
-Web 端不以可写本地库为数据源。macOS 桌面端通过 Electron 维护独立的 local-first SQLite，用于离线缓存、本地写入与后续同步。相关代码：
+Web、macOS 和 iOS 均以 Supabase 为唯一可写数据源。客户端通过 React Query
+维护界面缓存：适合的写操作先乐观更新缓存，再调用服务端，失败时回滚。
+成功的查询结果会持久化到 IndexedDB，供断网时只读查看。
 
-- `electron/sqlite-worker.mjs`：本地表结构与读写。
-- `electron/local-store.mjs`：主进程对本地库的封装。
-- `src/lib/local-first/`：渲染进程的仓库、同步与类型。
+- 禁止重新引入客户端可写数据库、outbox 或离线写入同步协议。
+- 离线时所有写入口必须禁用，不得把修改暂存在本地等待联网。
+- Electron 只提供系统集成能力，不承载任务、标签、评论等业务数据。
+- 历史版本遗留的 SQLite/local-first 数据文件不得自动读取、迁移或删除。
 
-凡改动任务、子任务、标签、评论、团队空间、附件或同步协议（含 Postgres 表结构、RLS、RPC、客户端类型、API payload），必须同时评估本地存储是否需要跟着改，例如：
-
-- SQLite 表或列是否与云端字段对齐。
-- `_entity_shadows`、`_client_outbox` 等同步载荷是否仍能读写新字段。
-- `src/lib/local-first/` 的类型、仓库与同步逻辑是否仍正确。
-- 现有本地库是否需要迁移，而不是只改 `CREATE TABLE IF NOT EXISTS`。
-
-若评估后无需改动，应在交付说明中写明原因；不能默认忽略。
+凡改动任务、子任务、标签、评论、团队空间、附件或 API payload，必须同时评估
+React Query 缓存更新、失败回滚、持久化兼容与 Realtime 刷新逻辑。
 
 ## 安全要求
 
@@ -80,6 +76,6 @@ Web 端不以可写本地库为数据源。macOS 桌面端通过 Electron 维护
 
 - 交付前运行 `pnpm typecheck`、`pnpm test` 和 `pnpm build`。
 - 涉及数据库结构变更时，重置本地 Supabase、运行 pgTAP，然后运行数据库顾问检查。
-- 涉及数据模型或同步协议时，必须评估桌面端 SQLite 与 `src/lib/local-first/`；若有改动，在桌面端做冒烟验证。
+- 涉及数据模型或缓存行为时，必须验证 Web、macOS 和 iOS 共用的直连与离线只读路径。
 - 在浏览器中验证 Web 布局，并对打包后的 Electron 应用进行冒烟测试。
 - 保留与本次任务无关的用户改动，绝不删除来源不明的远程对象。

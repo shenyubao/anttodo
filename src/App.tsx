@@ -128,16 +128,6 @@ import type {
 } from "./lib/desktopUpdate";
 import { formatUpdateProgressLabel } from "./lib/desktopUpdate";
 import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
-import { createSyncController, flushLocalOperation } from "./lib/local-first/syncController";
-import { createRemoteSyncAdapter, deviceIdForUser, nextDeviceSeq } from "./lib/local-first/remoteSync";
-import {
-  createLocalFirstStore,
-  isLocalFirstHost,
-  loadLocalFirstSnapshot,
-  offlineCacheBannerText,
-} from "./lib/local-first/localStore";
-import type { LocalCommand } from "./lib/local-first/repository";
-import { IDLE_SYNC_STATUS, type SyncStatus } from "./lib/local-first/types";
 import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
 import {
   assignTask as assignTaskApi,
@@ -259,7 +249,6 @@ import {
   appendTaskDependenciesInBundle,
   appendTaskToBundle,
   createOptimisticTask,
-  createLocalTask,
   createOptimisticTaskSection,
   isOptimisticTaskId,
   normalizeWorkspaceBundle,
@@ -1958,7 +1947,7 @@ function AuthScreen({
               onClick={() => selectAuthMode("account")}
               onKeyDown={handleAuthTabKeyDown}
             >
-              主账户登录
+              手机号登录
             </button>
             <button
               id="auth-tab-enterprise"
@@ -1972,7 +1961,7 @@ function AuthScreen({
               onClick={() => selectAuthMode("enterprise")}
               onKeyDown={handleAuthTabKeyDown}
             >
-              企业联合登录
+              企业单点登录
             </button>
           </div>
         )}
@@ -1996,12 +1985,14 @@ function AuthScreen({
             <form
               className="auth-form enterprise-slug-form"
               onSubmit={openEnterpriseLogin}
-              aria-label="企业联合登录"
+              aria-label="企业单点登录"
             >
               {onPremisesLogin ? (
                 instanceConfig?.workspaceSlug ? (
                   <p className="auth-enterprise-hint">
-                    已从当前服务自动识别企业，无需填写 Slug。
+                    当前企业名称：{instanceConfig.displayName}
+                    <br />
+                    当前企业Slug：{instanceConfig.workspaceSlug}
                   </p>
                 ) : (
                   <p className="form-error" role="alert">
@@ -2038,7 +2029,7 @@ function AuthScreen({
             </form>
           </div>
         ) : (
-          <div className="dingtalk-login" role="region" aria-label="企业联合登录">
+          <div className="dingtalk-login" role="region" aria-label="企业单点登录">
             {ssoLoading ? (
               <>
                 <strong>正在加载企业登录…</strong>
@@ -2121,83 +2112,12 @@ function RemoteApplication({
   const client = supabase!;
   const queryClient = useQueryClient();
   const online = useOnline();
-  const instanceNamespace = currentInstanceConfig()?.namespace ?? "official";
-  const localStore = useMemo(
-    () => createLocalFirstStore(userId, isLocalFirstHost(), instanceNamespace),
-    [instanceNamespace, userId],
-  );
-  const localWritable = online || localStore.enabled;
-  useEffect(() => {
-    void localStore.open();
-  }, [localStore]);
   const attachmentService = useMemo(
     () => createSupabaseAttachmentService(client),
     [client],
   );
-  const remoteSync = useMemo(
-    () => createRemoteSyncAdapter(client, userId, localStore, instanceNamespace),
-    [client, instanceNamespace, localStore, userId],
-  );
-  const runRemoteSync = useMemo(
-    () => async (targetWorkspaceId: string, reason: import("./lib/local-first/types").SyncReason) => {
-      const result = await remoteSync.run(targetWorkspaceId, reason);
-      if (localStore.enabled && result.status !== "failed" && online) {
-        try {
-          const freshBundle = await loadWorkspaceBundle(client, targetWorkspaceId);
-          await localStore.saveBundle(targetWorkspaceId, freshBundle);
-          queryClient.setQueryData(
-            ["workspace-bundle", targetWorkspaceId],
-            normalizeWorkspaceBundle(freshBundle),
-          );
-        } catch {
-          // The local commit and Outbox result remain durable; a later sync retries hydration.
-        }
-      }
-      return result;
-    },
-    [client, localStore, online, queryClient, remoteSync],
-  );
   const requestedWorkspaceId = currentApplicationRoute()?.workspaceId ?? null;
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>(IDLE_SYNC_STATUS);
-  const syncController = useMemo(
-    () => createSyncController({
-      workspaceId,
-      online,
-      runRemote: runRemoteSync,
-      onOnlineChange: (listener) => {
-        const handleOnline = () => listener();
-        const handleOffline = () => listener();
-        window.addEventListener("online", handleOnline);
-        window.addEventListener("offline", handleOffline);
-        return () => {
-          window.removeEventListener("online", handleOnline);
-          window.removeEventListener("offline", handleOffline);
-        };
-      },
-    }),
-    [online, runRemoteSync, workspaceId],
-  );
-
-  useEffect(() => {
-    const unsubscribe = syncController.subscribe(setSyncStatus);
-    return () => {
-      unsubscribe();
-      syncController.dispose();
-    };
-  }, [syncController]);
-
-  useEffect(() => {
-    void localStore.open();
-  }, [localStore]);
-
-  useEffect(() => {
-    if (!workspaceId || !online) return;
-    const timer = window.setInterval(() => {
-      void syncController.syncNow("timer");
-    }, 60_000);
-    return () => window.clearInterval(timer);
-  }, [online, syncController, workspaceId]);
   const [notice, setNotice] = useState("");
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [activityRevision, setActivityRevision] = useState(0);
@@ -2208,8 +2128,6 @@ function RemoteApplication({
   const realtimeRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const taskPageOffsetRef = useRef(0);
   const taskPageWorkspaceRef = useRef<string | null>(null);
-  const workspacesHydratedRef = useRef(false);
-  const bundleHydratedWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const [tasksHasMore, setTasksHasMore] = useState(false);
   const [tasksLoadingMore, setTasksLoadingMore] = useState(false);
 
@@ -2221,54 +2139,12 @@ function RemoteApplication({
 
   const workspacesQuery = useQuery({
     queryKey: ["workspaces", userId],
-    queryFn: async () => {
-      await localStore.open();
-      const legacyKey = instanceStorageKey(`anttodo:workspaces:${userId}`);
-      const value = await loadLocalFirstSnapshot({
-        localEnabled: localStore.enabled,
-        online,
-        preferLocal: !workspacesHydratedRef.current,
-        readLocal: async () => {
-          const cached = await localStore.getWorkspaces();
-          if (cached?.length) return cached;
-          const legacy = window.localStorage.getItem(legacyKey);
-          if (!legacy) return null;
-          try {
-            return JSON.parse(legacy) as Workspace[];
-          } catch {
-            window.localStorage.removeItem(legacyKey);
-            return null;
-          }
-        },
-        readRemote: async () => {
-          const remote = await loadWorkspaces(client, userId);
-          window.localStorage.setItem(legacyKey, JSON.stringify(remote));
-          return remote;
-        },
-        writeLocal: (remote) => localStore.saveWorkspaces(remote),
-      });
-      workspacesHydratedRef.current = true;
-      return value;
-    },
-    meta: { localFirst: localStore.enabled },
+    queryFn: () => loadWorkspaces(client, userId),
   });
   const quotaQuery = useQuery({
     queryKey: ["user-quota", userId],
     queryFn: () => loadUserQuota(client, userId),
   });
-
-  useEffect(() => {
-    if (!localStore.enabled || !online) return;
-    let cancelled = false;
-    void loadWorkspaces(client, userId).then(async (value) => {
-      if (cancelled) return;
-      await localStore.saveWorkspaces(value);
-      queryClient.setQueryData(["workspaces", userId], value);
-    }).catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [client, localStore, online, queryClient, userId]);
 
   useEffect(() => {
     return () => attachmentService.dispose();
@@ -2347,34 +2223,10 @@ function RemoteApplication({
 
   const bundleQuery = useQuery({
     queryKey: ["workspace-bundle", workspaceId],
-    queryFn: async () => {
-      await localStore.open();
-      const targetWorkspaceId = workspaceId!;
-      const hydrated = bundleHydratedWorkspaceIdsRef.current.has(targetWorkspaceId);
-      // A remote refetch must not replace task changes that are still queued locally.
-      const pendingLocalWrites = localStore.enabled && online && hydrated
-        ? (await localStore.listPending(targetWorkspaceId)).length > 0
-        : false;
-      const value = await loadLocalFirstSnapshot({
-        localEnabled: localStore.enabled,
-        online,
-        preferLocal: !hydrated,
-        pendingLocalWrites,
-        readLocal: () => localStore.getBundle(targetWorkspaceId),
-        readRemote: () => loadWorkspaceBundle(client, targetWorkspaceId),
-        writeLocal: (remote) => localStore.saveBundle(targetWorkspaceId, remote),
-      });
-      bundleHydratedWorkspaceIdsRef.current.add(targetWorkspaceId);
-      return value;
-    },
+    queryFn: () => loadWorkspaceBundle(client, workspaceId!),
     enabled: Boolean(workspaceId),
     select: normalizeWorkspaceBundle,
   });
-
-  useEffect(() => {
-    if (!online || !workspaceId || bundleQuery.isLoading) return;
-    void syncController.syncNow("reconnect");
-  }, [bundleQuery.isLoading, online, syncController, workspaceId]);
 
   useEffect(() => {
     taskPageWorkspaceRef.current = workspaceId;
@@ -2520,13 +2372,6 @@ function RemoteApplication({
       }, 50);
       realtimeRefreshTimersRef.current.add(timer);
     };
-    const syncMetaTables = new Set([
-      "client_devices",
-      "client_device_cursors",
-      "client_sync_ticks",
-      "client_sync_conflicts",
-      "attachment_cleanup_queue",
-    ]);
     const channel = client
       .channel(`anttodo:${workspaceId}`)
       .on(
@@ -2534,10 +2379,7 @@ function RemoteApplication({
         { event: "*", schema: "public" },
         (payload) => {
           const table = (payload as { table?: string }).table;
-          // Sync RPCs touch client_* tables; reacting to them re-enters sync forever.
-          if (table && !syncMetaTables.has(table)) {
-            void syncController.syncNow("realtime");
-          }
+          if (table === "attachment_cleanup_queue") return;
           if (table === "task_comments") {
             setCommentsRevision((value) => value + 1);
             void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
@@ -2606,7 +2448,7 @@ function RemoteApplication({
       recentLocalRealtimeChangesRef.current.clear();
       void client.removeChannel(channel);
     };
-  }, [client, queryClient, syncController, workspaceId]);
+  }, [client, queryClient, workspaceId]);
 
   const refresh = () =>
     Promise.all([
@@ -2650,22 +2492,6 @@ function RemoteApplication({
   }
   const activeWorkspaceId = workspaceId;
   const activeBundle = bundleQuery.data;
-
-  async function persistCurrentWorkspaceBundle(targetWorkspaceId = activeWorkspaceId) {
-    if (!localStore.enabled) return;
-    const current = queryClient.getQueryData<WorkspaceBundle>([
-      "workspace-bundle",
-      targetWorkspaceId,
-    ]);
-    if (!current) return;
-    try {
-      await localStore.saveBundle(targetWorkspaceId, current);
-    } catch (error) {
-      setNotice(error instanceof Error
-        ? `云端已保存，但本地缓存更新失败：${error.message}`
-        : "云端已保存，但本地缓存更新失败");
-    }
-  }
 
   async function loadMoreTasks() {
     if (tasksLoadingMore || !tasksHasMore) return;
@@ -2714,40 +2540,6 @@ function RemoteApplication({
     for (const taskId of taskIds) {
       recentLocalRealtimeChangesRef.current.set(`${table}:${taskId}`, expiresAt);
     }
-  }
-
-  async function enqueueLocalOperation(input: {
-    entityType: string;
-    entityId: string;
-    payload: Record<string, unknown>;
-    baseVersion?: number | null;
-    dependsOn?: string[];
-    bundle?: WorkspaceBundle;
-  }) {
-    if (!localStore.enabled) return false;
-    const command: LocalCommand = {
-      operationId: crypto.randomUUID(),
-      workspaceId: activeWorkspaceId,
-      deviceId: deviceIdForUser(userId, instanceNamespace),
-      deviceSeq: nextDeviceSeq(userId, instanceNamespace),
-      entityType: input.entityType,
-      entityId: input.entityId,
-      baseVersion: input.baseVersion ?? null,
-      payload: input.payload,
-      dependsOn: input.dependsOn,
-    };
-    const localBundle = input.bundle ?? queryClient.getQueryData<WorkspaceBundle>([
-      "workspace-bundle",
-      activeWorkspaceId,
-    ]);
-    if (!localBundle) throw new Error("本地工作区尚未加载");
-    await localStore.commitBundle({
-      workspaceId: activeWorkspaceId,
-      bundle: localBundle,
-      command,
-    });
-    if (online) void syncController.syncNow("local-write");
-    return true;
   }
 
   async function updateTask(
@@ -2838,27 +2630,6 @@ function RemoteApplication({
         })
       : null;
     rememberLocalRealtimeChanges("tasks", [taskId]);
-    if (localStore.enabled) {
-      if (!nextBundle) throw new Error("本地工作区尚未加载");
-      await enqueueLocalOperation({
-        entityType: moving ? "task_move" : "tasks",
-        entityId: taskId,
-        baseVersion: current?.version ?? null,
-        payload: moving ? {
-          parentTaskId: nextParentTaskId,
-          position: nextPosition,
-        } : {
-          ...payload,
-          ...(descriptionUpdate ? {
-            description: descriptionUpdate.description,
-            mentionedUserIds: descriptionUpdate.mentionedUserIds,
-          } : {}),
-        },
-        bundle: nextBundle,
-      });
-      queryClient.setQueryData(queryKey, nextBundle);
-      return;
-    }
     queryClient.setQueryData(queryKey, nextBundle);
     try {
       if (moving) {
@@ -2892,21 +2663,6 @@ function RemoteApplication({
     rememberLocalRealtimeChanges("tasks", [taskId]);
     rememberLocalRealtimeChanges("task_reminders", [taskId]);
     rememberLocalRealtimeChanges("task_reminder_settings", [taskId]);
-    if (localStore.enabled) {
-      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-        bundle ? applyTaskScheduleToBundle(bundle, taskId, patch, {
-          reminders: [],
-          reminderPersistent: schedule.persistent,
-          recurrence: nextRecurrence,
-        }) : bundle,
-      );
-      await enqueueLocalOperation({
-        entityType: "task_schedule",
-        entityId: taskId,
-        payload: { ...patch, schedule },
-      });
-      return;
-    }
     try {
       const reminders = await saveTaskScheduleApi(client, taskId, patch, schedule);
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
@@ -2950,16 +2706,6 @@ function RemoteApplication({
     );
     rememberLocalRealtimeChanges("tasks", [taskId]);
 
-    if (localStore.enabled) {
-      await enqueueLocalOperation({
-        entityType: "tasks",
-        entityId: taskId,
-        baseVersion: previous?.tasks.find((item) => item.id === taskId)?.version ?? null,
-        payload: { assignee_id: assigneeId, cli_assignee: cliAssignee },
-      });
-      return;
-    }
-
     try {
       const updated = await assignTaskApi(client, taskId, target);
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
@@ -3001,14 +2747,6 @@ function RemoteApplication({
     );
 
     try {
-      if (localStore.enabled) {
-        await enqueueLocalOperation({
-          entityType: selected ? "task_labels" : "task_labels",
-          entityId: `${taskId}:${labelId}`,
-          payload: { taskId, labelId, selected },
-        });
-        return;
-      }
       await toggleTaskLabelApi(client, taskId, labelId, selected);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
@@ -3038,15 +2776,6 @@ function RemoteApplication({
           }
         : current,
     );
-
-    if (localStore.enabled) {
-      await enqueueLocalOperation({
-        entityType: "task_participants",
-        entityId: `${taskId}:${userId}`,
-        payload: { taskId, userId, selected },
-      });
-      return;
-    }
 
     try {
       await toggleTaskParticipantApi(client, taskId, userId, selected);
@@ -3198,49 +2927,6 @@ function RemoteApplication({
       throw new Error("子级任务最多嵌套到 5 级");
     }
     const position = previous ? nextSiblingPosition(previous.tasks, parentTaskId) : 0;
-    if (localStore.enabled) {
-      const localChildTask = {
-        ...createLocalTask({
-        workspaceId: activeWorkspaceId,
-        userId,
-        title,
-        labelIds: [],
-        position,
-        parentTaskId,
-        priority: extras?.priority ?? "none",
-        dueAt: extras?.due_at ?? null,
-        dueTimezone: extras?.due_timezone ?? null,
-        assigneeId: extras?.assignee_id ?? null,
-        }),
-        due_start_at: extras?.due_start_at ?? null,
-        due_is_all_day: extras?.due_is_all_day ?? false,
-        cli_assignee: extras?.cli_assignee ?? null,
-      };
-      const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-      const next = current ? appendTaskToBundle(current, localChildTask) : current;
-      if (!next) throw new Error("本地工作区尚未加载");
-      rememberLocalRealtimeChanges("tasks", [localChildTask.id]);
-      await enqueueLocalOperation({
-        entityType: "tasks",
-        entityId: localChildTask.id,
-        bundle: next,
-        payload: {
-          workspace_id: activeWorkspaceId,
-          parent_task_id: parentTaskId,
-          title,
-          position: localChildTask.position,
-          priority: extras?.priority ?? "none",
-          due_at: extras?.due_at ?? null,
-          due_start_at: extras?.due_start_at ?? null,
-          due_is_all_day: extras?.due_is_all_day ?? false,
-          due_timezone: extras?.due_timezone ?? null,
-          assignee_id: extras?.assignee_id ?? null,
-          cli_assignee: extras?.cli_assignee ?? null,
-        },
-      });
-      queryClient.setQueryData(queryKey, next);
-      return;
-    }
     const optimistic = {
       ...createOptimisticTask({
       workspaceId: activeWorkspaceId,
@@ -3353,20 +3039,6 @@ function RemoteApplication({
       bundle ? appendTaskDependenciesInBundle(bundle, taskId, rows) : bundle,
     );
     try {
-      if (localStore.enabled) {
-        for (const row of rows) {
-          await enqueueLocalOperation({
-            entityType: "task_dependencies",
-            entityId: row.id,
-            payload: {
-              selected: true,
-              taskId,
-              dependsOnTaskId: row.depends_on_task_id,
-            },
-          });
-        }
-        return;
-      }
       for (const row of rows) {
         await insertTaskDependencyApi(client, {
           id: row.id,
@@ -3394,14 +3066,6 @@ function RemoteApplication({
       bundle ? removeTaskDependencyFromBundle(bundle, dependencyId) : bundle,
     );
     try {
-      if (localStore.enabled) {
-        await enqueueLocalOperation({
-          entityType: "task_dependencies",
-          entityId: dependencyId,
-          payload: { selected: false },
-        });
-        return;
-      }
       await deleteTaskDependencyApi(client, dependencyId);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
@@ -3636,7 +3300,6 @@ function RemoteApplication({
             ],
           }
         : current);
-      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3683,7 +3346,6 @@ function RemoteApplication({
           ],
         }
       : bundle);
-    await persistCurrentWorkspaceBundle(workspaceId!);
     return created;
   }
 
@@ -3710,7 +3372,6 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await deleteCustomTaskView(client, viewId);
-      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3749,7 +3410,6 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await saveTaskSystemViewPreference(client, next);
-      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3779,7 +3439,6 @@ function RemoteApplication({
         .update({ visible })
         .eq("id", viewId);
       if (error) throw new Error(error.message);
-      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3809,7 +3468,6 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await reorderSystemSmartViewsApi(client, next);
-      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3832,7 +3490,6 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await reorderCustomTaskViewsApi(client, orderedIds);
-      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3848,51 +3505,6 @@ function RemoteApplication({
     taskId: string,
     input: CreateCommentInput,
   ) {
-    const exactTaskId = taskId;
-    if (localStore.enabled) {
-      const existing = (await localStore.getComments(exactTaskId)) ?? [];
-      const createdAt = new Date().toISOString();
-      const commentId = crypto.randomUUID();
-      const memberById = new Map(activeBundle.members.map((member) => [member.user_id, member]));
-      const localComment: TaskComment = {
-        id: commentId,
-        workspace_id: activeWorkspaceId,
-        task_id: exactTaskId,
-        author_id: userId,
-        body: input.body,
-        image_uris: input.imageUris,
-        created_at: createdAt,
-        updated_at: createdAt,
-        author: memberById.get(userId)?.profile,
-        mentions: input.mentionedUserIds
-          .filter((id) => memberById.has(id))
-          .map((id) => ({
-            user_id: id,
-            display_name_snapshot: memberById.get(id)?.profile?.display_name || "团队成员",
-          })),
-      };
-      await localStore.commitComments({
-        taskId: exactTaskId,
-        comments: [...existing, localComment],
-        command: {
-          operationId: crypto.randomUUID(),
-          workspaceId: activeWorkspaceId,
-          deviceId: deviceIdForUser(userId, instanceNamespace),
-          deviceSeq: nextDeviceSeq(userId, instanceNamespace),
-          entityType: "task_comments",
-          entityId: commentId,
-          baseVersion: null,
-          payload: {
-            taskId: exactTaskId,
-            body: input.body,
-            imageUris: input.imageUris,
-            mentionedUserIds: input.mentionedUserIds,
-          },
-        },
-      });
-      if (online) void syncController.syncNow("local-write");
-      return;
-    }
     try {
       await createTaskCommentApi(client, {
         taskId,
@@ -3907,65 +3519,11 @@ function RemoteApplication({
   }
 
   async function deleteComment(comment: TaskComment) {
-    if (localStore.enabled) {
-      const comments = (await localStore.getComments(comment.task_id)) ?? [];
-      await localStore.commitComments({
-        taskId: comment.task_id,
-        comments: comments.filter((item) => item.id !== comment.id),
-        command: {
-          operationId: crypto.randomUUID(),
-          workspaceId: activeWorkspaceId,
-          deviceId: deviceIdForUser(userId, instanceNamespace),
-          deviceSeq: nextDeviceSeq(userId, instanceNamespace),
-          entityType: "task_comments",
-          entityId: comment.id,
-          baseVersion: null,
-          payload: { deleted: true },
-        },
-      });
-      if (online) void syncController.syncNow("local-write");
-      return;
-    }
     await deleteTaskCommentApi(client, comment.id);
     await Promise.allSettled(comment.image_uris.map((uri) => attachmentService.remove(uri)));
   }
 
   async function updateComment(comment: TaskComment, input: CreateCommentInput) {
-    if (localStore.enabled) {
-      const comments = (await localStore.getComments(comment.task_id)) ?? [];
-      const memberById = new Map(activeBundle.members.map((member) => [member.user_id, member]));
-      const nextComments = comments.map((item) => item.id === comment.id
-        ? {
-            ...item,
-            body: input.body,
-            image_uris: input.imageUris,
-            updated_at: new Date().toISOString(),
-            mentions: input.mentionedUserIds.filter((id) => memberById.has(id)).map((id) => ({
-              user_id: id,
-              display_name_snapshot: memberById.get(id)?.profile?.display_name || "团队成员",
-            })),
-          }
-        : item);
-      await localStore.commitComments({
-        taskId: comment.task_id,
-        comments: nextComments,
-        command: {
-          operationId: crypto.randomUUID(),
-          workspaceId: activeWorkspaceId,
-          deviceId: deviceIdForUser(userId, instanceNamespace),
-          deviceSeq: nextDeviceSeq(userId, instanceNamespace),
-          entityType: "task_comments",
-          entityId: comment.id,
-          baseVersion: null,
-          payload: {
-            body: input.body,
-            imageUris: input.imageUris,
-            mentionedUserIds: input.mentionedUserIds,
-          },
-        },
-      });
-      return;
-    }
     await updateTaskCommentApi(client, { commentId: comment.id, ...input });
     await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
   }
@@ -4017,7 +3575,6 @@ function RemoteApplication({
       ]);
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
         current ? replaceOptimisticTaskSection(current, optimistic.id, created) : current);
-      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -4037,7 +3594,6 @@ function RemoteApplication({
       await Promise.all(sectionIds.map((sectionId, position) =>
         updateTaskSection(client, sectionId, { position })));
       rememberLocalRealtimeChanges("task_sections", sectionIds);
-      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -4065,7 +3621,6 @@ function RemoteApplication({
               position: saved.position,
             })
           : current);
-      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -4083,7 +3638,6 @@ function RemoteApplication({
     try {
       await deleteTaskSection(client, sectionId);
       rememberLocalRealtimeChanges("task_sections", [sectionId]);
-      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -4116,7 +3670,6 @@ function RemoteApplication({
         sectionId,
         taskIds,
       });
-      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -4136,20 +3689,6 @@ function RemoteApplication({
       currentUserEmail={email}
       currentUserPhone={phone}
       online={online}
-      localWritable={localWritable}
-      syncStatus={syncStatus}
-      onSync={async () => {
-        const result = await syncController.syncNow("manual");
-        if (result.status === "failed") {
-          setNotice(result.errorMessage ?? "同步失败，请稍后重试");
-          return;
-        }
-        if (result.status === "conflict") {
-          setNotice(`同步完成，但有 ${result.conflicts} 个冲突待处理。`);
-        }
-        await queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
-        await queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
-      }}
       dateTimePreferences={
         dateTimePreferencesQuery.data ?? DEFAULT_DATE_TIME_PREFERENCES
       }
@@ -4220,61 +3759,6 @@ function RemoteApplication({
           position: parentTaskId ? nextSiblingPosition(currentBundle?.tasks ?? [], parentTaskId) : 0,
           labelIds: parentTaskId ? [] : input.labelIds,
         };
-        if (localStore.enabled) {
-            const localTask = createLocalTask({
-            workspaceId,
-            userId,
-            ...taskInput,
-          });
-          const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-          const appended = current ? appendTaskToBundle(current, localTask) : current;
-          const next = appended && input.optimisticOrder
-            ? applyTaskListOrderToBundle(appended, {
-                workspaceId,
-                listKey: input.optimisticOrder.listKey,
-                sectionId: input.optimisticOrder.sectionId,
-                taskIds: [localTask.id, ...input.optimisticOrder.taskIds],
-              })
-            : appended;
-          if (!next) throw new Error("本地工作区尚未加载");
-          const command: LocalCommand = {
-            operationId: crypto.randomUUID(),
-            workspaceId,
-            deviceId: deviceIdForUser(userId, instanceNamespace),
-            deviceSeq: nextDeviceSeq(userId, instanceNamespace),
-            entityType: "tasks",
-            entityId: localTask.id,
-            baseVersion: null,
-            payload: {
-              title: localTask.title,
-              description: localTask.description,
-              status: localTask.status,
-              priority: localTask.priority,
-              kind: localTask.kind,
-              parent_task_id: localTask.parent_task_id,
-              position: localTask.position,
-              due_at: localTask.due_at,
-              assignee_id: localTask.assignee_id,
-              label_ids: localTask.label_ids,
-            },
-          };
-          await localStore.commitBundle({ workspaceId, bundle: next, command });
-          queryClient.setQueryData(queryKey, next);
-          if (online && input.optimisticOrder) {
-            const synced = await flushLocalOperation({
-              operationId: command.operationId,
-              workspaceId,
-              listPending: localStore.listPending,
-              syncNow: syncController.syncNow,
-            });
-            if (!synced) {
-              throw new Error("任务已保存在本地，但尚未同步，暂时无法保存自定义排序");
-            }
-          } else if (online) {
-            void syncController.syncNow("local-write");
-          }
-          return localTask;
-        }
         const optimisticTask = createOptimisticTask({
           workspaceId,
           userId,
@@ -4332,17 +3816,7 @@ function RemoteApplication({
       onAddTaskDependencies={addTaskDependencies}
       onRemoveTaskDependency={removeTaskDependency}
       onPurgeTask={purgeTrashedTask}
-      onLoadTaskComments={async (taskId) => {
-        if (localStore.enabled) {
-          const cached = await localStore.getComments(taskId);
-          if (cached) return cached;
-        }
-        const comments = await loadTaskComments(client, taskId);
-        if (localStore.enabled) {
-          await localStore.saveComments(taskId, comments);
-        }
-        return comments;
-      }}
+      onLoadTaskComments={(taskId) => loadTaskComments(client, taskId)}
       onLoadTaskActivity={(taskId, cursor) => loadTaskActivity(client, taskId, cursor)}
       onLoadCommentCandidates={(taskId) => listTaskCommentCandidateIds(client, taskId)}
       onCreateComment={createComment}
@@ -4655,9 +4129,6 @@ function DemoApplication({
       currentUserEmail=""
       currentUserPhone="+8613800138000"
       online={online}
-      localWritable={online}
-      syncStatus={IDLE_SYNC_STATUS}
-      onSync={async () => undefined}
       dateTimePreferences={dateTimePreferences}
       notificationPreferences={notificationPreferences}
       attachmentService={attachmentService}
@@ -5565,9 +5036,6 @@ type WorkspaceAppProps = {
   currentUserEmail: string;
   currentUserPhone: string;
   online: boolean;
-  localWritable?: boolean;
-  syncStatus?: SyncStatus;
-  onSync?: () => Promise<unknown>;
   dateTimePreferences: DateTimePreferences;
   notificationPreferences: NotificationPreferences;
   attachmentService: AttachmentService;
@@ -5923,7 +5391,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const selectedTaskEditable = selectedTask
     ? currentTaskPermissionLevel(props.bundle, selectedTask, props.currentUserId) >= 2
     : false;
-  const localWritable = props.localWritable ?? props.online;
 
   function writeRoute(route: AppRoute, replace = false, state: unknown = null) {
     const path = appRoutePath(route);
@@ -6317,7 +5784,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       settingsOpen={settingsDialogOpen}
       smartView={smartView}
       selectedTask={selectedTask}
-      online={localWritable}
+      online={props.online}
       onOpenSearch={() => setSearchDialogOpen(true)}
       onOpenSettings={() => openSettings("account")}
       onOpenShortcutsSettings={() => openSettings("shortcuts")}
@@ -6345,8 +5812,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       <NavigationRail
         activeSection={appSection}
         online={props.online}
-        syncStatus={props.syncStatus ?? IDLE_SYNC_STATUS}
-        onSync={props.onSync ?? (async () => undefined)}
         userName={props.currentUserName}
         avatarUrl={
           props.bundle.members.find((member) => member.user_id === props.currentUserId)
@@ -6375,7 +5840,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       <MobileAppSidebar
         open={mobileAppSidebar}
         activeSection={appSection}
-        online={localWritable}
+        online={props.online}
         userName={props.currentUserName}
         currentUserId={props.currentUserId}
         avatarUrl={
@@ -6587,7 +6052,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : appSection === "calendar" ? <CalendarWorkspace
           bundle={props.bundle}
           currentUserId={props.currentUserId}
-          online={localWritable}
+          online={props.online}
           visibleCalendarIds={visibleCalendarIds}
           visibleAssigneeIds={visibleAssigneeIds}
           dateTimePreferences={props.dateTimePreferences}
@@ -6602,7 +6067,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : appSection === "focus" ? <FocusWorkspace
           workspaceId={props.workspaceId}
           userId={props.currentUserId}
-          online={localWritable}
+          online={props.online}
           tasks={props.bundle.tasks}
           settings={props.focusSettings}
           sessions={props.focusSessions}
@@ -6647,7 +6112,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             task={selectedTask}
             bundle={props.bundle}
             currentUserId={props.currentUserId}
-            online={localWritable}
+            online={props.online}
             editable={selectedTaskEditable}
             attachmentService={props.attachmentService}
             now={now}
@@ -6696,7 +6161,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           task={selectedTask}
           bundle={props.bundle}
           currentUserId={props.currentUserId}
-          online={localWritable}
+          online={props.online}
           editable={selectedTaskEditable}
           attachmentService={props.attachmentService}
           now={now}
@@ -6859,8 +6324,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 function NavigationRail({
   activeSection,
   online,
-  syncStatus,
-  onSync,
   userName,
   avatarUrl,
   workspaces,
@@ -6880,8 +6343,6 @@ function NavigationRail({
 }: {
   activeSection: AppSection;
   online: boolean;
-  syncStatus: SyncStatus;
-  onSync: () => Promise<unknown>;
   userName: string;
   avatarUrl: string | null;
   workspaces: Workspace[];
@@ -6903,7 +6364,6 @@ function NavigationRail({
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const showDownloadClient = !window.anttodoDesktop;
-  const showSync = isLocalFirstHost();
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -7060,40 +6520,6 @@ function NavigationRail({
         <Search />
       </button>
       <div className="rail-spacer" />
-      {showSync && (
-        <button
-          type="button"
-          className={clsx(
-            "rail-button",
-            "sync-button",
-            syncStatus.phase === "syncing" && "running",
-            syncStatus.phase === "error" && "error",
-            syncStatus.conflictCount > 0 && "has-conflicts",
-          )}
-          aria-label={syncStatus.phase === "syncing" ? "正在同步" : "立即同步"}
-          aria-busy={syncStatus.phase === "syncing"}
-          disabled={syncStatus.phase === "syncing" || syncStatus.phase === "offline"}
-          title={
-            syncStatus.phase === "offline"
-              ? "离线，联网后自动同步"
-              : syncStatus.phase === "error"
-              ? (syncStatus.errorMessage ?? "同步失败，点击重试")
-              : syncStatus.conflictCount > 0
-              ? `有 ${syncStatus.conflictCount} 个待处理冲突`
-              : syncStatus.pendingCount > 0
-              ? `有 ${syncStatus.pendingCount} 个待同步操作`
-              : "立即同步"
-          }
-          onClick={() => {
-            void onSync();
-          }}
-        >
-          <RefreshCw aria-hidden="true" />
-          {syncStatus.conflictCount > 0 && (
-            <span className="sync-conflict-badge" aria-label="有待处理冲突">!</span>
-          )}
-        </button>
-      )}
       {showDownloadClient && (
         <button
           className="rail-button"
@@ -9768,7 +9194,7 @@ function TaskWorkspace({
   onNotice: WorkspaceAppProps["onNotice"];
 }) {
   const [busy, setBusy] = useState(false);
-  const localWritable = online || isLocalFirstHost();
+  const writable = online;
   const initialQuickSettings = useMemo(
     () => readQuickAddSettings(workspaceId),
     [workspaceId],
@@ -10558,7 +9984,7 @@ function TaskWorkspace({
             <TaskRecommendationButton
               tasks={bundle.tasks}
               currentUserId={currentUserId}
-              online={localWritable}
+              online={writable}
               now={now}
               weekStartsOn={dateTimePreferences.weekStartsOn}
               onUpdateTask={onUpdateTask}
@@ -10609,11 +10035,11 @@ function TaskWorkspace({
       </header>
       {!isTrashView && viewMode === "list" && (
       <QuickAddForm
-        online={localWritable}
+        online={writable}
         canManage={canManageSelectedLabel}
         busy={busy}
         kind={quickKind}
-        placeholder={localWritable
+        placeholder={writable
           ? `添加${quickKind === "note" ? "笔记" : "任务"}至“${selectedLabel?.name ?? title}”`
           : "离线状态下不可新增任务"}
         now={now}
@@ -10628,7 +10054,7 @@ function TaskWorkspace({
         defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
         settings={(
           <QuickAddSettings
-            online={localWritable && !busy}
+            online={writable && !busy}
             kind={quickKind}
             priority={quickPriority}
             onKindChange={changeQuickKind}
@@ -10643,7 +10069,7 @@ function TaskWorkspace({
           {!online && (
             <div className="offline-banner">
               <CloudOff size={16} />
-              {offlineCacheBannerText()}
+              当前显示上次缓存，恢复网络后会自动刷新
             </div>
           )}
           <TaskKanban
@@ -10656,7 +10082,7 @@ function TaskWorkspace({
             currentUserId={currentUserId}
             defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
             selectedTaskId={selectedTaskId}
-            online={localWritable}
+            online={writable}
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
@@ -10712,8 +10138,8 @@ function TaskWorkspace({
           onSelectTask={onSelectTask}
           onSaveTaskSchedule={onSaveTaskSchedule}
           onCreateOnDay={async (day) => {
-            if (!localWritable || !canManageSelectedLabel) {
-              throw new Error(localWritable ? "没有创建任务的权限" : "离线模式下不可新增任务");
+            if (!writable || !canManageSelectedLabel) {
+              throw new Error(writable ? "没有创建任务的权限" : "离线模式下不可新增任务");
             }
             const timeZone = systemTimeZone();
             const patch = schedulePatchForTimelineDrop(day, timeZone);
@@ -10745,7 +10171,7 @@ function TaskWorkspace({
         {!online && (
           <div className="offline-banner">
             <CloudOff size={16} />
-            {offlineCacheBannerText()}
+            当前显示上次缓存，恢复网络后会自动刷新
           </div>
         )}
         {groups.length === 0
@@ -10797,7 +10223,7 @@ function TaskWorkspace({
                       members={bundle.members}
                       selectedTaskId={selectedTaskId}
                       workspaceId={workspaceId}
-                      online={localWritable}
+                      online={writable}
                       now={now}
                       dateTimePreferences={dateTimePreferences}
                       showLabels={preference.show_labels}
@@ -10893,7 +10319,7 @@ function TaskWorkspace({
             members={bundle.members}
             selectedTaskId={selectedTaskId}
             workspaceId={workspaceId}
-            online={localWritable}
+            online={writable}
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
@@ -10936,7 +10362,7 @@ function TaskWorkspace({
           bundle={bundle}
           currentUserId={currentUserId}
           parentId={selectedLabel.parent_id}
-          online={localWritable}
+          online={writable}
           onClose={() => setLabelSettingsOpen(false)}
           onCreate={async () => undefined}
           onSave={onSaveLabelAccess}
@@ -10947,7 +10373,7 @@ function TaskWorkspace({
           open={aiSettingsOpen}
           title={aiSettingsTitle}
           settings={aiWorkSettings}
-          online={localWritable}
+          online={writable}
           onOpenChange={setAiSettingsOpen}
           onSave={onSaveAiWorkSettings}
         />

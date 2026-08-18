@@ -60,7 +60,6 @@ import {
   type TimelineZoom,
 } from "./lib/taskTimeline";
 import { collectWorkspaceDependencies } from "./lib/taskDependencies";
-import { isLocalFirstHost, offlineCacheBannerText } from "./lib/local-first/localStore";
 import type {
   Label,
   ReminderSchedule,
@@ -175,7 +174,7 @@ export function TaskTimeline({
   onCreateOnDay: (day: Date) => Promise<void>;
   onNotice: (message: string) => void;
 }) {
-  const writable = online || isLocalFirstHost();
+  const writable = online;
   const timeZone = systemTimeZone();
   const [zoom, setZoom] = useState<TimelineZoom>(readZoom);
   const origin = useMemo(() => timelineOrigin(now), [now]);
@@ -537,7 +536,7 @@ export function TaskTimeline({
       {!online && (
         <div className="offline-banner">
           <CloudOff size={16} />
-          {offlineCacheBannerText()}
+          当前显示上次缓存，恢复网络后会自动刷新
         </div>
       )}
       <header className="timeline-toolbar">

@@ -5,6 +5,17 @@ title: ChangeLog
 description: AntTodo 的版本更新记录。
 ---
 
+## 1.0.5.20260818
+
+### ALL
+
+- Enhance: Web、Mac 与 iOS 统一为服务端直连与本地乐观更新模式
+- Enhance: 离线时可阅读最近缓存，写操作统一为只读禁用
+
+### Mac
+
+- Enhance: 停用本地 SQLite、出站队列和定时同步，保留旧数据文件但不再访问
+
 ## 1.0.4.20260814
 
 ### ALL

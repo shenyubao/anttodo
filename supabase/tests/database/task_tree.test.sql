@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(39);
+select plan(31);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -114,113 +114,31 @@ select lives_ok(
   'a root can be demoted atomically');
 select is((select count(*)::integer from public.task_labels where task_id='49000000-0000-0000-0000-000000000002'),0,'demotion removes independent labels');
 select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000001',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','task_move',
-    'entityId','49000000-0000-0000-0000-000000000005',
-    'payload',jsonb_build_object('parentTaskId','49000000-0000-0000-0000-000000000001','position',3)
-  )))$$,
-  'offline task moves use the unified move operation');
+  $$select public.move_task(
+    '49000000-0000-0000-0000-000000000005',
+    '49000000-0000-0000-0000-000000000001',
+    3
+  )$$,
+  'direct task moves use the unified move operation');
 select is(
   (select parent_task_id from public.tasks where id='49000000-0000-0000-0000-000000000005'),
   '49000000-0000-0000-0000-000000000001'::uuid,
-  'offline task moves retain one exact task id');
+  'direct task moves retain one exact task id');
 select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000002',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','tasks',
-    'entityId','49000000-0000-0000-0000-000000000030',
-    'payload',jsonb_build_object(
-      'title','Private labeled',
-      'label_ids',jsonb_build_array('39000000-0000-0000-0000-000000000002')
-    )
-  )))$$,
-  'offline create keeps private labels');
-select is(
-  (select count(*)::integer from public.task_labels
-    where task_id='49000000-0000-0000-0000-000000000030'
-      and label_id='39000000-0000-0000-0000-000000000002'),
-  1,
-  'offline create attaches the private label');
-select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000004',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','task_labels',
-    'entityId','49000000-0000-0000-0000-000000000030:39000000-0000-0000-0000-000000000002',
-    'payload',jsonb_build_object(
-      'taskId','49000000-0000-0000-0000-000000000030',
-      'labelId','39000000-0000-0000-0000-000000000002',
-      'selected',false
-    )
-  )))$$,
-  'offline label removal is unambiguous');
-select is(
-  (select count(*)::integer from public.task_labels
-    where task_id='49000000-0000-0000-0000-000000000030'
-      and label_id='39000000-0000-0000-0000-000000000002'),
-  0,
-  'offline label removal detaches the private label');
-select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000003',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','tasks',
-    'entityId','49000000-0000-0000-0000-000000000031',
-    'payload',jsonb_build_object(
-      'title','Nested labeled',
-      'parent_task_id','49000000-0000-0000-0000-000000000001',
-      'label_ids',jsonb_build_array('39000000-0000-0000-0000-000000000002')
-    )
-  )))$$,
-  'offline nested create ignores root-only labels');
-select is(
-  (select count(*)::integer from public.task_labels
-    where task_id='49000000-0000-0000-0000-000000000031'),
-  0,
-  'nested offline creates do not own labels');
-select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000005',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','tasks',
-    'entityId','49000000-0000-0000-0000-000000000005',
-    'payload',jsonb_build_object('status','completed')
-  )))$$,
-  'offline updates can complete an existing task');
+  $$update public.tasks set status='completed' where id='49000000-0000-0000-0000-000000000005'$$,
+  'direct updates can complete an existing task');
 select ok(
   (select completed_at is not null from public.tasks
     where id='49000000-0000-0000-0000-000000000005'),
-  'offline completion updates populate completed_at');
+  'direct completion updates populate completed_at');
 select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000006',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','tasks',
-    'entityId','49000000-0000-0000-0000-000000000032',
-    'payload',jsonb_build_object('title','Completed offline','status','completed')
-  )))$$,
-  'offline creates can start completed');
-select ok(
-  (select completed_at is not null from public.tasks
-    where id='49000000-0000-0000-0000-000000000032'),
-  'offline completed creates populate completed_at');
-select lives_ok(
-  $$select public.apply_client_operations(jsonb_build_array(jsonb_build_object(
-    'operationId','59000000-0000-0000-0000-000000000007',
-    'workspaceId','29000000-0000-0000-0000-000000000001',
-    'entityType','tasks',
-    'entityId','49000000-0000-0000-0000-000000000005',
-    'payload',jsonb_build_object('status','open')
-  )))$$,
-  'offline updates can reopen a completed task');
+  $$update public.tasks set status='open' where id='49000000-0000-0000-0000-000000000005'$$,
+  'direct updates can reopen a completed task');
 select is(
   (select completed_at from public.tasks
     where id='49000000-0000-0000-0000-000000000005'),
   null::timestamptz,
-  'offline reopen clears completed_at');
+  'direct reopen clears completed_at');
 select public.move_task(
   '49000000-0000-0000-0000-000000000005',
   '49000000-0000-0000-0000-000000000004',
