@@ -32,7 +32,7 @@ async function installDesktopAiBridge(page: Page) {
 
 test("web shows disabled AI settings entry and notes hide assignment/terminal", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   const aiSettings = page.getByRole("menuitem", { name: "设置 AI CLI" });
   await expect(aiSettings).toBeVisible();
   await expect(aiSettings).toBeDisabled();
@@ -83,13 +83,13 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
   const detail = page.locator(".task-detail-panel");
   await detail.getByRole("button", { name: "智能处理" }).click();
   await expect(page.getByRole("menuitem", { name: /格式化待办/ })).toHaveCount(0);
-  await expect(page.getByRole("menuitem", { name: /智能分解子任务/ })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /智能分解子级任务/ })).toBeVisible();
 
   await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
   await page.getByRole("menuitem", { name: "设置" }).click();
   const reopenedSettings = page.getByRole("dialog", { name: "设置" });
   await reopenedSettings.getByRole("button", { name: "AI功能", exact: true }).click();
-  await reopenedSettings.getByRole("switch", { name: "智能分解子任务" }).uncheck();
+  await reopenedSettings.getByRole("switch", { name: "智能分解子级任务" }).uncheck();
   await reopenedSettings.getByRole("button", { name: "关闭设置" }).click();
   await expect(detail.getByRole("button", { name: "智能处理" })).toHaveCount(0);
 });
@@ -102,7 +102,7 @@ test("offline AI feature settings stay read-only", async ({ context, page }) => 
   await settings.getByRole("button", { name: "AI功能", exact: true }).click();
   await context.setOffline(true);
   await expect(settings.getByRole("switch", { name: "智能格式化" })).toBeDisabled();
-  await expect(settings.getByRole("switch", { name: "智能分解子任务" })).toBeDisabled();
+  await expect(settings.getByRole("switch", { name: "智能分解子级任务" })).toBeDisabled();
   await expect(settings.getByRole("button", { name: /覆盖提示词/ })).toHaveCount(2);
   for (const button of await settings.getByRole("button", { name: /覆盖提示词/ }).all()) {
     await expect(button).toBeDisabled();
@@ -110,7 +110,7 @@ test("offline AI feature settings stay read-only", async ({ context, page }) => 
   await expect(settings.getByRole("link", { name: /蚂蚁清单 CLI/ })).toBeEnabled();
 });
 
-test("desktop configures Codex and opens independent task/subtask terminals", async ({ page }) => {
+test("desktop configures Codex and opens independent task terminals", async ({ page }) => {
   await installDesktopAiBridge(page);
   await page.goto("/?demo=1");
 
@@ -123,7 +123,7 @@ test("desktop configures Codex and opens independent task/subtask terminals", as
   await expect(page.getByRole("dialog", { name: "设置 AI CLI" })).toBeVisible();
   await page.getByRole("button", { name: "取消" }).click();
 
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "设置 AI CLI" }).click();
   const settings = page.getByRole("dialog", { name: "设置 AI CLI" });
   await settings.getByRole("checkbox", { name: "Codex" }).click();
@@ -138,17 +138,17 @@ test("desktop configures Codex and opens independent task/subtask terminals", as
   await detail.getByRole("button", { name: "显示待办内容" }).click();
   await expect(detail.locator(".task-cli-terminal")).toHaveCount(0);
 
-  const subtaskRow = detail.locator(".subtask-row").filter({ hasText: "检查 Mac 安装包" });
-  await subtaskRow.getByRole("button", { name: /^负责人：/ }).click();
-  await subtaskRow.getByRole("menuitemradio", { name: "Codex" }).click();
+  const childTaskRow = detail.locator(".childTask-row").filter({ hasText: "检查 Mac 安装包" });
+  await childTaskRow.getByRole("button", { name: /^负责人：/ }).click();
+  await childTaskRow.getByRole("menuitemradio", { name: "Codex" }).click();
   await expect(detail.locator(".task-cli-terminal")).toBeVisible();
   await detail.getByRole("button", { name: "显示待办内容" }).click();
-  await expect(subtaskRow.locator(".subtask-actions > *").evaluateAll((nodes) =>
+  await expect(childTaskRow.locator(".childTask-actions > *").evaluateAll((nodes) =>
     nodes.map((node) => node.className))).resolves.toEqual([
-    "task-assignee-control subtask-assignee-control",
-    "subtask-date-control",
-    "subtask-terminal-trigger",
-    "subtask-delete",
+    "task-assignee-control childTask-assignee-control",
+    "childTask-date-control",
+    "childTask-terminal-trigger",
+    "childTask-delete",
   ]);
 
   const starts = await page.evaluate(() => (
@@ -156,9 +156,9 @@ test("desktop configures Codex and opens independent task/subtask terminals", as
   ).__aiTerminalStarts);
   expect(starts.map((item) => item.sessionId)).toEqual([
     expect.stringMatching(/^task:/),
-    expect.stringMatching(/^subtask:/),
+    expect.stringMatching(/^task:/),
   ]);
   expect(starts[1].prompt).toContain(`父任务标题：${demoTaskTitle}`);
-  expect(starts[1].prompt).toContain("当前子任务：检查 Mac 安装包");
+  expect(starts[1].prompt).toContain("当前子级任务：检查 Mac 安装包");
   expect(starts[1].prompt).not.toContain("运行数据库安全测试");
 });

@@ -532,8 +532,14 @@ verify_jwt = false
 import_map = "./functions/cli-device-auth/deno.json"
 entrypoint = "./functions/cli-device-auth/index.ts"
 
-[functions.ai-subtask-decompose]
+[functions.ai-task-decompose]
 enabled = true
 verify_jwt = true
-import_map = "./functions/ai-subtask-decompose/deno.json"
-entrypoint = "./functions/ai-subtask-decompose/index.ts"
+import_map = "./functions/ai-task-decompose/deno.json"
+entrypoint = "./functions/ai-task-decompose/index.ts"
+
+[functions.init-app-admin]
+enabled = true
+verify_jwt = false
+import_map = "./functions/init-app-admin/deno.json"
+entrypoint = "./functions/init-app-admin/index.ts"

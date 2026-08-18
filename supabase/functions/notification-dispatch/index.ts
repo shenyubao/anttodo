@@ -18,9 +18,9 @@ const SCENARIO_BY_TYPE: Record<string, string> = {
   participant_title_changed: "participant_title_changed",
   participant_status_changed: "participant_status_changed",
   participant_new_comment: "participant_new_comment",
-  participant_subtask_created: "participant_subtask_created",
-  participant_subtask_status_changed: "participant_subtask_status_changed",
-  participant_subtask_title_changed: "participant_subtask_title_changed",
+  participant_task_created: "participant_task_created",
+  participant_status_changed: "participant_status_changed",
+  participant_title_changed: "participant_title_changed",
 };
 
 function notificationCopy(input: {
@@ -57,20 +57,20 @@ function notificationCopy(input: {
     }
     case "participant_new_comment":
       return { title: "新评论", body: `${actor} 评论了你参与的「${title}」` };
-    case "participant_subtask_created":
+    case "participant_task_created":
       return {
-        title: "新子任务",
-        body: `${actor} 在「${title}」中添加了子任务「${String(input.payload?.title ?? "")}」`,
+        title: "新子级任务",
+        body: `${actor} 在「${title}」中添加了子级任务「${String(input.payload?.title ?? "")}」`,
       };
-    case "participant_subtask_status_changed":
+    case "participant_status_changed":
       return {
-        title: "子任务状态",
-        body: `${actor} 更新了「${title}」的子任务状态`,
+        title: "子级任务状态",
+        body: `${actor} 更新了「${title}」的子级任务状态`,
       };
-    case "participant_subtask_title_changed":
+    case "participant_title_changed":
       return {
-        title: "子任务标题",
-        body: `${actor} 更新了「${title}」的子任务标题`,
+        title: "子级任务标题",
+        body: `${actor} 更新了「${title}」的子级任务标题`,
       };
     default:
       return { title: "AntTodo 通知", body: title };

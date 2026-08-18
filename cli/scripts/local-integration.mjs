@@ -203,12 +203,12 @@ try {
     throw new Error("CLI stopwatch session did not match the requested recording");
   }
 
-  const subtask = runCli("subtask", "create", "--task", task.id, "--title", "CLI subtask");
-  runCli("subtask", "list", "--task", task.id);
-  runCli("subtask", "get", subtask.id);
-  runCli("subtask", "set-duetime", subtask.id, "2026-08-05T11:00:00+08:00");
-  runCli("subtask", "set-duetime", subtask.id, "--clear");
-  runCli("subtask", "delete", subtask.id, "--yes");
+  const childTask = runCli("childTask", "create", "--task", task.id, "--title", "CLI childTask");
+  runCli("childTask", "list", "--task", task.id);
+  runCli("childTask", "get", childTask.id);
+  runCli("childTask", "set-duetime", childTask.id, "2026-08-05T11:00:00+08:00");
+  runCli("childTask", "set-duetime", childTask.id, "--clear");
+  runCli("childTask", "delete", childTask.id, "--yes");
 
   const note = runCli("note", "create", "--title", "CLI note", "--description", "integration", "--tag", tag.id);
   runCli("note", "list");

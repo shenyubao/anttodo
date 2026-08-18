@@ -12,7 +12,6 @@ import type { DateTimePreferences, Task, TaskDependency, TaskDependencyTarget } 
 
 export function TaskDependencyList({
   task,
-  subtaskId = null,
   tasks,
   writable,
   dateTimePreferences,
@@ -21,32 +20,30 @@ export function TaskDependencyList({
   onOpen,
 }: {
   task: Task;
-  subtaskId?: string | null;
   tasks: Task[];
   writable: boolean;
   dateTimePreferences: DateTimePreferences;
   onAdd: (targets: TaskDependencyTarget[]) => Promise<void>;
   onRemove: (dependencyId: string) => Promise<void>;
-  onOpen: (taskId: string, subtaskId?: string | null) => void;
+  onOpen: (taskId: string) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ left: number; top: number }>();
-  const dependencies = listItemDependencies(task, subtaskId);
-  const source = { taskId: task.id, subtaskId };
+  const dependencies = listItemDependencies(task);
+  const source = { taskId: task.id };
   const pickerTasks = useMemo(
     () => filterPickerTasksForDependency(tasks, source, dependencies),
-    [dependencies, source.subtaskId, source.taskId, tasks],
+    [dependencies, source.taskId, tasks],
   );
   const excludeKeys = useMemo(() => {
     const keys = [dependencyTargetKey(source)];
     for (const row of dependencies) {
       keys.push(dependencyTargetKey({
         taskId: row.depends_on_task_id,
-        subtaskId: row.depends_on_subtask_id,
       }));
     }
     return keys;
-  }, [dependencies, source.subtaskId, source.taskId]);
+  }, [dependencies, source.taskId]);
 
   function openPicker(event?: { currentTarget: HTMLElement }) {
     const rect = event?.currentTarget.getBoundingClientRect();
@@ -118,17 +115,13 @@ function DependencyRow({
   tasks: Task[];
   writable: boolean;
   dateTimePreferences: DateTimePreferences;
-  onOpen: (taskId: string, subtaskId?: string | null) => void;
+  onOpen: (taskId: string) => void;
   onRemove: (dependencyId: string) => Promise<void>;
 }) {
   const resolved = resolveDependencyTarget(tasks, {
     taskId: row.depends_on_task_id,
-    subtaskId: row.depends_on_subtask_id,
   });
-  const title = resolved
-    ? (resolved.subtask?.title ?? resolved.task.title)
-    : "无权查看";
-  const dueTarget = resolved?.subtask ?? resolved?.task ?? null;
+  const title = resolved?.title ?? "无权查看";
   return (
     <li className="task-dependency-item">
       <GitFork aria-hidden="true" />
@@ -138,13 +131,13 @@ function DependencyRow({
         disabled={!resolved}
         onClick={() => {
           if (!resolved) return;
-          onOpen(resolved.task.id, resolved.subtask?.id ?? null);
+          onOpen(resolved.id);
         }}
       >
         <span className="task-dependency-title">{title}</span>
-        {dueTarget?.due_at && (
+        {resolved?.due_at && (
           <span className="task-dependency-due">
-            {formatDueWithPreferences(dueTarget, dateTimePreferences)}
+            {formatDueWithPreferences(resolved, dateTimePreferences)}
           </span>
         )}
       </button>

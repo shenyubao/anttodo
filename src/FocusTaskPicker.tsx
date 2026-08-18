@@ -25,7 +25,6 @@ export function FocusTaskPicker({
   tasks,
   sessions = [],
   selectedTaskId,
-  selectedSubtaskId,
   onOpenChange,
   onSelect,
   mode = "focus",
@@ -38,9 +37,8 @@ export function FocusTaskPicker({
   tasks: Task[];
   sessions?: FocusSession[];
   selectedTaskId: string | null;
-  selectedSubtaskId?: string | null;
   onOpenChange: (open: boolean) => void;
-  onSelect: (taskId: string | null, subtaskId?: string | null) => void;
+  onSelect: (taskId: string | null) => void;
   mode?: "focus" | "dependency";
   excludeKeys?: string[];
   selectedTargets?: TaskDependencyTarget[];
@@ -113,10 +111,10 @@ export function FocusTaskPicker({
 
   if (!open) return null;
 
-  const select = (taskId: string | null, subtaskId: string | null = null) => {
+  const select = (taskId: string | null) => {
     if (isDependency) {
       if (!taskId) return;
-      const key = dependencyTargetKey({ taskId, subtaskId });
+      const key = dependencyTargetKey({ taskId });
       if (excluded.has(key)) return;
       setDraftKeys((current) => {
         const next = new Set(current);
@@ -126,7 +124,7 @@ export function FocusTaskPicker({
       });
       return;
     }
-    onSelect(taskId, subtaskId);
+    onSelect(taskId);
     onOpenChange(false);
   };
 
@@ -134,8 +132,7 @@ export function FocusTaskPicker({
     const targets: TaskDependencyTarget[] = [];
     for (const key of draftKeys) {
       if (excluded.has(key)) continue;
-      const [taskId, subtaskId = ""] = key.split(":");
-      targets.push({ taskId, subtaskId: subtaskId || null });
+      targets.push({ taskId: key });
     }
     onConfirm?.(targets);
     onOpenChange(false);
@@ -202,7 +199,6 @@ export function FocusTaskPicker({
                 icon
                 trees={grouped.today}
                 selectedTaskId={selectedTaskId}
-                selectedSubtaskId={selectedSubtaskId}
                 draftKeys={draftKeys}
                 excludedKeys={excluded}
                 multi={isDependency}
@@ -214,7 +210,6 @@ export function FocusTaskPicker({
                 title="已过期"
                 trees={grouped.overdue}
                 selectedTaskId={selectedTaskId}
-                selectedSubtaskId={selectedSubtaskId}
                 draftKeys={draftKeys}
                 excludedKeys={excluded}
                 multi={isDependency}
@@ -227,7 +222,6 @@ export function FocusTaskPicker({
                 title={grouped.today.length || grouped.overdue.length ? "其他" : "全部任务"}
                 trees={grouped.rest}
                 selectedTaskId={selectedTaskId}
-                selectedSubtaskId={selectedSubtaskId}
                 draftKeys={draftKeys}
                 excludedKeys={excluded}
                 multi={isDependency}
@@ -240,7 +234,6 @@ export function FocusTaskPicker({
             title="最近"
             trees={trees}
             selectedTaskId={selectedTaskId}
-            selectedSubtaskId={selectedSubtaskId}
             draftKeys={draftKeys}
             excludedKeys={excluded}
             onSelect={select}
@@ -278,7 +271,6 @@ function TaskGroup({
   title,
   trees,
   selectedTaskId,
-  selectedSubtaskId,
   draftKeys,
   excludedKeys,
   overdue,
@@ -289,13 +281,12 @@ function TaskGroup({
   title: string;
   trees: FocusPickerTree[];
   selectedTaskId: string | null;
-  selectedSubtaskId?: string | null;
   draftKeys: Set<string>;
   excludedKeys: Set<string>;
   overdue?: boolean;
   icon?: boolean;
   multi?: boolean;
-  onSelect: (taskId: string, subtaskId?: string | null) => void;
+  onSelect: (taskId: string) => void;
 }) {
   return (
     <div className="focus-task-picker-group">
@@ -308,7 +299,6 @@ function TaskGroup({
           key={tree.task.id}
           tree={tree}
           selectedTaskId={selectedTaskId}
-          selectedSubtaskId={selectedSubtaskId}
           draftKeys={draftKeys}
           excludedKeys={excludedKeys}
           overdue={overdue}
@@ -323,7 +313,6 @@ function TaskGroup({
 function PickerTree({
   tree,
   selectedTaskId,
-  selectedSubtaskId,
   draftKeys,
   excludedKeys,
   overdue,
@@ -332,20 +321,19 @@ function PickerTree({
 }: {
   tree: FocusPickerTree;
   selectedTaskId: string | null;
-  selectedSubtaskId?: string | null;
   draftKeys: Set<string>;
   excludedKeys: Set<string>;
   overdue?: boolean;
   multi?: boolean;
-  onSelect: (taskId: string, subtaskId?: string | null) => void;
+  onSelect: (taskId: string) => void;
 }) {
-  const parentKey = dependencyTargetKey({ taskId: tree.task.id, subtaskId: null });
+  const parentKey = dependencyTargetKey({ taskId: tree.task.id });
   const showParent = !excludedKeys.has(parentKey);
   const parentSelected = multi
     ? draftKeys.has(parentKey)
     : sameFocusTarget(
-      { taskId: selectedTaskId, subtaskId: selectedSubtaskId },
-      { taskId: tree.task.id, subtaskId: null },
+      { taskId: selectedTaskId },
+      { taskId: tree.task.id },
     );
   return (
     <div className="focus-task-picker-tree">
@@ -355,27 +343,27 @@ function PickerTree({
           dueAt={tree.task.due_at}
           overdue={overdue}
           selected={parentSelected}
-          onSelect={() => onSelect(tree.task.id, null)}
+          onSelect={() => onSelect(tree.task.id)}
         />
       )}
-      {tree.subtasks.map((subtask) => {
-        const key = dependencyTargetKey({ taskId: tree.task.id, subtaskId: subtask.id });
+      {tree.children.map((childTask) => {
+        const key = dependencyTargetKey({ taskId: childTask.id });
         if (excludedKeys.has(key)) return null;
         const selected = multi
           ? draftKeys.has(key)
           : sameFocusTarget(
-            { taskId: selectedTaskId, subtaskId: selectedSubtaskId },
-            { taskId: tree.task.id, subtaskId: subtask.id },
+            { taskId: selectedTaskId },
+            { taskId: childTask.id },
           );
         return (
           <PickerRow
-            key={subtask.id}
-            title={subtask.title}
-            dueAt={subtask.due_at}
+            key={childTask.id}
+            title={childTask.title}
+            dueAt={childTask.due_at}
             overdue={overdue}
             nested
             selected={selected}
-            onSelect={() => onSelect(tree.task.id, subtask.id)}
+            onSelect={() => onSelect(childTask.id)}
           />
         );
       })}

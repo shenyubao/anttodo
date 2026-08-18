@@ -11,16 +11,24 @@ describe("command tree", () => {
   it("contains the requested domains and workspace selection", () => {
     const program = buildProgram();
     expect(program.commands.map((command) => command.name())).toEqual([
-      "auth", "workspace", "task", "subtask", "note", "tag", "user",
+      "service", "auth", "workspace", "task", "note", "tag", "user",
       "group", "search", "comment", "activity", "attachment", "pomodoro", "stopwatch", "man",
     ]);
   });
 
-  it("exposes subtask editing and ordering", () => {
-    const subtask = buildProgram().commands.find((command) => command.name() === "subtask");
-    expect(subtask?.commands.map((command) => command.name())).toEqual([
-      "list", "get", "create", "update", "set-status", "assign", "set-priority", "reorder", "set-duetime", "delete",
-    ]);
+  it("exposes service selection and one-shot service override", () => {
+    const program = buildProgram();
+    expect(program.options.some((option) => option.flags === "--service-url <url>")).toBe(true);
+    expect(program.commands.find((command) => command.name() === "service")?.commands.map((command) => command.name()))
+      .toEqual(["use", "list", "current", "reset"]);
+  });
+
+  it("exposes unified task tree operations", () => {
+    const task = buildProgram().commands.find((command) => command.name() === "task");
+    expect(task?.commands.map((command) => command.name())).toContain("move");
+    expect(task?.commands.find((command) => command.name() === "create")?.options.some(
+      (option) => option.flags === "--parent <task-id>",
+    )).toBe(true);
   });
 
   it("includes complete JSON command paths and options", () => {

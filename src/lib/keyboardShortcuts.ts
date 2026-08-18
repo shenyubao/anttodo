@@ -12,7 +12,7 @@ export type ShortcutActionId =
   | "general.goFocus"
   | "general.goMindmap"
   | "task.focusQuickAdd"
-  | "task.addSubtask"
+  | "task.addChildTask"
   | "task.complete"
   | "task.delete"
   | "task.logHours"
@@ -141,9 +141,9 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     scopes: ["tasks"],
   },
   {
-    id: "task.addSubtask",
+    id: "task.addChildTask",
     group: "tasks",
-    label: "添加子任务",
+    label: "添加子级任务",
     defaultBinding: { key: "Enter", shift: true },
     remappable: true,
     allowInInput: false,

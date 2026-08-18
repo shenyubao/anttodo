@@ -34,7 +34,7 @@ test("clicking outside the task detail panel closes it", async ({ page }) => {
 
 test("task views switch per list and kanban supports column creation", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await expect(page.getByRole("menuitemradio", { name: "列表" }))
     .toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("menuitem", { name: "时间线，暂未开放" })).toBeDisabled();
@@ -58,7 +58,7 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
 
   await page.getByRole("button", { name: "所有" }).click();
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
   await expect(page).toHaveURL(/\/tasks\/kanban$/);
 
@@ -108,7 +108,7 @@ test("task views switch per list and kanban supports column creation", async ({ 
 
 test("custom task views can be saved, filtered, hidden, and deleted", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "另存为视图" }).click();
 
   const saveDialog = page.getByRole("dialog", { name: "另存为视图" });
@@ -186,52 +186,52 @@ test("kanban cards can be reordered by dragging the card body", async ({ page })
   ]);
 });
 
-test("task list expands, completes, and remembers subtasks per workspace", async ({ page }) => {
+test("task list expands, completes, and remembers nested tasks per workspace", async ({ page }) => {
   await page.goto("/?demo=1");
 
   const taskTree = page.locator(".task-tree-item").filter({ hasText: demoTaskTitle });
-  const subtaskList = taskTree.getByRole("list", { name: `子任务：${demoTaskTitle}` });
-  await expect(taskTree.getByRole("button", { name: `收起子任务：${demoTaskTitle}` }))
+  const childTaskList = taskTree.getByRole("list", { name: `子级任务：${demoTaskTitle}` });
+  await expect(taskTree.getByRole("button", { name: `收起子级任务：${demoTaskTitle}` }))
     .toBeVisible();
-  await expect(subtaskList.locator(".task-list-subtask-title")).toHaveText([
+  await expect(childTaskList.locator(".task-list-childTask-title")).toHaveText([
     "运行数据库安全测试",
     "检查 Mac 安装包",
   ]);
-  await expect(subtaskList.locator(".task-list-subtask-row")).toHaveCount(2);
-  await expect(subtaskList.locator(".task-list-subtask-row.completed")).toHaveCount(1);
+  await expect(childTaskList.locator(".task-list-childTask-row")).toHaveCount(2);
+  await expect(childTaskList.locator(".task-list-childTask-row.completed")).toHaveCount(1);
   await expect(taskTree).toContainText("1/2");
 
-  await subtaskList.getByRole("button", { name: "完成子任务：检查 Mac 安装包" }).click();
+  await childTaskList.getByRole("button", { name: "完成子级任务：检查 Mac 安装包" }).click();
   await expect(taskTree).toContainText("2/2");
-  await expect(subtaskList.locator(".task-list-subtask-row.completed")).toHaveCount(2);
+  await expect(childTaskList.locator(".task-list-childTask-row.completed")).toHaveCount(2);
 
-  await subtaskList.getByRole("button", { name: "检查 Mac 安装包", exact: true }).click();
+  await childTaskList.getByRole("button", { name: "检查 Mac 安装包", exact: true }).click();
   const detail = page.locator(".task-detail-panel");
   await expect(detail.locator(".detail-title")).toHaveValue("检查 Mac 安装包");
   await detail.getByRole("button", { name: "返回父任务" }).click();
   await expect(detail.locator(".detail-title")).toHaveValue(demoTaskTitle);
   await detail.getByRole("button", { name: "关闭详情" }).click();
 
-  await taskTree.getByRole("button", { name: `收起子任务：${demoTaskTitle}` }).click();
-  await expect(subtaskList).toHaveCount(0);
+  await taskTree.getByRole("button", { name: `收起子级任务：${demoTaskTitle}` }).click();
+  await expect(childTaskList).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
+  await expect(page.getByRole("button", { name: `展开子级任务：${demoTaskTitle}` })).toBeVisible();
 
   await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
   await page.getByRole("menuitem", { name: "切换团队" }).click();
   await page.getByRole("menuitemradio", { name: "个人空间" }).click();
-  await expect(page.getByRole("button", { name: `收起子任务：${demoTaskTitle}` })).toBeVisible();
+  await expect(page.getByRole("button", { name: `收起子级任务：${demoTaskTitle}` })).toBeVisible();
 
   await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
   await page.getByRole("menuitem", { name: "切换团队" }).click();
   await page.getByRole("menuitemradio", { name: "AntTodo 产品团队" }).click();
-  await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
+  await expect(page.getByRole("button", { name: `展开子级任务：${demoTaskTitle}` })).toBeVisible();
 
-  await page.getByRole("button", { name: "所有" }).click();
-  const noSubtasksRow = page.locator(".task-tree-item").filter({
+  await page.getByRole("button", { name: /^所有 \d+$/ }).click();
+  const noChildTasksRow = page.locator(".task-tree-item").filter({
     hasText: "优化任务详情抽屉交互",
   });
-  await expect(noSubtasksRow.locator(".task-subtasks-expander")).toHaveCount(0);
+  await expect(noChildTasksRow.locator(".task-children-expander")).toHaveCount(0);
 });
 
 test("quick add creates notes and keeps its per-workspace settings", async ({ page }) => {
@@ -263,7 +263,7 @@ test("quick add creates notes and keeps its per-workspace settings", async ({ pa
   await expect(detail.getByRole("textbox", { name: "笔记标题" })).toHaveValue(noteTitle);
   await expect(detail.locator(".priority-trigger")).toHaveCount(0);
   await expect(detail.getByRole("button", { name: "完成任务" })).toHaveCount(0);
-  await expect(detail.getByRole("button", { name: "展开子任务" })).toHaveCount(0);
+  await expect(detail.getByRole("button", { name: "展开子级任务" })).toHaveCount(0);
 
   await detail.getByRole("button", { name: "更多笔记操作" }).click();
   await detail.getByRole("menuitem", { name: "切换为待办" }).click();
@@ -282,12 +282,12 @@ test("offline mode disables note creation and type switching", async ({ page, co
   await expect(page.getByPlaceholder("离线状态下不可新增任务")).toBeDisabled();
   await expect(page.getByRole("button", { name: "快速新增设置" })).toBeDisabled();
   await expect(page.getByRole("button", {
-    name: "重新打开子任务：运行数据库安全测试",
+    name: "重新打开子级任务：运行数据库安全测试",
   })).toBeDisabled();
-  const collapseSubtasks = page.getByRole("button", { name: `收起子任务：${demoTaskTitle}` });
-  await expect(collapseSubtasks).toBeEnabled();
-  await collapseSubtasks.click();
-  await expect(page.getByRole("button", { name: `展开子任务：${demoTaskTitle}` })).toBeVisible();
+  const collapseChildTasks = page.getByRole("button", { name: `收起子级任务：${demoTaskTitle}` });
+  await expect(collapseChildTasks).toBeEnabled();
+  await collapseChildTasks.click();
+  await expect(page.getByRole("button", { name: `展开子级任务：${demoTaskTitle}` })).toBeVisible();
 
   await page.getByText(demoTaskTitle, { exact: true }).click();
   const detail = page.locator(".task-detail-panel");
@@ -318,7 +318,7 @@ test("notes hide and restore preserved task state across every entry surface", a
   await detail.getByRole("button", { name: "关闭详情" }).click();
 
   const noteTitle = "优化任务详情抽屉交互";
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitemcheckbox", { name: "显示已完成" }).click();
   row = page.locator(".task-row").filter({ hasText: noteTitle });
   await row.locator(".task-checkbox").click();
@@ -784,7 +784,7 @@ test("task search handles no results, escape, overlay, and mobile access", async
 test("task detail and labels follow the desktop reference layout", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "显示标签" }).click();
   await page.getByText(demoTaskTitle, { exact: true }).click();
 
@@ -1487,7 +1487,7 @@ test("task list preferences are independent for smart and label lists", async ({
 
 test("custom grouping is shared by list and kanban views", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitem", { name: "添加分组" }).click();
   await expect(page.getByRole("button", { name: "未分组 5" })).toBeVisible();
   await page.getByRole("textbox", { name: "分组名称" }).fill("进行中");
@@ -1503,7 +1503,7 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
   await expect(sectionMenu.getByRole("menuitem", { name: "删除" })).toBeVisible();
   await page.getByRole("button", { name: "管理分组“进行中”" }).click();
 
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
   const board = page.getByLabel("任务看板");
   await expect(board.getByRole("region", { name: "未分组" })).toBeVisible();
@@ -1520,7 +1520,7 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
     .press("Enter");
   await expect(sectionColumn.getByText("自定义分组任务", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "列表" }).click();
   const listSection = page.locator(".task-group").filter({ hasText: "进行中" });
   await expect(listSection.getByText("自定义分组任务", { exact: true })).toBeVisible();

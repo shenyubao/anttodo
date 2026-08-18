@@ -245,6 +245,8 @@ describe("label bundle updates", () => {
       tasks: [{
         id: "task",
         workspace_id: "workspace",
+        parent_task_id: null,
+        position: 0,
         title: "任务",
         description: "",
         kind: "todo",
@@ -270,7 +272,7 @@ describe("label bundle updates", () => {
         label_ids: ["team-parent", "team-grandchild", "private-parent"],
         participant_ids: [],
         description_mentions: [],
-        subtasks: [],
+        children: [],
         reminders: [],
         reminder_persistent: false,
       }],

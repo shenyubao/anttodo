@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { del, get, set } from "idb-keyval";
+import { instanceStorageKey } from "./instanceConfig";
 
 export const TASK_ATTACHMENT_BUCKET = "task-attachments";
 export const COMMENT_IMAGE_BUCKET = "comment-images";
@@ -200,7 +201,7 @@ export function createSupabaseAttachmentService(
   client: SupabaseClient,
 ): AttachmentService {
   const previewUrls = new Map<string, string>();
-  const localPendingKey = (uri: string) => `anttodo:local-attachment:${uri}`;
+  const localPendingKey = (uri: string) => instanceStorageKey(`anttodo:local-attachment:${uri}`);
 
   return {
     async upload(context, file) {

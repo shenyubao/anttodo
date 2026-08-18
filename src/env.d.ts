@@ -5,6 +5,10 @@ interface ImportMetaEnv {
   readonly VITE_SUPABASE_PUBLISHABLE_KEY?: string;
   readonly VITE_PUBLIC_APP_URL?: string;
   readonly VITE_APP_VERSION?: string;
+  readonly ANTTODO_INSTANCE_DISPLAY_NAME?: string;
+  readonly ANTTODO_DEPLOY_MODE?: "saas" | "onPremises";
+  readonly ANTTODO_INSTANCE_ENTERPRISE_SLUG?: string;
+  readonly ANTTODO_WORKSPACE_SLUG?: string;
 }
 
 interface ImportMeta {
@@ -55,6 +59,7 @@ interface Window {
     };
     auth: {
       openDingtalkUrl: (url: string) => Promise<boolean>;
+      setServiceOrigin: (origin: string) => Promise<boolean>;
       takePendingCallback: () => Promise<string | null>;
       onCallbackAvailable: (listener: () => void) => () => void;
     };
@@ -86,7 +91,7 @@ interface Window {
       }) => Promise<boolean>;
     };
     sync: {
-      open: (userId: string) => Promise<boolean>;
+      open: (namespace: string, userId: string) => Promise<boolean>;
       getStatus: (workspaceId: string | null) => Promise<import("./lib/local-first/types").SyncStatus>;
       saveBundle: (input: { workspaceId: string; bundle: import("./types").WorkspaceBundle }) => Promise<boolean>;
       getBundle: (workspaceId: string) => Promise<import("./types").WorkspaceBundle | null>;

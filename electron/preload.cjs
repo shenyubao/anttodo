@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
   }),
   auth: Object.freeze({
     openDingtalkUrl: (url) => ipcRenderer.invoke("anttodo:auth-open-dingtalk", url),
+    setServiceOrigin: (origin) => ipcRenderer.invoke("anttodo:auth-set-service-origin", origin),
     takePendingCallback: () => ipcRenderer.invoke("anttodo:auth-take-pending"),
     onCallbackAvailable: (listener) => {
       const handler = () => listener();
@@ -41,7 +42,7 @@ contextBridge.exposeInMainWorld("anttodoDesktop", {
     show: (payload) => ipcRenderer.invoke("anttodo:notifications-show", payload)
   }),
   sync: Object.freeze({
-    open: (userId) => ipcRenderer.invoke("anttodo:sync-open", userId),
+    open: (namespace, userId) => ipcRenderer.invoke("anttodo:sync-open", { namespace, userId }),
     getStatus: (workspaceId) => ipcRenderer.invoke("anttodo:sync-status", workspaceId),
     saveBundle: (input) => ipcRenderer.invoke("anttodo:sync-save-bundle", input),
     commitBundle: (input) => ipcRenderer.invoke("anttodo:sync-commit-bundle", input),

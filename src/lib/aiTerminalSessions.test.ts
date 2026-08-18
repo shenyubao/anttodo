@@ -8,7 +8,7 @@ import {
 afterEach(() => {
   for (const sessionId of [
     "task:task-a",
-    "subtask:one",
+    "task:one",
     "task:task-b",
   ]) {
     untrackAiTerminalSession(sessionId);
@@ -18,13 +18,13 @@ afterEach(() => {
 describe("ai terminal session registry", () => {
   it("tracks and clears running task sessions", () => {
     trackAiTerminalSession("task-a", "task:task-a");
-    trackAiTerminalSession("task-a", "subtask:one");
+    trackAiTerminalSession("task-a", "task:one");
     expect(getAiTerminalRunningTaskIds().has("task-a")).toBe(true);
 
     untrackAiTerminalSession("task:task-a");
     expect(getAiTerminalRunningTaskIds().has("task-a")).toBe(true);
 
-    untrackAiTerminalSession("subtask:one");
+    untrackAiTerminalSession("task:one");
     expect(getAiTerminalRunningTaskIds().has("task-a")).toBe(false);
   });
 });

@@ -52,17 +52,17 @@ values (
   '16000000-0000-0000-0000-000000000001'
 );
 
-insert into public.subtasks(id, task_id, title, position)
+insert into public.tasks(id, workspace_id, parent_task_id, title, position, created_by)
 values (
   '56000000-0000-0000-0000-000000000001',
+  '26000000-0000-0000-0000-000000000001',
   '46000000-0000-0000-0000-000000000001',
-  'Focus subtask',
-  0
+  'Focus nested task',0,'16000000-0000-0000-0000-000000000001'
 ), (
   '56000000-0000-0000-0000-000000000002',
+  '26000000-0000-0000-0000-000000000001',
   '46000000-0000-0000-0000-000000000002',
-  'Other subtask',
-  0
+  'Other nested task',0,'16000000-0000-0000-0000-000000000001'
 );
 
 select has_table('public', 'focus_sessions', 'focus_sessions table exists');
@@ -244,12 +244,11 @@ select set_config(
 select lives_ok(
   $$
     insert into public.focus_sessions(
-      user_id, workspace_id, task_id, subtask_id, mode, kind,
+      user_id, workspace_id, task_id, mode, kind,
       planned_seconds, elapsed_seconds, started_at, ended_at
     ) values (
       '16000000-0000-0000-0000-000000000001',
       '26000000-0000-0000-0000-000000000001',
-      '46000000-0000-0000-0000-000000000001',
       '56000000-0000-0000-0000-000000000001',
       'pomodoro',
       'focus',
@@ -259,19 +258,18 @@ select lives_ok(
       now()
     )
   $$,
-  'owner can insert a focus session linked to a subtask'
+  'owner can insert a focus session linked to a nested task'
 );
 
-select throws_ok(
+select lives_ok(
   $$
     insert into public.focus_sessions(
-      user_id, workspace_id, task_id, subtask_id, mode, kind,
+      user_id, workspace_id, task_id, mode, kind,
       planned_seconds, elapsed_seconds, started_at, ended_at
     ) values (
       '16000000-0000-0000-0000-000000000001',
       '26000000-0000-0000-0000-000000000001',
       null,
-      '56000000-0000-0000-0000-000000000001',
       'pomodoro',
       'focus',
       1500,
@@ -280,20 +278,17 @@ select throws_ok(
       now()
     )
   $$,
-  '23514',
-  null,
-  'focus session subtask requires a parent task_id'
+  'an unassociated focus session remains valid'
 );
 
 select throws_ok(
   $$
     insert into public.focus_sessions(
-      user_id, workspace_id, task_id, subtask_id, mode, kind,
+      user_id, workspace_id, task_id, mode, kind,
       planned_seconds, elapsed_seconds, started_at, ended_at
     ) values (
       '16000000-0000-0000-0000-000000000001',
-      '26000000-0000-0000-0000-000000000001',
-      '46000000-0000-0000-0000-000000000001',
+      '26000000-0000-0000-0000-000000000099',
       '56000000-0000-0000-0000-000000000002',
       'pomodoro',
       'focus',
@@ -303,9 +298,9 @@ select throws_ok(
       now()
     )
   $$,
-  '23514',
-  null,
-  'focus session subtask must belong to the linked task'
+  'P0001',
+  'Task and record must belong to the same workspace',
+  'focus session task must belong to the workspace'
 );
 
 select * from finish();

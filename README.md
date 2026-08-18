@@ -8,7 +8,7 @@ Functions 和定时同步。
 
 - 手机号验证码登录、多团队空间、成员邀请与 `owner/admin/member` 角色。
 - 所有、今天、指派给我、我关注的、收集箱等智能视图。
-- 标题、描述、状态、日期、优先级、负责人、子任务和活动记录。
+- 标题、描述、状态、日期、优先级、负责人、任务树和活动记录。
 - 树形标签、继承/覆盖权限和多标签严格权限交集。
 - IndexedDB 查询缓存；断网时可读、不可写。
 - Mock 连接器、增量同步状态、出站队列、运行日志和冲突处理。
@@ -78,6 +78,7 @@ pnpm ios:testflight
 VITE_SUPABASE_URL=https://supabase.example.com
 VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_your_key
 VITE_PUBLIC_APP_URL=https://todo.example.com
+ANTTODO_INSTANCE_DISPLAY_NAME=蚂蚁清单
 ```
 
 生产环境使用自托管 Supabase，`VITE_SUPABASE_URL` 应指向自托管 API 源（不是
@@ -108,10 +109,24 @@ Vite 环境变量提交。`config.toml` 中的 Twilio 占位值只用于绕过�
 的本地 Phone Provider 开关校验，Send SMS Hook 会完全替代它；不得填写真实
 Twilio 凭据。
 
+自托管生产环境还支持服务端初始化超管配置：
+`init_app_admin_mobile=18600201337`。Supabase Compose 启动时会调用受私有密钥保护的
+初始化 Function；如果该手机号对应的 Auth 用户不存在则创建，已存在但缺少超管
+标记则补齐标记，重复启动不会重复创建。该配置仅能放在 Supabase 服务端环境，
+不得放入 `VITE_` 变量或公开 Web Compose 配置。
+
 `VITE_PUBLIC_APP_URL` 是主站 Web 根地址（邀请链接与钉钉回调）。团队 SSO
 入口使用 `https://app.anttodo.com/team/{slug}` 格式；主站根路径仅暴露手机号
 登录，团队访问路径仅暴露钉钉 SSO。本地可用
 `http://localhost:5173/team/{slug}` 调试团队登录页。
+
+`ANTTODO_INSTANCE_DISPLAY_NAME` 是公开实例名称，写入 `/.well-known/anttodo.json`
+的 `displayName`。登录页标题显示为「蚂蚁待办 x {ANTTODO_INSTANCE_DISPLAY_NAME}」，
+浏览器标签也使用该名称；未配置时默认“蚂蚁清单”。
+
+`ANTTODO_DEPLOY_MODE` 用于区分 SaaS 与独立部署：`saas` 登录时需要用户填写企业
+Slug；`onPremises` 则从 `/.well-known/anttodo.json` 读取
+`ANTTODO_INSTANCE_ENTERPRISE_SLUG`，登录页不再要求填写。独立部署必须同时配置这两项。
 
 浏览器开发环境可回退到当前 HTTP(S) origin；打包后的 Electron 使用 `file:`
 origin，因此线上构建必须显式配置 `VITE_PUBLIC_APP_URL` 才能复制可公开访问的
@@ -139,6 +154,24 @@ Cloud。推送前：
 2. 确认 `ANTTODO_SUPABASE_SELFHOST_SSH` 已配置。
 3. 检查远端未知对象，禁止删除不属于 AntTodo 的表或函数。
 4. 执行迁移后查询表、RLS、策略和函数状态。
+
+## Ubuntu 独立 Web 实例
+
+Ubuntu 部署套件位于 `deploy/ubuntu/`，默认使用
+`ghcr.io/shenyubao/anttodo-web:latest`，在宿主机监听
+`127.0.0.1:5000`。它只托管 Web 与公开实例清单，不包含或代理 Supabase；TLS
+由外部网关终止，浏览器和桌面客户端按清单直连独立 Supabase。
+
+```bash
+git clone git@github.com:shenyubao/anttodo.git
+cd anttodo/deploy/ubuntu
+cp .env.example .env
+# 填写独立 Supabase URL 与 publishable key
+./deploy.sh
+```
+
+完整环境变量、外部网关和上线检查见
+[`deploy/ubuntu/README.md`](deploy/ubuntu/README.md)。
 
 ## 手机验证码登录
 

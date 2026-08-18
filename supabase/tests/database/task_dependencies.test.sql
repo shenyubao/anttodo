@@ -45,9 +45,9 @@ insert into public.task_labels(task_id, label_id) values
   ('44100000-0000-0000-0000-000000000002', '34100000-0000-0000-0000-000000000001'),
   ('44100000-0000-0000-0000-000000000003', '34100000-0000-0000-0000-000000000001');
 
-insert into public.subtasks(id, task_id, title, position, created_by) values
-  ('54100000-0000-0000-0000-000000000001', '44100000-0000-0000-0000-000000000001', 'Child of successor', 0, '14100000-0000-0000-0000-000000000001'),
-  ('54100000-0000-0000-0000-000000000002', '44100000-0000-0000-0000-000000000002', 'Child of predecessor', 0, '14100000-0000-0000-0000-000000000001');
+insert into public.tasks(id, workspace_id, parent_task_id, title, position, created_by) values
+  ('54100000-0000-0000-0000-000000000001','24100000-0000-0000-0000-000000000001','44100000-0000-0000-0000-000000000001','Child of successor',0,'14100000-0000-0000-0000-000000000001'),
+  ('54100000-0000-0000-0000-000000000002','24100000-0000-0000-0000-000000000001','44100000-0000-0000-0000-000000000002','Child of predecessor',0,'14100000-0000-0000-0000-000000000001');
 
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-000000000001","role":"authenticated"}', true);
@@ -111,22 +111,20 @@ select throws_ok(
     )
   $$,
   '23514',
-  'Dependency would create a cycle',
+  'Task dependency cycle detected',
   'cyclic dependency is rejected'
 );
 
 select lives_ok(
   $$
-    insert into public.task_dependencies(workspace_id, task_id, subtask_id, depends_on_task_id, depends_on_subtask_id)
+    insert into public.task_dependencies(workspace_id, task_id, depends_on_task_id)
     values (
       '24100000-0000-0000-0000-000000000001',
-      '44100000-0000-0000-0000-000000000001',
       '54100000-0000-0000-0000-000000000001',
-      '44100000-0000-0000-0000-000000000002',
       '54100000-0000-0000-0000-000000000002'
     )
   $$,
-  'subtask can depend on another subtask'
+  'a nested task can depend on another nested task'
 );
 
 select throws_ok(
@@ -151,7 +149,7 @@ select is(
     from public.task_dependencies
     where task_id = '44100000-0000-0000-0000-000000000001'
   ),
-  2,
+  1,
   'viewer can select dependencies on a viewable task'
 );
 
@@ -214,33 +212,33 @@ select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-0000000
 
 select lives_ok(
   $$
-    insert into public.task_dependencies(workspace_id, task_id, subtask_id, depends_on_task_id)
+    insert into public.task_dependencies(workspace_id, task_id, depends_on_task_id)
     values (
       '24100000-0000-0000-0000-000000000001',
-      '44100000-0000-0000-0000-000000000001',
       '54100000-0000-0000-0000-000000000001',
       '44100000-0000-0000-0000-000000000003'
     )
   $$,
-  'subtask can depend on a parent task'
+  'a nested task can depend on a root task'
 );
 
 select lives_ok(
   $$
-    delete from public.subtasks where id = '54100000-0000-0000-0000-000000000001'
+    update public.tasks set deleted_at=now() where id='54100000-0000-0000-0000-000000000001';
+    delete from public.tasks where id='54100000-0000-0000-0000-000000000001'
   $$,
-  'deleting a successor subtask is allowed'
+  'deleting a nested successor task is allowed'
 );
 
 select is(
   (
     select count(*)::integer
     from public.task_dependencies
-    where subtask_id = '54100000-0000-0000-0000-000000000001'
-       or depends_on_subtask_id = '54100000-0000-0000-0000-000000000001'
+    where task_id = '54100000-0000-0000-0000-000000000001'
+       or depends_on_task_id = '54100000-0000-0000-0000-000000000001'
   ),
   0,
-  'deleting a subtask cascades its dependency edges'
+  'deleting a nested task cascades its dependency edges'
 );
 
 select * from finish();

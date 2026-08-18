@@ -29,11 +29,11 @@ function waitForWorkerReady(worker, timeoutMs = 8000) {
   });
 }
 
-export async function createLocalStore({ userDataPath }) {
+export async function createLocalStore({ userDataPath, workerUrl = new URL("./sqlite-worker.mjs", import.meta.url) }) {
   const root = path.join(userDataPath, "local-first");
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const databasePath = path.join(root, "anttodo.sqlite");
-  const worker = new Worker(new URL("./sqlite-worker.mjs", import.meta.url), {
+  const worker = new Worker(workerUrl, {
     workerData: { path: databasePath },
     execArgv: process.execArgv.filter((argument) => !argument.startsWith("--input-type")),
   });

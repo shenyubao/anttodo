@@ -35,7 +35,7 @@ import {
   timelineOrigin,
   xToDayOffset,
 } from "./taskTimeline";
-import type { Subtask, Task } from "../types";
+import type { Task } from "../types";
 
 function task(patch: Partial<Task> = {}): Task {
   return {
@@ -66,39 +66,24 @@ function task(patch: Partial<Task> = {}): Task {
     label_ids: [],
     participant_ids: [],
     description_mentions: [],
-    subtasks: [],
+    children: [],
     reminders: [],
     reminder_persistent: false,
     watcher_ids: [],
     ...patch,
+    parent_task_id: patch.parent_task_id ?? null,
+    position: patch.position ?? 0,
   } as Task;
 }
 
-function subtask(patch: Partial<Subtask> = {}): Subtask {
-  return {
+function childTask(patch: Partial<Task> = {}): Task {
+  return task({
     id: "s1",
-    task_id: "t1",
-    parent_subtask_id: null,
-    title: "子任务",
-    description: "",
-    completed: false,
+    parent_task_id: "t1",
+    title: "子级任务",
     position: 0,
-    priority: "none",
-    due_at: null,
-    estimate_hours: null,
-    actual_hours: null,
-    estimate_pomodoros: null,
-    actual_pomodoros: null,
-    assignee_id: null,
-    cli_assignee: null,
-    created_by: "u1",
-    due_start_at: null,
-    due_is_all_day: false,
-    due_timezone: null,
-    reminders: [],
-    reminder_persistent: false,
     ...patch,
-  };
+  });
 }
 
 describe("taskTimeline", () => {
@@ -260,9 +245,7 @@ describe("taskTimeline", () => {
     const edges = [{
       id: "edge",
       task_id: "succ",
-      subtask_id: null,
       depends_on_task_id: "pred",
-      depends_on_subtask_id: null,
     }];
     const packed = packTimelineBarLanes(
       collectTimelineBars([predecessor, unrelated, successor], false),
@@ -290,9 +273,7 @@ describe("taskTimeline", () => {
       null,
       [{
         task_id: "succ",
-        subtask_id: null,
         depends_on_task_id: "pred",
-        depends_on_subtask_id: null,
       }],
     );
     expect(packed.laneCount).toBe(2);
@@ -319,9 +300,7 @@ describe("taskTimeline", () => {
       ],
       [{
         task_id: "succ",
-        subtask_id: null,
         depends_on_task_id: "pred",
-        depends_on_subtask_id: null,
       }],
     );
     expect(groups).toHaveLength(1);
@@ -329,76 +308,94 @@ describe("taskTimeline", () => {
     expect(groups[0]?.bars.map((item) => item.id).sort()).toEqual(["pred", "succ"]);
   });
 
-  it("includes dated subtasks even when the parent has no due date", () => {
+  it("includes dated children even when the parent has no due date", () => {
     const parent = task({
       id: "parent",
       due_at: null,
-      subtasks: [
-        subtask({ id: "dated", task_id: "parent", title: "有日期", due_at: "2026-08-10T12:00:00.000Z" }),
-        subtask({ id: "open", task_id: "parent", title: "无日期", due_at: null }),
+      children: [
+        childTask({ id: "dated", parent_task_id: "parent", title: "有日期", due_at: "2026-08-10T12:00:00.000Z" }),
+        childTask({ id: "open", parent_task_id: "parent", title: "无日期", due_at: null }),
       ],
     });
     const deleted = task({
       id: "gone",
       deleted_at: "2026-08-02T00:00:00.000Z",
-      subtasks: [
-        subtask({ id: "orphan", task_id: "gone", due_at: "2026-08-10T12:00:00.000Z" }),
+      children: [
+        childTask({ id: "orphan", parent_task_id: "gone", due_at: "2026-08-10T12:00:00.000Z" }),
       ],
     });
     const bars = collectTimelineBars([parent, deleted], false);
-    expect(bars.map((item) => item.id)).toEqual(["subtask:dated"]);
-    expect(bars[0]?.kind).toBe("subtask");
+    expect(bars.map((item) => item.id)).toEqual(["dated"]);
+    expect(bars[0]?.kind).toBe("childTask");
     const packed = packTimelineBarLanes(bars, null);
     expect(packed.items).toHaveLength(1);
     expect(packed.items[0]?.range.dayCount).toBe(1);
   });
 
-  it("hides completed parent and subtask bars unless showCompleted", () => {
+  it("hides completed parent and childTask bars unless showCompleted", () => {
     const parent = task({
       id: "parent",
       due_at: "2026-08-09T12:00:00.000Z",
       status: "completed",
-      subtasks: [
-        subtask({
+      children: [
+        childTask({
           id: "done",
-          task_id: "parent",
+          parent_task_id: "parent",
           due_at: "2026-08-10T12:00:00.000Z",
-          completed: true,
+          status: "completed",
         }),
-        subtask({
+        childTask({
           id: "open",
-          task_id: "parent",
+          parent_task_id: "parent",
           due_at: "2026-08-11T12:00:00.000Z",
-          completed: false,
+          status: "open",
         }),
       ],
     });
-    expect(collectTimelineBars([parent], false).map((item) => item.id)).toEqual(["subtask:open"]);
+    expect(collectTimelineBars([parent], false).map((item) => item.id)).toEqual(["open"]);
     expect(collectTimelineBars([parent], true).map((item) => item.id)).toEqual([
       "parent",
-      "subtask:done",
-      "subtask:open",
+      "done",
+      "open",
     ]);
   });
 
-  it("packs a parent task and overlapping subtask into separate lanes", () => {
+  it("packs a parent task and overlapping childTask into separate lanes", () => {
     const parent = task({
       id: "parent",
       title: "主任务",
       due_at: "2026-08-10T02:00:00.000Z",
-      subtasks: [
-        subtask({
+      children: [
+        childTask({
           id: "child",
-          task_id: "parent",
-          title: "子任务",
+          parent_task_id: "parent",
+          title: "子级任务",
           due_at: "2026-08-10T03:00:00.000Z",
         }),
       ],
     });
     const packed = packTimelineBarLanes(collectTimelineBars([parent], false), null);
     expect(packed.laneCount).toBe(2);
-    expect(packed.items.find((item) => item.source.kind === "task")?.lane).toBe(0);
-    expect(packed.items.find((item) => item.source.kind === "subtask")?.lane).toBe(1);
+    expect(packed.items.find((item) => item.source.kind === "task")?.lane).not.toBe(
+      packed.items.find((item) => item.source.kind === "childTask")?.lane,
+    );
+  });
+
+  it("does not draw a nested task twice when it is also in the flat list", () => {
+    const nested = childTask({
+      id: "dated",
+      parent_task_id: "parent",
+      title: "有日期",
+      due_at: "2026-08-10T12:00:00.000Z",
+    });
+    const parent = task({
+      id: "parent",
+      due_at: "2026-08-09T12:00:00.000Z",
+      children: [nested],
+    });
+    const bars = collectTimelineBars([parent, nested], false);
+    expect(bars.map((item) => item.id)).toEqual(["parent", "dated"]);
+    expect(bars.map((item) => item.kind)).toEqual(["task", "childTask"]);
   });
 
   it("defaults label width from the longest group title", () => {
@@ -470,23 +467,17 @@ describe("taskTimeline", () => {
         {
           id: "edge-1",
           task_id: "b",
-          subtask_id: null,
           depends_on_task_id: "a",
-          depends_on_subtask_id: null,
         },
         {
           id: "edge-missing",
           task_id: "c",
-          subtask_id: null,
           depends_on_task_id: "a",
-          depends_on_subtask_id: null,
         },
         {
           id: "edge-sub",
-          task_id: "parent",
-          subtask_id: "s1",
-          depends_on_task_id: "parent",
-          depends_on_subtask_id: "s0",
+          task_id: "s1",
+          depends_on_task_id: "s0",
         },
       ],
     );
@@ -500,15 +491,13 @@ describe("taskTimeline", () => {
     expect(paths[0]?.d).not.toContain(" L ");
     const subPaths = collectTimelineDependencyPaths(
       [
-        timelineBarBox("subtask:s0", { left: 10, width: 40 }, 0, 0),
-        timelineBarBox("subtask:s1", { left: 90, width: 40 }, 0, 1),
+        timelineBarBox("s0", { left: 10, width: 40 }, 0, 0),
+        timelineBarBox("s1", { left: 90, width: 40 }, 0, 1),
       ],
       [{
         id: "edge-sub",
-        task_id: "parent",
-        subtask_id: "s1",
-        depends_on_task_id: "parent",
-        depends_on_subtask_id: "s0",
+        task_id: "s1",
+        depends_on_task_id: "s0",
       }],
     );
     expect(subPaths).toHaveLength(1);

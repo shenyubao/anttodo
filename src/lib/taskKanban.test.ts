@@ -37,10 +37,12 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   updated_at: "2026-08-01T00:00:00.000Z",
   label_ids: [],
   participant_ids: [],
-  subtasks: [],
+  children: [],
   reminders: [],
   reminder_persistent: false,
   ...patch,
+  parent_task_id: patch.parent_task_id ?? null,
+  position: patch.position ?? 0,
   cli_assignee: patch.cli_assignee ?? null,
   estimate_pomodoros: patch.estimate_pomodoros ?? null,
   actual_pomodoros: patch.actual_pomodoros ?? null,
@@ -317,5 +319,17 @@ describe("task kanban", () => {
       now,
       weekStartsOn: 1,
     })).toEqual({ kind: "assignee", assigneeId: null, cliAssignee: "codex" });
+  });
+
+  it("does not surface nested tasks as their own kanban cards", () => {
+    const parent = task("parent", { title: "父任务", label_ids: ["a"] });
+    const child = task("child", {
+      title: "子任务",
+      parent_task_id: "parent",
+      label_ids: ["a"],
+    });
+    const result = columns("label", [parent, child]);
+    const labeled = result.find((column) => column.id === "label:a");
+    expect(labeled?.tasks.map((item) => item.id)).toEqual(["parent"]);
   });
 });

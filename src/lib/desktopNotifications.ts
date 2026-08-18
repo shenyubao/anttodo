@@ -47,9 +47,9 @@ export function scenarioForNotification(
     case "participant_title_changed":
     case "participant_status_changed":
     case "participant_new_comment":
-    case "participant_subtask_created":
-    case "participant_subtask_status_changed":
-    case "participant_subtask_title_changed":
+    case "participant_task_created":
+    case "participant_status_changed":
+    case "participant_title_changed":
       return item.notification_type;
     default:
       return null;
@@ -77,13 +77,13 @@ export function buildDesktopReminderEntries(
         persistent: task.reminder_persistent,
         skip: false,
       },
-      ...task.subtasks.map((subtask) => ({
-        title: subtask.title,
-        body: subtask.description,
-        recipientId: subtask.assignee_id ?? task.assignee_id ?? task.created_by,
-        reminders: subtask.reminders ?? [],
-        persistent: subtask.reminder_persistent,
-        skip: subtask.completed,
+      ...task.children.map((childTask) => ({
+        title: childTask.title,
+        body: childTask.description,
+        recipientId: childTask.assignee_id ?? task.assignee_id ?? task.created_by,
+        reminders: childTask.reminders ?? [],
+        persistent: childTask.reminder_persistent,
+        skip: (childTask.status === "completed"),
       })),
     ];
     for (const source of reminderSources) {

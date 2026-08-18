@@ -26,16 +26,22 @@ export function parseAuthDeepLink(value) {
   }
 }
 
-export function isAllowedDingtalkExternalUrl(value) {
+export function isAllowedDingtalkExternalUrl(
+  value,
+  callbackOrigin = "https://app.anttodo.com",
+  allowLocalHttp = false,
+) {
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.port) {
+    const localHttp = allowLocalHttp
+      && url.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if ((url.protocol !== "https:" && !localHttp) || url.username || url.password) {
       return false;
     }
     return (
-      (url.hostname === "login.dingtalk.com" && url.pathname === "/oauth2/auth") ||
-      (url.hostname === "app.anttodo.com" &&
-        /^\/auth\/dingtalk\/callback\/?$/.test(url.pathname))
+      (url.origin === "https://login.dingtalk.com" && url.pathname === "/oauth2/auth") ||
+      (url.origin === callbackOrigin && /^\/auth\/dingtalk\/callback\/?$/.test(url.pathname))
     );
   } catch {
     return false;

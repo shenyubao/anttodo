@@ -84,6 +84,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type CSSProperties,
   type FormEvent,
   type ReactNode,
@@ -127,19 +128,24 @@ import type {
 } from "./lib/desktopUpdate";
 import { formatUpdateProgressLabel } from "./lib/desktopUpdate";
 import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
-import { createSyncController } from "./lib/local-first/syncController";
+import { createSyncController, flushLocalOperation } from "./lib/local-first/syncController";
 import { createRemoteSyncAdapter, deviceIdForUser, nextDeviceSeq } from "./lib/local-first/remoteSync";
-import { createLocalFirstStore, isLocalFirstHost, offlineCacheBannerText } from "./lib/local-first/localStore";
+import {
+  createLocalFirstStore,
+  isLocalFirstHost,
+  loadLocalFirstSnapshot,
+  offlineCacheBannerText,
+} from "./lib/local-first/localStore";
 import type { LocalCommand } from "./lib/local-first/repository";
 import { IDLE_SYNC_STATUS, type SyncStatus } from "./lib/local-first/types";
 import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
 import {
-  assignSubtask as assignSubtaskApi,
   assignTask as assignTaskApi,
   createTaskComment as createTaskCommentApi,
   createLabelWithAccess as createLabelWithAccessApi,
   createCustomTaskView,
   createTask,
+  moveTask as moveTaskApi,
   createTaskSection,
   createWorkspace,
   deleteWorkspace as deleteWorkspaceApi,
@@ -174,7 +180,6 @@ import {
   saveFocusSettings,
   saveNotificationPreference,
   saveTaskSchedule as saveTaskScheduleApi,
-  saveSubtaskSchedule as saveSubtaskScheduleApi,
   saveTaskListPreference,
   saveTaskSystemViewPreference,
   setTaskListOrder,
@@ -251,26 +256,18 @@ import {
   applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
-  applySubtaskScheduleToBundle,
-  appendSubtaskInBundle,
   appendTaskDependenciesInBundle,
   appendTaskToBundle,
-  createOptimisticSubtask,
   createOptimisticTask,
-  createLocalSubtask,
   createLocalTask,
   createOptimisticTaskSection,
-  findTaskIdForSubtask,
   isOptimisticTaskId,
   normalizeWorkspaceBundle,
-  patchSubtaskInBundle,
   patchTaskInBundle,
   patchTaskSectionInBundle,
-  removeSubtaskFromBundle,
   removeTaskDependencyFromBundle,
   removeTaskFromBundle,
   removeTaskSectionFromBundle,
-  replaceOptimisticSubtask,
   replaceOptimisticTask,
   replaceOptimisticTaskSection,
   sectionIdFromRealtimeChange,
@@ -280,9 +277,10 @@ import {
 import {
   canAddChild,
   childrenOf,
+  isRootTask,
   nextSiblingPosition,
-  visibleFlattenedSubtasks,
-} from "./lib/subtaskTree";
+  visibleFlattenedTasks,
+} from "./lib/taskTree";
 import {
   DEFAULT_TASK_LIST_PREFERENCE,
   applyCustomTaskViewOrder,
@@ -377,6 +375,9 @@ import {
   maskPhone,
   normalizeMainlandPhone,
   phoneAuthErrorMessage,
+  readAuthLoginMode,
+  writeAuthLoginMode,
+  type AuthLoginMode,
 } from "./lib/auth";
 import {
   DEFAULT_LABEL_COLOR,
@@ -401,7 +402,21 @@ import {
   toggleAllUserGroupsInAssigneeFilter,
   toggleUserGroupInAssigneeFilter,
 } from "./lib/calendarVisibility";
-import { hasSupabaseConfig, supabase } from "./lib/supabase";
+import { configureSupabase, hasSupabaseConfig, supabase } from "./lib/supabase";
+import {
+  currentAppUrl,
+  currentAuthBrandTitle,
+  currentBrandName,
+  currentInstanceConfig,
+  instanceStorageKey,
+  isOnPremisesInstance,
+  loginWelcomeTitle,
+  rememberedInstanceConfigs,
+  restoreOfficialService,
+  setActiveInstanceConfig,
+  selectedServiceOrigin,
+  selectCustomService,
+} from "./lib/instanceConfig";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { memberDisplayName } from "./lib/taskTitleTokens";
 import { aiCliLabel, aiWorkSettingsTitleFromEvent, OPEN_AI_WORK_SETTINGS_EVENT, requestAiWorkSettings, stopCliTerminalsForTask } from "./lib/aiWork";
@@ -464,7 +479,6 @@ import type {
   NotificationScenario,
   NotificationType,
   ReminderSchedule,
-  Subtask,
   Task,
   TaskActivityEvent,
   TaskActivityPage,
@@ -919,7 +933,7 @@ function CliAuthorizationScreen({
       <section className="cli-auth-card" aria-live="polite">
         <div className="invite-brand">
           <BrandMark />
-          <span>蚂蚁清单</span>
+          <span>{currentBrandName()}</span>
         </div>
         {state === "loading" ? (
           <div className="invite-loading">正在验证 CLI 授权请求…</div>
@@ -1003,7 +1017,7 @@ function DesktopAuthErrorScreen({
       <section className="auth-card">
         <div className="auth-brand">
           <BrandMark />
-          <div><h1>蚂蚁清单</h1></div>
+          <div><h1>{currentAuthBrandTitle()}</h1></div>
         </div>
         <div className="dingtalk-login" role="alert">
           <strong>钉钉登录失败</strong>
@@ -1093,7 +1107,7 @@ function WorkspaceInviteScreen({
       <section className="invite-card">
         <div className="invite-brand">
           <BrandMark />
-          <span>AntTodo</span>
+          <span>{currentBrandName()}</span>
         </div>
         {previewQuery.isLoading ? (
           <div className="invite-loading">正在读取邀请…</div>
@@ -1102,7 +1116,7 @@ function WorkspaceInviteScreen({
             <Link2 aria-hidden="true" />
             <h1>邀请链接已失效</h1>
             <p>该链接可能已被关闭，请联系团队管理员获取新的邀请。</p>
-            <a className="button secondary full" href="/">返回 AntTodo</a>
+            <a className="button secondary full" href="/">返回 {currentBrandName()}</a>
           </div>
         ) : (
           <>
@@ -1159,21 +1173,51 @@ function BrandMark() {
 }
 
 function MissingConfig() {
+  const customServiceSelected = Boolean(window.anttodoDesktop)
+    && selectedServiceOrigin() !== "https://app.anttodo.com";
+  const instanceManifestUnavailable = customServiceSelected || (
+    !import.meta.env.VITE_SUPABASE_URL
+    && ["http:", "https:"].includes(window.location.protocol)
+    && window.location.origin !== "https://app.anttodo.com"
+  );
+  function retryService() {
+    window.location.reload();
+  }
+  function resetService() {
+    restoreOfficialService();
+    void window.anttodoDesktop?.auth.setServiceOrigin("https://app.anttodo.com").finally(() => {
+      window.location.reload();
+    });
+  }
   return (
     <main className="auth-screen">
       <section className="auth-card">
         <div className="auth-brand">
           <BrandMark />
           <div>
-            <h1>AntTodo</h1>
+            <h1>{currentAuthBrandTitle()}</h1>
             <p>团队任务，清晰推进</p>
           </div>
         </div>
         <div className="empty-state compact">
           <CloudOff size={30} />
-          <h2>缺少 Supabase 配置</h2>
-          <p>复制 .env.example 为 .env.local，并填写项目 URL 与 publishable key。</p>
+          <h2>{instanceManifestUnavailable ? "无法连接所选服务" : "缺少 Supabase 配置"}</h2>
+          <p>{instanceManifestUnavailable
+            ? "服务配置不可用，请检查网络后重试。桌面端也可以恢复 AntTodo 官方服务。"
+            : "复制 .env.example 为 .env.local，并填写项目 URL 与 publishable key。"}</p>
         </div>
+        {instanceManifestUnavailable && (
+          <div className="auth-service-actions">
+            <button type="button" className="button primary" onClick={retryService}>
+              重试
+            </button>
+            {customServiceSelected && (
+              <button type="button" className="button secondary" onClick={resetService}>
+                恢复官方服务
+              </button>
+            )}
+          </div>
+        )}
         <a className="button secondary full" href="?demo=1">
           先查看产品演示
         </a>
@@ -1279,7 +1323,7 @@ function DingtalkCallbackScreen() {
         <div className="auth-brand">
           <BrandMark />
           <div>
-            <h1>蚂蚁清单</h1>
+            <h1>{currentAuthBrandTitle()}</h1>
           </div>
         </div>
         {error ? (
@@ -1293,9 +1337,9 @@ function DingtalkCallbackScreen() {
         ) : nativeDeepLink ? (
           <div className="dingtalk-login">
             <strong>授权已完成</strong>
-            <p>蚂蚁清单应已自动打开。若没有反应，请点击下方按钮返回客户端。</p>
+            <p>{currentBrandName()}应已自动打开。若没有反应，请点击下方按钮返回客户端。</p>
             <a className="button primary full" href={nativeDeepLink}>
-              打开蚂蚁清单
+              打开{currentBrandName()}
             </a>
           </div>
         ) : (
@@ -1396,7 +1440,11 @@ function AuthScreen({
   const teamEntry = loginSurface === "team-sso";
   const [clientTeamEntry, setClientTeamEntry] = useState(false);
   const ssoEntry = teamEntry || clientTeamEntry;
-  const [activeMode, setActiveMode] = useState<"account" | "enterprise">("account");
+  const [activeMode, setActiveMode] = useState<AuthLoginMode>(
+    () => (showModeTabs ? readAuthLoginMode() : "account"),
+  );
+  const ignoreAuthTabClickRef = useRef(false);
+  const ignoreAuthTabClickTimerRef = useRef(0);
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [phone, setPhone] = useState("");
   const [sentPhone, setSentPhone] = useState("");
@@ -1405,19 +1453,109 @@ function AuthScreen({
   const [phoneError, setPhoneError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [enterpriseSlug, setEnterpriseSlug] = useState("");
+  const instanceConfig = currentInstanceConfig();
+  const onPremisesLogin = isOnPremisesInstance(instanceConfig);
+  const [enterpriseSlug, setEnterpriseSlug] = useState(
+    instanceConfig?.workspaceSlug ?? "",
+  );
   const [enterpriseError, setEnterpriseError] = useState("");
   const [ssoLogin, setSsoLogin] = useState<WorkspaceSsoLoginConfig | null>(null);
   const [selectedProvider, setSelectedProvider] =
     useState<WorkspaceSsoLoginProvider | null>(null);
   const [ssoError, setSsoError] = useState("");
   const [ssoLoading, setSsoLoading] = useState(teamEntry);
+  const [serviceChoice, setServiceChoice] = useState(
+    instanceConfig && !instanceConfig.official ? instanceConfig.appUrl : "official",
+  );
+  const [rememberedServices, setRememberedServices] = useState(() => rememberedInstanceConfigs());
+  const [serviceUrl, setServiceUrl] = useState(
+    instanceConfig && !instanceConfig.official ? instanceConfig.appUrl : "",
+  );
+  const [serviceBusy, setServiceBusy] = useState(false);
+  const [serviceError, setServiceError] = useState("");
+  const serviceSwitchDisabled = serviceBusy || busy || step === "otp" || ssoLoading;
   const dingtalkConfig = selectedProvider?.provider === "dingtalk"
     ? selectedProvider.config
     : null;
   const providerRenderer = selectedProvider
     ? SSO_PROVIDER_RENDERERS[selectedProvider.provider]
     : null;
+
+  useEffect(() => {
+    return () => window.clearTimeout(ignoreAuthTabClickTimerRef.current);
+  }, []);
+
+  async function connectService(value: string) {
+    if (showModeTabs) writeAuthLoginMode(activeMode);
+    setServiceBusy(true);
+    setServiceError("");
+    try {
+      const config = await selectCustomService(value);
+      setRememberedServices(rememberedInstanceConfigs());
+      const accepted = await window.anttodoDesktop?.auth.setServiceOrigin(config.appUrl);
+      if (accepted === false) throw new Error("桌面客户端拒绝了该服务地址。");
+      window.location.reload();
+    } catch (error) {
+      setServiceChoice("custom");
+      setServiceUrl(value);
+      setServiceError(error instanceof Error ? error.message : "无法连接此服务。");
+      setServiceBusy(false);
+    }
+  }
+
+  async function activateLoginService() {
+    if (serviceChoice !== "custom") return true;
+    setServiceBusy(true);
+    setServiceError("");
+    try {
+      const config = await selectCustomService(serviceUrl);
+      const accepted = await window.anttodoDesktop?.auth.setServiceOrigin(config.appUrl);
+      if (accepted === false) throw new Error("桌面客户端拒绝了该服务地址。");
+      setActiveInstanceConfig(config);
+      configureSupabase(config);
+      setRememberedServices(rememberedInstanceConfigs());
+      setServiceChoice(config.appUrl);
+      setEnterpriseSlug(config.workspaceSlug ?? "");
+      return true;
+    } catch (error) {
+      setServiceError(error instanceof Error ? error.message : "无法连接此服务。");
+      return false;
+    } finally {
+      setServiceBusy(false);
+    }
+  }
+
+  function ignoreAuthTabClicks() {
+    ignoreAuthTabClickRef.current = true;
+    window.clearTimeout(ignoreAuthTabClickTimerRef.current);
+    ignoreAuthTabClickTimerRef.current = window.setTimeout(() => {
+      ignoreAuthTabClickRef.current = false;
+    }, 500);
+  }
+
+  function handleServiceSelection(event: ChangeEvent<HTMLSelectElement>) {
+    ignoreAuthTabClicks();
+    const value = event.target.value;
+    setServiceChoice(value);
+    setServiceError("");
+    if (value === "custom") {
+      setServiceUrl(instanceConfig && !instanceConfig.official ? instanceConfig.appUrl : "");
+      return;
+    }
+    if (value === "official") {
+      if (!instanceConfig?.official) void switchToOfficialService();
+      return;
+    }
+    setServiceUrl(value);
+    if (value !== instanceConfig?.appUrl) void connectService(value);
+  }
+
+  async function switchToOfficialService() {
+    if (showModeTabs) writeAuthLoginMode(activeMode);
+    restoreOfficialService();
+    await window.anttodoDesktop?.auth.setServiceOrigin("https://app.anttodo.com");
+    window.location.reload();
+  }
 
   useEffect(() => {
     if (countdown <= 0) return;
@@ -1509,7 +1647,6 @@ function AuthScreen({
   }, [ssoEntry, dingtalkConfig]);
 
   async function sendCode() {
-    if (!supabase) return;
     const normalizedPhone = normalizeMainlandPhone(phone);
     if (!normalizedPhone) {
       setPhoneError("请输入正确的 11 位中国大陆手机号。");
@@ -1518,6 +1655,15 @@ function AuthScreen({
     setBusy(true);
     setPhoneError("");
     setMessage("");
+    if (!(await activateLoginService())) {
+      setBusy(false);
+      return;
+    }
+    if (!supabase) {
+      setPhoneError("当前服务尚未配置完成，请稍后重试。");
+      setBusy(false);
+      return;
+    }
     const { error: sendError } = await supabase.auth.signInWithOtp({
       phone: normalizedPhone,
       options: {
@@ -1598,18 +1744,28 @@ function AuthScreen({
     );
   }
 
-  function openEnterpriseLogin(event: FormEvent) {
+  async function openEnterpriseLogin(event: FormEvent) {
     event.preventDefault();
-    const normalizedSlug = normalizeWorkspaceSlug(enterpriseSlug);
+    const onPremises = onPremisesLogin;
+    const normalizedSlug = normalizeWorkspaceSlug(
+      onPremises
+        ? instanceConfig?.workspaceSlug ?? ""
+        : instanceConfig?.workspaceSlug ?? enterpriseSlug,
+    );
+    if (onPremises && !normalizedSlug) {
+      setEnterpriseError("当前独立部署未配置企业登录，请联系管理员。");
+      return;
+    }
     const validationError = workspaceSlugValidationMessage(normalizedSlug);
     if (validationError) {
       setEnterpriseError(validationError);
       return;
     }
+    if (!(await activateLoginService())) return;
     const loginUrl = buildWorkspaceTeamLoginUrl(
       normalizedSlug,
       !["http:", "https:"].includes(window.location.protocol)
-        ? import.meta.env.VITE_PUBLIC_APP_URL
+        ? currentAppUrl()
         : undefined,
       window.location.origin,
     );
@@ -1626,13 +1782,21 @@ function AuthScreen({
     }
   }
 
-  function selectAuthMode(mode: "account" | "enterprise", focus = false) {
+  function selectAuthMode(mode: AuthLoginMode, focus = false) {
+    if (!focus && ignoreAuthTabClickRef.current) return;
     setActiveMode(mode);
+    if (showModeTabs) writeAuthLoginMode(mode);
     if (focus) {
       window.requestAnimationFrame(() => {
         document.getElementById(`auth-tab-${mode}`)?.focus();
       });
     }
+  }
+
+  function handleAuthTabPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!ignoreAuthTabClickRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   function handleAuthTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -1702,7 +1866,7 @@ function AuthScreen({
       {phoneError && <p className="form-error" role="alert">{phoneError}</p>}
       {message && <p className="form-success" role="status">{message}</p>}
       <button className="button primary full" disabled={busy}>
-        {busy ? "请稍候…" : step === "phone" ? "获取验证码" : "登录 AntTodo"}
+        {busy ? "请稍候…" : step === "phone" ? "获取验证码" : `登录${currentBrandName()}`}
       </button>
       {step === "otp" && (
         <button
@@ -1717,13 +1881,63 @@ function AuthScreen({
     </form>
   );
 
+  const serviceSelector = window.anttodoDesktop && !ssoEntry ? (
+    <section className="auth-service" aria-label="登录服务">
+      <label className="auth-service-picker">
+        <span>当前服务</span>
+        <select
+          value={serviceChoice}
+          onChange={handleServiceSelection}
+          disabled={serviceSwitchDisabled}
+          aria-label="当前服务"
+        >
+          <option value="official">官方平台</option>
+          {rememberedServices.map((service) => (
+            <option key={service.appUrl} value={service.appUrl}>
+              {service.displayName}
+            </option>
+          ))}
+          <option value="custom">自定义平台</option>
+        </select>
+      </label>
+      {serviceChoice === "custom" && (
+        <div className="auth-service-form">
+          <label>
+            <span>平台地址</span>
+            <input
+              type="text"
+              inputMode="url"
+              value={serviceUrl}
+              onChange={(event) => {
+                setServiceUrl(event.target.value);
+                if (serviceError) setServiceError("");
+              }}
+              placeholder="https://todo.yuce-tech.cn"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              required
+              disabled={serviceSwitchDisabled}
+            />
+          </label>
+          {serviceError && <p className="form-error" role="alert">{serviceError}</p>}
+          {!instanceConfig?.official && (
+            <button type="button" className="auth-text-button" disabled={serviceSwitchDisabled} onClick={() => void switchToOfficialService()}>
+              恢复官方服务
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  ) : null;
+
   return (
     <main className="auth-screen">
       <section className="auth-card">
         <div className="auth-brand">
           <BrandMark />
           <div>
-            <h1>蚂蚁清单</h1>
+            <h1>{loginWelcomeTitle(serviceChoice)}</h1>
             {ssoEntry && ssoLogin?.workspace.name ? (
               <p>{ssoLogin.workspace.name}</p>
             ) : null}
@@ -1740,6 +1954,7 @@ function AuthScreen({
               aria-controls="auth-panel-account"
               tabIndex={activeMode === "account" ? 0 : -1}
               className={activeMode === "account" ? "active" : undefined}
+              onPointerDown={handleAuthTabPointerDown}
               onClick={() => selectAuthMode("account")}
               onKeyDown={handleAuthTabKeyDown}
             >
@@ -1753,6 +1968,7 @@ function AuthScreen({
               aria-controls="auth-panel-enterprise"
               tabIndex={activeMode === "enterprise" ? 0 : -1}
               className={activeMode === "enterprise" ? "active" : undefined}
+              onPointerDown={handleAuthTabPointerDown}
               onClick={() => selectAuthMode("enterprise")}
               onKeyDown={handleAuthTabKeyDown}
             >
@@ -1760,6 +1976,7 @@ function AuthScreen({
             </button>
           </div>
         )}
+        {serviceSelector}
         {!ssoEntry && activeMode === "account" ? (
           <div
             id="auth-panel-account"
@@ -1781,30 +1998,43 @@ function AuthScreen({
               onSubmit={openEnterpriseLogin}
               aria-label="企业联合登录"
             >
-              <div className="enterprise-login-intro">
-                <strong>进入企业登录入口</strong>
-                <p>输入企业为你提供的唯一 Slug，确认后将跳转到企业专属登录地址。</p>
-              </div>
-              <label>
-                <span>企业 Slug</span>
-                <input
-                  value={enterpriseSlug}
-                  onChange={(event) => {
-                    setEnterpriseSlug(event.target.value);
-                    if (enterpriseError) setEnterpriseError("");
-                  }}
-                  placeholder="例如 yucekj"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  autoFocus
-                  required
-                />
-              </label>
+              {onPremisesLogin ? (
+                instanceConfig?.workspaceSlug ? (
+                  <p className="auth-enterprise-hint">
+                    已从当前服务自动识别企业，无需填写 Slug。
+                  </p>
+                ) : (
+                  <p className="form-error" role="alert">
+                    当前独立部署未配置企业登录，请联系管理员。
+                  </p>
+                )
+              ) : (
+                <label>
+                  <span>企业 Slug</span>
+                  <input
+                    value={enterpriseSlug}
+                    onChange={(event) => {
+                      setEnterpriseSlug(event.target.value);
+                      if (enterpriseError) setEnterpriseError("");
+                    }}
+                    placeholder="例如 yucekj"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoFocus
+                    required
+                  />
+                </label>
+              )}
               {enterpriseError && (
                 <p className="form-error" role="alert">{enterpriseError}</p>
               )}
-              <button className="button primary full">确认并继续</button>
+              <button
+                className="button primary full"
+                disabled={onPremisesLogin && !instanceConfig?.workspaceSlug}
+              >
+                确认并继续
+              </button>
             </form>
           </div>
         ) : (
@@ -1849,7 +2079,7 @@ function AuthScreen({
                 <strong>暂时无法登录</strong>
                 <p>该企业尚未启用可用的联合登录，或企业访问地址无效。请联系管理员。</p>
                 {ssoError && <p className="form-error" role="alert">{ssoError}</p>}
-                <a className="button secondary full" href={import.meta.env.VITE_PUBLIC_APP_URL || "/"}>
+                <a className="button secondary full" href={currentAppUrl() || "/"}>
                   返回主站登录
                 </a>
               </>
@@ -1891,9 +2121,10 @@ function RemoteApplication({
   const client = supabase!;
   const queryClient = useQueryClient();
   const online = useOnline();
+  const instanceNamespace = currentInstanceConfig()?.namespace ?? "official";
   const localStore = useMemo(
-    () => createLocalFirstStore(userId, isLocalFirstHost()),
-    [userId],
+    () => createLocalFirstStore(userId, isLocalFirstHost(), instanceNamespace),
+    [instanceNamespace, userId],
   );
   const localWritable = online || localStore.enabled;
   useEffect(() => {
@@ -1904,8 +2135,8 @@ function RemoteApplication({
     [client],
   );
   const remoteSync = useMemo(
-    () => createRemoteSyncAdapter(client, userId, localStore),
-    [client, localStore, userId],
+    () => createRemoteSyncAdapter(client, userId, localStore, instanceNamespace),
+    [client, instanceNamespace, localStore, userId],
   );
   const runRemoteSync = useMemo(
     () => async (targetWorkspaceId: string, reason: import("./lib/local-first/types").SyncReason) => {
@@ -1977,33 +2208,47 @@ function RemoteApplication({
   const realtimeRefreshTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const taskPageOffsetRef = useRef(0);
   const taskPageWorkspaceRef = useRef<string | null>(null);
+  const workspacesHydratedRef = useRef(false);
+  const bundleHydratedWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const [tasksHasMore, setTasksHasMore] = useState(false);
   const [tasksLoadingMore, setTasksLoadingMore] = useState(false);
 
   useEffect(() => {
     if (workspaceId) {
-      window.localStorage.setItem("anttodo:last-workspace-id", workspaceId);
+      window.localStorage.setItem(instanceStorageKey("anttodo:last-workspace-id"), workspaceId);
     }
   }, [workspaceId]);
 
   const workspacesQuery = useQuery({
     queryKey: ["workspaces", userId],
     queryFn: async () => {
-      if (localStore.enabled) {
-        const cached = await localStore.getWorkspaces();
-        if (cached?.length) return cached;
-      }
-      try {
-        const value = await loadWorkspaces(client, userId);
-        await localStore.saveWorkspaces(value);
-        window.localStorage.setItem(`anttodo:workspaces:${userId}`, JSON.stringify(value));
-        return value;
-      } catch (error) {
-        if (!localStore.enabled || online) throw error;
-        const cached = window.localStorage.getItem(`anttodo:workspaces:${userId}`);
-        if (!cached) throw error;
-        return JSON.parse(cached) as Workspace[];
-      }
+      await localStore.open();
+      const legacyKey = instanceStorageKey(`anttodo:workspaces:${userId}`);
+      const value = await loadLocalFirstSnapshot({
+        localEnabled: localStore.enabled,
+        online,
+        preferLocal: !workspacesHydratedRef.current,
+        readLocal: async () => {
+          const cached = await localStore.getWorkspaces();
+          if (cached?.length) return cached;
+          const legacy = window.localStorage.getItem(legacyKey);
+          if (!legacy) return null;
+          try {
+            return JSON.parse(legacy) as Workspace[];
+          } catch {
+            window.localStorage.removeItem(legacyKey);
+            return null;
+          }
+        },
+        readRemote: async () => {
+          const remote = await loadWorkspaces(client, userId);
+          window.localStorage.setItem(legacyKey, JSON.stringify(remote));
+          return remote;
+        },
+        writeLocal: (remote) => localStore.saveWorkspaces(remote),
+      });
+      workspacesHydratedRef.current = true;
+      return value;
     },
     meta: { localFirst: localStore.enabled },
   });
@@ -2066,7 +2311,7 @@ function RemoteApplication({
     const routeWorkspace = workspacesQuery.data.find(
       (workspace) => workspace.id === requestedWorkspaceId,
     );
-    const lastWorkspaceId = window.localStorage.getItem("anttodo:last-workspace-id");
+    const lastWorkspaceId = window.localStorage.getItem(instanceStorageKey("anttodo:last-workspace-id"));
     const lastWorkspace = workspacesQuery.data.find(
       (workspace) => workspace.id === lastWorkspaceId,
     );
@@ -2104,20 +2349,23 @@ function RemoteApplication({
     queryKey: ["workspace-bundle", workspaceId],
     queryFn: async () => {
       await localStore.open();
-      if (localStore.enabled) {
-        const cached = await localStore.getBundle(workspaceId!);
-        if (cached) return cached;
-      }
-      try {
-        const value = await loadWorkspaceBundle(client, workspaceId!);
-        await localStore.saveBundle(workspaceId!, value);
-        return value;
-      } catch (error) {
-        if (!localStore.enabled || online) throw error;
-        const cached = await localStore.getBundle(workspaceId!);
-        if (!cached) throw error;
-        return cached;
-      }
+      const targetWorkspaceId = workspaceId!;
+      const hydrated = bundleHydratedWorkspaceIdsRef.current.has(targetWorkspaceId);
+      // A remote refetch must not replace task changes that are still queued locally.
+      const pendingLocalWrites = localStore.enabled && online && hydrated
+        ? (await localStore.listPending(targetWorkspaceId)).length > 0
+        : false;
+      const value = await loadLocalFirstSnapshot({
+        localEnabled: localStore.enabled,
+        online,
+        preferLocal: !hydrated,
+        pendingLocalWrites,
+        readLocal: () => localStore.getBundle(targetWorkspaceId),
+        readRemote: () => loadWorkspaceBundle(client, targetWorkspaceId),
+        writeLocal: (remote) => localStore.saveBundle(targetWorkspaceId, remote),
+      });
+      bundleHydratedWorkspaceIdsRef.current.add(targetWorkspaceId);
+      return value;
     },
     enabled: Boolean(workspaceId),
     select: normalizeWorkspaceBundle,
@@ -2316,7 +2564,6 @@ function RemoteApplication({
             table === "tasks"
             || table === "task_labels"
             || table === "task_list_placements"
-            || table === "subtasks"
             || table === "task_reminders"
             || table === "task_reminder_settings"
             || table === "task_dependencies"
@@ -2404,6 +2651,22 @@ function RemoteApplication({
   const activeWorkspaceId = workspaceId;
   const activeBundle = bundleQuery.data;
 
+  async function persistCurrentWorkspaceBundle(targetWorkspaceId = activeWorkspaceId) {
+    if (!localStore.enabled) return;
+    const current = queryClient.getQueryData<WorkspaceBundle>([
+      "workspace-bundle",
+      targetWorkspaceId,
+    ]);
+    if (!current) return;
+    try {
+      await localStore.saveBundle(targetWorkspaceId, current);
+    } catch (error) {
+      setNotice(error instanceof Error
+        ? `云端已保存，但本地缓存更新失败：${error.message}`
+        : "云端已保存，但本地缓存更新失败");
+    }
+  }
+
   async function loadMoreTasks() {
     if (tasksLoadingMore || !tasksHasMore) return;
     setTasksLoadingMore(true);
@@ -2465,8 +2728,8 @@ function RemoteApplication({
     const command: LocalCommand = {
       operationId: crypto.randomUUID(),
       workspaceId: activeWorkspaceId,
-      deviceId: deviceIdForUser(userId),
-      deviceSeq: nextDeviceSeq(userId),
+      deviceId: deviceIdForUser(userId, instanceNamespace),
+      deviceSeq: nextDeviceSeq(userId, instanceNamespace),
       entityType: input.entityType,
       entityId: input.entityId,
       baseVersion: input.baseVersion ?? null,
@@ -2498,13 +2761,20 @@ function RemoteApplication({
     const normalizedPatch: Partial<Task> = patch.kind === "note"
       ? { ...patch, assignee_id: null, cli_assignee: null }
       : patch;
+    const moving = normalizedPatch.parent_task_id !== undefined;
+    const nextParentTaskId = normalizedPatch.parent_task_id ?? null;
+    const nextPosition = normalizedPatch.position ?? current?.position ?? 0;
     const payload: Record<string, unknown> = { ...normalizedPatch };
     delete payload.label_ids;
-    delete payload.subtasks;
+    delete payload.children;
     delete payload.reminders;
     delete payload.reminder_persistent;
     delete payload.recurrence;
     delete payload.description_mentions;
+    if (moving) {
+      delete payload.parent_task_id;
+      delete payload.position;
+    }
     const mentionedUserIds = options?.mentionedUserIds;
     const descriptionUpdate = typeof payload.description === "string"
       && mentionedUserIds !== undefined
@@ -2516,7 +2786,7 @@ function RemoteApplication({
     if (descriptionUpdate) delete payload.description;
 
     if (current && payload.status === "completed" && current.status !== "completed") {
-      stopCliTerminalsForTask(taskId, current.subtasks.map((subtask) => subtask.id));
+      stopCliTerminalsForTask(taskId, current.children.map((childTask) => childTask.id));
     }
 
     const shouldRoll = Boolean(
@@ -2536,7 +2806,7 @@ function RemoteApplication({
           }))
       : null;
     const nextBundle: WorkspaceBundle | null = previous
-      ? {
+      ? normalizeWorkspaceBundle({
           ...previous,
           tasks: previous.tasks.map((task) => {
             if (task.id !== taskId) return task;
@@ -2555,8 +2825,8 @@ function RemoteApplication({
                   ...normalizedPatch,
                   ...(nextDescriptionMentions ? { description_mentions: nextDescriptionMentions } : {}),
                   ...(normalizedPatch.kind === "note" ? {
-                    subtasks: task.subtasks.map((subtask) => ({
-                      ...subtask,
+                    children: task.children.map((childTask) => ({
+                      ...childTask,
                       assignee_id: null,
                       cli_assignee: null,
                     })),
@@ -2565,16 +2835,19 @@ function RemoteApplication({
                   version: task.version + 1,
                 };
           }),
-        }
+        })
       : null;
     rememberLocalRealtimeChanges("tasks", [taskId]);
     if (localStore.enabled) {
       if (!nextBundle) throw new Error("本地工作区尚未加载");
       await enqueueLocalOperation({
-        entityType: "tasks",
+        entityType: moving ? "task_move" : "tasks",
         entityId: taskId,
         baseVersion: current?.version ?? null,
-        payload: {
+        payload: moving ? {
+          parentTaskId: nextParentTaskId,
+          position: nextPosition,
+        } : {
           ...payload,
           ...(descriptionUpdate ? {
             description: descriptionUpdate.description,
@@ -2588,6 +2861,9 @@ function RemoteApplication({
     }
     queryClient.setQueryData(queryKey, nextBundle);
     try {
+      if (moving) {
+        await moveTaskApi(client, taskId, nextParentTaskId, nextPosition);
+      }
       if (descriptionUpdate) {
         await updateTaskDescriptionApi(client, {
           taskId,
@@ -2653,54 +2929,12 @@ function RemoteApplication({
     }
   }
 
-  async function saveSubtaskSchedule(
-    subtaskId: string,
+  async function saveChildTaskSchedule(
+    taskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) {
-    const queryKey = ["workspace-bundle", activeWorkspaceId];
-    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const taskId = previous ? findTaskIdForSubtask(previous, subtaskId) : null;
-    if (taskId) {
-      rememberLocalRealtimeChanges("subtasks", [taskId]);
-      rememberLocalRealtimeChanges("task_reminders", [taskId]);
-    }
-    if (localStore.enabled) {
-      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-        bundle ? applySubtaskScheduleToBundle(bundle, subtaskId, patch, {
-          reminders: [],
-          reminderPersistent: schedule.persistent,
-        }) : bundle,
-      );
-      await enqueueLocalOperation({
-        entityType: "subtask_schedule",
-        entityId: subtaskId,
-        payload: { ...patch, schedule: { ...schedule, recurrence: null } },
-      });
-      return;
-    }
-    try {
-      const reminders = await saveSubtaskScheduleApi(client, subtaskId, patch, {
-        ...schedule,
-        recurrence: null,
-      });
-      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-        bundle
-          ? applySubtaskScheduleToBundle(bundle, subtaskId, patch, {
-              reminders,
-              reminderPersistent: schedule.persistent && reminders.length > 0,
-            })
-          : bundle,
-      );
-    } catch (error) {
-      queryClient.setQueryData(queryKey, previous);
-      throw error;
-    }
-    if (schedule.reminders.length > 0 && !window.anttodoDesktop) {
-      void ensureWebPushSubscription(client).catch((cause) => {
-        setNotice(cause instanceof Error ? cause.message : "浏览器通知订阅失败");
-      });
-    }
+    return saveTaskSchedule(taskId, patch, { ...schedule, recurrence: null });
   }
 
   async function assignTask(taskId: string, target: AssigneeTarget) {
@@ -2950,47 +3184,51 @@ function RemoteApplication({
     await refresh();
   }
 
-  async function createSubtask(
+  async function createChildTask(
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
+    extras?: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_task_id">>,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const task = previous?.tasks.find((item) => item.id === taskId);
-    const parentSubtaskId = extras?.parent_subtask_id ?? null;
-    if (parentSubtaskId && task && !canAddChild(task.subtasks, parentSubtaskId)) {
-      throw new Error("子任务最多嵌套到 5 级");
+    const parentChildTaskId = extras?.parent_task_id ?? null;
+    const parentTaskId = parentChildTaskId ?? taskId;
+    if (previous && !canAddChild(previous.tasks, parentTaskId)) {
+      throw new Error("子级任务最多嵌套到 5 级");
     }
-    const position = task ? nextSiblingPosition(task.subtasks, parentSubtaskId) : 0;
+    const position = previous ? nextSiblingPosition(previous.tasks, parentTaskId) : 0;
     if (localStore.enabled) {
-      const localSubtask = createLocalSubtask({
-        taskId,
+      const localChildTask = {
+        ...createLocalTask({
+        workspaceId: activeWorkspaceId,
         userId,
         title,
+        labelIds: [],
         position,
-        parentSubtaskId,
+        parentTaskId,
         priority: extras?.priority ?? "none",
         dueAt: extras?.due_at ?? null,
-        dueStartAt: extras?.due_start_at ?? null,
-        dueIsAllDay: extras?.due_is_all_day ?? false,
         dueTimezone: extras?.due_timezone ?? null,
         assigneeId: extras?.assignee_id ?? null,
-        cliAssignee: extras?.cli_assignee ?? null,
-      });
+        }),
+        due_start_at: extras?.due_start_at ?? null,
+        due_is_all_day: extras?.due_is_all_day ?? false,
+        cli_assignee: extras?.cli_assignee ?? null,
+      };
       const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-      const next = current ? appendSubtaskInBundle(current, taskId, localSubtask) : current;
+      const next = current ? appendTaskToBundle(current, localChildTask) : current;
       if (!next) throw new Error("本地工作区尚未加载");
-      rememberLocalRealtimeChanges("subtasks", [taskId]);
+      rememberLocalRealtimeChanges("tasks", [localChildTask.id]);
       await enqueueLocalOperation({
-        entityType: "subtasks",
-        entityId: localSubtask.id,
+        entityType: "tasks",
+        entityId: localChildTask.id,
         bundle: next,
         payload: {
-          taskId,
+          workspace_id: activeWorkspaceId,
+          parent_task_id: parentTaskId,
           title,
-          position: localSubtask.position,
-          parent_subtask_id: parentSubtaskId,
+          position: localChildTask.position,
           priority: extras?.priority ?? "none",
           due_at: extras?.due_at ?? null,
           due_start_at: extras?.due_start_at ?? null,
@@ -3003,196 +3241,100 @@ function RemoteApplication({
       queryClient.setQueryData(queryKey, next);
       return;
     }
-    const optimistic = createOptimisticSubtask({
-      taskId,
+    const optimistic = {
+      ...createOptimisticTask({
+      workspaceId: activeWorkspaceId,
       userId,
       optimisticId: crypto.randomUUID(),
       title,
+      labelIds: [],
       position,
-      parentSubtaskId,
+      parentTaskId,
       priority: extras?.priority ?? "none",
       dueAt: extras?.due_at ?? null,
-      dueStartAt: extras?.due_start_at ?? null,
-      dueIsAllDay: extras?.due_is_all_day ?? false,
       dueTimezone: extras?.due_timezone ?? null,
       assigneeId: extras?.assignee_id ?? null,
-      cliAssignee: extras?.cli_assignee ?? null,
-    });
+      }),
+      due_start_at: extras?.due_start_at ?? null,
+      due_is_all_day: extras?.due_is_all_day ?? false,
+      cli_assignee: extras?.cli_assignee ?? null,
+    };
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? appendSubtaskInBundle(bundle, taskId, optimistic) : bundle,
+      bundle ? appendTaskToBundle(bundle, optimistic) : bundle,
     );
-    rememberLocalRealtimeChanges("subtasks", [taskId]);
+    rememberLocalRealtimeChanges("tasks", [optimistic.id]);
     try {
-      const { data, error } = await client.from("subtasks").insert({
-        id: optimistic.id,
-        task_id: taskId,
-        parent_subtask_id: parentSubtaskId,
+      const data = await createTask(client, {
+        workspaceId: activeWorkspaceId,
         title,
+        labelIds: [],
+        parentTaskId,
         position: optimistic.position,
-        created_by: userId,
         priority: extras?.priority ?? "none",
-        due_at: extras?.due_at ?? null,
-        due_start_at: extras?.due_start_at ?? null,
-        due_is_all_day: extras?.due_is_all_day ?? false,
-        due_timezone: extras?.due_timezone ?? null,
-        assignee_id: extras?.assignee_id ?? null,
-        cli_assignee: extras?.cli_assignee ?? null,
-      }).select("*").single();
-      if (error) throw error;
+        dueAt: extras?.due_at ?? null,
+        dueTimezone: extras?.due_timezone ?? null,
+      });
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
         bundle
-          ? replaceOptimisticSubtask(bundle, taskId, optimistic.id, {
-              ...(data as Subtask),
-              parent_subtask_id: parentSubtaskId,
+          ? replaceOptimisticTask(bundle, optimistic.id, {
+              ...data,
+              parent_task_id: parentTaskId,
               due_start_at: extras?.due_start_at ?? null,
               due_is_all_day: extras?.due_is_all_day ?? false,
               due_timezone: extras?.due_timezone ?? null,
               reminders: [],
               reminder_persistent: false,
-            })
+            }, [])
           : bundle,
       );
     } catch (error) {
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-        bundle ? removeSubtaskFromBundle(bundle, optimistic.id) : bundle,
+        bundle ? removeTaskFromBundle(bundle, optimistic.id) : bundle,
       );
       throw error;
     }
   }
 
-  async function toggleSubtask(subtaskId: string, completed: boolean) {
-    const queryKey = ["workspace-bundle", activeWorkspaceId];
-    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const taskId = previous ? findTaskIdForSubtask(previous, subtaskId) : null;
-    if (taskId) rememberLocalRealtimeChanges("subtasks", [taskId]);
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? patchSubtaskInBundle(bundle, subtaskId, { completed }) : bundle,
-    );
-    if (localStore.enabled) {
-      await enqueueLocalOperation({
-        entityType: "subtasks",
-        entityId: subtaskId,
-        payload: { completed },
-      });
-      return;
-    }
-    const { error } = await client
-      .from("subtasks")
-      .update({ completed })
-      .eq("id", subtaskId);
-    if (error) {
-      queryClient.setQueryData(queryKey, previous);
-      setNotice(error.message || "子任务更新失败，请重试");
-      throw error;
-    }
+  async function toggleChildTask(taskId: string, completed: boolean) {
+    const status: Task["status"] = completed ? "completed" : "open";
+    const completedAt = completed ? new Date().toISOString() : null;
+    return updateTask(taskId, { status, completed_at: completedAt });
   }
 
-  async function updateSubtask(
-    subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority" | "parent_subtask_id" | "position">>,
+  async function updateChildTask(
+    taskId: string,
+    patch: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority" | "parent_task_id" | "position">>,
   ) {
-    const queryKey = ["workspace-bundle", activeWorkspaceId];
-    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const taskId = previous ? findTaskIdForSubtask(previous, subtaskId) : null;
-    if (taskId) rememberLocalRealtimeChanges("subtasks", [taskId]);
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? patchSubtaskInBundle(bundle, subtaskId, patch) : bundle,
-    );
-    if (localStore.enabled) {
-      await enqueueLocalOperation({
-        entityType: "subtasks",
-        entityId: subtaskId,
-        payload: patch,
-      });
-      return;
-    }
-    const { error } = await client.from("subtasks").update(patch).eq("id", subtaskId);
-    if (error) {
-      queryClient.setQueryData(queryKey, previous);
-      throw error;
-    }
+    return updateTask(taskId, patch);
   }
 
-  async function assignSubtask(subtaskId: string, target: AssigneeTarget) {
-    const queryKey = ["workspace-bundle", activeWorkspaceId];
-    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const taskId = previous ? findTaskIdForSubtask(previous, subtaskId) : null;
-    if (taskId) rememberLocalRealtimeChanges("subtasks", [taskId]);
-    const patch = {
-      assignee_id: target.kind === "user" ? target.userId : null,
-      cli_assignee: target.kind === "cli" ? target.tool : null,
-    };
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? patchSubtaskInBundle(bundle, subtaskId, patch) : bundle,
-    );
-    if (localStore.enabled) {
-      await enqueueLocalOperation({
-        entityType: "subtasks",
-        entityId: subtaskId,
-        payload: patch,
-      });
-      return;
-    }
-    try {
-      const updated = await assignSubtaskApi(client, subtaskId, target);
-      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-        bundle ? patchSubtaskInBundle(bundle, subtaskId, {
-          assignee_id: updated.assignee_id,
-          cli_assignee: updated.cli_assignee,
-        }) : bundle,
-      );
-    } catch (error) {
-      queryClient.setQueryData(queryKey, previous);
-      throw error;
-    }
+  async function assignChildTask(taskId: string, target: AssigneeTarget) {
+    return assignTask(taskId, target);
   }
 
-  async function deleteSubtask(subtaskId: string) {
-    const queryKey = ["workspace-bundle", activeWorkspaceId];
-    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const taskId = previous ? findTaskIdForSubtask(previous, subtaskId) : null;
-    if (taskId) rememberLocalRealtimeChanges("subtasks", [taskId]);
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? removeSubtaskFromBundle(bundle, subtaskId) : bundle,
-    );
-    if (localStore.enabled) {
-      await enqueueLocalOperation({
-        entityType: "subtasks",
-        entityId: subtaskId,
-        payload: { deleted: true },
-      });
-      return;
-    }
-    const { error } = await client.from("subtasks").delete().eq("id", subtaskId);
-    if (error) {
-      queryClient.setQueryData(queryKey, previous);
-      throw error;
-    }
+  async function deleteChildTask(taskId: string) {
+    return updateTask(taskId, { deleted_at: new Date().toISOString() });
   }
 
   async function addTaskDependencies(
     taskId: string,
     targets: TaskDependencyTarget[],
-    subtaskId: string | null = null,
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const owner = previous?.tasks.find((item) => item.id === taskId);
-    if (!owner) throw new Error("任务不存在");
+    if (!previous) throw new Error("任务数据尚未加载");
+    const source = previous.tasks.find((item) => item.id === taskId);
+    if (!source) throw new Error("任务不存在");
     const unique = targets.filter((target, index) =>
-      targets.findIndex((item) =>
-        item.taskId === target.taskId && (item.subtaskId ?? null) === (target.subtaskId ?? null),
-      ) === index,
+      targets.findIndex((item) => item.taskId === target.taskId) === index,
     );
-    const existing = subtaskId
-      ? owner.subtasks.find((item) => item.id === subtaskId)?.dependencies ?? []
-      : owner.dependencies ?? [];
+    const existing = source?.dependencies ?? [];
     const existingKeys = new Set(existing.map((row) =>
-      `${row.depends_on_task_id}:${row.depends_on_subtask_id ?? ""}`));
+      row.depends_on_task_id));
     const nextTargets = unique.filter((target) =>
-      !existingKeys.has(`${target.taskId}:${target.subtaskId ?? ""}`));
+      !existingKeys.has(target.taskId));
     for (const target of nextTargets) {
-      if (wouldCreateDependencyCycle(previous?.tasks ?? [], { taskId, subtaskId }, target)) {
+      if (wouldCreateDependencyCycle(previous.tasks, { taskId }, target)) {
         throw new Error("不能形成循环依赖");
       }
     }
@@ -3200,9 +3342,7 @@ function RemoteApplication({
       id: crypto.randomUUID(),
       workspace_id: activeWorkspaceId,
       task_id: taskId,
-      subtask_id: subtaskId,
       depends_on_task_id: target.taskId,
-      depends_on_subtask_id: target.subtaskId,
       position: existing.length + index,
       created_by: userId,
       created_at: new Date().toISOString(),
@@ -3210,7 +3350,7 @@ function RemoteApplication({
     if (rows.length === 0) return;
     rememberLocalRealtimeChanges("task_dependencies", [taskId]);
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
-      bundle ? appendTaskDependenciesInBundle(bundle, taskId, subtaskId, rows) : bundle,
+      bundle ? appendTaskDependenciesInBundle(bundle, taskId, rows) : bundle,
     );
     try {
       if (localStore.enabled) {
@@ -3221,9 +3361,7 @@ function RemoteApplication({
             payload: {
               selected: true,
               taskId,
-              subtaskId,
               dependsOnTaskId: row.depends_on_task_id,
-              dependsOnSubtaskId: row.depends_on_subtask_id,
             },
           });
         }
@@ -3234,9 +3372,7 @@ function RemoteApplication({
           id: row.id,
           workspaceId: activeWorkspaceId,
           taskId,
-          subtaskId,
           dependsOnTaskId: row.depends_on_task_id,
-          dependsOnSubtaskId: row.depends_on_subtask_id,
         });
       }
     } catch (error) {
@@ -3250,8 +3386,8 @@ function RemoteApplication({
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const owner = previous?.tasks.find((task) =>
       (task.dependencies ?? []).some((item) => item.id === dependencyId)
-      || task.subtasks.some((subtask) =>
-        (subtask.dependencies ?? []).some((item) => item.id === dependencyId)),
+      || task.children.some((childTask) =>
+        (childTask.dependencies ?? []).some((item) => item.id === dependencyId)),
     );
     if (owner) rememberLocalRealtimeChanges("task_dependencies", [owner.id]);
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
@@ -3335,7 +3471,7 @@ function RemoteApplication({
   async function copyInviteLink(link: WorkspaceInviteLink) {
     const inviteUrl = buildWorkspaceInviteUrl(
       link.id,
-      import.meta.env.VITE_PUBLIC_APP_URL,
+      currentAppUrl(),
       window.location.origin,
     );
     if (!inviteUrl) {
@@ -3459,38 +3595,15 @@ function RemoteApplication({
       const delta = hoursFromFocusSeconds(created.elapsed_seconds);
       const pomodoroDelta = isPomodoroCount(created) ? 1 : 0;
       if (delta != null || pomodoroDelta > 0) {
-        if (created.subtask_id) {
-          const currentSubtask = queryClient
-            .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
-            ?.tasks.find((task) => task.id === created.task_id)
-            ?.subtasks.find((item) => item.id === created.subtask_id);
-          await updateSubtask(created.subtask_id, {
-            ...(delta != null && {
-              actual_hours: appendActualHours(currentSubtask?.actual_hours, delta),
-            }),
-            ...(pomodoroDelta > 0 && {
-              actual_pomodoros: appendActualPomodoros(
-                currentSubtask?.actual_pomodoros,
-                pomodoroDelta,
-              ),
-            }),
-          });
-        } else {
-          const currentTask = queryClient
-            .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
-            ?.tasks.find((task) => task.id === created.task_id);
-          await updateTask(created.task_id, {
-            ...(delta != null && {
-              actual_hours: appendActualHours(currentTask?.actual_hours, delta),
-            }),
-            ...(pomodoroDelta > 0 && {
-              actual_pomodoros: appendActualPomodoros(
-                currentTask?.actual_pomodoros,
-                pomodoroDelta,
-              ),
-            }),
-          });
-        }
+        const currentTask = queryClient
+          .getQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId])
+          ?.tasks.find((task) => task.id === created.task_id);
+        await updateTask(created.task_id, {
+          ...(delta != null && { actual_hours: appendActualHours(currentTask?.actual_hours, delta) }),
+          ...(pomodoroDelta > 0 && {
+            actual_pomodoros: appendActualPomodoros(currentTask?.actual_pomodoros, pomodoroDelta),
+          }),
+        });
       }
     }
     return created;
@@ -3511,12 +3624,23 @@ function RemoteApplication({
         }
       : current);
     try {
-      await saveTaskListPreference(client, next);
+      const saved = await saveTaskListPreference(client, next);
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
+        ? {
+            ...current,
+            taskListPreferences: [
+              ...current.taskListPreferences.filter(
+                (item) => item.list_key !== saved.list_key || item.user_id !== saved.user_id,
+              ),
+              saved,
+            ],
+          }
+        : current);
+      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
     }
-    void queryClient.invalidateQueries({ queryKey });
   }
 
   async function createCustomTaskViewForWorkspace(input: {
@@ -3559,6 +3683,7 @@ function RemoteApplication({
           ],
         }
       : bundle);
+    await persistCurrentWorkspaceBundle(workspaceId!);
     return created;
   }
 
@@ -3585,6 +3710,7 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await deleteCustomTaskView(client, viewId);
+      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3623,6 +3749,7 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await saveTaskSystemViewPreference(client, next);
+      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3652,6 +3779,7 @@ function RemoteApplication({
         .update({ visible })
         .eq("id", viewId);
       if (error) throw new Error(error.message);
+      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3681,6 +3809,7 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await reorderSystemSmartViewsApi(client, next);
+      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3703,6 +3832,7 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await reorderCustomTaskViewsApi(client, orderedIds);
+      await persistCurrentWorkspaceBundle(workspaceId!);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3716,18 +3846,18 @@ function RemoteApplication({
 
   async function createComment(
     taskId: string,
-    input: CreateCommentInput & { subtaskId?: string | null },
+    input: CreateCommentInput,
   ) {
+    const exactTaskId = taskId;
     if (localStore.enabled) {
-      const existing = (await localStore.getComments(taskId, input.subtaskId)) ?? [];
+      const existing = (await localStore.getComments(exactTaskId)) ?? [];
       const createdAt = new Date().toISOString();
       const commentId = crypto.randomUUID();
       const memberById = new Map(activeBundle.members.map((member) => [member.user_id, member]));
       const localComment: TaskComment = {
         id: commentId,
         workspace_id: activeWorkspaceId,
-        task_id: taskId,
-        subtask_id: input.subtaskId ?? null,
+        task_id: exactTaskId,
         author_id: userId,
         body: input.body,
         image_uris: input.imageUris,
@@ -3742,20 +3872,18 @@ function RemoteApplication({
           })),
       };
       await localStore.commitComments({
-        taskId,
-        subtaskId: input.subtaskId,
+        taskId: exactTaskId,
         comments: [...existing, localComment],
         command: {
           operationId: crypto.randomUUID(),
           workspaceId: activeWorkspaceId,
-          deviceId: deviceIdForUser(userId),
-          deviceSeq: nextDeviceSeq(userId),
+          deviceId: deviceIdForUser(userId, instanceNamespace),
+          deviceSeq: nextDeviceSeq(userId, instanceNamespace),
           entityType: "task_comments",
           entityId: commentId,
           baseVersion: null,
           payload: {
-            taskId,
-            subtaskId: input.subtaskId ?? null,
+            taskId: exactTaskId,
             body: input.body,
             imageUris: input.imageUris,
             mentionedUserIds: input.mentionedUserIds,
@@ -3771,7 +3899,6 @@ function RemoteApplication({
         body: input.body,
         imageUris: input.imageUris,
         mentionedUserIds: input.mentionedUserIds,
-        subtaskId: input.subtaskId,
       });
     } catch (error) {
       await Promise.allSettled(input.imageUris.map((uri) => attachmentService.remove(uri)));
@@ -3781,16 +3908,15 @@ function RemoteApplication({
 
   async function deleteComment(comment: TaskComment) {
     if (localStore.enabled) {
-      const comments = (await localStore.getComments(comment.task_id, comment.subtask_id)) ?? [];
+      const comments = (await localStore.getComments(comment.task_id)) ?? [];
       await localStore.commitComments({
         taskId: comment.task_id,
-        subtaskId: comment.subtask_id,
         comments: comments.filter((item) => item.id !== comment.id),
         command: {
           operationId: crypto.randomUUID(),
           workspaceId: activeWorkspaceId,
-          deviceId: deviceIdForUser(userId),
-          deviceSeq: nextDeviceSeq(userId),
+          deviceId: deviceIdForUser(userId, instanceNamespace),
+          deviceSeq: nextDeviceSeq(userId, instanceNamespace),
           entityType: "task_comments",
           entityId: comment.id,
           baseVersion: null,
@@ -3806,7 +3932,7 @@ function RemoteApplication({
 
   async function updateComment(comment: TaskComment, input: CreateCommentInput) {
     if (localStore.enabled) {
-      const comments = (await localStore.getComments(comment.task_id, comment.subtask_id)) ?? [];
+      const comments = (await localStore.getComments(comment.task_id)) ?? [];
       const memberById = new Map(activeBundle.members.map((member) => [member.user_id, member]));
       const nextComments = comments.map((item) => item.id === comment.id
         ? {
@@ -3822,13 +3948,12 @@ function RemoteApplication({
         : item);
       await localStore.commitComments({
         taskId: comment.task_id,
-        subtaskId: comment.subtask_id,
         comments: nextComments,
         command: {
           operationId: crypto.randomUUID(),
           workspaceId: activeWorkspaceId,
-          deviceId: deviceIdForUser(userId),
-          deviceSeq: nextDeviceSeq(userId),
+          deviceId: deviceIdForUser(userId, instanceNamespace),
+          deviceSeq: nextDeviceSeq(userId, instanceNamespace),
           entityType: "task_comments",
           entityId: comment.id,
           baseVersion: null,
@@ -3892,6 +4017,7 @@ function RemoteApplication({
       ]);
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
         current ? replaceOptimisticTaskSection(current, optimistic.id, created) : current);
+      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3911,6 +4037,7 @@ function RemoteApplication({
       await Promise.all(sectionIds.map((sectionId, position) =>
         updateTaskSection(client, sectionId, { position })));
       rememberLocalRealtimeChanges("task_sections", sectionIds);
+      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3938,6 +4065,7 @@ function RemoteApplication({
               position: saved.position,
             })
           : current);
+      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3955,6 +4083,7 @@ function RemoteApplication({
     try {
       await deleteTaskSection(client, sectionId);
       rememberLocalRealtimeChanges("task_sections", [sectionId]);
+      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3970,14 +4099,15 @@ function RemoteApplication({
   ) {
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
-      ? applyTaskListOrderToBundle(current, {
+    const next = previous
+      ? applyTaskListOrderToBundle(previous, {
           workspaceId: activeWorkspaceId,
           listKey,
           sectionId,
           taskIds,
         })
-      : current);
+      : previous;
+    queryClient.setQueryData(queryKey, next);
     rememberLocalRealtimeChanges("task_list_placements", taskIds);
     try {
       await setTaskListOrder(client, {
@@ -3986,6 +4116,7 @@ function RemoteApplication({
         sectionId,
         taskIds,
       });
+      await persistCurrentWorkspaceBundle();
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -4081,11 +4212,19 @@ function RemoteApplication({
       }}
       onCreateTask={async (input) => {
         const queryKey = ["workspace-bundle", workspaceId];
+        const currentBundle = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+        const parentTaskId = input.parentTaskId ?? null;
+        const taskInput = {
+          ...input,
+          parentTaskId,
+          position: parentTaskId ? nextSiblingPosition(currentBundle?.tasks ?? [], parentTaskId) : 0,
+          labelIds: parentTaskId ? [] : input.labelIds,
+        };
         if (localStore.enabled) {
             const localTask = createLocalTask({
             workspaceId,
             userId,
-            ...input,
+            ...taskInput,
           });
           const current = queryClient.getQueryData<WorkspaceBundle>(queryKey);
           const appended = current ? appendTaskToBundle(current, localTask) : current;
@@ -4101,8 +4240,8 @@ function RemoteApplication({
           const command: LocalCommand = {
             operationId: crypto.randomUUID(),
             workspaceId,
-            deviceId: deviceIdForUser(userId),
-            deviceSeq: nextDeviceSeq(userId),
+            deviceId: deviceIdForUser(userId, instanceNamespace),
+            deviceSeq: nextDeviceSeq(userId, instanceNamespace),
             entityType: "tasks",
             entityId: localTask.id,
             baseVersion: null,
@@ -4111,6 +4250,9 @@ function RemoteApplication({
               description: localTask.description,
               status: localTask.status,
               priority: localTask.priority,
+              kind: localTask.kind,
+              parent_task_id: localTask.parent_task_id,
+              position: localTask.position,
               due_at: localTask.due_at,
               assignee_id: localTask.assignee_id,
               label_ids: localTask.label_ids,
@@ -4118,13 +4260,25 @@ function RemoteApplication({
           };
           await localStore.commitBundle({ workspaceId, bundle: next, command });
           queryClient.setQueryData(queryKey, next);
-          if (online) void syncController.syncNow("local-write");
+          if (online && input.optimisticOrder) {
+            const synced = await flushLocalOperation({
+              operationId: command.operationId,
+              workspaceId,
+              listPending: localStore.listPending,
+              syncNow: syncController.syncNow,
+            });
+            if (!synced) {
+              throw new Error("任务已保存在本地，但尚未同步，暂时无法保存自定义排序");
+            }
+          } else if (online) {
+            void syncController.syncNow("local-write");
+          }
           return localTask;
         }
         const optimisticTask = createOptimisticTask({
           workspaceId,
           userId,
-          ...input,
+          ...taskInput,
         });
         queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => {
           if (!current) return current;
@@ -4142,7 +4296,7 @@ function RemoteApplication({
         try {
           const created = await createTask(client, {
             workspaceId,
-            ...input,
+            ...taskInput,
           });
           rememberLocalRealtimeChanges("tasks", [created.id]);
           rememberLocalRealtimeChanges("task_labels", [created.id]);
@@ -4152,7 +4306,7 @@ function RemoteApplication({
                   current,
                   optimisticTask.id,
                   created,
-                  input.labelIds,
+                  taskInput.labelIds,
                 )
               : current);
           return created;
@@ -4166,26 +4320,26 @@ function RemoteApplication({
       }}
       onUpdateTask={updateTask}
       onSaveTaskSchedule={saveTaskSchedule}
-      onSaveSubtaskSchedule={saveSubtaskSchedule}
+      onSaveChildTaskSchedule={saveChildTaskSchedule}
       onToggleTaskLabel={toggleTaskLabel}
       onToggleTaskParticipant={toggleTaskParticipant}
       onAssignTask={assignTask}
-      onAssignSubtask={assignSubtask}
-      onCreateSubtask={createSubtask}
-      onToggleSubtask={toggleSubtask}
-      onUpdateSubtask={updateSubtask}
-      onDeleteSubtask={deleteSubtask}
+      onAssignChildTask={assignChildTask}
+      onCreateChildTask={createChildTask}
+      onToggleChildTask={toggleChildTask}
+      onUpdateChildTask={updateChildTask}
+      onDeleteChildTask={deleteChildTask}
       onAddTaskDependencies={addTaskDependencies}
       onRemoveTaskDependency={removeTaskDependency}
       onPurgeTask={purgeTrashedTask}
-      onLoadTaskComments={async (taskId, options) => {
+      onLoadTaskComments={async (taskId) => {
         if (localStore.enabled) {
-          const cached = await localStore.getComments(taskId, options?.subtaskId);
+          const cached = await localStore.getComments(taskId);
           if (cached) return cached;
         }
-        const comments = await loadTaskComments(client, taskId, options);
+        const comments = await loadTaskComments(client, taskId);
         if (localStore.enabled) {
-          await localStore.saveComments(taskId, options?.subtaskId, comments);
+          await localStore.saveComments(taskId, comments);
         }
         return comments;
       }}
@@ -4294,7 +4448,6 @@ function DemoApplication({
       id: "demo-comment-mention",
       workspace_id: "workspace-team",
       task_id: "task-2",
-      subtask_id: null,
       author_id: "demo-member",
       body: "@沈宇宝 请确认一下详情面板的评论交互",
       image_uris: [],
@@ -4361,7 +4514,7 @@ function DemoApplication({
       nextPatch = { ...nextPatch, assignee_id: null, cli_assignee: null };
     }
     if (task && nextPatch.status === "completed" && task.status !== "completed") {
-      stopCliTerminalsForTask(taskId, task.subtasks.map((subtask) => subtask.id));
+      stopCliTerminalsForTask(taskId, task.children.map((childTask) => childTask.id));
     }
     if (
       task
@@ -4415,7 +4568,7 @@ function DemoApplication({
     const newlyMentioned = (nextDescriptionMentions ?? []).filter(
       (item) => !previousMentionIds.has(item.user_id),
     );
-    setBundle((current) => ({
+    setBundle((current) => normalizeWorkspaceBundle({
       ...current,
       tasks: current.tasks.map((item) =>
         item.id === taskId
@@ -4426,8 +4579,8 @@ function DemoApplication({
                 ? { description_mentions: nextDescriptionMentions }
                 : {}),
               ...(nextPatch.kind === "note" ? {
-                subtasks: item.subtasks.map((subtask) => ({
-                  ...subtask,
+                children: item.children.map((childTask) => ({
+                  ...childTask,
                   assignee_id: null,
                   cli_assignee: null,
                 })),
@@ -4591,6 +4744,10 @@ function DemoApplication({
             {
               id: createdId,
               workspace_id: workspaceId,
+              parent_task_id: input.parentTaskId ?? null,
+              position: input.parentTaskId
+                ? nextSiblingPosition(bundle.tasks, input.parentTaskId)
+                : 0,
               title: input.title,
               description: input.description ?? "",
               kind: input.kind ?? "todo",
@@ -4608,11 +4765,11 @@ function DemoApplication({
               version: 1,
               created_at: createdAt,
               updated_at: createdAt,
-              label_ids: input.labelIds,
+              label_ids: input.parentTaskId ? [] : input.labelIds,
               participant_ids:
                 input.assigneeId === "demo-user" ? [] : ["demo-user"],
               description_mentions: [],
-              subtasks: [],
+              children: [],
               reminders: [],
               reminder_persistent: false,
               recurrence: null,
@@ -4646,7 +4803,6 @@ function DemoApplication({
               created_by: "demo-user",
               created_at: createdAt,
               updated_at: createdAt,
-              subtask_id: null,
             })),
             reminder_persistent: schedule.persistent,
             updated_at: createdAt,
@@ -4671,38 +4827,25 @@ function DemoApplication({
           });
         }
       }}
-      onSaveSubtaskSchedule={async (subtaskId, patch, schedule) => {
+      onSaveChildTaskSchedule={async (targetTaskId, patch, schedule) => {
         const createdAt = new Date().toISOString();
-        const parent = bundle.tasks.find((task) =>
-          task.subtasks.some((item) => item.id === subtaskId),
-        );
-        setBundle((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) => ({
-            ...task,
-            subtasks: task.subtasks.map((subtask) => subtask.id !== subtaskId ? subtask : {
-              ...subtask,
-              ...patch,
-              reminders: schedule.reminders.map((rule, position) => ({
-                id: `${subtaskId}:demo-reminder:${position}`,
-                task_id: task.id,
-                subtask_id: subtaskId,
-                ...rule,
-                trigger_at: reminderTriggerAt({ ...task, ...patch }, rule) ?? createdAt,
-                position,
-                created_by: "demo-user",
-                created_at: createdAt,
-                updated_at: createdAt,
-              })),
-              reminder_persistent: schedule.persistent,
-            }),
+        const currentTask = bundle.tasks.find((task) => task.id === targetTaskId);
+        if (!currentTask) return;
+        setBundle((current) => normalizeWorkspaceBundle(patchTaskInBundle(current, targetTaskId, {
+          ...patch,
+          reminders: schedule.reminders.map((rule, position) => ({
+            id: `${targetTaskId}:demo-reminder:${position}`,
+            task_id: targetTaskId,
+            ...rule,
+            trigger_at: reminderTriggerAt({ ...currentTask, ...patch }, rule) ?? createdAt,
+            position,
+            created_by: "demo-user",
+            created_at: createdAt,
+            updated_at: createdAt,
           })),
-        }));
-        if (parent) {
-          appendDemoActivity(parent.id, "task.updated", {
-            changes: { subtask_id: subtaskId, ...patch },
-          });
-        }
+          reminder_persistent: schedule.persistent,
+        })));
+        appendDemoActivity(targetTaskId, "task.updated", { changes: patch });
       }}
       onToggleTaskLabel={async (taskId, labelId, selected) => {
         setBundle((current) => ({
@@ -4757,148 +4900,105 @@ function DemoApplication({
           });
         }
       }}
-      onAssignSubtask={async (subtaskId, target) => {
+      onAssignChildTask={async (targetTaskId, target) => {
         const assigneeId = target.kind === "user" ? target.userId : null;
         const cliAssignee = target.kind === "cli" ? target.tool : null;
         setBundle((current) => ({
           ...current,
           tasks: current.tasks.map((task) => ({
             ...task,
-            subtasks: task.subtasks.map((item) => item.id === subtaskId
+            children: task.children.map((item) => item.id === targetTaskId
               ? { ...item, assignee_id: assigneeId, cli_assignee: cliAssignee }
               : item),
           })),
         }));
       }}
-      onCreateSubtask={async (taskId, title, extras) => {
-        const subtaskId = crypto.randomUUID();
-        setBundle((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) =>
-            task.id === taskId
-              ? {
-                  ...task,
-                  subtasks: [
-                    ...task.subtasks,
-                    {
-                      id: subtaskId,
-                      task_id: taskId,
-                      parent_subtask_id: extras?.parent_subtask_id ?? null,
-                      title,
-                      description: "",
-                      completed: false,
-                      position: nextSiblingPosition(task.subtasks, extras?.parent_subtask_id ?? null),
-                      priority: extras?.priority ?? "none",
-                      due_at: extras?.due_at ?? null,
-                      due_start_at: extras?.due_start_at ?? null,
-                      due_is_all_day: extras?.due_is_all_day ?? false,
-                      due_timezone: extras?.due_timezone ?? null,
-                      estimate_hours: null,
-                      actual_hours: null,
-                      estimate_pomodoros: null,
-                      actual_pomodoros: null,
-                      assignee_id: extras?.assignee_id ?? null,
-                      cli_assignee: extras?.cli_assignee ?? null,
-                      created_by: "demo-user",
-                      reminders: [],
-                      reminder_persistent: false,
-                    },
-                  ],
-                }
-              : task,
-          ),
-        }));
-        appendDemoActivity(taskId, "task.subtask_created", {
-          subtask_id: subtaskId,
+      onCreateChildTask={async (taskId, title, extras) => {
+        const targetTaskId = crypto.randomUUID();
+        const created = createOptimisticTask({
+          workspaceId,
+          userId: "demo-user",
           title,
-          completed: false,
+          labelIds: [],
+          parentTaskId: extras?.parent_task_id ?? taskId,
+          position: nextSiblingPosition(bundle.tasks, extras?.parent_task_id ?? taskId),
+          priority: extras?.priority ?? "none",
+          dueAt: extras?.due_at ?? null,
+          assigneeId: extras?.assignee_id ?? null,
+          optimisticId: targetTaskId,
+        });
+        setBundle((current) => normalizeWorkspaceBundle({
+          ...current,
+          tasks: [...current.tasks, {
+            ...created,
+            due_start_at: extras?.due_start_at ?? null,
+            due_is_all_day: extras?.due_is_all_day ?? false,
+            due_timezone: extras?.due_timezone ?? null,
+            cli_assignee: extras?.cli_assignee ?? null,
+          }],
+        }));
+        appendDemoActivity(targetTaskId, "task.created", {
+          task_id: targetTaskId,
+          parent_task_id: taskId,
+          title,
+          status: "open",
         });
       }}
-      onToggleSubtask={async (subtaskId, completed) => {
-        const ownerTask = bundle.tasks.find((task) => task.subtasks.some((subtask) => subtask.id === subtaskId));
-        const subtask = ownerTask?.subtasks.find((item) => item.id === subtaskId);
-        setBundle((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) => ({
-            ...task,
-            subtasks: task.subtasks.map((subtask) =>
-              subtask.id === subtaskId ? { ...subtask, completed } : subtask,
-            ),
-          })),
-        }));
-        if (ownerTask && subtask && subtask.completed !== completed) {
-          appendDemoActivity(ownerTask.id, "task.subtask_updated", {
-            subtask_id: subtaskId,
-            title: subtask.title,
-            changes: { completed: { before: subtask.completed, after: completed } },
+      onToggleChildTask={async (targetTaskId, completed) => {
+        const ownerTask = bundle.tasks.find((task) => task.children.some((childTask) => childTask.id === targetTaskId));
+        const childTask = ownerTask?.children.find((item) => item.id === targetTaskId);
+        setBundle((current) => normalizeWorkspaceBundle(patchTaskInBundle(
+          current,
+          targetTaskId,
+          { status: completed ? "completed" : "open", completed_at: completed ? new Date().toISOString() : null },
+        )));
+        if (ownerTask && childTask && (childTask.status === "completed") !== completed) {
+          appendDemoActivity(targetTaskId, "task.updated", {
+            task_id: targetTaskId,
+            title: childTask.title,
+            changes: { status: { before: childTask.status, after: completed ? "completed" : "open" } },
           });
         }
       }}
-      onUpdateSubtask={async (subtaskId, patch) => {
-        const ownerTask = bundle.tasks.find((task) => task.subtasks.some((subtask) => subtask.id === subtaskId));
-        const subtask = ownerTask?.subtasks.find((item) => item.id === subtaskId);
-        setBundle((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) => ({
-            ...task,
-            subtasks: task.subtasks.map((item) => item.id === subtaskId ? { ...item, ...patch } : item),
-          })),
-        }));
-        if (ownerTask && subtask) {
+      onUpdateChildTask={async (targetTaskId, patch) => {
+        const ownerTask = bundle.tasks.find((task) => task.children.some((childTask) => childTask.id === targetTaskId));
+        const childTask = ownerTask?.children.find((item) => item.id === targetTaskId);
+        setBundle((current) => normalizeWorkspaceBundle(patchTaskInBundle(current, targetTaskId, patch)));
+        if (ownerTask && childTask) {
           const changes = Object.fromEntries(Object.entries(patch).flatMap(([field, after]) => {
             const key = field as keyof typeof patch;
-            return subtask[key] !== after
-              ? [[field, { before: subtask[key], after }]]
+            return childTask[key] !== after
+              ? [[field, { before: childTask[key], after }]]
               : [];
           }));
-          if (Object.keys(changes).length) appendDemoActivity(ownerTask.id, "task.subtask_updated", {
-            subtask_id: subtaskId,
-            title: patch.title ?? subtask.title,
+          if (Object.keys(changes).length) appendDemoActivity(targetTaskId, "task.updated", {
+            task_id: targetTaskId,
+            title: patch.title ?? childTask.title,
             changes,
           });
         }
       }}
-      onDeleteSubtask={async (subtaskId) => {
-        const ownerTask = bundle.tasks.find((task) => task.subtasks.some((subtask) => subtask.id === subtaskId));
-        const subtask = ownerTask?.subtasks.find((item) => item.id === subtaskId);
-        setBundle((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) => {
-            const removed = new Set([subtaskId, ...task.subtasks
-              .filter((item) => {
-                let cursor = item.parent_subtask_id;
-                while (cursor) {
-                  if (cursor === subtaskId) return true;
-                  cursor = task.subtasks.find((row) => row.id === cursor)?.parent_subtask_id ?? null;
-                }
-                return false;
-              })
-              .map((item) => item.id)]);
-            return {
-              ...task,
-              subtasks: task.subtasks.filter((item) => !removed.has(item.id)),
-            };
-          }),
-        }));
-        if (ownerTask && subtask) appendDemoActivity(ownerTask.id, "task.subtask_deleted", {
-          subtask_id: subtaskId,
-          title: subtask.title,
-          completed: subtask.completed,
+      onDeleteChildTask={async (targetTaskId) => {
+        const ownerTask = bundle.tasks.find((task) => task.children.some((childTask) => childTask.id === targetTaskId));
+        const childTask = ownerTask?.children.find((item) => item.id === targetTaskId);
+        setBundle((current) => normalizeWorkspaceBundle(removeTaskFromBundle(current, targetTaskId)));
+        if (ownerTask && childTask) appendDemoActivity(targetTaskId, "task.deleted", {
+          task_id: targetTaskId,
+          title: childTask.title,
+          status: childTask.status,
         });
       }}
-      onAddTaskDependencies={async (taskId, targets, subtaskId = null) => {
+      onAddTaskDependencies={async (taskId, targets) => {
         const rows: TaskDependency[] = targets.map((target, index) => ({
           id: crypto.randomUUID(),
           workspace_id: workspaceId,
           task_id: taskId,
-          subtask_id: subtaskId,
           depends_on_task_id: target.taskId,
-          depends_on_subtask_id: target.subtaskId,
           position: index,
           created_by: "demo-user",
           created_at: new Date().toISOString(),
         }));
-        setBundle((current) => appendTaskDependenciesInBundle(current, taskId, subtaskId, rows));
+        setBundle((current) => appendTaskDependenciesInBundle(current, taskId, rows));
       }}
       onRemoveTaskDependency={async (dependencyId) => {
         setBundle((current) => removeTaskDependencyFromBundle(current, dependencyId));
@@ -4910,12 +5010,9 @@ function DemoApplication({
         }
         setBundle((current) => removeTaskFromBundle(current, taskId));
       }}
-      onLoadTaskComments={async (taskId, options) =>
+      onLoadTaskComments={async (taskId) =>
         demoCommentsRef.current.filter((comment) =>
-          comment.task_id === taskId
-          && (options?.subtaskId
-            ? comment.subtask_id === options.subtaskId
-            : comment.subtask_id == null))}
+          comment.task_id === taskId)}
       onLoadTaskActivity={async (taskId, cursor) => {
         const task = bundle.tasks.find((item) => item.id === taskId);
         const taskEvents = demoActivities.filter((event) => event.task_id === taskId);
@@ -4958,7 +5055,6 @@ function DemoApplication({
           id: commentId,
           workspace_id: workspaceId,
           task_id: taskId,
-          subtask_id: input.subtaskId ?? null,
           author_id: "demo-user",
           body: input.body,
           image_uris: input.imageUris,
@@ -5284,46 +5380,13 @@ function DemoApplication({
           const delta = hoursFromFocusSeconds(created.elapsed_seconds);
           const pomodoroDelta = isPomodoroCount(created) ? 1 : 0;
           if (delta != null || pomodoroDelta > 0) {
-            if (created.subtask_id) {
-              const currentSubtask = bundle.tasks
-                .find((task) => task.id === created.task_id)
-                ?.subtasks.find((item) => item.id === created.subtask_id);
-              setBundle((current) => ({
-                ...current,
-                tasks: current.tasks.map((task) => task.id !== created.task_id
-                  ? task
-                  : {
-                      ...task,
-                      subtasks: task.subtasks.map((subtask) => subtask.id !== created.subtask_id
-                        ? subtask
-                        : {
-                            ...subtask,
-                            ...(delta != null && {
-                              actual_hours: appendActualHours(currentSubtask?.actual_hours, delta),
-                            }),
-                            ...(pomodoroDelta > 0 && {
-                              actual_pomodoros: appendActualPomodoros(
-                                currentSubtask?.actual_pomodoros,
-                                pomodoroDelta,
-                              ),
-                            }),
-                          }),
-                    }),
-              }));
-            } else {
-              const currentTask = bundle.tasks.find((task) => task.id === created.task_id);
-              patchTask(created.task_id, {
-                ...(delta != null && {
-                  actual_hours: appendActualHours(currentTask?.actual_hours, delta),
-                }),
-                ...(pomodoroDelta > 0 && {
-                  actual_pomodoros: appendActualPomodoros(
-                    currentTask?.actual_pomodoros,
-                    pomodoroDelta,
-                  ),
-                }),
-              });
-            }
+            const currentTask = bundle.tasks.find((task) => task.id === created.task_id);
+            patchTask(created.task_id, {
+              ...(delta != null && { actual_hours: appendActualHours(currentTask?.actual_hours, delta) }),
+              ...(pomodoroDelta > 0 && {
+                actual_pomodoros: appendActualPomodoros(currentTask?.actual_pomodoros, pomodoroDelta),
+              }),
+            });
           }
         }
         return created;
@@ -5543,6 +5606,7 @@ type WorkspaceAppProps = {
     priority?: TaskPriority;
     kind?: TaskKind;
     assigneeId?: string | null;
+    parentTaskId?: string | null;
     optimisticOrder?: {
       listKey: string;
       sectionId: string | null;
@@ -5559,8 +5623,8 @@ type WorkspaceAppProps = {
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
-  onSaveSubtaskSchedule: (
-    subtaskId: string,
+  onSaveChildTaskSchedule: (
+    targetTaskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
@@ -5575,28 +5639,26 @@ type WorkspaceAppProps = {
     selected: boolean,
   ) => Promise<void>;
   onAssignTask: (taskId: string, target: AssigneeTarget) => Promise<void>;
-  onAssignSubtask: (subtaskId: string, target: AssigneeTarget) => Promise<void>;
-  onCreateSubtask: (
+  onAssignChildTask: (targetTaskId: string, target: AssigneeTarget) => Promise<void>;
+  onCreateChildTask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
+    extras?: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_task_id">>,
   ) => Promise<void>;
-  onToggleSubtask: (subtaskId: string, completed: boolean) => Promise<void>;
-  onUpdateSubtask: (
-    subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority" | "parent_subtask_id" | "position">>,
+  onToggleChildTask: (targetTaskId: string, completed: boolean) => Promise<void>;
+  onUpdateChildTask: (
+    targetTaskId: string,
+    patch: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "title" | "description" | "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority" | "parent_task_id" | "position">>,
   ) => Promise<void>;
-  onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onDeleteChildTask: (targetTaskId: string) => Promise<void>;
   onAddTaskDependencies: (
     taskId: string,
     targets: TaskDependencyTarget[],
-    subtaskId?: string | null,
   ) => Promise<void>;
   onRemoveTaskDependency: (dependencyId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
   onLoadTaskComments: (
     taskId: string,
-    options?: { subtaskId?: string | null },
   ) => Promise<TaskComment[]>;
   onLoadTaskActivity: (
     taskId: string,
@@ -5605,7 +5667,7 @@ type WorkspaceAppProps = {
   onLoadCommentCandidates: (taskId: string) => Promise<string[]>;
   onCreateComment: (
     taskId: string,
-    input: CreateCommentInput & { subtaskId?: string | null },
+    input: CreateCommentInput,
   ) => Promise<void>;
   onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
   onDeleteComment: (comment: TaskComment) => Promise<void>;
@@ -5809,7 +5871,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
     workspaceInitialRoute?.kind === "task" ? workspaceInitialRoute.taskId : null,
   );
-  const [selectedSubtaskId, setSelectedSubtaskId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<TaskViewMode>(
     initialListRoute?.kind === "view" || initialListRoute?.kind === "tag"
       ? initialListRoute.mode ?? "list"
@@ -5902,26 +5963,15 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       itemKind: task.kind === "note" ? "note" : "task",
     }, false, { taskReturnRoute: sectionRoute() });
     setSelectedTaskId(taskId);
-    setSelectedSubtaskId(null);
   }
 
-  function selectSubtask(taskId: string, subtaskId: string) {
-    const task = props.bundle.tasks.find((item) => item.id === taskId);
-    if (!task || !task.subtasks.some((subtask) => subtask.id === subtaskId)) return;
-    writeRoute({
-      workspaceId: props.workspaceId,
-      kind: "task",
-      taskId,
-      itemKind: task.kind === "note" ? "note" : "task",
-    }, false, { taskReturnRoute: sectionRoute() });
-    setSelectedTaskId(taskId);
-    setSelectedSubtaskId(subtaskId);
+  function selectChildTask(taskId: string) {
+    selectTask(taskId);
   }
 
   function closeTask() {
     writeRoute(currentTaskReturnRoute(props.workspaceId) ?? sectionRoute(), true);
     setSelectedTaskId(null);
-    setSelectedSubtaskId(null);
   }
 
   function selectSmartView(view: SmartView) {
@@ -5931,7 +5981,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setViewMode(mode);
     setSelectedLabelId(null);
     setSelectedTaskId(null);
-    setSelectedSubtaskId(null);
   }
 
   function selectLabel(labelId: string) {
@@ -5940,7 +5989,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setSelectedLabelId(labelId);
     setViewMode(mode);
     setSelectedTaskId(null);
-    setSelectedSubtaskId(null);
   }
 
   function changeWorkspace(workspaceId: string) {
@@ -5951,17 +5999,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     if (selectedTaskId && !selectedTask) {
       setSelectedTaskId(null);
-      setSelectedSubtaskId(null);
       writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
   }, [selectedTask, selectedTaskId]);
-
-  useEffect(() => {
-    if (!selectedSubtaskId || !selectedTask) return;
-    if (!selectedTask.subtasks.some((subtask) => subtask.id === selectedSubtaskId)) {
-      setSelectedSubtaskId(null);
-    }
-  }, [selectedSubtaskId, selectedTask]);
 
   useEffect(() => {
     const route = currentApplicationRoute();
@@ -5997,7 +6037,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setViewMode("list");
           setSelectedLabelId(null);
           setSelectedTaskId(null);
-          setSelectedSubtaskId(null);
         }
         return;
       }
@@ -6007,7 +6046,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
         setAppSection(route.kind);
         setSelectedTaskId(null);
-        setSelectedSubtaskId(null);
         return;
       }
       setAppSection("tasks");
@@ -6024,7 +6062,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         setViewMode(listRoute.mode ?? "list");
       }
       setSelectedTaskId(route.kind === "task" ? route.taskId : null);
-      setSelectedSubtaskId(null);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -6039,13 +6076,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setViewMode("list");
       setSelectedLabelId(null);
       setSelectedTaskId(null);
-      setSelectedSubtaskId(null);
       return;
     }
     if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
       setAppSection(route.kind);
       setSelectedTaskId(null);
-      setSelectedSubtaskId(null);
       return;
     }
     setAppSection("tasks");
@@ -6064,7 +6099,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     if (route.kind === "task") {
       if (task) {
         setSelectedTaskId(task.id);
-        setSelectedSubtaskId(null);
         writeRoute({
           ...route,
           itemKind: task.kind === "note" ? "note" : "task",
@@ -6075,7 +6109,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       }
     } else {
       setSelectedTaskId(null);
-      setSelectedSubtaskId(null);
     }
   }, [props.workspaceId]);
 
@@ -6127,7 +6160,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSelectedLabelId(null);
     }
     setSelectedTaskId(null);
-    setSelectedSubtaskId(null);
     setMobileSidebar(false);
     setMobileAppSidebar(false);
     setMindMapCreateLabel(null);
@@ -6183,7 +6215,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             setViewMode("list");
             setSelectedLabelId(null);
             setSelectedTaskId(null);
-            setSelectedSubtaskId(null);
             writeRoute({ workspaceId: targetWorkspaceId, kind: "view", view, mode: "list" });
           } else if (command.target === "task") {
             const task = props.bundle.tasks.find((item) => item.id === command.taskId);
@@ -6197,7 +6228,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               : { workspaceId: targetWorkspaceId, kind: "view" as const, view: DEFAULT_SMART_VIEW, mode: "list" as const };
             setAppSection("tasks");
             setSelectedTaskId(task.id);
-            setSelectedSubtaskId(null);
             writeRoute({
               workspaceId: targetWorkspaceId,
               kind: "task",
@@ -6213,7 +6243,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 
         setAppSection("focus");
         setSelectedTaskId(null);
-        setSelectedSubtaskId(null);
         writeRoute({ workspaceId: targetWorkspaceId, kind: "focus" });
         setFocusDeepLink(envelope as DesktopFocusDeepLinkEnvelope);
       } catch (error) {
@@ -6266,7 +6295,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         itemKind: task.kind === "note" ? "note" : "task",
       }, false, { taskReturnRoute: sectionRoute() });
       setSelectedTaskId(target.taskId);
-      setSelectedSubtaskId(null);
     });
     return () => {
       unsubscribeSettings();
@@ -6294,7 +6322,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       onOpenSettings={() => openSettings("account")}
       onOpenShortcutsSettings={() => openSettings("shortcuts")}
       onChangeSection={changeSection}
-      onCreateSubtask={(taskId, title) => props.onCreateSubtask(taskId, title)}
+      onCreateChildTask={(taskId, title) => props.onCreateChildTask(taskId, title)}
       onUpdateTask={props.onUpdateTask}
       onCloseTask={closeTask}
       onNotice={props.onNotice}
@@ -6516,7 +6544,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           viewMode={viewMode}
           selectedLabelId={selectedLabelId}
           selectedTaskId={selectedTaskId}
-          selectedSubtaskId={selectedSubtaskId}
           online={props.online}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
@@ -6524,20 +6551,20 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onMenu={openMobileNavigation}
           onSearch={() => setSearchDialogOpen(true)}
           onSelectTask={selectTask}
-          onSelectSubtask={selectSubtask}
+          onSelectChildTask={selectChildTask}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
-          onSaveSubtaskSchedule={props.onSaveSubtaskSchedule}
+          onSaveChildTaskSchedule={props.onSaveChildTaskSchedule}
           tasksHasMore={props.tasksHasMore}
           tasksLoadingMore={props.tasksLoadingMore}
           onLoadMoreTasks={props.onLoadMoreTasks}
           onToggleTaskLabel={props.onToggleTaskLabel}
           onAssignTask={props.onAssignTask}
-          onCreateSubtask={props.onCreateSubtask}
-          onToggleSubtask={props.onToggleSubtask}
-          onUpdateSubtask={props.onUpdateSubtask}
-          onDeleteSubtask={props.onDeleteSubtask}
+          onCreateChildTask={props.onCreateChildTask}
+          onToggleChildTask={props.onToggleChildTask}
+          onUpdateChildTask={props.onUpdateChildTask}
+          onDeleteChildTask={props.onDeleteChildTask}
           onAddTaskDependencies={props.onAddTaskDependencies}
           onPurgeTask={props.onPurgeTask}
           onSaveLabelAccess={props.onSaveLabelAccess}
@@ -6631,41 +6658,32 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             settingsLabelName={selectedLabelId
               ? props.bundle.labels.find((label) => label.id === selectedLabelId)?.name
               : null}
-            focusedSubtaskId={selectedSubtaskId}
-            onClearFocusedSubtask={() => setSelectedSubtaskId(null)}
-            onFocusSubtask={(subtaskId) => setSelectedSubtaskId(subtaskId)}
             onClose={closeTask}
+            onOpenTask={selectTask}
             onUpdate={(patch, options) =>
               props.onUpdateTask(selectedTask.id, patch, options)}
             onSaveSchedule={(patch, schedule) =>
               props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
-            onSaveSubtaskSchedule={props.onSaveSubtaskSchedule}
+            onSaveChildTaskSchedule={props.onSaveChildTaskSchedule}
             onAssign={(assigneeId) =>
               props.onAssignTask(selectedTask.id, assigneeId)}
-            onAssignSubtask={props.onAssignSubtask}
+            onAssignChildTask={props.onAssignChildTask}
             onToggleLabel={props.onToggleTaskLabel}
             onToggleParticipant={props.onToggleTaskParticipant}
-            onCreateSubtask={(title, extras) =>
-              props.onCreateSubtask(selectedTask.id, title, extras)}
-            onToggleSubtask={props.onToggleSubtask}
-            onUpdateSubtask={props.onUpdateSubtask}
-            onDeleteSubtask={props.onDeleteSubtask}
-            onAddDependencies={(targets, subtaskId) =>
-              props.onAddTaskDependencies(selectedTask.id, targets, subtaskId)}
+            onCreateChildTask={(title, extras) =>
+              props.onCreateChildTask(selectedTask.id, title, extras)}
+            onToggleChildTask={props.onToggleChildTask}
+            onUpdateChildTask={props.onUpdateChildTask}
+            onDeleteChildTask={props.onDeleteChildTask}
+            onAddDependencies={props.onAddTaskDependencies}
             onRemoveDependency={props.onRemoveTaskDependency}
-            onOpenDependency={(taskId, subtaskId) => {
-              if (subtaskId) selectSubtask(taskId, subtaskId);
-              else selectTask(taskId);
-            }}
+            onOpenDependency={selectTask}
             commentsRevision={props.commentsRevision}
             activityRevision={props.activityRevision}
             onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
-            onLoadComments={(scope) => props.onLoadTaskComments(selectedTask.id, scope)}
+            onLoadComments={props.onLoadTaskComments}
             onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
-            onCreateComment={(input, scope) => props.onCreateComment(selectedTask.id, {
-              ...input,
-              subtaskId: scope?.subtaskId,
-            })}
+            onCreateComment={props.onCreateComment}
             onUpdateComment={props.onUpdateComment}
             onDeleteComment={props.onDeleteComment}
             onNotice={props.onNotice}
@@ -6690,36 +6708,30 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             ? props.bundle.labels.find((label) => label.id === selectedLabelId)?.name
             : null}
           onClose={closeTask}
+          onOpenTask={selectTask}
           onUpdate={(patch, options) =>
             props.onUpdateTask(selectedTask.id, patch, options)}
           onSaveSchedule={(patch, schedule) =>
             props.onSaveTaskSchedule(selectedTask.id, patch, schedule)}
-          onSaveSubtaskSchedule={props.onSaveSubtaskSchedule}
+          onSaveChildTaskSchedule={props.onSaveChildTaskSchedule}
           onAssign={(assigneeId) => props.onAssignTask(selectedTask.id, assigneeId)}
-          onAssignSubtask={props.onAssignSubtask}
+          onAssignChildTask={props.onAssignChildTask}
           onToggleLabel={props.onToggleTaskLabel}
           onToggleParticipant={props.onToggleTaskParticipant}
-          onCreateSubtask={(title, extras) =>
-            props.onCreateSubtask(selectedTask.id, title, extras)}
-          onToggleSubtask={props.onToggleSubtask}
-          onUpdateSubtask={props.onUpdateSubtask}
-          onDeleteSubtask={props.onDeleteSubtask}
-          onAddDependencies={(targets, subtaskId) =>
-            props.onAddTaskDependencies(selectedTask.id, targets, subtaskId)}
+          onCreateChildTask={(title, extras) =>
+            props.onCreateChildTask(selectedTask.id, title, extras)}
+          onToggleChildTask={props.onToggleChildTask}
+          onUpdateChildTask={props.onUpdateChildTask}
+          onDeleteChildTask={props.onDeleteChildTask}
+          onAddDependencies={props.onAddTaskDependencies}
           onRemoveDependency={props.onRemoveTaskDependency}
-          onOpenDependency={(taskId, subtaskId) => {
-            if (subtaskId) selectSubtask(taskId, subtaskId);
-            else selectTask(taskId);
-          }}
+          onOpenDependency={selectTask}
           commentsRevision={props.commentsRevision}
           activityRevision={props.activityRevision}
           onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
-          onLoadComments={(scope) => props.onLoadTaskComments(selectedTask.id, scope)}
+          onLoadComments={props.onLoadTaskComments}
           onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
-          onCreateComment={(input, scope) => props.onCreateComment(selectedTask.id, {
-            ...input,
-            subtaskId: scope?.subtaskId,
-          })}
+          onCreateComment={props.onCreateComment}
           onUpdateComment={props.onUpdateComment}
           onDeleteComment={props.onDeleteComment}
           onNotice={props.onNotice}
@@ -7201,7 +7213,7 @@ function MobileAppSidebar({
     locked: boolean | null;
   } | null>(null);
   const currentWorkspace = workspaces.find((item) => item.id === workspaceId);
-  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
+  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isRootTask(task) && isActiveTask(task));
   const calendarIds = ["inbox", ...bundle.labels.map((label) => label.id)];
   const allCalendarsVisible = calendarIds.every((id) => visibleCalendarIds.has(id));
   const assigneeIds = calendarAssigneeFilterIds(bundle.members);
@@ -7886,7 +7898,7 @@ function Sidebar({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
+  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isRootTask(task) && isActiveTask(task));
   const userLabelOrder = userOrderOverride ?? bundle.userLabelOrder;
   const labels = bundle.labels
     .map((label) => {
@@ -9216,7 +9228,7 @@ function SmartViewsSidebarList({
 }) {
   const [menu, setMenu] = useState<{ view: SmartView; x: number; y: number } | null>(null);
   const [createFrom, setCreateFrom] = useState<SmartView | null>(null);
-  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isActiveTask(task));
+  const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isRootTask(task) && isActiveTask(task));
   const trashedTasks = bundle.tasks.filter((task) => Boolean(task.deleted_at));
   const systemOrder = resolveSystemSmartViewOrder(bundle.taskSystemViewPreferences);
   const customViews = [...bundle.customTaskViews]
@@ -9497,12 +9509,14 @@ function systemSmartViewVisible(
 }
 
 const QUICK_ADD_SETTINGS_KEY = "anttodo:quick-add-settings";
-const TASK_SUBTASKS_COLLAPSED_KEY = "anttodo:task-subtasks-collapsed";
+const TASK_CHILD_TASKS_COLLAPSED_KEY = "anttodo:task-children-collapsed";
 
-function readCollapsedTaskSubtasks(workspaceId: string) {
+function readCollapsedTaskChildTasks(workspaceId: string) {
   try {
     const value: unknown = JSON.parse(
-      window.localStorage.getItem(`${TASK_SUBTASKS_COLLAPSED_KEY}:${workspaceId}`) ?? "[]",
+      window.localStorage.getItem(
+        instanceStorageKey(`${TASK_CHILD_TASKS_COLLAPSED_KEY}:${workspaceId}`),
+      ) ?? "[]",
     );
     return new Set(
       Array.isArray(value)
@@ -9514,13 +9528,13 @@ function readCollapsedTaskSubtasks(workspaceId: string) {
   }
 }
 
-function storeCollapsedTaskSubtasks(
+function storeCollapsedTaskChildTasks(
   workspaceId: string,
   collapsedTaskIds: ReadonlySet<string>,
 ) {
   try {
     window.localStorage.setItem(
-      `${TASK_SUBTASKS_COLLAPSED_KEY}:${workspaceId}`,
+      instanceStorageKey(`${TASK_CHILD_TASKS_COLLAPSED_KEY}:${workspaceId}`),
       JSON.stringify([...collapsedTaskIds]),
     );
   } catch {
@@ -9534,7 +9548,7 @@ function readQuickAddSettings(workspaceId: string): {
 } {
   try {
     const value = JSON.parse(
-      window.localStorage.getItem(`${QUICK_ADD_SETTINGS_KEY}:${workspaceId}`) ?? "null",
+      window.localStorage.getItem(instanceStorageKey(`${QUICK_ADD_SETTINGS_KEY}:${workspaceId}`)) ?? "null",
     ) as { kind?: unknown; priority?: unknown } | null;
     const kind = value?.kind === "note" ? "note" : "todo";
     const priority = ["none", "low", "medium", "high"].includes(String(value?.priority))
@@ -9552,7 +9566,7 @@ function storeQuickAddSettings(
 ) {
   try {
     window.localStorage.setItem(
-      `${QUICK_ADD_SETTINGS_KEY}:${workspaceId}`,
+      instanceStorageKey(`${QUICK_ADD_SETTINGS_KEY}:${workspaceId}`),
       JSON.stringify(settings),
     );
   } catch {
@@ -9674,7 +9688,6 @@ function TaskWorkspace({
   viewMode,
   selectedLabelId,
   selectedTaskId,
-  selectedSubtaskId,
   online,
   now,
   dateTimePreferences,
@@ -9682,20 +9695,20 @@ function TaskWorkspace({
   onMenu,
   onSearch,
   onSelectTask,
-  onSelectSubtask,
+  onSelectChildTask,
   onCreateTask,
   onUpdateTask,
   onSaveTaskSchedule,
-  onSaveSubtaskSchedule,
+  onSaveChildTaskSchedule,
   tasksHasMore,
   tasksLoadingMore,
   onLoadMoreTasks,
   onToggleTaskLabel,
   onAssignTask,
-  onCreateSubtask,
-  onToggleSubtask,
-  onUpdateSubtask,
-  onDeleteSubtask,
+  onCreateChildTask,
+  onToggleChildTask,
+  onUpdateChildTask,
+  onDeleteChildTask,
   onAddTaskDependencies,
   onPurgeTask,
   onSaveLabelAccess,
@@ -9718,27 +9731,26 @@ function TaskWorkspace({
   viewMode: TaskViewMode;
   selectedLabelId: string | null;
   selectedTaskId: string | null;
-  selectedSubtaskId: string | null;
   online: boolean;
   now: Date;
   aiWorkSettings: AiWorkSettings;
   onMenu: () => void;
   onSearch: () => void;
   onSelectTask: (id: string) => void;
-  onSelectSubtask: (taskId: string, subtaskId: string) => void;
+  onSelectChildTask: (taskId: string) => void;
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
-  onSaveSubtaskSchedule: WorkspaceAppProps["onSaveSubtaskSchedule"];
+  onSaveChildTaskSchedule: WorkspaceAppProps["onSaveChildTaskSchedule"];
   tasksHasMore: boolean;
   tasksLoadingMore: boolean;
   onLoadMoreTasks: WorkspaceAppProps["onLoadMoreTasks"];
   onToggleTaskLabel: WorkspaceAppProps["onToggleTaskLabel"];
   onAssignTask: WorkspaceAppProps["onAssignTask"];
-  onCreateSubtask: WorkspaceAppProps["onCreateSubtask"];
-  onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
-  onUpdateSubtask: WorkspaceAppProps["onUpdateSubtask"];
-  onDeleteSubtask: WorkspaceAppProps["onDeleteSubtask"];
+  onCreateChildTask: WorkspaceAppProps["onCreateChildTask"];
+  onToggleChildTask: WorkspaceAppProps["onToggleChildTask"];
+  onUpdateChildTask: WorkspaceAppProps["onUpdateChildTask"];
+  onDeleteChildTask: WorkspaceAppProps["onDeleteChildTask"];
   onAddTaskDependencies: WorkspaceAppProps["onAddTaskDependencies"];
   onPurgeTask: WorkspaceAppProps["onPurgeTask"];
   onSaveLabelAccess: WorkspaceAppProps["onSaveLabelAccess"];
@@ -9772,8 +9784,8 @@ function TaskWorkspace({
   const [sectionDraftName, setSectionDraftName] = useState("");
   const [sectionDraftBusy, setSectionDraftBusy] = useState(false);
   const [saveViewOpen, setSaveViewOpen] = useState(false);
-  const [collapsedTaskSubtasks, setCollapsedTaskSubtasks] = useState(
-    () => readCollapsedTaskSubtasks(workspaceId),
+  const [collapsedTaskChildTasks, setCollapsedTaskChildTasks] = useState(
+    () => readCollapsedTaskChildTasks(workspaceId),
   );
   const [listDragOverlay, setListDragOverlay] = useState<{
     task: Task;
@@ -9853,7 +9865,7 @@ function TaskWorkspace({
   }, [initialQuickSettings]);
 
   useEffect(() => {
-    setCollapsedTaskSubtasks(readCollapsedTaskSubtasks(workspaceId));
+    setCollapsedTaskChildTasks(readCollapsedTaskChildTasks(workspaceId));
   }, [workspaceId]);
 
   useEffect(() => {
@@ -9895,12 +9907,12 @@ function TaskWorkspace({
     setAiSettingsOpen(true);
   }
 
-  function toggleTaskSubtasks(taskId: string) {
-    setCollapsedTaskSubtasks((current) => {
+  function toggleTaskChildTasks(taskId: string) {
+    setCollapsedTaskChildTasks((current) => {
       const next = new Set(current);
       if (next.has(taskId)) next.delete(taskId);
       else next.add(taskId);
-      storeCollapsedTaskSubtasks(workspaceId, next);
+      storeCollapsedTaskChildTasks(workspaceId, next);
       return next;
     });
   }
@@ -10555,7 +10567,7 @@ function TaskWorkspace({
           <TaskViewMenu
             preference={preference}
             viewMode={viewMode}
-            online={localWritable}
+            online={online}
             onChange={savePreference}
           />
           {!isTrashView && (
@@ -10563,7 +10575,7 @@ function TaskWorkspace({
               <TaskFilterMenu
                 preference={preference}
                 members={bundle.members}
-                online={localWritable}
+                online={online}
                 locked={filtersLocked}
                 onChange={savePreference}
               />
@@ -10574,7 +10586,7 @@ function TaskWorkspace({
                 showLabels={preference.show_labels}
                 showCompleted={preference.show_completed}
                 showHours={preference.show_hours}
-                online={localWritable}
+                online={online}
                 aiWorkAvailable={desktopAiAvailable}
                 onChangeViewMode={(mode) => {
                   void changeViewMode(mode).catch(() => onNotice("视图切换失败，请重试"));
@@ -10676,11 +10688,11 @@ function TaskWorkspace({
             onSelectTask={onSelectTask}
             onUpdateTask={onUpdateTask}
             onSaveTaskSchedule={onSaveTaskSchedule}
-            onSaveSubtaskSchedule={onSaveSubtaskSchedule}
+            onSaveChildTaskSchedule={onSaveChildTaskSchedule}
             onCreateTask={onCreateTask}
-            onCreateSubtask={onCreateSubtask}
-            onUpdateSubtask={onUpdateSubtask}
-            onDeleteSubtask={onDeleteSubtask}
+            onCreateChildTask={onCreateChildTask}
+            onUpdateChildTask={onUpdateChildTask}
+            onDeleteChildTask={onDeleteChildTask}
             onAddTaskDependencies={onAddTaskDependencies}
             pickerTasks={bundle.tasks}
             onPurgeTask={onPurgeTask}
@@ -10696,10 +10708,8 @@ function TaskWorkspace({
           online={online}
           now={now}
           selectedTaskId={selectedTaskId}
-          selectedSubtaskId={selectedSubtaskId}
           showCompleted={preference.show_completed}
           onSelectTask={onSelectTask}
-          onSelectSubtask={onSelectSubtask}
           onSaveTaskSchedule={onSaveTaskSchedule}
           onCreateOnDay={async (day) => {
             if (!localWritable || !canManageSelectedLabel) {
@@ -10786,7 +10796,6 @@ function TaskWorkspace({
                       labels={bundle.labels}
                       members={bundle.members}
                       selectedTaskId={selectedTaskId}
-                      selectedSubtaskId={selectedSubtaskId}
                       workspaceId={workspaceId}
                       online={localWritable}
                       now={now}
@@ -10795,7 +10804,7 @@ function TaskWorkspace({
                       showHours={preference.show_hours}
                       draggable={taskDragEnabled}
                       sectionDraggable={canManageSections}
-                      collapsedTaskSubtasks={collapsedTaskSubtasks}
+                      collapsedTaskChildTasks={collapsedTaskChildTasks}
                       editableSection={editableSection}
                       canEditTask={canEditTask}
                       contextMenuVariant={isTrashView ? "trash" : "default"}
@@ -10810,22 +10819,22 @@ function TaskWorkspace({
                       }}
                       onDeleteSection={onDeleteTaskSection}
                       onSelect={onSelectTask}
-                      onSelectSubtask={onSelectSubtask}
-                      onToggleSubtasks={toggleTaskSubtasks}
+                      onSelectChildTask={onSelectChildTask}
+                      onToggleChildTasks={toggleTaskChildTasks}
                       onToggle={async (task) =>
                         onUpdateTask(task.id, {
                           status: task.status === "completed" ? "open" : "completed",
                           completed_at: task.status === "completed" ? null : new Date().toISOString(),
                         })
                       }
-                      onToggleSubtask={onToggleSubtask}
+                      onToggleChildTask={onToggleChildTask}
                       onUpdateTask={onUpdateTask}
                       onSaveTaskSchedule={onSaveTaskSchedule}
-                      onSaveSubtaskSchedule={onSaveSubtaskSchedule}
+                      onSaveChildTaskSchedule={onSaveChildTaskSchedule}
                       onCreateTask={onCreateTask}
-                      onCreateSubtask={onCreateSubtask}
-                      onUpdateSubtask={onUpdateSubtask}
-                      onDeleteSubtask={onDeleteSubtask}
+                      onCreateChildTask={onCreateChildTask}
+                      onUpdateChildTask={onUpdateChildTask}
+                      onDeleteChildTask={onDeleteChildTask}
                       onAddTaskDependencies={onAddTaskDependencies}
                       onPurgeTask={onPurgeTask}
                       onNotice={onNotice}
@@ -10883,29 +10892,28 @@ function TaskWorkspace({
             labels={bundle.labels}
             members={bundle.members}
             selectedTaskId={selectedTaskId}
-            selectedSubtaskId={selectedSubtaskId}
             workspaceId={workspaceId}
             online={localWritable}
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
             showHours={preference.show_hours}
-            collapsedTaskSubtasks={collapsedTaskSubtasks}
+            collapsedTaskChildTasks={collapsedTaskChildTasks}
             onSelect={onSelectTask}
-            onSelectSubtask={onSelectSubtask}
-            onToggleSubtasks={toggleTaskSubtasks}
+            onSelectChildTask={onSelectChildTask}
+            onToggleChildTasks={toggleTaskChildTasks}
             canEditTask={canEditTask}
             contextMenuVariant="default"
             onToggle={async (task) =>
               onUpdateTask(task.id, { status: "open", completed_at: null })}
-            onToggleSubtask={onToggleSubtask}
+            onToggleChildTask={onToggleChildTask}
             onUpdateTask={onUpdateTask}
             onSaveTaskSchedule={onSaveTaskSchedule}
-            onSaveSubtaskSchedule={onSaveSubtaskSchedule}
+            onSaveChildTaskSchedule={onSaveChildTaskSchedule}
             onCreateTask={onCreateTask}
-            onCreateSubtask={onCreateSubtask}
-            onUpdateSubtask={onUpdateSubtask}
-            onDeleteSubtask={onDeleteSubtask}
+            onCreateChildTask={onCreateChildTask}
+            onUpdateChildTask={onUpdateChildTask}
+            onDeleteChildTask={onDeleteChildTask}
             onAddTaskDependencies={onAddTaskDependencies}
             onPurgeTask={onPurgeTask}
             onNotice={onNotice}
@@ -11156,7 +11164,6 @@ function TaskGroup({
   labels,
   members,
   selectedTaskId,
-  selectedSubtaskId,
   workspaceId,
   online,
   now,
@@ -11165,24 +11172,24 @@ function TaskGroup({
   showHours = false,
   draggable = false,
   sectionDraggable = false,
-  collapsedTaskSubtasks,
+  collapsedTaskChildTasks,
   editableSection,
   contextMenuVariant = "default",
   onRenameSection,
   onInsertSection,
   onDeleteSection,
   onSelect,
-  onSelectSubtask,
+  onSelectChildTask,
   onToggle,
-  onToggleSubtasks,
-  onToggleSubtask,
+  onToggleChildTasks,
+  onToggleChildTask,
   onUpdateTask,
   onSaveTaskSchedule,
-  onSaveSubtaskSchedule,
+  onSaveChildTaskSchedule,
   onCreateTask,
-  onCreateSubtask,
-  onUpdateSubtask,
-  onDeleteSubtask,
+  onCreateChildTask,
+  onUpdateChildTask,
+  onDeleteChildTask,
   onAddTaskDependencies,
   onPurgeTask,
   onNotice,
@@ -11195,7 +11202,6 @@ function TaskGroup({
   labels: Label[];
   members: Member[];
   selectedTaskId: string | null;
-  selectedSubtaskId: string | null;
   workspaceId: string;
   online: boolean;
   now: Date;
@@ -11204,24 +11210,24 @@ function TaskGroup({
   showHours?: boolean;
   draggable?: boolean;
   sectionDraggable?: boolean;
-  collapsedTaskSubtasks: ReadonlySet<string>;
+  collapsedTaskChildTasks: ReadonlySet<string>;
   editableSection?: TaskSection;
   contextMenuVariant?: "default" | "trash";
   onRenameSection?: (sectionId: string, name: string) => Promise<void>;
   onInsertSection?: (sectionId: string, placement: "before" | "after") => void;
   onDeleteSection?: (sectionId: string) => Promise<void>;
   onSelect: (id: string) => void;
-  onSelectSubtask: (taskId: string, subtaskId: string) => void;
+  onSelectChildTask: (taskId: string) => void;
   onToggle: (task: Task) => Promise<void>;
-  onToggleSubtasks: (taskId: string) => void;
-  onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
+  onToggleChildTasks: (taskId: string) => void;
+  onToggleChildTask: WorkspaceAppProps["onToggleChildTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
-  onSaveSubtaskSchedule: WorkspaceAppProps["onSaveSubtaskSchedule"];
+  onSaveChildTaskSchedule: WorkspaceAppProps["onSaveChildTaskSchedule"];
   onCreateTask: WorkspaceAppProps["onCreateTask"];
-  onCreateSubtask: WorkspaceAppProps["onCreateSubtask"];
-  onUpdateSubtask: WorkspaceAppProps["onUpdateSubtask"];
-  onDeleteSubtask: WorkspaceAppProps["onDeleteSubtask"];
+  onCreateChildTask: WorkspaceAppProps["onCreateChildTask"];
+  onUpdateChildTask: WorkspaceAppProps["onUpdateChildTask"];
+  onDeleteChildTask: WorkspaceAppProps["onDeleteChildTask"];
   onAddTaskDependencies: WorkspaceAppProps["onAddTaskDependencies"];
   onPurgeTask: WorkspaceAppProps["onPurgeTask"];
   onNotice: WorkspaceAppProps["onNotice"];
@@ -11231,7 +11237,7 @@ function TaskGroup({
   const [sectionMenuOpen, setSectionMenuOpen] = useState(false);
   const [taskMenu, setTaskMenu] = useState<{
     taskId: string;
-    subtaskId?: string;
+    targetTaskId?: string;
     x: number;
     y: number;
   } | null>(null);
@@ -11249,14 +11255,14 @@ function TaskGroup({
   const menuTask = taskMenu
     ? tasks.find((task) => task.id === taskMenu.taskId) ?? null
     : null;
-  const menuSubtask = taskMenu?.subtaskId && menuTask
-    ? menuTask.subtasks.find((item) => item.id === taskMenu.subtaskId) ?? null
+  const menuChildTask = taskMenu?.targetTaskId && menuTask
+    ? menuTask.children.find((item) => item.id === taskMenu.targetTaskId) ?? null
     : null;
 
   useEffect(() => {
     if (!taskMenu) return;
-    if (!menuTask || (taskMenu.subtaskId && !menuSubtask)) setTaskMenu(null);
-  }, [menuSubtask, menuTask, taskMenu]);
+    if (!menuTask || (taskMenu.targetTaskId && !menuChildTask)) setTaskMenu(null);
+  }, [menuChildTask, menuTask, taskMenu]);
 
   async function saveRename() {
     if (renameSubmittingRef.current) return;
@@ -11410,32 +11416,33 @@ function TaskGroup({
             <TaskRow
               key={task.id}
               task={task}
+              treeTasks={pickerTasks ?? tasks}
               labels={labels}
               members={members}
-              selected={selectedTaskId === task.id && !selectedSubtaskId}
-              selectedSubtaskId={selectedTaskId === task.id ? selectedSubtaskId : null}
+              selected={selectedTaskId === task.id}
+              selectedTaskId={selectedTaskId}
               online={online && !isOptimisticTaskId(task.id) && canEditTask(task)}
               now={now}
               showLabels={showLabels}
               showHours={showHours}
               draggable={draggable && !isOptimisticTaskId(task.id) && canEditTask(task)}
-              subtasksCollapsed={collapsedTaskSubtasks.has(task.id)}
+              childrenCollapsed={collapsedTaskChildTasks.has(task.id)}
               onSelect={() => {
                 if (!isOptimisticTaskId(task.id)) onSelect(task.id);
               }}
-              onSelectSubtask={(subtaskId) => {
-                if (!isOptimisticTaskId(task.id)) onSelectSubtask(task.id, subtaskId);
+              onSelectChildTask={(taskId) => {
+                if (!isOptimisticTaskId(task.id)) onSelectChildTask(taskId);
               }}
-              onToggleSubtasks={() => onToggleSubtasks(task.id)}
+              onToggleChildTasks={() => onToggleChildTasks(task.id)}
               onToggle={() => onToggle(task)}
-              onToggleSubtask={onToggleSubtask}
-              onContextMenu={(x, y, subtaskId) => {
+              onToggleChildTask={onToggleChildTask}
+              onContextMenu={(x, y, targetTaskId) => {
                 if (isOptimisticTaskId(task.id) || !canEditTask(task)) return;
                 onSelect(task.id);
                 setSectionMenuOpen(false);
                 setTaskMenu({
                   taskId: task.id,
-                  subtaskId,
+                  targetTaskId,
                   x,
                   y,
                 });
@@ -11444,10 +11451,10 @@ function TaskGroup({
           ))}
         </SortableContext>
       )}
-      {taskMenu && menuTask && (!taskMenu.subtaskId || menuSubtask) && (
+      {taskMenu && menuTask && (!taskMenu.targetTaskId || menuChildTask) && (
         <TaskContextMenu
           task={menuTask}
-          subtask={menuSubtask}
+          childTask={menuChildTask}
           workspaceId={workspaceId}
           x={taskMenu.x}
           y={taskMenu.y}
@@ -11458,21 +11465,20 @@ function TaskGroup({
           onClose={() => setTaskMenu(null)}
           onUpdateTask={onUpdateTask}
           onSaveTaskSchedule={onSaveTaskSchedule}
-          onSaveSubtaskSchedule={onSaveSubtaskSchedule}
+          onSaveChildTaskSchedule={onSaveChildTaskSchedule}
           onCreateTask={onCreateTask}
-          onCreateSubtask={onCreateSubtask}
-          onUpdateSubtask={onUpdateSubtask}
-          onDeleteSubtask={onDeleteSubtask}
+          onCreateChildTask={onCreateChildTask}
+          onUpdateChildTask={onUpdateChildTask}
+          onDeleteChildTask={onDeleteChildTask}
           onPurgeTask={onPurgeTask}
-          onExpandSubtasks={() => {
-            if (collapsedTaskSubtasks.has(menuTask.id)) {
-              onToggleSubtasks(menuTask.id);
+          onExpandChildTasks={() => {
+            if (collapsedTaskChildTasks.has(menuTask.id)) {
+              onToggleChildTasks(menuTask.id);
             }
           }}
           onNotice={onNotice}
           pickerTasks={pickerTasks ?? tasks}
-          onAddDependencies={(targets, subtaskId) =>
-            onAddTaskDependencies(menuTask.id, targets, subtaskId)}
+          onAddDependencies={onAddTaskDependencies}
         />
       )}
     </section>
@@ -11503,6 +11509,7 @@ function TaskListDragOverlay({
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
     : null;
+  const liveChildren = task.children.filter((childTask) => !childTask.deleted_at);
 
   return (
     <article
@@ -11516,7 +11523,7 @@ function TaskListDragOverlay({
       {task.kind !== "note" && task.priority !== "none" && (
         <span className="priority-bar" aria-hidden="true" />
       )}
-      <span className="task-subtasks-expander-slot" aria-hidden="true" />
+      <span className="task-children-expander-slot" aria-hidden="true" />
       {task.kind === "note" ? (
         <span className="task-note-icon"><NotebookPen /></span>
       ) : (
@@ -11543,9 +11550,9 @@ function TaskListDragOverlay({
             </span>
           )}
           <span className="task-meta">
-            {task.kind !== "note" && task.subtasks.length > 0 && (
+            {task.kind !== "note" && liveChildren.length > 0 && (
               <span>
-                {task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}
+                {liveChildren.filter((childTask) => childTask.status === "completed").length}/{liveChildren.length}
               </span>
             )}
             {dueStatus && (
@@ -11584,40 +11591,42 @@ function TaskListDragOverlay({
 
 function TaskRow({
   task,
+  treeTasks,
   labels,
   members,
   selected,
-  selectedSubtaskId,
+  selectedTaskId,
   online,
   now,
   showLabels = false,
   showHours = false,
   draggable = false,
-  subtasksCollapsed,
+  childrenCollapsed,
   onSelect,
-  onSelectSubtask,
-  onToggleSubtasks,
+  onSelectChildTask,
+  onToggleChildTasks,
   onToggle,
-  onToggleSubtask,
+  onToggleChildTask,
   onContextMenu,
 }: {
   task: Task;
+  treeTasks: Task[];
   labels: Label[];
   members: Member[];
   selected: boolean;
-  selectedSubtaskId: string | null;
+  selectedTaskId: string | null;
   online: boolean;
   now: Date;
   showLabels?: boolean;
   showHours?: boolean;
   draggable?: boolean;
-  subtasksCollapsed: boolean;
+  childrenCollapsed: boolean;
   onSelect: () => void;
-  onSelectSubtask: (subtaskId: string) => void;
-  onToggleSubtasks: () => void;
+  onSelectChildTask: (targetTaskId: string) => void;
+  onToggleChildTasks: () => void;
   onToggle: () => Promise<void>;
-  onToggleSubtask: WorkspaceAppProps["onToggleSubtask"];
-  onContextMenu: (x: number, y: number, subtaskId?: string) => void;
+  onToggleChildTask: WorkspaceAppProps["onToggleChildTask"];
+  onContextMenu: (x: number, y: number, targetTaskId?: string) => void;
 }) {
   const {
     attributes,
@@ -11635,19 +11644,20 @@ function TaskRow({
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
     : null;
-  const hasSubtasks = task.kind !== "note" && task.subtasks.length > 0;
+  const liveChildren = useMemo(() => childrenOf(treeTasks, task.id), [task.id, treeTasks]);
+  const hasChildTasks = task.kind !== "note" && liveChildren.length > 0;
   const [collapsedNestedIds, setCollapsedNestedIds] = useState<Set<string>>(new Set());
-  const visibleSubtasks = useMemo(
-    () => visibleFlattenedSubtasks(task.subtasks, null, collapsedNestedIds),
-    [collapsedNestedIds, task.subtasks],
+  const visibleChildTasks = useMemo(
+    () => visibleFlattenedTasks(treeTasks, task.id, collapsedNestedIds),
+    [collapsedNestedIds, task.id, treeTasks],
   );
   const runningTerminalTaskIds = useAiTerminalRunningTaskIds();
   const terminalRunning = runningTerminalTaskIds.has(task.id);
 
-  function toggleSubtask(subtask: Subtask) {
+  function toggleChildTask(childTask: Task) {
     if (!online) return;
-    void onToggleSubtask(subtask.id, !subtask.completed).catch(() => {
-      // App.toggleSubtask already rolls back and surfaces a notice.
+    void onToggleChildTask(childTask.id, !(childTask.status === "completed")).catch(() => {
+      // App.toggleChildTask already rolls back and surfaces a notice.
     });
   }
 
@@ -11695,20 +11705,20 @@ function TaskRow({
           <GripVertical />
         </button>
       )}
-      <span className="task-subtasks-expander-slot">
-        {hasSubtasks && (
+      <span className="task-children-expander-slot">
+        {hasChildTasks && (
           <button
             type="button"
-            className="task-subtasks-expander"
-            aria-label={`${subtasksCollapsed ? "展开" : "收起"}子任务：${task.title}`}
-            aria-expanded={!subtasksCollapsed}
-            aria-controls={`task-subtasks-${task.id}`}
+            className="task-children-expander"
+            aria-label={`${childrenCollapsed ? "展开" : "收起"}子级任务：${task.title}`}
+            aria-expanded={!childrenCollapsed}
+            aria-controls={`task-children-${task.id}`}
             onClick={(event) => {
               event.stopPropagation();
-              onToggleSubtasks();
+              onToggleChildTasks();
             }}
           >
-            {subtasksCollapsed ? <ChevronRight /> : <ChevronDown />}
+            {childrenCollapsed ? <ChevronRight /> : <ChevronDown />}
           </button>
         )}
       </span>
@@ -11750,9 +11760,9 @@ function TaskRow({
           )}
           <span className="task-meta">
             {optimistic && <span className="task-save-state">保存中</span>}
-            {task.kind !== "note" && task.subtasks.length > 0 && (
+            {task.kind !== "note" && liveChildren.length > 0 && (
               <span>
-                {task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}
+                {liveChildren.filter((childTask) => (childTask.status === "completed")).length}/{liveChildren.length}
               </span>
             )}
             {dueStatus && (
@@ -11795,33 +11805,33 @@ function TaskRow({
         </span>
       </button>
       </article>
-      {hasSubtasks && !subtasksCollapsed && (
+      {hasChildTasks && !childrenCollapsed && (
         <div
-          id={`task-subtasks-${task.id}`}
-          className="task-list-subtasks"
+          id={`task-children-${task.id}`}
+          className="task-list-children"
           role="list"
-          aria-label={`子任务：${task.title}`}
+          aria-label={`子级任务：${task.title}`}
         >
-          {visibleSubtasks.map(({ subtask, depth }) => {
-            const nestOffset = (depth - 2) * 16;
-            const childCount = childrenOf(task.subtasks, subtask.id).length;
-            const nestedCollapsed = collapsedNestedIds.has(subtask.id);
-            const subtaskAssignee = members.find(
-              (member) => member.user_id === subtask.assignee_id,
+          {visibleChildTasks.map(({ task: childTask, depth }) => {
+            const nestOffset = (depth - 1) * 16;
+            const childCount = childrenOf(treeTasks, childTask.id).length;
+            const nestedCollapsed = collapsedNestedIds.has(childTask.id);
+            const childTaskAssignee = members.find(
+              (member) => member.user_id === childTask.assignee_id,
             );
-            const subtaskDueStatus = subtask.completed
+            const childTaskDueStatus = (childTask.status === "completed")
               ? null
-              : getDueStatus(subtask.due_at, now);
-            const subtaskHoursLabel = showHours
-              ? formatHoursList(subtask.estimate_hours, subtask.actual_hours)
+              : getDueStatus(childTask.due_at, now);
+            const childTaskHoursLabel = showHours
+              ? formatHoursList(childTask.estimate_hours, childTask.actual_hours)
               : null;
             return (
               <article
-                key={subtask.id}
+                key={childTask.id}
                 className={clsx(
-                  "task-list-subtask-row",
-                  subtask.completed && "completed",
-                  selectedSubtaskId === subtask.id && "selected",
+                  "task-list-childTask-row",
+                  (childTask.status === "completed") && "completed",
+                  selectedTaskId === childTask.id && "selected",
                 )}
                 style={{ paddingLeft: 58 + nestOffset }}
                 role="listitem"
@@ -11829,15 +11839,15 @@ function TaskRow({
                   event.preventDefault();
                   event.stopPropagation();
                   if (!online) return;
-                  onContextMenu(event.clientX, event.clientY, subtask.id);
+                  onContextMenu(event.clientX, event.clientY, childTask.id);
                 }}
               >
-                {subtask.priority && subtask.priority !== "none" && (
+                {childTask.priority && childTask.priority !== "none" && (
                     <span
-                    className="task-list-subtask-priority"
+                    className="task-list-childTask-priority"
                     aria-hidden="true"
                     style={{
-                      "--priority-color": getPriorityOption(subtask.priority).color,
+                      "--priority-color": getPriorityOption(childTask.priority).color,
                       left: 48 + nestOffset,
                     } as React.CSSProperties}
                   />
@@ -11845,16 +11855,16 @@ function TaskRow({
                 {childCount > 0 ? (
                   <button
                     type="button"
-                    className="task-subtasks-expander task-list-nested-expander"
-                    aria-label={`${nestedCollapsed ? "展开" : "收起"}子任务：${subtask.title}`}
+                    className="task-children-expander task-list-nested-expander"
+                    aria-label={`${nestedCollapsed ? "展开" : "收起"}子级任务：${childTask.title}`}
                     aria-expanded={!nestedCollapsed}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
                       setCollapsedNestedIds((current) => {
                         const next = new Set(current);
-                        if (next.has(subtask.id)) next.delete(subtask.id);
-                        else next.add(subtask.id);
+                        if (next.has(childTask.id)) next.delete(childTask.id);
+                        else next.add(childTask.id);
                         return next;
                       });
                     }}
@@ -11866,55 +11876,55 @@ function TaskRow({
                 )}
                 <button
                   type="button"
-                  className="task-list-subtask-checkbox"
-                  aria-label={`${subtask.completed ? "重新打开" : "完成"}子任务：${subtask.title}`}
+                  className="task-list-childTask-checkbox"
+                  aria-label={`${(childTask.status === "completed") ? "重新打开" : "完成"}子级任务：${childTask.title}`}
                   disabled={!online}
                   onClick={(event) => {
                     event.stopPropagation();
-                    toggleSubtask(subtask);
+                    toggleChildTask(childTask);
                   }}
                 >
-                  <span className={clsx("task-list-subtask-check", subtask.completed && "checked")}>
-                    {subtask.completed && <Check />}
+                  <span className={clsx("task-list-childTask-check", (childTask.status === "completed") && "checked")}>
+                    {(childTask.status === "completed") && <Check />}
                   </span>
                 </button>
                 <button
                   type="button"
-                  className="task-list-subtask-content"
-                  onClick={() => onSelectSubtask(subtask.id)}
+                  className="task-list-childTask-content"
+                  onClick={() => onSelectChildTask(childTask.id)}
                 >
                   <span className="task-main-line">
-                    <span className="task-list-subtask-title">{subtask.title}</span>
+                    <span className="task-list-childTask-title">{childTask.title}</span>
                     <span className="task-meta">
-                      {subtaskDueStatus && (
-                        <time className={subtaskDueStatus.overdue ? "overdue" : ""}>
-                          {subtaskDueStatus.label}
+                      {childTaskDueStatus && (
+                        <time className={childTaskDueStatus.overdue ? "overdue" : ""}>
+                          {childTaskDueStatus.label}
                         </time>
                       )}
-                      {subtaskHoursLabel && (
-                        <span className="task-hours">{subtaskHoursLabel}</span>
+                      {childTaskHoursLabel && (
+                        <span className="task-hours">{childTaskHoursLabel}</span>
                       )}
-                      {subtaskAssignee && (
+                      {childTaskAssignee && (
                         <span className="task-assignee">
                           <MemberAvatar
-                            member={subtaskAssignee}
+                            member={childTaskAssignee}
                             className="task-assignee-avatar"
-                            title={`负责人：${subtaskAssignee.profile?.display_name ?? "团队成员"}`}
+                            title={`负责人：${childTaskAssignee.profile?.display_name ?? "团队成员"}`}
                           />
                           {showContactNames && (
                             <span className="task-assignee-name">
                               {formatContactDisplayName(
-                                subtaskAssignee.profile?.display_name ?? "团队成员",
+                                childTaskAssignee.profile?.display_name ?? "团队成员",
                               )}
                             </span>
                           )}
                         </span>
                       )}
-                      {subtask.cli_assignee && (
+                      {childTask.cli_assignee && (
                         <AiCliAvatar
-                          tool={subtask.cli_assignee}
+                          tool={childTask.cli_assignee}
                           className="task-assignee-avatar"
-                          title={`负责人：${aiCliLabel(subtask.cli_assignee)}`}
+                          title={`负责人：${aiCliLabel(childTask.cli_assignee)}`}
                         />
                       )}
                     </span>
@@ -12062,7 +12072,7 @@ function TeamManagementPanel({
 
   const teamLoginUrl = buildWorkspaceTeamLoginUrl(
     normalizeWorkspaceSlug(slug) || workspace.slug,
-    import.meta.env.VITE_PUBLIC_APP_URL,
+    currentAppUrl(),
     window.location.origin,
   );
 
@@ -12572,17 +12582,17 @@ function SsoSettingsPanel({
 
   const provider = providerQuery.data ?? null;
   const callbackUrl = buildDingtalkCallbackUrl(
-    import.meta.env.VITE_PUBLIC_APP_URL,
+    currentAppUrl(),
     window.location.origin,
   );
   const loginUrl = buildWorkspaceTeamLoginUrl(
     workspace.slug,
-    import.meta.env.VITE_PUBLIC_APP_URL,
+    currentAppUrl(),
     window.location.origin,
   );
   const clientInviteUrl = buildWorkspaceTeamClientInviteUrl(
     workspace.slug,
-    import.meta.env.VITE_PUBLIC_APP_URL,
+    currentAppUrl(),
     window.location.origin,
   );
 

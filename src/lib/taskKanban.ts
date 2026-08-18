@@ -20,6 +20,7 @@ import {
   orderedTaskSections,
   sortTasks,
 } from "./taskList";
+import { isRootTask } from "./taskTree";
 
 export type KanbanColumnTarget =
   | { kind: "none" }
@@ -237,7 +238,8 @@ export function buildKanbanColumns(input: {
     ] satisfies KanbanColumn[];
   }
 
-  const activeTasks = input.tasks.filter(isActiveTask);
+  const listTasks = input.tasks.filter(isRootTask);
+  const activeTasks = listTasks.filter(isActiveTask);
   const groups = groupTasks({
     tasks: activeTasks,
     grouping: input.preference.grouping,
@@ -260,7 +262,7 @@ export function buildKanbanColumns(input: {
     input.listTitle,
     input.selectedLabelId,
     (["codex", "claude"] as const).filter((tool) =>
-      input.tasks.some((task) => task.cli_assignee === tool)),
+      listTasks.some((task) => task.cli_assignee === tool)),
   ).map((column) => ({ ...column, tasks: tasksByGroup.get(column.id) ?? [] }));
   if (input.preference.show_completed) {
     columns.push({
@@ -268,7 +270,7 @@ export function buildKanbanColumns(input: {
       title: "已完成",
       target: { kind: "completed" },
       tasks: sortTasks(
-        input.tasks.filter(isCompletedTask),
+        listTasks.filter(isCompletedTask),
         input.preference.sort,
         input.preference.direction,
         input.labels,

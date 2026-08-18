@@ -113,8 +113,8 @@ function labelColor(task: Task, labels: Label[]) {
   return labels.find((label) => task.label_ids.includes(label.id))?.color ?? "#9EB3FC";
 }
 
-function barBackground(color: string, isSubtask: boolean) {
-  if (!isSubtask) return color;
+function barBackground(color: string, isChildTask: boolean) {
+  if (!isChildTask) return color;
   return `color-mix(in srgb, ${color} 42%, white)`;
 }
 
@@ -152,10 +152,8 @@ export function TaskTimeline({
   online,
   now,
   selectedTaskId,
-  selectedSubtaskId,
   showCompleted,
   onSelectTask,
-  onSelectSubtask,
   onSaveTaskSchedule,
   onCreateOnDay,
   onNotice,
@@ -167,10 +165,8 @@ export function TaskTimeline({
   online: boolean;
   now: Date;
   selectedTaskId: string | null;
-  selectedSubtaskId: string | null;
   showCompleted: boolean;
   onSelectTask: (taskId: string) => void;
-  onSelectSubtask: (taskId: string, subtaskId: string) => void;
   onSaveTaskSchedule: (
     taskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
@@ -303,8 +299,7 @@ export function TaskTimeline({
     return collectTimelineDependencyPaths(boxes, dependencyEdges);
   }, [dayWidth, dependencyEdges, origin, packedByGroup, timelineRows]);
 
-  const focusedBarId = hoveredBarId
-    ?? (selectedSubtaskId ? `subtask:${selectedSubtaskId}` : selectedTaskId);
+  const focusedBarId = hoveredBarId ?? selectedTaskId;
 
   const schedulePanelBundle = useMemo(() => ({
     ...bundle,
@@ -481,7 +476,7 @@ export function TaskTimeline({
   }
 
   function openBar(
-    source: { kind: "task" | "subtask"; task: Task; subtask: { id: string } | null },
+    source: { kind: "task" | "childTask"; task: Task; childTask: { id: string } | null },
     event: ReactMouseEvent,
   ) {
     event.stopPropagation();
@@ -489,11 +484,7 @@ export function TaskTimeline({
       suppressBarClickRef.current = false;
       return;
     }
-    if (source.kind === "subtask" && source.subtask) {
-      onSelectSubtask(source.task.id, source.subtask.id);
-      return;
-    }
-    onSelectTask(source.task.id);
+    onSelectTask(source.childTask?.id ?? source.task.id);
   }
 
   async function onGridDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
@@ -747,23 +738,24 @@ export function TaskTimeline({
                   const packed = packedByGroup.get(row.id);
                   if (!packed) return [];
                   return packed.items.map(({ source, task, lane, range }) => {
-                    const isSubtask = source.kind === "subtask";
+                    const isChildTask = source.kind === "childTask";
+                    const drag = pointerDrag?.taskId === task.id ? pointerDrag : null;
                     let displayRange = range;
-                    if (!isSubtask && pointerDrag?.taskId === task.id) {
-                      if (pointerDrag.kind === "move" && pointerDrag.dayDelta !== 0) {
+                    if (!isChildTask && drag) {
+                      if (drag.kind === "move" && drag.dayDelta !== 0) {
                         const patch = schedulePatchForTimelineMove(
                           task,
-                          pointerDrag.dayDelta,
+                          drag.dayDelta,
                           timeZone,
                         );
                         if (patch) {
                           displayRange = taskBarRange({ ...task, ...patch }, timeZone) ?? range;
                         }
-                      } else if (pointerDrag.kind === "resize" && pointerDrag.dayDelta !== 0) {
+                      } else if (drag.kind === "resize" && drag.dayDelta !== 0) {
                         const patch = schedulePatchForTimelineResize(
                           task,
-                          pointerDrag.edge,
-                          pointerDrag.dayDelta,
+                          drag.edge,
+                          drag.dayDelta,
                           timeZone,
                         );
                         if (patch) {
@@ -774,30 +766,28 @@ export function TaskTimeline({
                     const { left, width } = barGeometry(displayRange, origin, dayWidth);
                     const titleOutside = shouldPlaceTimelineBarTitleOutside(source.title, width);
                     const color = labelColor(task, bundle.labels);
-                    const editable = !isSubtask
+                    const editable = !isChildTask
                       && writable
                       && canRescheduleTask(bundle, task, currentUserId)
                       && !pendingIds.has(task.id);
-                    const selected = isSubtask
-                      ? selectedSubtaskId === source.subtask?.id
-                      : selectedTaskId === task.id && !selectedSubtaskId;
+                    const selected = selectedTaskId === (source.childTask?.id ?? task.id);
                     return (
                       <div
                         key={source.id}
                         className={clsx(
                           "timeline-bar",
-                          isSubtask && "is-subtask",
+                          isChildTask && "is-childTask",
                           selected && "selected",
                           source.completed && "completed",
                           editable && "editable",
-                          !isSubtask && pendingIds.has(task.id) && "pending",
+                          !isChildTask && pendingIds.has(task.id) && "pending",
                           titleOutside && "title-outside",
                         )}
                         style={{
                           top: row.top + lane * TIMELINE_ROW_HEIGHT + TIMELINE_BAR_TOP_INSET,
                           left,
                           width,
-                          backgroundColor: barBackground(color, isSubtask),
+                          backgroundColor: barBackground(color, isChildTask),
                         }}
                         title={source.title}
                         onMouseEnter={() => setHoveredBarId(source.id)}
@@ -806,7 +796,7 @@ export function TaskTimeline({
                         ))}
                         onClick={(event) => openBar(source, event)}
                         onPointerDown={(event) => {
-                          if (isSubtask) return;
+                          if (isChildTask) return;
                           if ((event.target as HTMLElement).closest(".timeline-bar-handle")) {
                             return;
                           }

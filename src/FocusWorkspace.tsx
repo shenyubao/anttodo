@@ -17,6 +17,7 @@ import {
   formatFocusDayLabel,
   formatFocusDuration,
   formatFocusTimeRange,
+  focusRuntimeStorageKey,
   groupFocusSessionsByDay,
   loadFocusRuntimeState,
   nextBreakKind,
@@ -33,6 +34,7 @@ import {
 } from "./lib/focusSession";
 import type { FocusSession, FocusSettings, Task } from "./types";
 import type { DesktopFocusDeepLinkEnvelope } from "./lib/desktopDeepLink";
+import { currentBrandName } from "./lib/instanceConfig";
 
 export function FocusWorkspace({
   workspaceId,
@@ -72,8 +74,8 @@ export function FocusWorkspace({
   const [manualMinutes, setManualMinutes] = useState(25);
   const [manualNotes, setManualNotes] = useState("");
   const [manualTaskId, setManualTaskId] = useState<string | null>(null);
-  const [manualSubtaskId, setManualSubtaskId] = useState<string | null>(null);
-  const titleBaseRef = useRef(typeof document === "undefined" ? "AntTodo" : document.title);
+  const [manualChildTaskId, setManualChildTaskId] = useState<string | null>(null);
+  const titleBaseRef = useRef(typeof document === "undefined" ? currentBrandName() : document.title);
   const completionHandledRef = useRef(false);
   const runtimeRef = useRef(runtime);
   const skipRuntimeSaveRef = useRef(false);
@@ -112,7 +114,7 @@ export function FocusWorkspace({
   }, [runtime, userId, workspaceId]);
 
   useEffect(() => {
-    const key = `anttodo:focus-runtime:${userId}:${workspaceId}`;
+    const key = focusRuntimeStorageKey(userId, workspaceId);
     const onStorage = (event: StorageEvent) => {
       if (event.key !== key) return;
       skipRuntimeSaveRef.current = true;
@@ -163,16 +165,12 @@ export function FocusWorkspace({
       return false;
     }
     const nextTaskId = taskId ?? current.taskId;
-    const nextSubtaskId = taskId != null && taskId !== current.taskId
-      ? null
-      : current.subtaskId;
     if (mode === "stopwatch") {
       setRuntime({
         ...current,
         mode,
         phase: "stopwatch",
         taskId: nextTaskId,
-        subtaskId: nextSubtaskId,
         plannedSeconds: 0,
         elapsedSeconds: 0,
         startedAt: new Date().toISOString(),
@@ -185,7 +183,6 @@ export function FocusWorkspace({
         mode,
         phase: "focusing",
         taskId: nextTaskId,
-        subtaskId: nextSubtaskId,
         plannedSeconds: settings.pomodoro_minutes * 60,
         elapsedSeconds: 0,
         startedAt: new Date().toISOString(),
@@ -273,7 +270,7 @@ export function FocusWorkspace({
       return;
     }
     const label = runtime.phase === "breaking" ? "休息" : "专注";
-    document.title = `${formatFocusClock(displayedSeconds(runtime, nowMs))} ${label} · AntTodo`;
+    document.title = `${formatFocusClock(displayedSeconds(runtime, nowMs))} ${label} · ${currentBrandName()}`;
     return () => {
       document.title = titleBaseRef.current;
     };
@@ -291,9 +288,12 @@ export function FocusWorkspace({
   }, [nowMs, runtime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedTitle = useMemo(
-    () => resolveFocusTargetTitle(tasks, runtime.taskId, runtime.subtaskId),
-    [runtime.subtaskId, runtime.taskId, tasks],
+    () => resolveFocusTargetTitle(tasks, runtime.taskId),
+    [runtime.taskId, tasks],
   );
+  const selectedTask = tasks.find((task) => task.id === runtime.taskId) ?? null;
+  const selectedRootTaskId = selectedTask?.parent_task_id ?? runtime.taskId;
+  const selectedNestedTaskId = selectedTask?.parent_task_id ? selectedTask.id : null;
   const stats = useMemo(() => summarizeFocusSessions(sessions), [sessions]);
   const groups = useMemo(() => groupFocusSessionsByDay(sessions), [sessions]);
   const showActiveSide = runtime.phase === "focusing"
@@ -310,7 +310,6 @@ export function FocusWorkspace({
     endedAt: string;
     notes: string;
     taskId: string | null;
-    subtaskId: string | null;
   }) {
     if (!online) {
       onNotice("离线时无法保存专注记录");
@@ -321,7 +320,6 @@ export function FocusWorkspace({
         user_id: userId,
         workspace_id: workspaceId,
         task_id: partial.taskId,
-        subtask_id: partial.subtaskId,
         mode: partial.mode,
         kind: partial.kind,
         planned_seconds: partial.plannedSeconds,
@@ -353,7 +351,6 @@ export function FocusWorkspace({
         endedAt,
         notes: current.notes,
         taskId: current.taskId,
-        subtaskId: current.subtaskId,
       });
       const completedPomodoros = current.completedPomodoros + 1;
       const breakKind = nextBreakKind(completedPomodoros, settings.long_break_interval);
@@ -398,7 +395,6 @@ export function FocusWorkspace({
         endedAt,
         notes: "",
         taskId: current.taskId,
-        subtaskId: current.subtaskId,
       });
       const idle = createIdleRuntimeState(settings);
       if (settings.auto_start_pomodoro) {
@@ -407,7 +403,6 @@ export function FocusWorkspace({
           phase: "focusing",
           mode: "pomodoro",
           taskId: current.taskId,
-          subtaskId: current.subtaskId,
           notes: "",
           plannedSeconds: settings.pomodoro_minutes * 60,
           startedAt: new Date().toISOString(),
@@ -417,7 +412,6 @@ export function FocusWorkspace({
         setRuntime({
           ...idle,
           taskId: current.taskId,
-          subtaskId: current.subtaskId,
           completedPomodoros: current.completedPomodoros,
         });
       }
@@ -496,7 +490,6 @@ export function FocusWorkspace({
           endedAt,
           notes: current.notes,
           taskId: current.taskId,
-          subtaskId: current.subtaskId,
         });
       }
     } else if (current.phase === "breaking" && elapsed >= 60) {
@@ -511,7 +504,6 @@ export function FocusWorkspace({
         endedAt,
         notes: "",
         taskId: current.taskId,
-        subtaskId: current.subtaskId,
       });
     }
 
@@ -520,15 +512,16 @@ export function FocusWorkspace({
       ...idle,
       mode: current.mode,
       taskId: current.taskId,
-      subtaskId: current.subtaskId,
       completedPomodoros: current.completedPomodoros,
     });
     clearFocusRuntimeState(userId, workspaceId);
   }
 
-  async function selectFocusTask(taskId: string | null, subtaskId: string | null = null) {
+  async function selectFocusTask(taskId: string | null) {
     const current = runtimeRef.current;
-    const { sessionToPersist, nextRuntime } = switchFocusTask(current, { taskId, subtaskId });
+    const { sessionToPersist, nextRuntime } = switchFocusTask(current, {
+      taskId,
+    });
     if (nextRuntime === current) return;
     setRuntime(nextRuntime);
     if (sessionToPersist) {
@@ -554,7 +547,6 @@ export function FocusWorkspace({
     setRuntime({
       ...idle,
       taskId: runtime.taskId,
-      subtaskId: runtime.subtaskId,
       completedPomodoros: runtime.completedPomodoros,
     });
   }
@@ -575,14 +567,13 @@ export function FocusWorkspace({
       startedAt: startedAt.toISOString(),
       endedAt: endedAt.toISOString(),
       notes: manualNotes,
-      taskId: manualTaskId,
-      subtaskId: manualSubtaskId,
+      taskId: manualChildTaskId ?? manualTaskId,
     });
     setManualOpen(false);
     setManualNotes("");
     setManualMinutes(25);
     setManualTaskId(null);
-    setManualSubtaskId(null);
+    setManualChildTaskId(null);
   }
 
   return (
@@ -678,9 +669,8 @@ export function FocusWorkspace({
                 tasks={tasks}
                 sessions={sessions}
                 selectedTaskId={runtime.taskId}
-                selectedSubtaskId={runtime.subtaskId}
                 onOpenChange={setPickerOpen}
-                onSelect={(taskId, subtaskId) => void selectFocusTask(taskId, subtaskId)}
+                onSelect={(taskId) => void selectFocusTask(taskId)}
               />
             )}
           </div>
@@ -758,7 +748,7 @@ export function FocusWorkspace({
                                 {formatFocusTimeRange(session.started_at, session.ended_at)}
                               </div>
                               <div className="focus-records-title">
-                                {resolveFocusRecordTitle(tasks, session.task_id, session.subtask_id)}
+                                {resolveFocusRecordTitle(tasks, session.task_id)}
                               </div>
                               {session.notes && (
                                 <div className="focus-records-notes">{session.notes}</div>
@@ -795,36 +785,36 @@ export function FocusWorkspace({
           <label>
             <span>关联任务</span>
             <select
-              value={manualSubtaskId && manualTaskId
-                ? `${manualTaskId}:${manualSubtaskId}`
+              value={manualChildTaskId && manualTaskId
+                ? `${manualTaskId}:${manualChildTaskId}`
                 : (manualTaskId ?? "")}
               onChange={(event) => {
                 const value = event.target.value;
                 if (!value) {
                   setManualTaskId(null);
-                  setManualSubtaskId(null);
+                  setManualChildTaskId(null);
                   return;
                 }
                 const separator = value.indexOf(":");
                 if (separator === -1) {
                   setManualTaskId(value);
-                  setManualSubtaskId(null);
+                  setManualChildTaskId(null);
                   return;
                 }
                 setManualTaskId(value.slice(0, separator));
-                setManualSubtaskId(value.slice(separator + 1));
+                setManualChildTaskId(value.slice(separator + 1));
               }}
             >
               <option value="">不关联任务</option>
               {listFocusableTasks(tasks).map((task) => (
                 <optgroup key={task.id} label={task.title}>
                   <option value={task.id}>{task.title}</option>
-                  {task.subtasks
+                  {task.children
                     .slice()
                     .sort((a, b) => a.position - b.position)
-                    .map((subtask) => (
-                      <option key={subtask.id} value={`${task.id}:${subtask.id}`}>
-                        {subtask.title}
+                    .map((childTask) => (
+                      <option key={childTask.id} value={`${task.id}:${childTask.id}`}>
+                        {childTask.title}
                       </option>
                     ))}
                 </optgroup>

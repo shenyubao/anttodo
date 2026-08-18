@@ -51,7 +51,7 @@ test("uses a two-step mainland phone OTP flow", async ({ page }) => {
   await expect(page.getByRole("button", { name: /秒后可重新发送/ })).toBeDisabled();
 
   await page.getByPlaceholder("请输入 6 位验证码").fill("123456");
-  await page.getByRole("button", { name: "登录 AntTodo" }).click();
+  await page.getByRole("button", { name: /^登录/ }).click();
   await expect(page.getByRole("alert")).toContainText("验证码已过期");
 
   await page.getByRole("button", { name: "修改号码" }).click();
@@ -102,7 +102,7 @@ test("switches to enterprise login, validates slug, and opens the canonical team
   await expect(page.getByRole("tab", { name: "主账户登录" })).toHaveCount(0);
   await expect(page.getByText("宇策科技", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "跳转到钉钉授权" })).toBeVisible();
-  await expect(page.getByLabel("钉钉登录二维码")).toHaveCount(0);
+  await expect(page.getByLabel("钉钉登录二维码")).toBeVisible();
   await expect(page.getByText("使用钉钉扫码登录")).toHaveCount(0);
 });
 
@@ -148,7 +148,15 @@ test("desktop enterprise login requests a desktop state and opens DingTalk exter
           minimize() {},
           toggleFullScreen() {},
         },
+        tray: {
+          setAuthenticated() {},
+          showMainWindow() {},
+          hide() {},
+        },
         auth: {
+          async setServiceOrigin() {
+            return true;
+          },
           async openDingtalkUrl(url: string) {
             openedUrls.push(url);
             return true;
@@ -179,6 +187,7 @@ test("desktop enterprise login requests a desktop state and opens DingTalk exter
 
   await expect(page.getByText("宇策科技", { exact: true })).toBeVisible();
   expect(requestedClient).toBe("desktop");
+  await page.getByRole("button", { name: "跳转到钉钉授权" }).click();
   await expect.poll(() =>
     page.evaluate(() =>
       (window as typeof window & { __openedDingtalkUrls: string[] })
@@ -212,6 +221,162 @@ test("keeps the login card usable on a narrow viewport", async ({ page }) => {
   await page.getByRole("tab", { name: "企业联合登录" }).click();
   await expect(page.getByPlaceholder("例如 yucekj")).toBeVisible();
   await expect(page.locator(".auth-preview")).toBeHidden();
+});
+
+test("keeps the current login tab after reload", async ({ page }) => {
+  await page.getByRole("tab", { name: "企业联合登录" }).click();
+  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+});
+
+test("keeps the current login tab when switching desktop services", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.assign(window, {
+      anttodoDesktop: {
+        platform: "darwin",
+        versions: { electron: "test", chrome: "test" },
+        windowControls: {
+          close() {},
+          minimize() {},
+          toggleFullScreen() {},
+        },
+        tray: {
+          setAuthenticated() {},
+          showMainWindow() {},
+          hide() {},
+        },
+        auth: {
+          async setServiceOrigin() {
+            return true;
+          },
+          async openDingtalkUrl() {
+            return true;
+          },
+          async takePendingCallback() {
+            return null;
+          },
+          onCallbackAvailable() {
+            return () => {};
+          },
+        },
+      },
+    });
+  });
+  await page.reload();
+
+  await page.getByRole("tab", { name: "企业联合登录" }).click();
+  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+
+  await page.getByLabel("当前服务", { exact: true }).selectOption("custom");
+  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByPlaceholder("https://todo.yuce-tech.cn")).toBeVisible();
+  await expect(page.getByPlaceholder("例如 yucekj")).toBeVisible();
+
+  await page.evaluate(() => {
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="当前服务"]');
+    const accountTab = document.getElementById("auth-tab-account");
+    if (!select || !accountTab) throw new Error("login controls missing");
+    select.value = "official";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    accountTab.click();
+  });
+  await expect(page.getByRole("tab", { name: "企业联合登录" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("form", { name: "企业联合登录" })).toBeVisible();
+});
+
+test("desktop validates, remembers, and restores a custom service", async ({ page }) => {
+  await page.route("https://todo.yuce-tech.cn/.well-known/anttodo.json", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        schemaVersion: 1,
+        instanceId: "8e78719f-8d1f-4d0d-90fc-b18c7f99fd84",
+        displayName: "宇策科技 AntTodo",
+        deployMode: "onPremises",
+        workspaceSlug: "yucekj",
+        appUrl: "https://todo.yuce-tech.cn",
+        supabaseUrl: "https://supabase.yuce-tech.cn",
+        publishableKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
+        deviceAuthorizationEndpoint:
+          "https://supabase.yuce-tech.cn/functions/v1/cli-device-auth",
+      }),
+    });
+  });
+  await page.addInitScript(() => {
+    const serviceOrigins: string[] = [];
+    Object.assign(window, {
+      __serviceOrigins: serviceOrigins,
+      anttodoDesktop: {
+        platform: "darwin",
+        versions: { electron: "test", chrome: "test" },
+        windowControls: {
+          close() {},
+          minimize() {},
+          toggleFullScreen() {},
+        },
+        tray: {
+          setAuthenticated() {},
+          showMainWindow() {},
+          hide() {},
+        },
+        auth: {
+          async setServiceOrigin(origin: string) {
+            serviceOrigins.push(origin);
+            return true;
+          },
+          async openDingtalkUrl() {
+            return true;
+          },
+          async takePendingCallback() {
+            return null;
+          },
+          onCallbackAvailable() {
+            return () => {};
+          },
+        },
+      },
+    });
+  });
+  await page.reload();
+
+  const service = page.getByLabel("登录服务");
+  await expect(service.getByText("AntTodo 官方服务")).toBeVisible();
+  await service.getByRole("button").first().click();
+  await service.getByPlaceholder("https://todo.yuce-tech.cn").fill("todo.yuce-tech.cn");
+  await service.getByRole("button", { name: "连接此服务" }).click();
+
+  await expect(service.getByText("宇策科技 AntTodo")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "蚂蚁待办 x 宇策科技 AntTodo" })).toBeVisible();
+  await expect(page).toHaveTitle("宇策科技 AntTodo");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("anttodo:selected-service-origin")))
+    .toBe("https://todo.yuce-tech.cn");
+  await expect.poll(() => page.evaluate(() => (
+    window as typeof window & { __serviceOrigins: string[] }
+  ).__serviceOrigins.includes("https://todo.yuce-tech.cn"))).toBe(true);
+
+  await page.getByRole("tab", { name: "企业联合登录" }).click();
+  await expect(page.getByText("已从当前服务自动识别企业，无需填写 Slug。")).toBeVisible();
+  await expect(page.getByPlaceholder("例如 yucekj")).toHaveCount(0);
+  await expect(page.getByLabel("企业 Slug")).toHaveCount(0);
+
+  await service.getByRole("button").first().click();
+  await service.getByRole("button", { name: "恢复官方服务" }).click();
+  await expect(service.getByText("AntTodo 官方服务")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("anttodo:selected-service-origin")))
+    .toBeNull();
 });
 
 test("previews a workspace invite before asking the visitor to sign in", async ({

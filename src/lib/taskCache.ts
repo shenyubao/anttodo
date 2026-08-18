@@ -1,6 +1,5 @@
 import type {
   AiCliTool,
-  Subtask,
   Task,
   TaskDependency,
   TaskKind,
@@ -10,12 +9,11 @@ import type {
   TaskSection,
   WorkspaceBundle,
 } from "../types";
-import { descendantIds } from "./subtaskTree";
+import { descendantIds } from "./taskTree";
 import { orderedTaskSections, taskSectionOrderAfterInsert } from "./taskList";
 
 export const OPTIMISTIC_TASK_ID_PREFIX = "optimistic-task:";
 export const OPTIMISTIC_SECTION_ID_PREFIX = "optimistic-section:";
-export const OPTIMISTIC_SUBTASK_ID_PREFIX = "optimistic-subtask:";
 
 export type OptimisticTaskInput = {
   workspaceId: string;
@@ -29,6 +27,8 @@ export type OptimisticTaskInput = {
   priority?: TaskPriority;
   kind?: TaskKind;
   assigneeId?: string | null;
+  parentTaskId?: string | null;
+  position?: number;
   optimisticId?: string;
   now?: string;
 };
@@ -39,14 +39,37 @@ export function isOptimisticTaskId(taskId: string) {
 
 /** Fill fields added after older persisted query caches were written. */
 export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBundle {
-  if (
-    Array.isArray(bundle.customTaskViews)
-    && Array.isArray(bundle.taskSystemViewPreferences)
-  ) {
-    return bundle;
+  const flattened: Task[] = [];
+  const flatInputIds = new Set((bundle.tasks ?? []).map((task) => task.id));
+  const hasFlatTreeRows = (bundle.tasks ?? []).some((task) => Boolean(task.parent_task_id));
+  const visit = (task: Task, inheritedParentId: string | null) => {
+    const children = Array.isArray(task.children) ? task.children : [];
+    const normalized = {
+      ...task,
+      parent_task_id: task.parent_task_id ?? inheritedParentId,
+      position: task.position ?? 0,
+      children: [] as Task[],
+    };
+    flattened.push(normalized);
+    for (const child of hasFlatTreeRows ? [] : children) {
+      if (!flatInputIds.has(child.id)) visit(child, task.id);
+    }
+  };
+  for (const task of bundle.tasks ?? []) {
+    if (!flattened.some((item) => item.id === task.id)) visit(task, null);
   }
+  const byParent = new Map<string, Task[]>();
+  for (const task of flattened) {
+    if (!task.parent_task_id || task.deleted_at) continue;
+    byParent.set(task.parent_task_id, [...(byParent.get(task.parent_task_id) ?? []), task]);
+  }
+  const tasks = flattened.map((task) => ({
+    ...task,
+    children: (byParent.get(task.id) ?? []).sort((a, b) => a.position - b.position),
+  }));
   return {
     ...bundle,
+    tasks,
     customTaskViews: bundle.customTaskViews ?? [],
     taskSystemViewPreferences: bundle.taskSystemViewPreferences ?? [],
   };
@@ -66,6 +89,8 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
   return {
     id: input.optimisticId ?? `${OPTIMISTIC_TASK_ID_PREFIX}${crypto.randomUUID()}`,
     workspace_id: input.workspaceId,
+    parent_task_id: input.parentTaskId ?? null,
+    position: input.position ?? 0,
     title: input.title,
     description: input.description ?? "",
     kind,
@@ -91,7 +116,7 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
     label_ids: input.labelIds,
     participant_ids: defaultCreatorParticipantIds(input.userId, input.assigneeId),
     description_mentions: [],
-    subtasks: [],
+    children: [],
     reminders: [],
     reminder_persistent: false,
     dependencies: [],
@@ -116,6 +141,8 @@ function taskFromCreatedRow(
   return {
     id: created.id,
     workspace_id: created.workspace_id,
+    parent_task_id: created.parent_task_id ?? null,
+    position: created.position ?? 0,
     title: created.title,
     description: created.description ?? "",
     kind: created.kind ?? "todo",
@@ -144,7 +171,7 @@ function taskFromCreatedRow(
       created.assignee_id ?? null,
     ),
     description_mentions: created.description_mentions ?? [],
-    subtasks: [],
+    children: [],
     reminders: [],
     reminder_persistent: false,
     dependencies: created.dependencies ?? [],
@@ -153,7 +180,7 @@ function taskFromCreatedRow(
 
 export function appendTaskToBundle(bundle: WorkspaceBundle, task: Task): WorkspaceBundle {
   if (bundle.tasks.some((item) => item.id === task.id)) return bundle;
-  return { ...bundle, tasks: [task, ...bundle.tasks] };
+  return normalizeWorkspaceBundle({ ...bundle, tasks: [task, ...bundle.tasks] });
 }
 
 export function replaceOptimisticTask(
@@ -177,29 +204,26 @@ export function replaceOptimisticTask(
       : placement,
   );
 
-  return {
+  return normalizeWorkspaceBundle({
     ...bundle,
     tasks,
     taskPlacements: deduplicatePlacements(placements),
-  };
+  });
 }
 
 export function removeTaskFromBundle(bundle: WorkspaceBundle, taskId: string): WorkspaceBundle {
+  const removedIds = new Set([taskId, ...descendantIds(bundle.tasks, taskId)]);
   return {
     ...bundle,
     tasks: bundle.tasks
-      .filter((task) => task.id !== taskId)
+      .filter((task) => !removedIds.has(task.id))
       .map((task) => ({
         ...task,
         dependencies: (task.dependencies ?? []).filter((item) =>
-          item.depends_on_task_id !== taskId && item.task_id !== taskId),
-        subtasks: task.subtasks.map((subtask) => ({
-          ...subtask,
-          dependencies: (subtask.dependencies ?? []).filter((item) =>
-            item.depends_on_task_id !== taskId && item.task_id !== taskId),
-        })),
+          !removedIds.has(item.depends_on_task_id) && !removedIds.has(item.task_id)),
+        children: task.children.filter((child) => !removedIds.has(child.id)),
       })),
-    taskPlacements: bundle.taskPlacements.filter((placement) => placement.task_id !== taskId),
+    taskPlacements: bundle.taskPlacements.filter((placement) => !removedIds.has(placement.task_id)),
   };
 }
 
@@ -405,13 +429,13 @@ export function patchTaskInBundle(
   taskId: string,
   patch: Partial<Task> | ((task: Task) => Task),
 ): WorkspaceBundle {
-  return {
+  return normalizeWorkspaceBundle({
     ...bundle,
     tasks: bundle.tasks.map((task) => {
       if (task.id !== taskId) return task;
       return typeof patch === "function" ? patch(task) : { ...task, ...patch };
     }),
-  };
+  });
 }
 
 export function applyTaskScheduleToBundle(
@@ -435,37 +459,35 @@ export function applyTaskScheduleToBundle(
   }));
 }
 
-export function applySubtaskScheduleToBundle(
+export function applyChildTaskScheduleToBundle(
   bundle: WorkspaceBundle,
-  subtaskId: string,
+  taskId: string,
   patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
   input: {
     reminders: TaskReminder[];
     reminderPersistent: boolean;
   },
 ): WorkspaceBundle {
-  return patchSubtaskInBundle(bundle, subtaskId, {
+  return patchTaskInBundle(bundle, taskId, {
     ...patch,
     reminders: input.reminders,
     reminder_persistent: input.reminderPersistent,
   });
 }
 
-export function findTaskIdForSubtask(
+export function findTaskIdForChildTask(
   bundle: WorkspaceBundle,
-  subtaskId: string,
+  taskId: string,
 ): string | null {
-  return bundle.tasks.find((task) =>
-    task.subtasks.some((subtask) => subtask.id === subtaskId),
-  )?.id ?? null;
+  return bundle.tasks.find((task) => task.id === taskId)?.parent_task_id ?? null;
 }
 
-export type OptimisticSubtaskInput = {
+export type OptimisticChildTaskInput = {
   taskId: string;
   userId: string;
   title: string;
   position: number;
-  parentSubtaskId?: string | null;
+  parentChildTaskId?: string | null;
   priority?: TaskPriority;
   dueAt?: string | null;
   dueStartAt?: string | null;
@@ -476,100 +498,82 @@ export type OptimisticSubtaskInput = {
   optimisticId?: string;
 };
 
-export function isOptimisticSubtaskId(subtaskId: string) {
-  return subtaskId.startsWith(OPTIMISTIC_SUBTASK_ID_PREFIX);
+export function isOptimisticChildTaskId(taskId: string) {
+  return isOptimisticTaskId(taskId);
 }
 
-export function createOptimisticSubtask(input: OptimisticSubtaskInput): Subtask {
-  return {
-    id: input.optimisticId ?? `${OPTIMISTIC_SUBTASK_ID_PREFIX}${crypto.randomUUID()}`,
-    task_id: input.taskId,
-    parent_subtask_id: input.parentSubtaskId ?? null,
+export function createOptimisticChildTask(input: OptimisticChildTaskInput): Task {
+  const task = createOptimisticTask({
+    workspaceId: "",
+    userId: input.userId,
     title: input.title,
-    description: "",
-    completed: false,
+    labelIds: [],
+    parentTaskId: input.parentChildTaskId ?? input.taskId,
     position: input.position,
-    priority: input.priority ?? "none",
-    due_at: input.dueAt ?? null,
+    priority: input.priority,
+    dueAt: input.dueAt,
+    assigneeId: input.assigneeId,
+    optimisticId: input.optimisticId,
+  });
+  return {
+    ...task,
     due_start_at: input.dueStartAt ?? null,
     due_is_all_day: input.dueIsAllDay ?? false,
     due_timezone: input.dueTimezone ?? null,
-    estimate_hours: null,
-    actual_hours: null,
-    estimate_pomodoros: null,
-    actual_pomodoros: null,
-    assignee_id: input.assigneeId ?? null,
     cli_assignee: input.cliAssignee ?? null,
-    created_by: input.userId,
-    reminders: [],
-    reminder_persistent: false,
-    dependencies: [],
   };
 }
 
-/** Create a subtask owned by the local database. The UUID is final and is never replaced by a server ID. */
-export function createLocalSubtask(input: Omit<OptimisticSubtaskInput, "optimisticId"> & { id?: string }): Subtask {
-  return createOptimisticSubtask({
+/** Create a childTask owned by the local database. The UUID is final and is never replaced by a server ID. */
+export function createLocalChildTask(input: Omit<OptimisticChildTaskInput, "optimisticId"> & { id?: string }): Task {
+  return createOptimisticChildTask({
     ...input,
     optimisticId: input.id ?? crypto.randomUUID(),
   });
 }
 
-export function replaceOptimisticSubtask(
+export function replaceOptimisticChildTask(
   bundle: WorkspaceBundle,
   taskId: string,
   optimisticId: string,
-  created: Subtask,
+  created: Task,
 ): WorkspaceBundle {
-  return patchTaskInBundle(bundle, taskId, (task) => {
-    const withoutCreated = task.subtasks.filter((item) => item.id !== created.id);
-    const optimisticIndex = withoutCreated.findIndex((item) => item.id === optimisticId);
-    const subtasks = optimisticIndex >= 0
-      ? withoutCreated.map((item, index) => index === optimisticIndex ? created : item)
-      : [...withoutCreated, created];
-    return { ...task, subtasks };
+  const parent = bundle.tasks.find((item) => item.id === taskId);
+  const next = { ...created, workspace_id: created.workspace_id || parent?.workspace_id || "" };
+  return normalizeWorkspaceBundle({
+    ...bundle,
+    tasks: bundle.tasks.map((item) => item.id === optimisticId ? next : item),
   });
 }
 
-export function appendSubtaskInBundle(
+export function appendChildTaskInBundle(
   bundle: WorkspaceBundle,
   taskId: string,
-  subtask: Subtask,
+  childTask: Task,
 ): WorkspaceBundle {
-  return patchTaskInBundle(bundle, taskId, (task) => {
-    if (task.subtasks.some((item) => item.id === subtask.id)) return task;
-    return { ...task, subtasks: [...task.subtasks, subtask] };
+  if (bundle.tasks.some((item) => item.id === childTask.id)) return bundle;
+  const parent = bundle.tasks.find((item) => item.id === taskId);
+  return normalizeWorkspaceBundle({
+    ...bundle,
+    tasks: [...bundle.tasks, {
+      ...childTask,
+      workspace_id: childTask.workspace_id || parent?.workspace_id || "",
+      parent_task_id: childTask.parent_task_id ?? taskId,
+    }],
   });
 }
 
 export function appendTaskDependenciesInBundle(
   bundle: WorkspaceBundle,
   taskId: string,
-  subtaskId: string | null,
   rows: TaskDependency[],
 ): WorkspaceBundle {
   if (rows.length === 0) return bundle;
   return patchTaskInBundle(bundle, taskId, (task) => {
-    if (!subtaskId) {
-      const existing = new Set((task.dependencies ?? []).map((item) => item.id));
-      return {
-        ...task,
-        dependencies: [...(task.dependencies ?? []), ...rows.filter((row) => !existing.has(row.id))],
-      };
-    }
+    const existing = new Set((task.dependencies ?? []).map((item) => item.id));
     return {
       ...task,
-      subtasks: task.subtasks.map((subtask) => {
-        if (subtask.id !== subtaskId) return subtask;
-        const existing = new Set((subtask.dependencies ?? []).map((item) => item.id));
-        return {
-          ...subtask,
-          dependencies: [
-            ...(subtask.dependencies ?? []),
-            ...rows.filter((row) => !existing.has(row.id)),
-          ],
-        };
-      }),
+      dependencies: [...(task.dependencies ?? []), ...rows.filter((row) => !existing.has(row.id))],
     };
   });
 }
@@ -583,54 +587,21 @@ export function removeTaskDependencyFromBundle(
     tasks: bundle.tasks.map((task) => ({
       ...task,
       dependencies: (task.dependencies ?? []).filter((item) => item.id !== dependencyId),
-      subtasks: task.subtasks.map((subtask) => ({
-        ...subtask,
-        dependencies: (subtask.dependencies ?? []).filter((item) => item.id !== dependencyId),
-      })),
     })),
   };
 }
 
-export function patchSubtaskInBundle(
+export function patchChildTaskInBundle(
   bundle: WorkspaceBundle,
-  subtaskId: string,
-  patch: Partial<Subtask>,
+  taskId: string,
+  patch: Partial<Task>,
 ): WorkspaceBundle {
-  return {
-    ...bundle,
-    tasks: bundle.tasks.map((task) => {
-      if (!task.subtasks.some((item) => item.id === subtaskId)) return task;
-      return {
-        ...task,
-        subtasks: task.subtasks.map((item) =>
-          item.id === subtaskId ? { ...item, ...patch } : item
-        ),
-      };
-    }),
-  };
+  return patchTaskInBundle(bundle, taskId, patch);
 }
 
-export function removeSubtaskFromBundle(
+export function removeChildTaskFromBundle(
   bundle: WorkspaceBundle,
-  subtaskId: string,
+  taskId: string,
 ): WorkspaceBundle {
-  return {
-    ...bundle,
-    tasks: bundle.tasks.map((task) => {
-      if (!task.subtasks.some((item) => item.id === subtaskId)) return task;
-      const removedIds = new Set([subtaskId, ...descendantIds(task.subtasks, subtaskId)]);
-      return {
-        ...task,
-        dependencies: (task.dependencies ?? []).filter((item) =>
-          !removedIds.has(item.depends_on_subtask_id ?? "") && !removedIds.has(item.subtask_id ?? "")),
-        subtasks: task.subtasks
-          .filter((item) => !removedIds.has(item.id))
-          .map((item) => ({
-            ...item,
-            dependencies: (item.dependencies ?? []).filter((dep) =>
-              !removedIds.has(dep.depends_on_subtask_id ?? "") && !removedIds.has(dep.subtask_id ?? "")),
-          })),
-      };
-    }),
-  };
+  return removeTaskFromBundle(bundle, taskId);
 }

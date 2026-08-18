@@ -372,15 +372,17 @@ select set_config('request.jwt.claims', '{"sub":"14100000-0000-0000-0000-0000000
 
 select lives_ok(
   $$
-    insert into public.subtasks(task_id, title, position, created_by)
+    insert into public.tasks(id, workspace_id, parent_task_id, title, position, created_by)
     values (
+      '54100000-0000-0000-0000-000000000001',
+      '24100000-0000-0000-0000-000000000001',
       '44100000-0000-0000-0000-000000000001',
-      'Sub A',
+      'Nested A',
       0,
       '14100000-0000-0000-0000-000000000001'
     )
   $$,
-  'owner can create subtask'
+  'owner can create a nested task'
 );
 
 reset role;
@@ -388,19 +390,19 @@ reset role;
 select is(
   anttodo_private.force_flush_notification_dispatch_buffer() >= 1,
   true,
-  'flush subtask buffer rows'
+  'flush nested task buffer rows'
 );
 
 select is(
   (
     select count(*)::integer
     from public.notifications
-    where task_id = '44100000-0000-0000-0000-000000000001'
+    where task_id = '54100000-0000-0000-0000-000000000001'
       and recipient_id = '14100000-0000-0000-0000-000000000003'
-      and notification_type = 'participant_subtask_created'
+      and notification_type = 'participant_task_created'
   ),
   1,
-  'subtask create notifies participants'
+  'nested task creation notifies root participants'
 );
 
 -- Mention cancels pending comment buffer for the mentioned user.

@@ -124,6 +124,8 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
+    parent_task_id TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'open',
@@ -132,16 +134,6 @@ database.exec(`
     assignee_id TEXT,
     version INTEGER NOT NULL DEFAULT 1,
     deleted_at TEXT,
-    updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS subtasks (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    parent_subtask_id TEXT,
-    title TEXT NOT NULL,
-    completed INTEGER NOT NULL DEFAULT 0,
-    position INTEGER NOT NULL DEFAULT 0,
-    version INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS labels (
@@ -186,12 +178,76 @@ function applySqliteMigrations() {
   const applied = new Set(
     rows("SELECT version FROM _schema_migrations").map((item) => String(item.version)),
   );
-  if (!applied.has("nested_subtasks_v1")) {
-    const columns = rows("PRAGMA table_info(subtasks)").map((item) => String(item.name));
-    if (!columns.includes("parent_subtask_id")) {
-      run("ALTER TABLE subtasks ADD COLUMN parent_subtask_id TEXT");
+  if (!applied.has("unified_task_tree_v1")) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const taskColumns = rows("PRAGMA table_info(tasks)").map((item) => String(item.name));
+      if (!taskColumns.includes("parent_task_id")) run("ALTER TABLE tasks ADD COLUMN parent_task_id TEXT");
+      if (!taskColumns.includes("position")) run("ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0");
+
+      const hasLegacyTreeTable = rows(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'children'",
+      ).length > 0;
+      if (hasLegacyTreeTable) {
+        run(`INSERT OR IGNORE INTO tasks(
+          id, workspace_id, parent_task_id, position, title, description, status,
+          priority, due_at, assignee_id, version, deleted_at, updated_at
+        )
+        SELECT c.id, t.workspace_id, COALESCE(c.parent_task_id, c.task_id), c.position,
+          c.title, '', CASE WHEN c.completed = 1 THEN 'completed' ELSE 'open' END,
+          'none', NULL, NULL, c.version, NULL, c.updated_at
+        FROM children c JOIN tasks t ON t.id = c.task_id`);
+        run("DROP TABLE children");
+      }
+
+      const legacyEntity = ["sub", "tasks"].join("");
+      const legacySchedule = ["sub", "task_schedule"].join("");
+      const legacyIdCamel = ["sub", "taskId"].join("");
+      const legacyIdSnake = ["sub", "task_id"].join("");
+      const normalizeLegacyPayload = (rawPayload) => {
+        let payload;
+        try { payload = JSON.parse(String(rawPayload || "{}")); } catch { return String(rawPayload); }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) return String(rawPayload);
+        const exactTaskId = payload[legacyIdCamel] ?? payload.taskId ?? payload[legacyIdSnake] ?? payload.task_id;
+        const nextPayload = { ...payload };
+        delete nextPayload[legacyIdCamel];
+        delete nextPayload[legacyIdSnake];
+        if (exactTaskId) {
+          nextPayload.taskId = exactTaskId;
+          nextPayload.task_id = exactTaskId;
+        }
+        return JSON.stringify(nextPayload);
+      };
+      for (const row of rows("SELECT operation_id, entity_type, payload FROM _client_outbox")) {
+        const entityType = row.entity_type === legacyEntity
+          ? "tasks"
+          : row.entity_type === legacySchedule ? "task_schedule" : row.entity_type;
+        run("UPDATE _client_outbox SET entity_type = ?, payload = ? WHERE operation_id = ?", [
+          entityType, normalizeLegacyPayload(row.payload), row.operation_id,
+        ]);
+      }
+      for (const row of rows("SELECT workspace_id, entity_type, entity_id, payload FROM _entity_shadows")) {
+        const entityType = row.entity_type === legacyEntity ? "tasks"
+          : row.entity_type === legacySchedule ? "task_schedule" : row.entity_type;
+        run(`UPDATE _entity_shadows SET entity_type=?,payload=?
+          WHERE workspace_id=? AND entity_type=? AND entity_id=?`, [
+          entityType, normalizeLegacyPayload(row.payload), row.workspace_id, row.entity_type, row.entity_id,
+        ]);
+      }
+      for (const row of rows("SELECT id, entity_type, local_payload, remote_payload FROM _sync_conflicts")) {
+        const entityType = row.entity_type === legacyEntity ? "tasks"
+          : row.entity_type === legacySchedule ? "task_schedule" : row.entity_type;
+        run(`UPDATE _sync_conflicts SET entity_type=?,local_payload=?,remote_payload=? WHERE id=?`, [
+          entityType, normalizeLegacyPayload(row.local_payload),
+          normalizeLegacyPayload(row.remote_payload), row.id,
+        ]);
+      }
+      run("INSERT INTO _schema_migrations(version) VALUES (?)", ["unified_task_tree_v1"]);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
     }
-    run("INSERT INTO _schema_migrations(version) VALUES (?)", ["nested_subtasks_v1"]);
   }
 }
 

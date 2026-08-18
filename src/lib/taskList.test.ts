@@ -6,6 +6,7 @@ import {
   applySystemSmartViewOrder,
   applyTaskListFilters,
   assigneeFilterLabel,
+  countTasksForLabelSubtree,
   buildCustomViewSnapshotFromSmartView,
   canHideSmartView,
   clampGroupingForViewMode,
@@ -69,8 +70,10 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   updated_at: "2026-07-29T01:00:00.000Z",
   label_ids: [],
   participant_ids: [],
-  subtasks: [],
+  children: [],
   ...patch,
+  parent_task_id: patch.parent_task_id ?? null,
+  position: patch.position ?? 0,
   cli_assignee: patch.cli_assignee ?? null,
   kind: patch.kind ?? "todo",
   reminders: patch.reminders ?? [],
@@ -571,6 +574,46 @@ describe("task list grouping and sorting", () => {
         selectedLabelId: null,
       }).map((item) => item.id),
     ).toEqual(["mine", "other"]);
+  });
+
+  it("keeps nested tasks out of top-level label, inbox, and all views", () => {
+    const parent = task("parent", { title: "父任务", label_ids: ["a"] });
+    const child = task("child", {
+      title: "子任务",
+      parent_task_id: "parent",
+      label_ids: ["a"],
+    });
+    const unlabeledChild = task("inbox-child", {
+      title: "收集箱子任务",
+      parent_task_id: "parent",
+      label_ids: [],
+    });
+    const tasks = [parent, child, unlabeledChild, task("inbox-root")];
+    expect(
+      filterTasksForView({
+        tasks,
+        labels,
+        smartView: "all",
+        selectedLabelId: "a",
+      }).map((item) => item.id),
+    ).toEqual(["parent"]);
+    expect(
+      filterTasksForView({
+        tasks,
+        labels,
+        smartView: "all",
+        selectedLabelId: null,
+      }).map((item) => item.id),
+    ).toEqual(["parent", "inbox-root"]);
+    expect(
+      filterTasksForView({
+        tasks,
+        labels,
+        smartView: "inbox",
+        selectedLabelId: null,
+      }).map((item) => item.id),
+    ).toEqual(["inbox-root"]);
+    expect(countTasksForLabelSubtree(tasks, labels, "a")).toBe(1);
   });
 });
 

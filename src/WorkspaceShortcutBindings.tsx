@@ -17,7 +17,7 @@ export function WorkspaceShortcutBindings({
   onOpenSettings,
   onOpenShortcutsSettings,
   onChangeSection,
-  onCreateSubtask,
+  onCreateChildTask,
   onUpdateTask,
   onCloseTask,
   onNotice,
@@ -31,7 +31,7 @@ export function WorkspaceShortcutBindings({
   onOpenSettings: () => void;
   onOpenShortcutsSettings: () => void;
   onChangeSection: (section: "tasks" | "calendar" | "mindmap" | "focus") => void;
-  onCreateSubtask: (taskId: string, title: string) => Promise<void>;
+  onCreateChildTask: (taskId: string, title: string) => Promise<void>;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
   onCloseTask: () => void;
   onNotice: (message: string) => void;
@@ -88,12 +88,12 @@ export function WorkspaceShortcutBindings({
     input.select();
   });
 
-  useShortcutHandler("task.addSubtask", () => {
+  useShortcutHandler("task.addChildTask", () => {
     if (appSection !== "tasks" || !selectedTask || !online || selectedTask.deleted_at) {
       return false;
     }
-    void onCreateSubtask(selectedTask.id, "新子任务").catch((error) => {
-      onNotice(error instanceof Error ? error.message : "添加子任务失败，请重试");
+    void onCreateChildTask(selectedTask.id, "新子级任务").catch((error) => {
+      onNotice(error instanceof Error ? error.message : "添加子级任务失败，请重试");
     });
   });
 

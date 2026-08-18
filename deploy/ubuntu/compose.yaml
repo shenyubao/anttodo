@@ -1,0 +1,30 @@
+services:
+  web:
+    image: ${ANTTODO_WEB_IMAGE:-ghcr.io/shenyubao/anttodo-web:latest}
+    restart: unless-stopped
+    environment:
+      ANTTODO_INSTANCE_ID: ${ANTTODO_INSTANCE_ID:?required}
+      ANTTODO_INSTANCE_DISPLAY_NAME: ${ANTTODO_INSTANCE_DISPLAY_NAME:?required}
+      ANTTODO_DEPLOY_MODE: ${ANTTODO_DEPLOY_MODE:-saas}
+      ANTTODO_INSTANCE_ENTERPRISE_SLUG: ${ANTTODO_INSTANCE_ENTERPRISE_SLUG:-}
+      ANTTODO_WORKSPACE_SLUG: ${ANTTODO_WORKSPACE_SLUG:-}
+      ANTTODO_PUBLIC_APP_URL: ${ANTTODO_PUBLIC_APP_URL:?required}
+      ANTTODO_SUPABASE_URL: ${ANTTODO_SUPABASE_URL:?required}
+      ANTTODO_SUPABASE_PUBLISHABLE_KEY: ${ANTTODO_SUPABASE_PUBLISHABLE_KEY:?required}
+      ANTTODO_DEVICE_AUTHORIZATION_ENDPOINT: ${ANTTODO_DEVICE_AUTHORIZATION_ENDPOINT:-}
+    ports:
+      - "${ANTTODO_WEB_BIND:-127.0.0.1}:${ANTTODO_WEB_PORT:-5000}:5000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=16m,uid=101,gid=101,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5000/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

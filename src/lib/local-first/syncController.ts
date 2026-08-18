@@ -5,11 +5,52 @@ import {
   type SyncRunResult,
   type SyncStatus,
 } from "./types";
+import type { LocalCommand } from "./repository";
 
 type SyncBridge = NonNullable<Window["anttodoDesktop"]>["sync"];
 
+export function syncErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (error && typeof error === "object") {
+    const value = error as Record<string, unknown>;
+    // PostgREST details can contain the full rejected row. Keep those out of
+    // user-facing notices while retaining the actionable message and hint.
+    const parts = [value.message, value.hint]
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    if (parts.length > 0) {
+      const code = typeof value.code === "string" && value.code.trim() ? ` (${value.code})` : "";
+      return `${[...new Set(parts)].join(" ")}${code}`;
+    }
+  }
+  return "同步失败";
+}
+
 function desktopSyncBridge(): SyncBridge | null {
   return window.anttodoDesktop?.sync ?? null;
+}
+
+export async function flushLocalOperation(input: {
+  operationId: string;
+  workspaceId: string;
+  listPending: (workspaceId: string) => Promise<LocalCommand[]>;
+  syncNow: (reason: "local-write") => Promise<SyncRunResult>;
+  maxAttempts?: number;
+}) {
+  const maxAttempts = Math.max(1, input.maxAttempts ?? 3);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const result = await input.syncNow("local-write");
+    const pending = await input.listPending(input.workspaceId);
+    const operation = pending.find((item) => item.operationId === input.operationId);
+    if (!operation) return true;
+    if (
+      result.status === "failed"
+      || result.status === "offline"
+      || (operation as LocalCommand & { state?: string }).state === "failed"
+    ) {
+      return false;
+    }
+  }
+  return false;
 }
 
 export function createSyncController(input: {
@@ -80,7 +121,7 @@ export function createSyncController(input: {
         });
         return result;
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "同步失败";
+        const errorMessage = syncErrorMessage(error);
         const result: SyncRunResult = {
           status: "failed",
           applied: 0,

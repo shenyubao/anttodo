@@ -22,6 +22,8 @@ import { createDesktopAutoUpdater } from "./auto-updater.mjs";
 import { createAiTerminalManager } from "./ai-terminal.mjs";
 import { createTrayController } from "./tray.mjs";
 import { createLocalStore } from "./local-store.mjs";
+import { instanceUserDataPath } from "./instance-storage.mjs";
+import { shouldMinimizeMainWindowOnClose } from "./main-window-behavior.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -31,26 +33,26 @@ let mainWindow = null;
 let isQuitting = false;
 let deepLinksReady = false;
 let localStore = null;
-let localStoreUserId = null;
+let localStoreOwnerKey = null;
 let localStoreGate = Promise.resolve();
 let quittingAfterCleanup = false;
+let activeServiceOrigin = "https://app.anttodo.com";
 
-async function getLocalStore(userId) {
-  if (typeof userId !== "string" || !/^[0-9a-f-]{20,}$/i.test(userId)) {
-    throw new Error("Invalid local store user id");
-  }
+async function getLocalStore(namespace, userId) {
+  const userDataPath = instanceUserDataPath(app.getPath("userData"), namespace, userId);
+  const ownerKey = `${namespace}:${userId}`;
   const run = localStoreGate.then(async () => {
-    if (localStore && localStoreUserId === userId) return localStore;
+    if (localStore && localStoreOwnerKey === ownerKey) return localStore;
     if (localStore) {
       await localStore.dispose();
       localStore = null;
-      localStoreUserId = null;
+      localStoreOwnerKey = null;
     }
     let lastError;
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         localStore = await createLocalStore({
-          userDataPath: path.join(app.getPath("userData"), "users", userId),
+          userDataPath,
         });
         lastError = null;
         break;
@@ -60,7 +62,7 @@ async function getLocalStore(userId) {
       }
     }
     if (!localStore) throw lastError ?? new Error("Failed to open local store");
-    localStoreUserId = userId;
+    localStoreOwnerKey = ownerKey;
     return localStore;
   });
   localStoreGate = run.then(() => undefined, () => undefined);
@@ -248,9 +250,26 @@ ipcMain.on("anttodo:window-toggle-full-screen", (event) => {
 });
 
 ipcMain.handle("anttodo:auth-open-dingtalk", async (_event, url) => {
-  if (typeof url !== "string" || !isAllowedDingtalkExternalUrl(url)) return false;
+  if (typeof url !== "string" || !isAllowedDingtalkExternalUrl(url, activeServiceOrigin, isDev)) return false;
   await shell.openExternal(url);
   return true;
+});
+
+ipcMain.handle("anttodo:auth-set-service-origin", (_event, value) => {
+  try {
+    const url = new URL(value);
+    const localHttp = isDev
+      && url.protocol === "http:"
+      && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (
+      (url.protocol !== "https:" && !localHttp) || url.username || url.password ||
+      url.pathname !== "/" || url.search || url.hash
+    ) return false;
+    activeServiceOrigin = url.origin;
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 ipcMain.handle("anttodo:auth-take-pending", () => authCallbackQueue.take());
@@ -275,8 +294,8 @@ ipcMain.handle("anttodo:notifications-show", (_event, payload) => {
   });
 });
 
-ipcMain.handle("anttodo:sync-open", async (_event, userId) => {
-  await getLocalStore(userId);
+ipcMain.handle("anttodo:sync-open", async (_event, input) => {
+  await getLocalStore(input?.namespace, input?.userId);
   return true;
 });
 
@@ -410,6 +429,9 @@ function createWindow() {
     height: 860,
     minWidth: 960,
     minHeight: 640,
+    // Keep the main window in macOS window switchers. The tray popover below
+    // is the only window that should be excluded from them.
+    skipTaskbar: false,
     ...(isMac
       ? {
           // System traffic-light spacing cannot be tightened; hide and draw compact
@@ -428,9 +450,12 @@ function createWindow() {
   const webContentsId = window.webContents.id;
   mainWindow = window;
   window.on("close", (event) => {
-    if (process.platform === "darwin" && !isQuitting) {
+    if (shouldMinimizeMainWindowOnClose({ platform: process.platform, isQuitting })) {
       event.preventDefault();
-      window.hide();
+      // Do not hide the window: hidden windows disappear from some Option-Tab
+      // switchers. Minimized regular windows remain discoverable and restore
+      // cleanly when selected there.
+      window.minimize();
     }
   });
   window.on("closed", () => {
@@ -476,6 +501,15 @@ function createWindow() {
   }
 }
 
+function setMacDockIcon() {
+  if (process.platform !== "darwin" || !app.dock) return;
+
+  // electron . does not have an app bundle whose Info.plist can provide the
+  // product icon. Set it explicitly in both development and packaged builds
+  // so the Dock and Command-Tab always use AntTodo's icon.
+  app.dock.setIcon(path.join(__dirname, "../build/icon.png"));
+}
+
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     // macOS delivers protocol launches through `open-url`; argv is used only
@@ -483,6 +517,7 @@ if (hasSingleInstanceLock) {
     if (process.platform !== "darwin") {
       for (const arg of process.argv) receiveDeepLink(arg);
     }
+    setMacDockIcon();
     createWindow();
     trayController.start();
     powerMonitor.on("resume", () => reminderScheduler.resume());
@@ -514,7 +549,7 @@ app.on("before-quit", (event) => {
   });
   void closing.finally(() => {
     localStore = null;
-    localStoreUserId = null;
+    localStoreOwnerKey = null;
     quittingAfterCleanup = true;
     app.quit();
   });

@@ -14,8 +14,12 @@ const indexedDbStorage = {
   },
 };
 
-export const queryPersister = createAsyncStoragePersister({
-  storage: indexedDbStorage,
-  key: "ANTTODO_QUERY_CACHE",
-  throttleTime: 750,
-});
+export function createQueryPersister(namespace = "official") {
+  return createAsyncStoragePersister({
+    storage: indexedDbStorage,
+    key: namespace === "official"
+      ? "ANTTODO_QUERY_CACHE"
+      : `ANTTODO_QUERY_CACHE:${namespace}`,
+    throttleTime: 750,
+  });
+}

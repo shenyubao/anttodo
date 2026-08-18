@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { atomicWrite, CACHE_FILE, readJson } from "./storage.js";
+import { atomicWrite, readJson, storageFile } from "./storage.js";
 import type { TaskPriority, TaskStatus } from "./types.js";
 
 export const CACHE_FRESH_MS = 30_000;
@@ -26,15 +26,17 @@ export type TaskListCacheOptions = {
   search?: string;
   trash?: boolean;
   includeTrash?: boolean;
+  parent?: string | null;
   limit: number;
   offset: number;
 };
 
-export type CacheRefreshRequest =
-  | { type: "workspaces"; userId: string }
+export type CacheRefreshInput =
+  | { type: "workspaces"; userId: string; serviceUrl?: string }
   | {
       type: "task-list";
       userId: string;
+      serviceUrl?: string;
       workspaceId: string;
       taskKind: "todo" | "note";
       options: TaskListCacheOptions;
@@ -42,13 +44,17 @@ export type CacheRefreshRequest =
   | {
       type: "task";
       userId: string;
+      serviceUrl?: string;
       workspaceId: string;
       taskKind: "todo" | "note";
       taskId: string;
     };
 
+export type CacheRefreshRequest = CacheRefreshInput & { serviceKey: string };
+
 export type CacheReadOptions = {
   userId: string;
+  serviceKey: string;
   refresh: CacheRefreshRequest;
 };
 
@@ -56,8 +62,8 @@ function emptyCache(): CacheFile {
   return { version: CACHE_VERSION, entries: {} };
 }
 
-async function loadCache(): Promise<CacheFile> {
-  const value = await readJson<unknown>(CACHE_FILE, null);
+async function loadCache(serviceKey: string): Promise<CacheFile> {
+  const value = await readJson<unknown>(storageFile("cache.json", serviceKey), null);
   if (!value || typeof value !== "object") return emptyCache();
   const candidate = value as Partial<CacheFile>;
   if (candidate.version !== CACHE_VERSION || !candidate.entries || typeof candidate.entries !== "object") {
@@ -95,40 +101,40 @@ export function taskCacheKey(
   return `tasks:${userId}:${workspaceId}:item:${taskKind}:${taskId}`;
 }
 
-export async function writeCacheEntry(key: string, value: unknown) {
-  const cache = await loadCache();
+export async function writeCacheEntry(key: string, value: unknown, serviceKey: string) {
+  const cache = await loadCache(serviceKey);
   cache.entries[key] = { cachedAt: new Date().toISOString(), value };
   const entries = Object.entries(cache.entries)
     .sort(([, left], [, right]) => Date.parse(right.cachedAt) - Date.parse(left.cachedAt))
     .slice(0, MAX_CACHE_ENTRIES);
-  await atomicWrite(CACHE_FILE, {
+  await atomicWrite(storageFile("cache.json", serviceKey), {
     version: CACHE_VERSION,
     entries: Object.fromEntries(entries),
   } satisfies CacheFile);
 }
 
-export async function invalidateCache(prefixes: string[]) {
+export async function invalidateCache(prefixes: string[], serviceKey: string) {
   if (!prefixes.length) return;
-  const cache = await loadCache();
+  const cache = await loadCache(serviceKey);
   const entries = Object.fromEntries(
     Object.entries(cache.entries).filter(([key]) => !prefixes.some((prefix) => key.startsWith(prefix))),
   );
   if (Object.keys(entries).length === Object.keys(cache.entries).length) return;
-  await atomicWrite(CACHE_FILE, { version: CACHE_VERSION, entries } satisfies CacheFile);
+  await atomicWrite(storageFile("cache.json", serviceKey), { version: CACHE_VERSION, entries } satisfies CacheFile);
 }
 
-export async function invalidateTaskCachesForWorkspace(workspaceId: string) {
-  const cache = await loadCache();
+export async function invalidateTaskCachesForWorkspace(workspaceId: string, serviceKey: string) {
+  const cache = await loadCache(serviceKey);
   const marker = `:${workspaceId}:`;
   const entries = Object.fromEntries(
     Object.entries(cache.entries).filter(([key]) => !(key.startsWith("tasks:") && key.includes(marker))),
   );
   if (Object.keys(entries).length === Object.keys(cache.entries).length) return;
-  await atomicWrite(CACHE_FILE, { version: CACHE_VERSION, entries } satisfies CacheFile);
+  await atomicWrite(storageFile("cache.json", serviceKey), { version: CACHE_VERSION, entries } satisfies CacheFile);
 }
 
-export async function invalidateWorkspaceListCaches() {
-  await invalidateCache(["workspaces:"]);
+export async function invalidateWorkspaceListCaches(serviceKey: string) {
+  await invalidateCache(["workspaces:"], serviceKey);
 }
 
 export function taskWorkspaceCachePrefix(userId: string, workspaceId: string) {
@@ -156,11 +162,11 @@ export async function readThroughCache<T>(
   options: CacheReadOptions,
   fetchValue: () => Promise<T>,
 ): Promise<T> {
-  const cache = await loadCache();
+  const cache = await loadCache(options.serviceKey);
   const entry = cache.entries[key];
   if (!entry || !entry.cachedAt) {
     const value = await fetchValue();
-    await writeCacheEntry(key, value).catch(() => undefined);
+    await writeCacheEntry(key, value, options.serviceKey).catch(() => undefined);
     return value;
   }
 
@@ -168,7 +174,7 @@ export async function readThroughCache<T>(
   if (!Number.isFinite(age) || age > CACHE_MAX_AGE_MS) {
     try {
       const value = await fetchValue();
-      await writeCacheEntry(key, value).catch(() => undefined);
+      await writeCacheEntry(key, value, options.serviceKey).catch(() => undefined);
       return value;
     } catch (error) {
       return entry.value as T;
@@ -179,7 +185,7 @@ export async function readThroughCache<T>(
   return entry.value as T;
 }
 
-export async function readCacheEntry<T>(key: string) {
-  const cache = await loadCache();
+export async function readCacheEntry<T>(key: string, serviceKey: string) {
+  const cache = await loadCache(serviceKey);
   return cache.entries[key]?.value as T | undefined;
 }

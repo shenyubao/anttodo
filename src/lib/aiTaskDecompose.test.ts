@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFormattedDescription,
-  buildSubtaskExtrasFromSuggestion,
+  buildChildTaskExtrasFromSuggestion,
   formatAiSuggestedDueAt,
   isMidnightLocalDueAt,
   normalizeAiFormatSuggestion,
-  normalizeAiSuggestedSubtasks,
+  normalizeAiSuggestedTasks,
   normalizeDueAt,
-} from "./aiSubtaskDecompose";
+} from "./aiTaskDecompose";
 
-describe("normalizeAiSuggestedSubtasks", () => {
+describe("normalizeAiSuggestedTasks", () => {
   it("keeps title and validates assignee/due", () => {
-    const rows = normalizeAiSuggestedSubtasks(
+    const rows = normalizeAiSuggestedTasks(
       {
-        subtasks: [
+        tasks: [
           {
             title: " 汇总周报 ",
             assignee_user_id: "u1",
@@ -44,7 +44,7 @@ describe("normalizeAiSuggestedSubtasks", () => {
 
   it("accepts bare arrays", () => {
     expect(
-      normalizeAiSuggestedSubtasks([{ title: "A" }, { title: "B" }]).map(
+      normalizeAiSuggestedTasks([{ title: "A" }, { title: "B" }]).map(
         (item) => item.title,
       ),
     ).toEqual(["A", "B"]);
@@ -53,8 +53,8 @@ describe("normalizeAiSuggestedSubtasks", () => {
 
 describe("demo helpers", () => {
   it("detects non-uuid demo ids", async () => {
-    const { isLocalDemoTaskContext, buildDemoAiSuggestedSubtasks } =
-      await import("./aiSubtaskDecompose");
+    const { isLocalDemoTaskContext, buildDemoAiSuggestedTasks } =
+      await import("./aiTaskDecompose");
     expect(isLocalDemoTaskContext("workspace-team", "task-1")).toBe(true);
     expect(
       isLocalDemoTaskContext(
@@ -62,7 +62,7 @@ describe("demo helpers", () => {
         "7e74efbb-780a-411b-aa7a-1867efbfa40b",
       ),
     ).toBe(false);
-    expect(buildDemoAiSuggestedSubtasks({ title: "周报" }).length).toBeGreaterThan(0);
+    expect(buildDemoAiSuggestedTasks({ title: "周报" }).length).toBeGreaterThan(0);
   });
 });
 
@@ -82,10 +82,10 @@ describe("formatAiSuggestedDueAt", () => {
   });
 });
 
-describe("buildSubtaskExtrasFromSuggestion", () => {
+describe("buildChildTaskExtrasFromSuggestion", () => {
   it("drops assignable-out assignees", () => {
     expect(
-      buildSubtaskExtrasFromSuggestion(
+      buildChildTaskExtrasFromSuggestion(
         {
           title: "x",
           assignee_user_id: "u9",

@@ -1,18 +1,18 @@
 import {
   DEFAULT_SMART_FORMAT_INSTRUCTION,
-  DEFAULT_SUBTASK_DECOMPOSE_INSTRUCTION,
+  DEFAULT_TASK_DECOMPOSE_INSTRUCTION,
   normalizeAiPromptOverride,
 } from "../../supabase/functions/_shared/ai-feature-prompts";
 import type { AiFeatureSettings } from "../types";
 
-export type AiFeatureId = "smart_format" | "subtask_decompose";
+export type AiFeatureId = "smart_format" | "task_decompose";
 
 export const AI_FEATURE_OPTIONS: Array<{
   id: AiFeatureId;
   label: string;
   description: string;
-  enabledKey: "smart_format_enabled" | "subtask_decompose_enabled";
-  promptKey: "smart_format_prompt_override" | "subtask_decompose_prompt_override";
+  enabledKey: "smart_format_enabled" | "task_decompose_enabled";
+  promptKey: "smart_format_prompt_override" | "task_decompose_prompt_override";
   defaultInstruction: string;
 }> = [
   {
@@ -24,12 +24,12 @@ export const AI_FEATURE_OPTIONS: Array<{
     defaultInstruction: DEFAULT_SMART_FORMAT_INSTRUCTION,
   },
   {
-    id: "subtask_decompose",
-    label: "智能分解子任务",
-    description: "根据任务内容提取可执行的子任务建议。",
-    enabledKey: "subtask_decompose_enabled",
-    promptKey: "subtask_decompose_prompt_override",
-    defaultInstruction: DEFAULT_SUBTASK_DECOMPOSE_INSTRUCTION,
+    id: "task_decompose",
+    label: "智能分解子级任务",
+    description: "根据任务内容提取可执行的子级任务建议。",
+    enabledKey: "task_decompose_enabled",
+    promptKey: "task_decompose_prompt_override",
+    defaultInstruction: DEFAULT_TASK_DECOMPOSE_INSTRUCTION,
   },
 ];
 
@@ -38,8 +38,8 @@ export function createDefaultAiFeatureSettings(userId: string): AiFeatureSetting
     user_id: userId,
     smart_format_enabled: true,
     smart_format_prompt_override: null,
-    subtask_decompose_enabled: true,
-    subtask_decompose_prompt_override: null,
+    task_decompose_enabled: true,
+    task_decompose_prompt_override: null,
   };
 }
 
@@ -51,12 +51,12 @@ export function normalizeAiFeatureSettings(
     smart_format_prompt_override: normalizeAiPromptOverride(
       settings.smart_format_prompt_override,
     ),
-    subtask_decompose_prompt_override: normalizeAiPromptOverride(
-      settings.subtask_decompose_prompt_override,
+    task_decompose_prompt_override: normalizeAiPromptOverride(
+      settings.task_decompose_prompt_override,
     ),
   };
 }
 
 export function hasEnabledAiFeature(settings: AiFeatureSettings) {
-  return settings.smart_format_enabled || settings.subtask_decompose_enabled;
+  return settings.smart_format_enabled || settings.task_decompose_enabled;
 }

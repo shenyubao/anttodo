@@ -1,6 +1,5 @@
 import {
   addDays,
-  addHours,
   addMonths,
   endOfMonth,
   endOfWeek,
@@ -39,6 +38,8 @@ import {
 import { createPortal } from "react-dom";
 import {
   HALF_HOUR_OPTIONS,
+  RANGE_END_TIME_OPTIONS,
+  createDefaultRangeDraft,
   getDueStatus,
   getPresetDate,
   isValidDueRange,
@@ -86,7 +87,6 @@ import type {
   ReminderRule,
   ReminderSchedule,
   ReminderUnit,
-  Subtask,
   Task,
   TaskRecurrence,
   TaskReminder,
@@ -105,17 +105,17 @@ export type DueDateTarget = {
   status?: TaskStatus | "open" | "completed";
 };
 
-export function dueTargetFromSubtask(subtask: Subtask): DueDateTarget {
+export function dueTargetFromChildTask(childTask: Task): DueDateTarget {
   return {
-    id: subtask.id,
-    due_at: subtask.due_at,
-    due_start_at: subtask.due_start_at,
-    due_is_all_day: subtask.due_is_all_day,
-    due_timezone: subtask.due_timezone,
-    reminders: subtask.reminders,
-    reminder_persistent: subtask.reminder_persistent,
+    id: childTask.id,
+    due_at: childTask.due_at,
+    due_start_at: childTask.due_start_at,
+    due_is_all_day: childTask.due_is_all_day,
+    due_timezone: childTask.due_timezone,
+    reminders: childTask.reminders,
+    reminder_persistent: childTask.reminder_persistent,
     recurrence: null,
-    status: subtask.completed ? "completed" : "open",
+    status: (childTask.status === "completed") ? "completed" : "open",
   };
 }
 
@@ -220,12 +220,13 @@ export function DueDateControl({
   function resetDraft() {
     const zone = task.due_timezone ?? systemTimeZone();
     const point = initialPoint(task);
+    const defaultRange = createDefaultRangeDraft(toDateInput(point, zone));
     const start = task.due_start_at
       ? roundUpToHalfHour(new Date(task.due_start_at))
       : point;
     const end = task.due_start_at && task.due_at
       ? roundUpToHalfHour(new Date(task.due_at))
-      : addHours(start, 1);
+      : point;
     const singleAllDay = Boolean(
       task.due_is_all_day && task.due_start_at && task.due_at
       && toDateInput(new Date(task.due_start_at), zone) === toDateInput(new Date(task.due_at), zone),
@@ -238,10 +239,20 @@ export function DueDateControl({
         ? !singleAllDay
         : Boolean(task.due_at) && !task.due_is_all_day && !task.due_start_at,
     );
-    setStartDate(toDateInput(start, zone));
-    setStartTime(toTimeInput(start, zone));
-    setEndDate(toDateInput(end, zone));
-    setEndTime(toTimeInput(end, zone));
+    setStartDate(task.due_start_at
+      ? toDateInput(new Date(task.due_start_at), zone)
+      : defaultRange.startDate);
+    setStartTime(task.due_start_at && !task.due_is_all_day
+      ? toTimeInput(start, zone)
+      : defaultRange.startTime);
+    setEndDate(task.due_start_at && task.due_at
+      ? toDateInput(new Date(task.due_at), zone)
+      : defaultRange.endDate);
+    setEndTime(task.due_start_at && task.due_at && !task.due_is_all_day
+      ? (toTimeInput(new Date(task.due_at), zone) === defaultRange.endTime
+          ? defaultRange.endTime
+          : toTimeInput(end, zone))
+      : defaultRange.endTime);
     setAllDay(task.due_is_all_day);
     setTimeZone(zone);
     setDisplayedMonth(new Date(`${toDateInput(point, zone)}T12:00:00`));
@@ -480,12 +491,11 @@ export function DueDateControl({
 
   function switchTab(next: "point" | "range") {
     if (next === "range" && tab === "point") {
-      const start = fromZonedDateTime(pointDate, pointTime, timeZone);
-      const end = addHours(start, 1);
-      setStartDate(toDateInput(start, timeZone));
-      setStartTime(toTimeInput(start, timeZone));
-      setEndDate(toDateInput(end, timeZone));
-      setEndTime(toTimeInput(end, timeZone));
+      const range = createDefaultRangeDraft(pointDate);
+      setStartDate(range.startDate);
+      setStartTime(range.startTime);
+      setEndDate(range.endDate);
+      setEndTime(range.endTime);
     }
     if (next === "point") {
       setReminders((current) => current.filter((rule) => rule.anchor === "start"));
@@ -615,21 +625,21 @@ export function DueDateControl({
   }
 
   return (
-    <div className={clsx("detail-due-control", compact && "subtask-date-control")} ref={rootRef}>
+    <div className={clsx("detail-due-control", compact && "childTask-date-control")} ref={rootRef}>
       {showTrigger && (
         <button
           ref={triggerRef}
           type="button"
           className={compact
             ? clsx(
-              "subtask-date-trigger",
+              "childTask-date-trigger",
               task.due_at && "has-date",
               !task.due_at && "icon-only",
               status?.overdue && "overdue",
             )
             : (status?.overdue ? "detail-due-trigger overdue" : "detail-due-trigger")}
           aria-label={compact
-            ? (task.due_at ? `截止时间：${formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}` : "设置子任务截止时间")
+            ? (task.due_at ? `截止时间：${formatDueWithPreferences({ ...dueFields, due_timezone: task.due_timezone }, preferences)}` : "设置子级任务截止时间")
             : "设置到期时间"}
           aria-haspopup="dialog"
           aria-expanded={open}
@@ -818,7 +828,7 @@ export function DueDateControl({
                     value={endTime}
                     onChange={(event) => setEndTime(event.target.value)}
                   >
-                    {HALF_HOUR_OPTIONS.map((time) => (
+                    {RANGE_END_TIME_OPTIONS.map((time) => (
                       <option key={time} value={time}>
                         {timeOptionLabel(time, preferences)}
                       </option>

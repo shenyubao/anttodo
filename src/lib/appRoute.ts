@@ -1,4 +1,5 @@
 import type { TaskViewMode } from "../types";
+import { currentAppUrl } from "./instanceConfig";
 
 export type SystemSmartView = "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
 export type AppSmartView = SystemSmartView | `custom:${string}`;
@@ -125,8 +126,8 @@ export function taskShareUrl(
     itemKind: task.kind === "note" ? "note" : "task",
   });
   let url = new URL(path, window.location.origin).toString();
-  if (window.location.protocol === "file:" && import.meta.env.VITE_PUBLIC_APP_URL) {
-    url = new URL(path, import.meta.env.VITE_PUBLIC_APP_URL).toString();
+  if (window.location.protocol === "file:") {
+    url = new URL(path, currentAppUrl()).toString();
   }
   return url;
 }

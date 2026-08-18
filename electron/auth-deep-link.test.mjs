@@ -27,6 +27,31 @@ describe("desktop auth deep links", () => {
     ).toBe(true);
     expect(isAllowedDingtalkExternalUrl("https://app.anttodo.com/other")).toBe(false);
     expect(isAllowedDingtalkExternalUrl("http://login.dingtalk.com/oauth2/auth")).toBe(false);
+    expect(
+      isAllowedDingtalkExternalUrl(
+        "https://todo.yuce-tech.cn/auth/dingtalk/callback?authCode=x",
+        "https://todo.yuce-tech.cn",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedDingtalkExternalUrl(
+        "https://app.anttodo.com/auth/dingtalk/callback?authCode=x",
+        "https://todo.yuce-tech.cn",
+      ),
+    ).toBe(false);
+    expect(
+      isAllowedDingtalkExternalUrl(
+        "http://localhost:5000/auth/dingtalk/callback?authCode=x",
+        "http://localhost:5000",
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedDingtalkExternalUrl(
+        "http://localhost:5000/auth/dingtalk/callback?authCode=x",
+        "http://localhost:5000",
+      ),
+    ).toBe(false);
   });
 
   it("deduplicates and bounds pending callbacks", () => {

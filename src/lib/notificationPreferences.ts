@@ -13,9 +13,9 @@ export const NOTIFICATION_SCENARIOS: Array<{
   { id: "participant_title_changed", label: "待办参与者-标题变更" },
   { id: "participant_status_changed", label: "待办参与者-状态变更" },
   { id: "participant_new_comment", label: "待办参与者-有新的评论" },
-  { id: "participant_subtask_created", label: "待办参与者-有新的子任务" },
-  { id: "participant_subtask_status_changed", label: "待办参与者-子任务状态变更" },
-  { id: "participant_subtask_title_changed", label: "待办参与者-子任务标题变更" },
+  { id: "participant_task_created", label: "待办参与者-有新的子级任务" },
+  { id: "participant_status_changed", label: "待办参与者-子级任务状态变更" },
+  { id: "participant_title_changed", label: "待办参与者-子级任务标题变更" },
 ];
 
 export const DEFAULT_CHANNEL_PREFERENCES: NotificationChannelPreferences = {

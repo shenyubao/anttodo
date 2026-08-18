@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(32);
+select plan(34);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -46,11 +46,12 @@ values (
   '15000000-0000-0000-0000-000000000001'
 );
 
-insert into public.subtasks(id, task_id, title, created_by)
+insert into public.tasks(id, workspace_id, parent_task_id, title, created_by)
 values (
   '55000000-0000-0000-0000-000000000001',
+  '25000000-0000-0000-0000-000000000001',
   '45000000-0000-0000-0000-000000000001',
-  'AI subtask',
+  'AI child task',
   '15000000-0000-0000-0000-000000000001'
 );
 
@@ -65,7 +66,7 @@ select ok(
   'AI work settings enables RLS'
 );
 select has_column('public', 'tasks', 'cli_assignee', 'tasks store a CLI assignee');
-select has_column('public', 'subtasks', 'cli_assignee', 'subtasks store a CLI assignee');
+select has_column('public', 'tasks', 'parent_task_id', 'tasks store their parent relationship');
 select ok(has_table_privilege('authenticated', 'public.user_ai_work_settings', 'SELECT'), 'authenticated can select settings');
 select ok(has_table_privilege('authenticated', 'public.user_ai_work_settings', 'INSERT'), 'authenticated can insert settings');
 select ok(has_table_privilege('authenticated', 'public.user_ai_work_settings', 'UPDATE'), 'authenticated can update settings');
@@ -204,30 +205,30 @@ select throws_ok(
   'task assignment RPC rejects two targets'
 );
 select lives_ok(
-  $$select public.assign_subtask(
+  $$select public.assign_task(
     '55000000-0000-0000-0000-000000000001', null, 'codex'
   )$$,
-  'an enabled CLI can be assigned to a subtask'
+  'an enabled CLI can be assigned to a nested task'
 );
 select is(
   (
     select concat_ws('|', coalesce(assignee_id::text, ''), cli_assignee::text)
-    from public.subtasks where id = '55000000-0000-0000-0000-000000000001'
+    from public.tasks where id = '55000000-0000-0000-0000-000000000001'
   ),
   '|codex',
-  'subtask member and CLI assignments are mutually exclusive'
+  'nested task member and CLI assignments are mutually exclusive'
 );
 select is(
   (
-    select payload #>> '{changes,cli_assignee,after}'
+    select payload->>'cli_assignee'
     from public.activity_events
-    where task_id = '45000000-0000-0000-0000-000000000001'
-      and event_type = 'task.subtask_updated'
+    where task_id = '55000000-0000-0000-0000-000000000001'
+      and event_type = 'task.assignee_changed'
     order by created_at desc, id desc
     limit 1
   ),
   'codex',
-  'subtask activity records the CLI assignee'
+  'nested task activity records the CLI assignee'
 );
 select lives_ok(
   $$select public.assign_task(
@@ -235,26 +236,34 @@ select lives_ok(
   )$$,
   'task can be reassigned to CLI before note conversion'
 );
+select throws_ok(
+  $$update public.tasks set kind = 'note'
+    where id = '45000000-0000-0000-0000-000000000001'$$,
+  'P0001', 'Notes cannot contain child tasks',
+  'a task with descendants cannot become a note'
+);
+select is(
+  (
+    select kind::text
+    from public.tasks where id = '45000000-0000-0000-0000-000000000001'
+  ),
+  'todo',
+  'failed note conversion leaves the task unchanged'
+);
+select lives_ok(
+  $$update public.tasks set deleted_at=now() where id='55000000-0000-0000-0000-000000000001';
+    delete from public.tasks where id='55000000-0000-0000-0000-000000000001'$$,
+  'a nested task can be permanently removed before note conversion'
+);
 select lives_ok(
   $$update public.tasks set kind = 'note'
     where id = '45000000-0000-0000-0000-000000000001'$$,
-  'a task can be converted to a note transactionally'
+  'a leaf root can be converted to a note'
 );
 select is(
-  (
-    select (assignee_id is null and cli_assignee is null)::text
-    from public.tasks where id = '45000000-0000-0000-0000-000000000001'
-  ),
-  'true',
-  'note conversion clears the top-level assignment'
-);
-select is(
-  (
-    select (assignee_id is null and cli_assignee is null)::text
-    from public.subtasks where id = '55000000-0000-0000-0000-000000000001'
-  ),
-  'true',
-  'note conversion clears all subtask assignments'
+  (select (assignee_id is null and cli_assignee is null)::text from public.tasks
+   where id='45000000-0000-0000-0000-000000000001'),
+  'true','note conversion clears the assignment'
 );
 select throws_ok(
   $$select public.assign_task(
@@ -264,12 +273,11 @@ select throws_ok(
   'notes reject CLI assignment'
 );
 select throws_ok(
-  $$select public.assign_subtask(
-    '55000000-0000-0000-0000-000000000001',
-    '15000000-0000-0000-0000-000000000002', null
-  )$$,
-  '42501', 'Notes cannot have assigned subtasks',
-  'subtasks under notes reject member assignment'
+  $$insert into public.tasks(id,workspace_id,parent_task_id,title,created_by) values(
+    '55000000-0000-0000-0000-000000000002','25000000-0000-0000-0000-000000000001',
+    '45000000-0000-0000-0000-000000000001','Below note','15000000-0000-0000-0000-000000000001')$$,
+  'P0001', 'Notes cannot contain child tasks',
+  'notes reject nested tasks'
 );
 
 select * from finish();

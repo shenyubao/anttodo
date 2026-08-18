@@ -1,11 +1,13 @@
-import "./instrument";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import * as Sentry from "@sentry/react";
 import { Capacitor } from "@capacitor/core";
-import { queryPersister } from "./lib/persistence";
+import { createQueryPersister } from "./lib/persistence";
+import { bootstrapInstanceConfig, currentBrandName } from "./lib/instanceConfig";
+import { configureSupabase } from "./lib/supabase";
+import { initializeSentry } from "./instrument";
 import {
   applyThemePreference,
   loadThemePreference,
@@ -40,33 +42,48 @@ if (Capacitor.isNativePlatform()) {
   document.body.classList.add("is-capacitor", `is-${Capacitor.getPlatform()}`);
 }
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 20_000,
-      gcTime: 24 * 60 * 60 * 1000,
-      retry: 1,
-      networkMode: "offlineFirst",
-    },
-    mutations: {
-      networkMode: "online",
-    },
-  },
-});
+async function bootstrap() {
+  let instanceConfig = null;
+  try {
+    instanceConfig = await bootstrapInstanceConfig();
+  } catch (error) {
+    console.warn("Unable to load AntTodo instance configuration", error);
+  }
+  document.title = currentBrandName(instanceConfig);
+  configureSupabase(instanceConfig);
+  if (instanceConfig) {
+    await window.anttodoDesktop?.auth.setServiceOrigin(instanceConfig.appUrl);
+  }
+  initializeSentry(instanceConfig);
 
-createRoot(document.getElementById("root")!, {
-  onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
-    console.warn("Uncaught error", error, errorInfo.componentStack);
-  }),
-  onCaughtError: Sentry.reactErrorHandler(),
-  onRecoverableError: Sentry.reactErrorHandler(),
-}).render(
-  <StrictMode>
-    <PersistQueryClientProvider
-      client={queryClient}
-      persistOptions={{
-        persister: queryPersister,
-        buster: "workspace-bundle-custom-views-v1",
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 20_000,
+        gcTime: 24 * 60 * 60 * 1000,
+        retry: 1,
+        networkMode: "offlineFirst",
+      },
+      mutations: {
+        networkMode: "online",
+      },
+    },
+  });
+  const queryPersister = createQueryPersister(instanceConfig?.namespace);
+
+  createRoot(document.getElementById("root")!, {
+    onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
+      console.warn("Uncaught error", error, errorInfo.componentStack);
+    }),
+    onCaughtError: Sentry.reactErrorHandler(),
+    onRecoverableError: Sentry.reactErrorHandler(),
+  }).render(
+    <StrictMode>
+      <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+          persister: queryPersister,
+        buster: "workspace-bundle-unified-task-tree-v1",
         maxAge: 24 * 60 * 60 * 1000,
         dehydrateOptions: {
           shouldDehydrateQuery: (query) => {
@@ -78,8 +95,8 @@ createRoot(document.getElementById("root")!, {
             return true;
           },
         },
-      }}
-    >
+        }}
+      >
       {!window.anttodoDesktop || isTraySurface ? null : window.anttodoDesktop.platform === "darwin" ? (
         <div className="window-traffic-lights" aria-label="窗口控制">
           <button
@@ -115,7 +132,10 @@ createRoot(document.getElementById("root")!, {
         </div>
       ) : null}
       {!isTraySurface && <div className="window-drag-strip" aria-hidden="true" />}
-      <App />
-    </PersistQueryClientProvider>
-  </StrictMode>,
-);
+        <App />
+      </PersistQueryClientProvider>
+    </StrictMode>,
+  );
+}
+
+void bootstrap();

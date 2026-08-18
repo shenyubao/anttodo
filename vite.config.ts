@@ -11,6 +11,29 @@ const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "ut
 };
 const appVersion = typeof packageJson.version === "string" ? packageJson.version : "0.0.0";
 
+function parseDeployMode(value: string | undefined) {
+  const mode = value?.trim() || "saas";
+  if (mode !== "saas" && mode !== "onPremises") {
+    throw new Error("ANTTODO_DEPLOY_MODE must be saas or onPremises");
+  }
+  return mode;
+}
+
+function parseEnterpriseSlug(env: Record<string, string>) {
+  const workspaceSlug = env.ANTTODO_INSTANCE_ENTERPRISE_SLUG?.trim()
+    || env.ANTTODO_WORKSPACE_SLUG?.trim()
+    || env.VITE_WORKSPACE_SLUG?.trim()
+    || "";
+  if (workspaceSlug && (
+    workspaceSlug.length < 2
+    || workspaceSlug.length > 48
+    || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(workspaceSlug)
+  )) {
+    throw new Error("ANTTODO_INSTANCE_ENTERPRISE_SLUG must contain 2 to 48 lowercase letters, numbers, and hyphens");
+  }
+  return workspaceSlug;
+}
+
 function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
   return {
     name: "anttodo-cli-public-config",
@@ -19,6 +42,17 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
       const publishableKey = env.VITE_SUPABASE_PUBLISHABLE_KEY;
       const appUrl = env.VITE_PUBLIC_APP_URL;
       if (!supabaseUrl || !publishableKey || !appUrl) return;
+      const instanceId = env.ANTTODO_INSTANCE_ID || "00000000-0000-4000-8000-000000000001";
+      const displayName = env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim() || "AntTodo 官方服务";
+      if (!displayName || displayName.length > 80) {
+        throw new Error("ANTTODO_INSTANCE_DISPLAY_NAME must contain 1 to 80 characters");
+      }
+      const deployMode = parseDeployMode(env.ANTTODO_DEPLOY_MODE);
+      const workspaceSlug = parseEnterpriseSlug(env);
+      if (deployMode === "onPremises" && !workspaceSlug) {
+        throw new Error("ANTTODO_INSTANCE_ENTERPRISE_SLUG is required when ANTTODO_DEPLOY_MODE=onPremises");
+      }
+      const deviceAuthorizationEndpoint = `${supabaseUrl.replace(/\/$/, "")}/functions/v1/cli-device-auth`;
       this.emitFile({
         type: "asset",
         fileName: ".well-known/anttodo-cli.json",
@@ -26,7 +60,22 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
           supabaseUrl,
           publishableKey,
           appUrl,
-          deviceAuthorizationEndpoint: `${supabaseUrl.replace(/\/$/, "")}/functions/v1/cli-device-auth`,
+          deviceAuthorizationEndpoint,
+        })}\n`,
+      });
+      this.emitFile({
+        type: "asset",
+        fileName: ".well-known/anttodo.json",
+        source: `${JSON.stringify({
+          schemaVersion: 1,
+          instanceId,
+          displayName,
+          deployMode,
+          ...(workspaceSlug ? { workspaceSlug } : {}),
+          appUrl,
+          supabaseUrl,
+          publishableKey,
+          deviceAuthorizationEndpoint,
         })}\n`,
       });
     },
@@ -48,6 +97,10 @@ export default defineConfig(({ mode }) => {
       "import.meta.env.VITE_SUPABASE_URL": JSON.stringify(env.VITE_SUPABASE_URL ?? ""),
       "import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY": JSON.stringify(env.VITE_SUPABASE_PUBLISHABLE_KEY ?? ""),
       "import.meta.env.VITE_PUBLIC_APP_URL": JSON.stringify(env.VITE_PUBLIC_APP_URL ?? ""),
+      "import.meta.env.ANTTODO_INSTANCE_DISPLAY_NAME": JSON.stringify(env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim() || ""),
+      "import.meta.env.ANTTODO_DEPLOY_MODE": JSON.stringify(parseDeployMode(env.ANTTODO_DEPLOY_MODE)),
+      "import.meta.env.ANTTODO_INSTANCE_ENTERPRISE_SLUG": JSON.stringify(parseEnterpriseSlug(env)),
+      "import.meta.env.ANTTODO_WORKSPACE_SLUG": JSON.stringify(parseEnterpriseSlug(env)),
     },
     server: {
       port: 5173,

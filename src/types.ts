@@ -72,8 +72,8 @@ export type AiFeatureSettings = {
   user_id: string;
   smart_format_enabled: boolean;
   smart_format_prompt_override: string | null;
-  subtask_decompose_enabled: boolean;
-  subtask_decompose_prompt_override: string | null;
+  task_decompose_enabled: boolean;
+  task_decompose_prompt_override: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -86,7 +86,6 @@ export type FocusSession = {
   user_id: string;
   workspace_id: string;
   task_id: string | null;
-  subtask_id: string | null;
   mode: FocusSessionMode;
   kind: FocusSessionKind;
   planned_seconds: number;
@@ -217,9 +216,7 @@ export type TaskDependency = {
   id: string;
   workspace_id: string;
   task_id: string;
-  subtask_id: string | null;
   depends_on_task_id: string;
-  depends_on_subtask_id: string | null;
   position: number;
   created_by: string | null;
   created_at: string;
@@ -227,32 +224,6 @@ export type TaskDependency = {
 
 export type TaskDependencyTarget = {
   taskId: string;
-  subtaskId: string | null;
-};
-
-export type Subtask = {
-  id: string;
-  task_id: string;
-  parent_subtask_id: string | null;
-  title: string;
-  description: string;
-  completed: boolean;
-  position: number;
-  priority: TaskPriority;
-  due_at: string | null;
-  due_start_at: string | null;
-  due_is_all_day: boolean;
-  due_timezone: string | null;
-  estimate_hours: number | null;
-  actual_hours: number | null;
-  estimate_pomodoros: number | null;
-  actual_pomodoros: number | null;
-  assignee_id: string | null;
-  cli_assignee: AiCliTool | null;
-  created_by: string | null;
-  reminders: TaskReminder[];
-  reminder_persistent: boolean;
-  dependencies?: TaskDependency[];
 };
 
 export type ReminderRule = {
@@ -265,7 +236,6 @@ export type ReminderRule = {
 export type TaskReminder = ReminderRule & {
   id: string;
   task_id: string;
-  subtask_id: string | null;
   trigger_at: string;
   position: number;
   created_by: string;
@@ -290,6 +260,8 @@ export type TaskRecurrence = {
 export type Task = {
   id: string;
   workspace_id: string;
+  parent_task_id: string | null;
+  position: number;
   title: string;
   description: string;
   kind: TaskKind;
@@ -314,7 +286,8 @@ export type Task = {
   updated_at: string;
   label_ids: string[];
   participant_ids: string[];
-  subtasks: Subtask[];
+  /** Derived client-side child references; never persisted or sent to the API. */
+  children: Task[];
   reminders: TaskReminder[];
   reminder_persistent: boolean;
   description_mentions: CommentMention[];
@@ -330,7 +303,6 @@ export type TaskComment = {
   id: string;
   workspace_id: string;
   task_id: string;
-  subtask_id: string | null;
   author_id: string;
   body: string;
   image_uris: string[];
@@ -366,9 +338,7 @@ export type NotificationScenario =
   | "participant_title_changed"
   | "participant_status_changed"
   | "participant_new_comment"
-  | "participant_subtask_created"
-  | "participant_subtask_status_changed"
-  | "participant_subtask_title_changed";
+  | "participant_task_created";
 
 export type NotificationChannelPreferences = {
   systemEnabled: boolean;
@@ -390,9 +360,7 @@ export type NotificationType =
   | "participant_title_changed"
   | "participant_status_changed"
   | "participant_new_comment"
-  | "participant_subtask_created"
-  | "participant_subtask_status_changed"
-  | "participant_subtask_title_changed";
+  | "participant_task_created";
 
 export type AppNotification = {
   id: string;

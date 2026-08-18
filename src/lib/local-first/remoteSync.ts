@@ -6,8 +6,12 @@ type RemoteSyncAdapter = {
   run: (workspaceId: string, reason: SyncReason) => Promise<SyncRunResult>;
 };
 
-export function deviceIdForUser(userId: string): string {
-  const key = `anttodo:sync-device:${userId}`;
+function namespacedKey(key: string, namespace: string) {
+  return namespace === "official" ? key : `${key}:${namespace}`;
+}
+
+export function deviceIdForUser(userId: string, namespace = "official"): string {
+  const key = namespacedKey(`anttodo:sync-device:${userId}`, namespace);
   const existing = window.localStorage.getItem(key);
   if (existing) return existing;
   const id = crypto.randomUUID();
@@ -15,23 +19,24 @@ export function deviceIdForUser(userId: string): string {
   return id;
 }
 
-export function nextDeviceSeq(userId: string): number {
-  const key = `anttodo:sync-device-seq:${userId}`;
+export function nextDeviceSeq(userId: string, namespace = "official"): number {
+  const key = namespacedKey(`anttodo:sync-device-seq:${userId}`, namespace);
   const next = Number(window.localStorage.getItem(key) ?? 0) + 1;
   window.localStorage.setItem(key, String(next));
   return next;
 }
 
-function cursorKey(userId: string, workspaceId: string) {
-  return `anttodo:sync-cursor:${userId}:${workspaceId}`;
+function cursorKey(userId: string, workspaceId: string, namespace: string) {
+  return namespacedKey(`anttodo:sync-cursor:${userId}:${workspaceId}`, namespace);
 }
 
 export function createRemoteSyncAdapter(
   client: SupabaseClient,
   userId: string,
   localStore: LocalFirstStore | null = null,
+  namespace = "official",
 ): RemoteSyncAdapter {
-  const deviceId = deviceIdForUser(userId);
+  const deviceId = deviceIdForUser(userId, namespace);
   const bridge = window.anttodoDesktop?.sync;
   let deviceRegistered = false;
 
@@ -49,7 +54,7 @@ export function createRemoteSyncAdapter(
         deviceRegistered = true;
       }
 
-      const cursor = Number(window.localStorage.getItem(cursorKey(userId, workspaceId)) ?? 0);
+      const cursor = Number(window.localStorage.getItem(cursorKey(userId, workspaceId, namespace)) ?? 0);
       const { data: pulled, error: pullError } = await client.rpc("pull_client_changes", {
         p_workspace_id: workspaceId,
         p_cursor: cursor,
@@ -86,7 +91,7 @@ export function createRemoteSyncAdapter(
         ? Number(pulled[pulled.length - 1]?.seq ?? cursor)
         : cursor;
       if (nextCursor > cursor) {
-        window.localStorage.setItem(cursorKey(userId, workspaceId), String(nextCursor));
+        window.localStorage.setItem(cursorKey(userId, workspaceId, namespace), String(nextCursor));
         const { error: ackError } = await client.rpc("ack_client_cursor", {
           p_device_id: deviceId,
           p_workspace_id: workspaceId,

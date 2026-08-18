@@ -17,6 +17,7 @@ import {
 } from "./dateTimePreferences";
 import type { DateTimePreferences, Label, Task, UserLabelOrder } from "../types";
 import { compareSiblingLabels, userLabelOrderMap } from "./labels";
+import { isRootTask } from "./taskTree";
 
 export type MindMapNodeKind =
   | "root"
@@ -552,7 +553,7 @@ export function buildMindMapTree({
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }): MindMapTreeNode {
   const userOrder = userLabelOrderMap(userLabelOrder);
-  const visibleTasks = tasks.filter((task) => !task.deleted_at && task.kind !== "note");
+  const visibleTasks = tasks.filter((task) => !task.deleted_at && task.kind !== "note" && isRootTask(task));
   const dayTasks = new Map<string, Task[]>();
   const weekTasks = new Map<string, Task[]>();
   const monthTasks = new Map<string, Task[]>();

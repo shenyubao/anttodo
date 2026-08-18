@@ -148,19 +148,19 @@ export function taskActivityPresentation(
       icon: <Tag />,
     };
   }
-  if (event.event_type === "task.subtask_created") {
-    return { action: "创建了子任务", detail: String(event.payload.title ?? ""), tone: "create", icon: <ListChecks /> };
+  if (event.event_type === "task.childTask_created") {
+    return { action: "创建了子级任务", detail: String(event.payload.title ?? ""), tone: "create", icon: <ListChecks /> };
   }
-  if (event.event_type === "task.subtask_deleted") {
-    return { action: "删除了子任务", detail: String(event.payload.title ?? ""), tone: "delete", icon: <Trash2 /> };
+  if (event.event_type === "task.childTask_deleted") {
+    return { action: "删除了子级任务", detail: String(event.payload.title ?? ""), tone: "delete", icon: <Trash2 /> };
   }
-  if (event.event_type === "task.subtask_updated") {
+  if (event.event_type === "task.childTask_updated") {
     const changes = record(event.payload.changes) as Record<string, Change>;
     const completed = changes.completed?.after;
     if (changes.cli_assignee?.after === "codex" || changes.cli_assignee?.after === "claude") {
       const tool = changes.cli_assignee.after;
       return {
-        action: "修改了子任务负责人",
+        action: "修改了子级任务负责人",
         detail: `${String(event.payload.title ?? "")} · ${aiCliLabel(tool)}`,
         tone: "assign",
         icon: <UserRound />,
@@ -168,7 +168,7 @@ export function taskActivityPresentation(
     }
     if (changes.assignee_id) {
       return {
-        action: "修改了子任务负责人",
+        action: "修改了子级任务负责人",
         detail: `${String(event.payload.title ?? "")} · ${memberName(changes.assignee_id.after, members)}`,
         tone: "assign",
         icon: <UserRound />,
@@ -178,7 +178,7 @@ export function taskActivityPresentation(
       const value = changes.cli_assignee as { after?: unknown };
       const tool = value.after;
       return {
-        action: "修改了子任务负责人",
+        action: "修改了子级任务负责人",
         detail: `${String(event.payload.title ?? "")} · ${
           tool === "codex" || tool === "claude" ? aiCliLabel(tool) : "未指派"
         }`,
@@ -189,7 +189,7 @@ export function taskActivityPresentation(
     if (changes.due_at) {
       const dueAt = changes.due_at.after;
       return {
-        action: "修改了子任务日期",
+        action: "修改了子级任务日期",
         detail: typeof dueAt === "string"
           ? `${String(event.payload.title ?? "")} · ${formatPreferenceDateTime(dueAt, preferences)}`
           : String(event.payload.title ?? ""),
@@ -199,17 +199,17 @@ export function taskActivityPresentation(
     }
     if (changes.priority) {
       return {
-        action: "修改了子任务优先级",
+        action: "修改了子级任务优先级",
         detail: `${String(event.payload.title ?? "")} · ${priorityName(changes.priority.after)}`,
         tone: "edit",
         icon: <Pencil />,
       };
     }
     return completed === true
-      ? { action: "完成了子任务", detail: String(event.payload.title ?? ""), tone: "complete", icon: <Check /> }
+      ? { action: "完成了子级任务", detail: String(event.payload.title ?? ""), tone: "complete", icon: <Check /> }
       : completed === false
-        ? { action: "重新打开了子任务", detail: String(event.payload.title ?? ""), tone: "edit", icon: <RefreshCw /> }
-        : { action: "修改了子任务", detail: String(event.payload.title ?? ""), tone: "edit", icon: <Pencil /> };
+        ? { action: "重新打开了子级任务", detail: String(event.payload.title ?? ""), tone: "edit", icon: <RefreshCw /> }
+        : { action: "修改了子级任务", detail: String(event.payload.title ?? ""), tone: "edit", icon: <Pencil /> };
   }
   if (event.event_type === "task.reminders_changed") {
     return { action: "修改了提醒", detail: "", tone: "edit", icon: <CalendarClock /> };

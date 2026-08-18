@@ -34,25 +34,25 @@ select set_config(
   true
 );
 
-insert into public.subtasks(id, task_id, title, position)
+insert into public.tasks(id, workspace_id, parent_task_id, title, position, created_by)
 values (
   '56200000-0000-0000-0000-000000000001',
+  '26200000-0000-0000-0000-000000000001',
   '46200000-0000-0000-0000-000000000001',
-  'Pomodoro subtask',
-  0
+  'Pomodoro nested task',0,'16200000-0000-0000-0000-000000000001'
 );
 
 select has_column('public', 'tasks', 'estimate_pomodoros', 'tasks expose estimate pomodoros');
 select has_column('public', 'tasks', 'actual_pomodoros', 'tasks expose actual pomodoros');
-select has_column('public', 'subtasks', 'estimate_pomodoros', 'subtasks expose estimate pomodoros');
-select has_column('public', 'subtasks', 'actual_pomodoros', 'subtasks expose actual pomodoros');
+select has_column('public', 'tasks', 'parent_task_id', 'tasks expose nesting');
+select has_column('public', 'tasks', 'position', 'tasks expose sibling position');
 select ok(
   (select relrowsecurity from pg_class where oid = 'public.tasks'::regclass),
   'tasks keep RLS enabled'
 );
 select ok(
-  (select relrowsecurity from pg_class where oid = 'public.subtasks'::regclass),
-  'subtasks keep RLS enabled'
+  (select relrowsecurity from pg_class where oid = 'public.tasks'::regclass),
+  'nested tasks use task RLS'
 );
 
 update public.tasks
@@ -60,7 +60,7 @@ set estimate_pomodoros = 3,
     actual_pomodoros = 2
 where id = '46200000-0000-0000-0000-000000000001';
 
-update public.subtasks
+update public.tasks
 set estimate_pomodoros = 1,
     actual_pomodoros = 1
 where id = '56200000-0000-0000-0000-000000000001';
@@ -71,9 +71,9 @@ select is(
   'task pomodoro counts can be updated'
 );
 select is(
-  (select actual_pomodoros from public.subtasks where id = '56200000-0000-0000-0000-000000000001'),
+  (select actual_pomodoros from public.tasks where id = '56200000-0000-0000-0000-000000000001'),
   1,
-  'subtask pomodoro counts can be updated'
+  'nested task pomodoro counts can be updated'
 );
 
 select throws_ok(
@@ -83,10 +83,10 @@ select throws_ok(
   'task pomodoro counts cannot be negative'
 );
 select throws_ok(
-  $$update public.subtasks set estimate_pomodoros = -1 where id = '56200000-0000-0000-0000-000000000001'$$,
+  $$update public.tasks set estimate_pomodoros = -1 where id = '56200000-0000-0000-0000-000000000001'$$,
   '23514',
   null,
-  'subtask pomodoro counts cannot be negative'
+  'nested task pomodoro counts cannot be negative'
 );
 
 select * from finish();

@@ -21,13 +21,35 @@ self-hosted instances. Only the publishable key and the user's
 browser-authorized Supabase session are used; this package never accepts or
 stores a service-role key.
 
+Custom services can be selected from the CLI. The address must serve the same
+instance manifest used by the desktop client at
+`/.well-known/anttodo.json`:
+
+```bash
+# Save and select a service for future commands
+anttodo service use https://todo.example.com
+
+# Inspect configured services or restore the official service
+anttodo service list
+anttodo service current
+anttodo service reset
+
+# Use a service for one command without changing the saved selection
+anttodo --service-url https://todo.example.com task list
+```
+
+Service addresses, sessions, workspace settings, pending device authorizations,
+and read caches are isolated from one another. Custom services must use HTTPS;
+localhost HTTP is available only when `ANTTODO_ALLOW_LOCAL_HTTP=1` is set for
+local development.
+
 Run `anttodo man --format pretty` for the full command tree.
 Inside this repository, use `pnpm cli:run man` (or any other command and
 options) to build and execute the local CLI.
 
 The CLI also exposes task/note editing and bulk status operations, completed
 pomodoro and stopwatch session recording, reminder and
-recurrence schedules, subtask editing/assignment/reordering, tag access and
+recurrence schedules, task-tree editing/assignment/reordering, tag access and
 ordering management, workspace administration and invite links, full-text task
 search, comments, activity history, and attachment upload/download/signed URLs.
 Use `anttodo man` as the machine-readable API contract.

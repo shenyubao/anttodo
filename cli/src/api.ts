@@ -16,6 +16,7 @@ import {
   type CacheReadOptions,
   type TaskListCacheOptions,
 } from "./cache.js";
+import { getActiveServiceKey } from "./storage.js";
 import type {
   FocusSession,
   LabelAccessScope,
@@ -32,7 +33,7 @@ type Workspace = { id: string; name: string; slug: string; role: string };
 type ApiContext = { client: SupabaseClient; user: User };
 
 async function invalidateTaskCache(workspaceId: string) {
-  await invalidateTaskCachesForWorkspace(workspaceId).catch(() => undefined);
+  await invalidateTaskCachesForWorkspace(workspaceId, getActiveServiceKey() ?? "official").catch(() => undefined);
 }
 
 function throwError(error: { message: string; code?: string; details?: string } | null) {
@@ -132,27 +133,16 @@ export async function useWorkspace(context: ApiContext, idOrSlug: string) {
   return workspace;
 }
 
-const taskSelect = "*, task_labels(label_id), task_participants(user_id), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent)";
+const taskSelect = "*, task_labels(label_id), task_participants(user_id), task_reminders(*), task_reminder_settings(persistent), task_dependencies(*)";
 
 function normalizeTask(row: Record<string, unknown>) {
-  const allReminders = (row.task_reminders ?? []) as Array<{ subtask_id?: string | null }>;
-  const parentReminders = allReminders.filter((reminder) => !reminder.subtask_id);
-  const subtasks = ((row.subtasks ?? []) as Array<Record<string, unknown>>).map((subtask) => {
-    const nestedSettings = subtask.subtask_reminder_settings;
-    const settings = Array.isArray(nestedSettings) ? nestedSettings[0] : nestedSettings;
-    const { subtask_reminder_settings: _settings, ...rest } = subtask;
-    return {
-      ...rest,
-      reminders: allReminders.filter((reminder) => reminder.subtask_id === rest.id),
-      reminder_persistent: Boolean((settings as { persistent?: boolean } | null)?.persistent),
-    };
-  });
+  const allReminders = (row.task_reminders ?? []) as Array<Record<string, unknown>>;
   return {
     ...row,
     label_ids: ((row.task_labels ?? []) as Array<{ label_id: string }>).map((item) => item.label_id),
     participant_ids: ((row.task_participants ?? []) as Array<{ user_id: string }>).map((item) => item.user_id),
-    subtasks,
-    reminders: parentReminders,
+    reminders: allReminders,
+    dependencies: row.task_dependencies ?? [],
     reminder_persistent: Array.isArray(row.task_reminder_settings)
       ? Boolean((row.task_reminder_settings as Array<{ persistent: boolean }>)[0]?.persistent)
       : Boolean((row.task_reminder_settings as { persistent?: boolean } | null)?.persistent),
@@ -175,6 +165,7 @@ async function listTasksFromApi(
     search?: string;
     trash?: boolean;
     includeTrash?: boolean;
+    parent?: string | null;
     limit: number;
     offset: number;
   },
@@ -198,6 +189,8 @@ async function listTasksFromApi(
   if (options.status && options.status !== "all") query = query.eq("status", options.status);
   if (options.priority) query = query.eq("priority", options.priority);
   if (options.assignee) query = query.eq("assignee_id", options.assignee);
+  if (options.parent) query = query.eq("parent_task_id", options.parent);
+  else if (options.parent === null) query = query.is("parent_task_id", null);
   if (options.search?.trim()) {
     const pattern = options.search.trim().replace(/[(),]/g, " ");
     query = query.or(`title.ilike.%${pattern}%,description.ilike.%${pattern}%`);
@@ -295,7 +288,35 @@ export async function createTask(client: SupabaseClient, input: {
   dueAt?: string | null;
   dueTimezone?: string | null;
   assigneeId?: string | null;
+  parentTaskId?: string | null;
+  position?: number;
 }) {
+  if (input.parentTaskId) {
+    const { data: authData, error: authError } = await client.auth.getUser();
+    throwError(authError);
+    const taskId = crypto.randomUUID();
+    const { error } = await client.from("tasks").insert({
+      id: taskId,
+      workspace_id: input.workspaceId,
+      parent_task_id: input.parentTaskId,
+      position: input.position ?? 0,
+      title: input.title.trim(),
+      description: input.description ?? "",
+      priority: input.priority ?? "low",
+      due_at: input.dueAt ?? null,
+      due_timezone: input.dueTimezone ?? null,
+      created_by: authData.user?.id,
+    });
+    throwError(error);
+    const { data, error: selectError } = await client
+      .from("tasks")
+      .select("*")
+      .eq("id", taskId)
+      .single();
+    throwError(selectError);
+    await invalidateTaskCache(input.workspaceId);
+    return requireRow(data, "Task");
+  }
   const { data, error } = await client.rpc("create_task_with_labels", {
     p_workspace_id: input.workspaceId,
     p_title: input.title.trim(),
@@ -309,6 +330,23 @@ export async function createTask(client: SupabaseClient, input: {
   });
   throwError(error);
   await invalidateTaskCache(input.workspaceId);
+  return data;
+}
+
+export async function moveTask(
+  client: SupabaseClient,
+  workspaceId: string,
+  taskId: string,
+  parentTaskId: string | null,
+) {
+  await getTask(client, workspaceId, taskId, "todo");
+  const { data, error } = await client.rpc("move_task", {
+    p_task_id: taskId,
+    p_parent_task_id: parentTaskId,
+    p_position: 0,
+  });
+  throwError(error);
+  await invalidateTaskCache(workspaceId);
   return data;
 }
 
@@ -383,55 +421,6 @@ export async function softDeleteTask(client: SupabaseClient, workspaceId: string
   throwError(error);
   await invalidateTaskCache(workspaceId);
   return requireRow(data, kind === "note" ? "Note" : "Task");
-}
-
-export async function listSubtasks(client: SupabaseClient, workspaceId: string, taskId: string) {
-  await getTask(client, workspaceId, taskId, "todo");
-  const { data, error } = await client.from("subtasks").select("*").eq("task_id", taskId).order("position");
-  throwError(error);
-  return data ?? [];
-}
-
-export async function getSubtask(client: SupabaseClient, workspaceId: string, id: string) {
-  const { data, error } = await client
-    .from("subtasks")
-    .select("*, tasks!inner(workspace_id, kind)")
-    .eq("id", id)
-    .eq("tasks.workspace_id", workspaceId)
-    .eq("tasks.kind", "todo")
-    .maybeSingle();
-  throwError(error);
-  return requireRow(data, "Subtask");
-}
-
-export async function createSubtask(client: SupabaseClient, userId: string, workspaceId: string, taskId: string, title: string) {
-  const task = await getTask(client, workspaceId, taskId, "todo") as { subtasks?: unknown[] };
-  const { data, error } = await client.from("subtasks").insert({
-    task_id: taskId,
-    title: title.trim(),
-    position: task.subtasks?.length ?? 0,
-    created_by: userId,
-  }).select("*").maybeSingle();
-  throwError(error);
-  await invalidateTaskCache(workspaceId);
-  return requireRow(data, "Subtask");
-}
-
-export async function updateSubtaskDueTime(client: SupabaseClient, workspaceId: string, id: string, dueAt: string | null) {
-  await getSubtask(client, workspaceId, id);
-  const { data, error } = await client.from("subtasks").update({ due_at: dueAt }).eq("id", id).select("*").maybeSingle();
-  throwError(error);
-  await invalidateTaskCache(workspaceId);
-  return requireRow(data, "Subtask");
-}
-
-export async function deleteSubtask(client: SupabaseClient, workspaceId: string, id: string) {
-  const subtask = await getSubtask(client, workspaceId, id);
-  const { data, error } = await client.from("subtasks").delete().eq("id", id).select("id").maybeSingle();
-  throwError(error);
-  requireRow(data, "Subtask");
-  await invalidateTaskCache(workspaceId);
-  return subtask;
 }
 
 export async function listTags(client: SupabaseClient, workspaceId: string) {
@@ -657,29 +646,6 @@ export async function saveTaskSchedule(
   return { task: updatedTask, reminders: data ?? [] };
 }
 
-export async function updateSubtask(
-  client: SupabaseClient,
-  workspaceId: string,
-  id: string,
-  patch: Record<string, unknown>,
-) {
-  await getSubtask(client, workspaceId, id);
-  const { data, error } = await client.from("subtasks").update(patch).eq("id", id).select("*").maybeSingle();
-  throwError(error);
-  await invalidateTaskCache(workspaceId);
-  return requireRow(data, "Subtask");
-}
-
-export async function reorderSubtasks(client: SupabaseClient, workspaceId: string, taskId: string, orderedIds: string[]) {
-  const current = await listSubtasks(client, workspaceId, taskId) as Array<{ id: string }>;
-  const expected = new Set(current.map((item) => item.id));
-  if (orderedIds.length !== expected.size || orderedIds.some((id) => !expected.has(id)) || new Set(orderedIds).size !== orderedIds.length) {
-    throw new CliError({ type: "validation", code: "invalid_subtask_order", message: "Ordered IDs must contain every subtask exactly once" });
-  }
-  for (const [position, id] of orderedIds.entries()) await updateSubtask(client, workspaceId, id, { position });
-  return listSubtasks(client, workspaceId, taskId);
-}
-
 export async function updateTag(
   client: SupabaseClient,
   workspaceId: string,
@@ -761,7 +727,7 @@ export async function createWorkspace(client: SupabaseClient, userId: string, na
   const normalized = slug?.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
   const { data, error } = await client.from("workspaces").insert({ name: name.trim(), slug: normalized || undefined, created_by: userId }).select("*").single();
   throwError(error);
-  await invalidateWorkspaceListCaches().catch(() => undefined);
+  await invalidateWorkspaceListCaches(getActiveServiceKey() ?? "official").catch(() => undefined);
   return data;
 }
 
@@ -769,14 +735,14 @@ export async function updateWorkspace(client: SupabaseClient, workspaceId: strin
   const payload = { ...patch, ...(patch.name === undefined ? {} : { name: patch.name.trim() }), ...(patch.slug === undefined ? {} : { slug: patch.slug.trim().toLowerCase() }) };
   const { data, error } = await client.from("workspaces").update(payload).eq("id", workspaceId).select("*").single();
   throwError(error);
-  await invalidateWorkspaceListCaches().catch(() => undefined);
+  await invalidateWorkspaceListCaches(getActiveServiceKey() ?? "official").catch(() => undefined);
   return data;
 }
 
 export async function deleteWorkspace(client: SupabaseClient, workspaceId: string, confirmationName: string) {
   const { data, error } = await client.functions.invoke("workspace-admin", { body: { action: "delete", workspaceId, confirmationName } });
   if (error) throw new CliError({ type: "api", code: "workspace_delete_failed", message: typeof data?.error === "string" ? data.error : error.message, details: data });
-  await invalidateWorkspaceListCaches().catch(() => undefined);
+  await invalidateWorkspaceListCaches(getActiveServiceKey() ?? "official").catch(() => undefined);
   await invalidateTaskCache(workspaceId);
   return data;
 }
@@ -788,7 +754,7 @@ export async function updateWorkspaceMemberRole(client: SupabaseClient, workspac
   if (current.data.role === "owner") throw new CliError({ type: "authorization", code: "owner_protected", message: "The workspace owner role cannot be changed" });
   const { data, error } = await client.from("workspace_members").update({ role }).eq("workspace_id", workspaceId).eq("user_id", userId).select("*").maybeSingle();
   throwError(error);
-  await invalidateWorkspaceListCaches().catch(() => undefined);
+  await invalidateWorkspaceListCaches(getActiveServiceKey() ?? "official").catch(() => undefined);
   return requireRow(data, "Workspace member");
 }
 
@@ -799,7 +765,7 @@ export async function removeWorkspaceMember(client: SupabaseClient, workspaceId:
   if (current.data.role === "owner") throw new CliError({ type: "authorization", code: "owner_protected", message: "The workspace owner cannot be removed" });
   const { data, error } = await client.from("workspace_members").delete().eq("workspace_id", workspaceId).eq("user_id", userId).neq("role", "owner").select("user_id").maybeSingle();
   throwError(error);
-  await invalidateWorkspaceListCaches().catch(() => undefined);
+  await invalidateWorkspaceListCaches(getActiveServiceKey() ?? "official").catch(() => undefined);
   return requireRow(data, "Workspace member");
 }
 
@@ -809,9 +775,8 @@ export async function workspaceInvite(client: SupabaseClient, body: Record<strin
   return data;
 }
 
-export async function listComments(client: SupabaseClient, taskId: string, subtaskId?: string) {
-  let query = client.from("task_comments").select("*, mentions:task_comment_mentions(user_id, display_name_snapshot)").eq("task_id", taskId).order("created_at");
-  query = subtaskId ? query.eq("subtask_id", subtaskId) : query.is("subtask_id", null);
+export async function listComments(client: SupabaseClient, taskId: string) {
+  const query = client.from("task_comments").select("*, mentions:task_comment_mentions(user_id, display_name_snapshot)").eq("task_id", taskId).order("created_at");
   const { data, error } = await query;
   throwError(error);
   const comments = data ?? [];
@@ -822,8 +787,8 @@ export async function listComments(client: SupabaseClient, taskId: string, subta
   return comments.map((comment) => ({ ...comment, mentions: comment.mentions ?? [], author: byId.get(comment.author_id) }));
 }
 
-export async function createComment(client: SupabaseClient, input: { taskId: string; body: string; imageUris: string[]; mentionedUserIds: string[]; subtaskId?: string | null }) {
-  const { data, error } = await client.rpc("create_task_comment", { p_task_id: input.taskId, p_body: input.body, p_image_uris: input.imageUris, p_mentioned_user_ids: input.mentionedUserIds, p_subtask_id: input.subtaskId ?? null });
+export async function createComment(client: SupabaseClient, input: { taskId: string; body: string; imageUris: string[]; mentionedUserIds: string[] }) {
+  const { data, error } = await client.rpc("create_task_comment", { p_task_id: input.taskId, p_body: input.body, p_image_uris: input.imageUris, p_mentioned_user_ids: input.mentionedUserIds });
   throwError(error);
   return data;
 }

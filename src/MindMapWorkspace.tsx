@@ -70,6 +70,7 @@ import {
   type MindMapTreeNode,
 } from "./lib/mindMap";
 import { applyTaskListFilters, resolveTaskListPreference } from "./lib/taskList";
+import { instanceStorageKey } from "./lib/instanceConfig";
 import type {
   DateTimePreferences,
   Label,
@@ -688,7 +689,7 @@ function layoutTree(
 function storedViewport(workspaceId: string): Viewport | null {
   try {
     const value = JSON.parse(
-      window.localStorage.getItem(`anttodo:mind-map-viewport:${workspaceId}`) ?? "null",
+      window.localStorage.getItem(instanceStorageKey(`anttodo:mind-map-viewport:${workspaceId}`)) ?? "null",
     );
     return value
       && Number.isFinite(value.x)
@@ -702,7 +703,7 @@ function storedViewport(workspaceId: string): Viewport | null {
 }
 
 function collapsedStorageKey(workspaceId: string) {
-  return `anttodo:mind-map-collapsed:${workspaceId}`;
+  return instanceStorageKey(`anttodo:mind-map-collapsed:${workspaceId}`);
 }
 
 function storeCollapsedNodes(workspaceId: string, collapsedNodeIds: ReadonlySet<string>) {
@@ -714,7 +715,7 @@ function storeCollapsedNodes(workspaceId: string, collapsedNodeIds: ReadonlySet<
 }
 
 function hiddenLabelsStorageKey(workspaceId: string) {
-  return `anttodo:mind-map-hidden-labels:${workspaceId}`;
+  return instanceStorageKey(`anttodo:mind-map-hidden-labels:${workspaceId}`);
 }
 
 function storedHiddenLabelIds(workspaceId: string) {
@@ -742,7 +743,7 @@ function storeHiddenLabelIds(workspaceId: string, hiddenLabelIds: ReadonlySet<st
 }
 
 function labelDisplayStorageKey(workspaceId: string) {
-  return `anttodo:mind-map-label-display:${workspaceId}`;
+  return instanceStorageKey(`anttodo:mind-map-label-display:${workspaceId}`);
 }
 
 function storedLabelDisplayMode(workspaceId: string): MindMapLabelDisplayMode {
@@ -1704,7 +1705,7 @@ function MindMapCanvas({
           onMoveEnd={(_, viewport) => {
             if (!initializedRef.current) return;
             window.localStorage.setItem(
-              `anttodo:mind-map-viewport:${workspaceId}`,
+              instanceStorageKey(`anttodo:mind-map-viewport:${workspaceId}`),
               JSON.stringify(viewport),
             );
           }}

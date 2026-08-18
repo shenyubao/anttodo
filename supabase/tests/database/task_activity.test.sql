@@ -54,39 +54,39 @@ select is(
   'label activity stores a display snapshot'
 );
 
-insert into public.subtasks(id, task_id, title, completed, position)
-values ('53000000-0000-0000-0000-000000000001', '43000000-0000-0000-0000-000000000001', 'Child task', false, 0);
-update public.subtasks set completed = true where id = '53000000-0000-0000-0000-000000000001';
+insert into public.tasks(id, workspace_id, parent_task_id, title, status, position, created_by)
+values ('53000000-0000-0000-0000-000000000001','23000000-0000-0000-0000-000000000001',
+  '43000000-0000-0000-0000-000000000001','Child task','open',0,'13000000-0000-0000-0000-000000000001');
+update public.tasks set status = 'completed', completed_at=now() where id = '53000000-0000-0000-0000-000000000001';
 select is(
-  (select count(*)::integer from public.activity_events where task_id = '43000000-0000-0000-0000-000000000001' and event_type = 'task.subtask_created'),
+  (select count(*)::integer from public.activity_events where task_id = '53000000-0000-0000-0000-000000000001' and event_type = 'task.created'),
   1,
-  'creating a subtask records activity'
+  'creating a nested task records activity'
 );
 select is(
-  (select payload->'changes'->'completed'->>'after' from public.activity_events where task_id = '43000000-0000-0000-0000-000000000001' and event_type = 'task.subtask_updated'),
-  'true',
-  'completing a subtask records its new state'
+  (select payload->'changes'->'status'->>'after' from public.activity_events where task_id = '53000000-0000-0000-0000-000000000001' and event_type = 'task.updated'),
+  'completed',
+  'completing a nested task records its new state'
 );
-update public.subtasks
+update public.tasks
 set due_at = '2026-08-09 10:00:00+00', assignee_id = '13000000-0000-0000-0000-000000000001'
 where id = '53000000-0000-0000-0000-000000000001';
 select is(
   (select payload->'changes'->'due_at'->>'after' from public.activity_events
-   where task_id = '43000000-0000-0000-0000-000000000001'
-     and event_type = 'task.subtask_updated'
+   where task_id = '53000000-0000-0000-0000-000000000001'
+     and event_type = 'task.updated'
      and payload->'changes' ? 'due_at'
    order by created_at desc, id desc limit 1),
   '2026-08-09T10:00:00+00:00',
-  'changing a subtask date records its new value'
+  'changing a nested task date records its new value'
 );
 select is(
-  (select payload->'changes'->'assignee_id'->>'after' from public.activity_events
-   where task_id = '43000000-0000-0000-0000-000000000001'
-     and event_type = 'task.subtask_updated'
-     and payload->'changes' ? 'assignee_id'
+  (select payload->>'assignee_id' from public.activity_events
+   where task_id = '53000000-0000-0000-0000-000000000001'
+     and event_type = 'task.assignee_changed'
    order by created_at desc, id desc limit 1),
   '13000000-0000-0000-0000-000000000001',
-  'changing a subtask assignee records its new value'
+  'changing a nested task assignee records its new value'
 );
 
 select lives_ok(
@@ -125,11 +125,17 @@ select is(
 select is(
   (select count(*)::integer from public.list_task_activity(
     '43000000-0000-0000-0000-000000000001',
-    (select created_at from public.activity_events where task_id = '43000000-0000-0000-0000-000000000001' order by created_at desc, id desc limit 1),
-    (select id from public.activity_events where task_id = '43000000-0000-0000-0000-000000000001' order by created_at desc, id desc limit 1),
+    (select created_at from public.activity_events where task_id in (
+      '43000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'
+    ) order by created_at desc, id desc limit 1),
+    (select id from public.activity_events where task_id in (
+      '43000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'
+    ) order by created_at desc, id desc limit 1),
     100
   )),
-  (select count(*)::integer - 1 from public.activity_events where task_id = '43000000-0000-0000-0000-000000000001'),
+  (select count(*)::integer - 1 from public.activity_events where task_id in (
+    '43000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'
+  )),
   'activity RPC cursor excludes the cursor event without skipping older rows'
 );
 

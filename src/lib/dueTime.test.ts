@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_RANGE_END_TIME,
+  DEFAULT_RANGE_START_TIME,
+  RANGE_END_TIME_OPTIONS,
   createAllDayRange,
+  createDefaultRangeDraft,
   formatDueExact,
   fromLocalDateTime,
   getDueStatus,
@@ -12,6 +16,18 @@ import {
 } from "./dueTime";
 
 describe("due time helpers", () => {
+  it("defaults a new range to the full selected day", () => {
+    expect(createDefaultRangeDraft("2026-08-18")).toEqual({
+      startDate: "2026-08-18",
+      startTime: "00:00",
+      endDate: "2026-08-18",
+      endTime: "23:59",
+    });
+    expect(DEFAULT_RANGE_START_TIME).toBe("00:00");
+    expect(DEFAULT_RANGE_END_TIME).toBe("23:59");
+    expect(RANGE_END_TIME_OPTIONS.at(-1)).toBe("23:59");
+  });
+
   it("rounds up to the current 30 minute bucket", () => {
     expect(toLocalTimeInput(roundUpToHalfHour(new Date(2026, 6, 25, 14, 0, 30)))).toBe("14:30");
     expect(toLocalTimeInput(roundUpToHalfHour(new Date(2026, 6, 25, 14, 30, 0)))).toBe("14:30");

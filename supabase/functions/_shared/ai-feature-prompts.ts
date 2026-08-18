@@ -4,10 +4,10 @@ export const DEFAULT_SMART_FORMAT_INSTRUCTION = `请把任务整理为更规范�
 
 保持原意与事实边界，优化标题和正文的表达与层次；从原文中提取截止时间、验收标准和参考资料，不要添加原文没有的事实与需求。`;
 
-export const DEFAULT_SUBTASK_DECOMPOSE_INSTRUCTION = `请基于父任务标题与描述中的事实内容，归纳整理出可执行的子任务建议。
+export const DEFAULT_TASK_DECOMPOSE_INSTRUCTION = `请基于父任务标题与描述中的事实内容，归纳整理出可执行的子级任务建议。
 
 - 只从原文已有信息中提取、归纳、重组；不要凭空补充步骤、目标、风险、验收或交付物。
-- 优先识别原文中的清单项、分点、阶段、交付物和明确动作，并总结为独立子任务。
+- 优先识别原文中的清单项、分点、阶段、交付物和明确动作，并总结为独立子级任务。
 - 信息不足时少拆，不要为凑数量编造通用流程。
 - 描述为空或几乎无可用信息时，最多基于标题生成 1～2 条直接可执行项；仍不确定时只输出与标题最贴近的一条。`;
 
@@ -27,8 +27,8 @@ export function effectiveSmartFormatInstruction(value: unknown) {
   return normalizeAiPromptOverride(value) ?? DEFAULT_SMART_FORMAT_INSTRUCTION;
 }
 
-export function effectiveSubtaskDecomposeInstruction(value: unknown) {
-  return normalizeAiPromptOverride(value) ?? DEFAULT_SUBTASK_DECOMPOSE_INSTRUCTION;
+export function effectiveTaskDecomposeInstruction(value: unknown) {
+  return normalizeAiPromptOverride(value) ?? DEFAULT_TASK_DECOMPOSE_INSTRUCTION;
 }
 
 export function buildSmartFormatPrompt(input: {
@@ -61,11 +61,11 @@ ${input.title}
 ${input.description || "(无描述)"}`;
 }
 
-export function buildSubtaskDecomposePrompt(input: {
+export function buildTaskDecomposePrompt(input: {
   instruction?: string | null;
   title: string;
   description: string;
-  existingSubtasks: string[];
+  existingTasks: string[];
   contacts: AiPromptContact[];
   nowIso: string;
   timeZone: string;
@@ -75,19 +75,19 @@ export function buildSubtaskDecomposePrompt(input: {
       .map((contact) => `- ${contact.display_name} (user_id: ${contact.user_id})`)
       .join("\n")
     : "(无可用联系人)";
-  const existing = input.existingSubtasks.length
-    ? input.existingSubtasks.map((title) => `- ${title}`).join("\n")
-    : "(暂无子任务)";
+  const existing = input.existingTasks.length
+    ? input.existingTasks.map((title) => `- ${title}`).join("\n")
+    : "(暂无子级任务)";
 
   return `业务指令：
-${effectiveSubtaskDecomposeInstruction(input.instruction)}
+${effectiveTaskDecomposeInstruction(input.instruction)}
 
 固定输出协议：
-1. 只输出 JSON（不要 markdown 代码块），格式为 {"subtasks":[{"title":"...","assignee_user_id":null,"due_at":null},...]}。
+1. 只输出 JSON（不要 markdown 代码块），格式为 {"tasks":[{"title":"...","assignee_user_id":null,"due_at":null},...]}。
 2. 生成 1～12 条；title 必填，简洁可执行，中文优先，不超过 60 字。
 3. assignee_user_id 只能填写「组织联系人」中的 user_id，且仅当任务原文明确提到该人或可唯一对应；否则为 null。
 4. due_at 仅在任务原文出现截止或时间表述时填写 ISO 8601；不确定则为 null。若只有日期，用该日本地上午 09:00 再转 ISO。
-5. 不得重复「已有子任务」中的标题，也不得只改写已有标题后再次输出。
+5. 不得重复「已有子级任务」中的标题，也不得只改写已有标题后再次输出。
 6. 结合当前时间与时区理解「今天、明天、下周」等表述。
 
 当前时间：${input.nowIso}
@@ -99,7 +99,7 @@ ${input.title}
 父任务描述：
 ${input.description || "(无描述)"}
 
-已有子任务：
+已有子级任务：
 ${existing}
 
 组织联系人：

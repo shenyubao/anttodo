@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   aiWorkSettingsTitleFromEvent,
-  buildSubtaskCliPrompt,
+  buildChildTaskCliPrompt,
   buildTaskCliPrompt,
   isAiWorkConfigured,
   sameAssignee,
-  subtaskTerminalSessionKey,
   taskTerminalSessionKey,
 } from "./aiWork";
 
@@ -22,30 +21,30 @@ describe("AI work helpers", () => {
     expect(prompt).not.toContain("描述");
   });
 
-  it("limits a subtask prompt to parent context and the selected subtask", () => {
-    const prompt = buildSubtaskCliPrompt(
+  it("limits a childTask prompt to parent context and the selected childTask", () => {
+    const prompt = buildChildTaskCliPrompt(
       { title: "发布桌面版", description: "准备 1.2.0" },
       { title: "验证 arm64 安装包" },
     );
     expect(prompt).toContain("父任务标题：发布桌面版");
     expect(prompt).toContain("父任务描述：\n准备 1.2.0");
-    expect(prompt).toContain("当前子任务：验证 arm64 安装包");
+    expect(prompt).toContain("当前子级任务：验证 arm64 安装包");
     expect(prompt).toContain("请只处理");
   });
 
-  it("omits parent description from a subtask prompt when empty", () => {
-    const prompt = buildSubtaskCliPrompt(
+  it("omits parent description from a childTask prompt when empty", () => {
+    const prompt = buildChildTaskCliPrompt(
       { title: "发布桌面版", description: "  " },
       { title: "验证 arm64 安装包" },
     );
     expect(prompt).toContain("父任务标题：发布桌面版");
     expect(prompt).not.toContain("父任务描述");
-    expect(prompt).toContain("当前子任务：验证 arm64 安装包");
+    expect(prompt).toContain("当前子级任务：验证 arm64 安装包");
   });
 
   it("uses stable independent session keys", () => {
     expect(taskTerminalSessionKey("one")).toBe("task:one");
-    expect(subtaskTerminalSessionKey("one")).toBe("subtask:one");
+    expect(taskTerminalSessionKey("one")).toBe("task:one");
   });
 
   it("compares user and CLI targets without conflating them", () => {

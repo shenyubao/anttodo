@@ -12,7 +12,7 @@ AntTodo CLI（`@anttodos/cli`）适合在终端、脚本和 CI 中管理任务�
 
 - 任务：创建、编辑标题/描述/标签、分配负责人、设置优先级与时间、完成/取消/恢复、批量操作和永久删除。
 - 提醒与重复：管理提醒规则、重复频率、时区和持久提醒。
-- 子任务：编辑标题、完成状态、负责人、优先级、截止时间和排序。
+- 任务树：通过父任务创建、按父任务查询，并支持把任务移动到其他父任务或根级别。
 - 笔记与标签：编辑、恢复、回收站、标签调整，以及标签改名、改色、移动、排序和权限配置。
 - 团队空间：创建、编辑、删除、成员角色、移除成员和邀请链接；`user list`、`group list` 可查询成员与用户组。
 - 专注记录：通过 `pomodoro` 和 `stopwatch` 写入完整、已结束的专注 session。
@@ -45,7 +45,35 @@ npm install --global /tmp/anttodos-cli-0.1.0.tgz
 
 下面的示例假设已经安装了 `anttodo` 命令；使用 `npx` 时，把 `anttodo` 替换为 `npx @anttodos/cli` 即可。
 
-## 2. 登录并检查会话
+## 2. 配置自定义服务地址
+
+CLI 默认连接 AntTodo 官方服务。使用自托管或企业私有服务时，服务地址必须提供与 Web/macOS 客户端相同的实例清单：
+`/.well-known/anttodo.json`。
+
+保存并切换到自定义服务：
+
+```bash
+anttodo service use https://todo.example.com
+anttodo service current
+anttodo service list
+```
+
+恢复官方服务：
+
+```bash
+anttodo service reset
+```
+
+如果只想让某一条命令访问自定义服务，不改变已保存的服务选择，可以使用全局参数：
+
+```bash
+anttodo --service-url https://todo.example.com task list
+anttodo --service-url https://todo.example.com auth status --verify
+```
+
+每个服务的登录态、默认团队空间、缓存和设备授权请求彼此隔离。服务地址必须使用 HTTPS；本地开发时可显式设置 `ANTTODO_ALLOW_LOCAL_HTTP=1` 后使用 localhost HTTP 地址。
+
+## 3. 登录并检查会话
 
 交互式登录会打开浏览器完成授权，并将会话保存在本机：
 
@@ -69,7 +97,7 @@ anttodo auth logout
 
 CLI 不需要服务端密钥。不要把 Supabase service-role key 或其他私密令牌放进脚本、环境变量或日志中。
 
-## 3. 选择团队空间
+## 4. 选择团队空间
 
 大多数任务命令都需要一个团队空间。先列出当前账号可访问的空间，再设置默认空间：
 
@@ -84,7 +112,7 @@ anttodo workspace use <团队空间 ID 或 slug>
 anttodo --workspace <团队空间 ID 或 slug> task list
 ```
 
-## 4. 创建并完成第一个任务
+## 5. 创建并完成第一个任务
 
 ```bash
 anttodo task create \
@@ -121,7 +149,7 @@ anttodo task bulk complete --id task-1 --id task-2
 anttodo task bulk set-priority --id task-3 --id task-4 --priority high
 ```
 
-## 5. 记录专注 session
+## 6. 记录专注 session
 
 CLI 只记录已经完整结束的专注 session，不负责启动、暂停或实时计时。起止时间必须使用带时区的 RFC3339，且 session 至少持续 60 秒：
 
@@ -140,7 +168,7 @@ anttodo stopwatch \
 
 `pomodoro` 的计划时长由 `--planned-seconds` 指定；`stopwatch` 的计划时长自动等于起止时间计算出的实际时长。两者都只写入 `kind=focus`，任务关联和备注均为可选。
 
-## 6. 设置提醒和重复规则
+## 7. 设置提醒和重复规则
 
 `task schedule` 同时管理到期时间、时区、提醒和重复规则：
 
@@ -161,14 +189,14 @@ anttodo task schedule <任务 ID> \
 anttodo task schedule <任务 ID> --clear
 ```
 
-## 7. 子任务、笔记和标签
+## 8. 任务树、笔记和标签
 
 ```bash
-# 子任务
-anttodo subtask create --task <任务 ID> --title "核对示例" --priority medium
-anttodo subtask set-status <子任务 ID> completed
-anttodo subtask assign <子任务 ID> --user <用户 ID>
-anttodo subtask reorder --task <任务 ID> --id <子任务 ID> --id <另一个子任务 ID>
+# 任务树：创建子任务、查询直接子任务、移动任务
+anttodo task create --title "核对示例" --parent <父任务 ID> --priority medium
+anttodo task list --parent <父任务 ID>
+anttodo task move <任务 ID> --parent <新的父任务 ID>
+anttodo task move <任务 ID> --root
 
 # 笔记
 anttodo note list
@@ -184,7 +212,7 @@ anttodo tag reorder <标签 ID> --before <另一个标签 ID>
 
 笔记和标签的永久删除同样需要 `--yes`；回收站中的笔记可先用 `note list --trash` 检查，再执行 `note restore` 或 `note purge`。
 
-## 8. 搜索、评论、附件和活动记录
+## 9. 搜索、评论、附件和活动记录
 
 ```bash
 anttodo search "发布说明" --kind all --format table
@@ -199,7 +227,7 @@ anttodo attachment download <附件 URI> --output ./release-notes.pdf
 
 上传附件后，CLI 会返回附件 URI；需要在评论中插入附件时，可以使用 `--comment-image` 上传为评论图片，或将 URI 传给 `comment create --image-uri`。
 
-## 9. 在脚本和 CI 中使用
+## 10. 在脚本和 CI 中使用
 
 所有命令都支持统一的输出格式：`json`、`pretty`、`table`、`ndjson` 和 `csv`。自动化场景建议使用 JSON，并让退出码控制流水线：
 
@@ -214,11 +242,11 @@ anttodo search "待发布" --format ndjson | jq -r '.id'
 anttodo man --format pretty
 ```
 
-## 10. 常见问题
+## 11. 常见问题
 
 - `not_logged_in`：先执行 `anttodo auth login`，再用 `auth status --verify` 检查会话。
 - `workspace_required`：执行 `workspace list` 后用 `workspace use` 设置默认团队空间，或在命令上加 `--workspace`。
-- 任务、子任务、笔记或标签看不到：确认当前账号和团队空间，并检查对象权限；CLI 不会绕过 RLS。
+- 任务树、笔记或标签看不到：确认当前服务、账号和团队空间，并检查对象权限；CLI 不会绕过 RLS。
 - CI 没有浏览器：使用 `auth login --no-wait --no-open` 获取设备码，在有浏览器的设备上完成授权后，再用设备码完成登录流程。
 
 本地开发和验证可以运行：

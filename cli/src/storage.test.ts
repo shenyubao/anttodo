@@ -29,4 +29,19 @@ describe("credential storage", () => {
     await expect((await import("node:fs/promises")).readdir(directory).then((files) => files.some((file) => file.endsWith(".tmp"))))
       .resolves.toBe(false);
   });
+
+  it("keeps authentication files isolated by service", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "anttodo-cli-service-storage-"));
+    temporaryDirectories.push(directory);
+    process.env.ANTTODO_STATE_DIR = directory;
+    const { FileAuthStorage, setActiveServiceKey } = await import("./storage.js");
+
+    setActiveServiceKey("service-a");
+    await new FileAuthStorage("service-a").setItem("session", "a");
+    setActiveServiceKey("service-b");
+    await new FileAuthStorage("service-b").setItem("session", "b");
+
+    await expect(new FileAuthStorage("service-a").getItem("session")).resolves.toBe("a");
+    await expect(new FileAuthStorage("service-b").getItem("session")).resolves.toBe("b");
+  });
 });

@@ -91,7 +91,7 @@ describe("formatHours", () => {
     expect(formatHoursList(null, null)).toBeNull();
   });
 
-  it("sums subtask hours and ignores empty values", () => {
+  it("sums childTask hours and ignores empty values", () => {
     expect(sumHours([1, null, 2.3, undefined])).toBe(3.3);
     expect(sumHours([null, undefined])).toBeNull();
   });

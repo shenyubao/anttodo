@@ -137,29 +137,29 @@ export function TaskRecommendationButton({
       {open && createPortal(
         <div
           ref={panelRef}
-          className="ai-subtask-suggest-panel task-recommendation-panel"
+          className="ai-childTask-suggest-panel task-recommendation-panel"
           role="dialog"
           aria-label="推荐任务"
           style={position}
         >
-          <div className="ai-subtask-suggest-header">
+          <div className="ai-childTask-suggest-header">
             <strong>推荐任务</strong>
           </div>
-          <div className="ai-subtask-suggest-body">
-            {error && <p className="ai-subtask-suggest-error">{error}</p>}
+          <div className="ai-childTask-suggest-body">
+            {error && <p className="ai-childTask-suggest-error">{error}</p>}
             {!error && candidates.length === 0 && (
-              <p className="ai-subtask-suggest-status">暂无推荐任务</p>
+              <p className="ai-childTask-suggest-status">暂无推荐任务</p>
             )}
             {candidates.length > 0 && (
-              <ul className="ai-subtask-suggest-list">
+              <ul className="ai-childTask-suggest-list">
                 {candidates.map((task) => (
-                  <li key={task.id} className="ai-subtask-suggest-row">
-                    <div className="ai-subtask-suggest-main">
-                      <span className="ai-subtask-suggest-title">{task.title}</span>
+                  <li key={task.id} className="ai-childTask-suggest-row">
+                    <div className="ai-childTask-suggest-main">
+                      <span className="ai-childTask-suggest-title">{task.title}</span>
                     </div>
                     <button
                       type="button"
-                      className="ai-subtask-suggest-add"
+                      className="ai-childTask-suggest-add"
                       disabled={!online || busy}
                       aria-label={`采纳任务：${task.title}`}
                       onClick={() => void adopt(task)}

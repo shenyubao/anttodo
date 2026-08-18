@@ -38,6 +38,8 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
   return {
     id: "quick-add-draft",
     workspace_id: "",
+    parent_task_id: null,
+    position: 0,
     title: "",
     description: "",
     kind: "todo",
@@ -63,7 +65,7 @@ function createDraftTask(due: ParsedTaskDue | null): Task {
     updated_at: timestamp,
     label_ids: [],
     participant_ids: [],
-    subtasks: [],
+    children: [],
     reminders: [],
     reminder_persistent: false,
   };

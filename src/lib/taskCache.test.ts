@@ -5,20 +5,20 @@ import {
   applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
-  appendSubtaskInBundle,
+  appendChildTaskInBundle,
   appendTaskToBundle,
-  createOptimisticSubtask,
+  createOptimisticChildTask,
   createOptimisticTask,
   createOptimisticTaskSection,
   defaultCreatorParticipantIds,
-  findTaskIdForSubtask,
-  isOptimisticSubtaskId,
+  findTaskIdForChildTask,
+  isOptimisticChildTaskId,
   normalizeWorkspaceBundle,
-  patchSubtaskInBundle,
-  removeSubtaskFromBundle,
+  patchChildTaskInBundle,
+  removeChildTaskFromBundle,
   removeTaskFromBundle,
   removeTaskSectionFromBundle,
-  replaceOptimisticSubtask,
+  replaceOptimisticChildTask,
   replaceOptimisticTask,
   replaceOptimisticTaskSection,
   sectionIdFromRealtimeChange,
@@ -58,7 +58,46 @@ describe("task cache updates", () => {
     expect(normalized.taskSystemViewPreferences).toEqual([]);
 
     const current = emptyBundle();
-    expect(normalizeWorkspaceBundle(current)).toBe(current);
+    expect(normalizeWorkspaceBundle(current)).toStrictEqual(current);
+  });
+
+  it("keeps deleted nested tasks in the flat list but off the parent children", () => {
+    const parent = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "父任务",
+      labelIds: [],
+    });
+    const child = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "子任务",
+      labelIds: [],
+      parentTaskId: parent.id,
+      optimisticId: "child-live",
+    });
+    const deleted = {
+      ...createOptimisticTask({
+        workspaceId: "workspace",
+        userId: "user",
+        title: "已删除子任务",
+        labelIds: [],
+        parentTaskId: parent.id,
+        optimisticId: "child-deleted",
+      }),
+      deleted_at: "2026-08-18T10:16:12.314Z",
+    };
+    let bundle = normalizeWorkspaceBundle({
+      ...emptyBundle(),
+      tasks: [parent, child, deleted],
+    });
+    expect(bundle.tasks.find((task) => task.id === parent.id)?.children.map((item) => item.id))
+      .toEqual([child.id]);
+    expect(bundle.tasks.some((task) => task.id === deleted.id)).toBe(true);
+
+    bundle = patchChildTaskInBundle(bundle, child.id, { deleted_at: "2026-08-18T10:16:12.314Z" });
+    expect(bundle.tasks.find((task) => task.id === parent.id)?.children).toEqual([]);
+    expect(bundle.tasks.find((task) => task.id === child.id)?.deleted_at).toBe("2026-08-18T10:16:12.314Z");
   });
 
   it("auto-watches creator unless self-assigned", () => {
@@ -331,20 +370,18 @@ describe("task cache updates", () => {
     expect(rolledBack.taskPlacements).toEqual([]);
   });
 
-  it("extracts task ids from task and child-table Realtime payloads", () => {
+  it("extracts task ids from unified task Realtime payloads", () => {
     expect(taskIdFromRealtimeChange({ table: "tasks", new: { id: "task-1" } }))
       .toBe("task-1");
     expect(taskIdFromRealtimeChange({ table: "task_labels", new: { task_id: "task-2" } }))
       .toBe("task-2");
     expect(taskIdFromRealtimeChange({ table: "task_list_placements", old: { task_id: "task-3" } }))
       .toBe("task-3");
-    expect(taskIdFromRealtimeChange({ table: "subtasks", new: { task_id: "task-4", id: "sub-1" } }))
-      .toBe("task-4");
     expect(taskIdFromRealtimeChange({ table: "task_reminders", old: { task_id: "task-5" } }))
       .toBe("task-5");
   });
 
-  it("patches task schedule and subtasks in place", () => {
+  it("patches task schedule and children in place", () => {
     const task = createOptimisticTask({
       workspaceId: "workspace",
       userId: "user",
@@ -372,7 +409,6 @@ describe("task cache updates", () => {
         created_by: "user",
         created_at: "2026-08-03T00:00:00.000Z",
         updated_at: "2026-08-03T00:00:00.000Z",
-        subtask_id: null,
       }],
       reminderPersistent: true,
       recurrence: { freq: "daily", interval: 1, mode: "due" },
@@ -385,47 +421,30 @@ describe("task cache updates", () => {
     });
     expect(bundle.tasks[0].reminders).toHaveLength(1);
 
-    const subtask = {
-      id: "sub-1",
-      task_id: task.id,
-      parent_subtask_id: null,
-      title: "子任务",
-      description: "",
-      completed: false,
+    const childTask = createOptimisticChildTask({
+      taskId: task.id,
+      userId: "user",
+      title: "子级任务",
       position: 0,
-      priority: "none" as const,
-      due_at: null,
-      estimate_hours: null,
-      actual_hours: null,
-      estimate_pomodoros: null,
-      actual_pomodoros: null,
-      assignee_id: null,
-      cli_assignee: null,
-      created_by: "user",
-      due_start_at: null,
-      due_is_all_day: false,
-      due_timezone: null,
-      reminders: [],
-      reminder_persistent: false,
-      dependencies: [],
-    };
-    bundle = appendSubtaskInBundle(bundle, task.id, subtask);
-    expect(findTaskIdForSubtask(bundle, "sub-1")).toBe(task.id);
-    bundle = patchSubtaskInBundle(bundle, "sub-1", {
-      completed: true,
+      optimisticId: "sub-1",
+    });
+    bundle = appendChildTaskInBundle(bundle, task.id, childTask);
+    expect(findTaskIdForChildTask(bundle, "sub-1")).toBe(task.id);
+    bundle = patchChildTaskInBundle(bundle, "sub-1", {
+      status: "completed",
       assignee_id: "member-1",
       due_at: "2026-08-05T00:00:00.000Z",
     });
-    expect(bundle.tasks[0].subtasks[0]).toMatchObject({
-      completed: true,
+    expect(bundle.tasks[0].children[0]).toMatchObject({
+      status: "completed",
       assignee_id: "member-1",
       due_at: "2026-08-05T00:00:00.000Z",
     });
-    bundle = removeSubtaskFromBundle(bundle, "sub-1");
-    expect(bundle.tasks[0].subtasks).toEqual([]);
+    bundle = removeChildTaskFromBundle(bundle, "sub-1");
+    expect(bundle.tasks[0].children).toEqual([]);
   });
 
-  it("removes nested descendants when deleting a parent subtask", () => {
+  it("removes nested descendants when deleting a parent childTask", () => {
     const task = createOptimisticTask({
       workspaceId: "workspace",
       userId: "user",
@@ -433,26 +452,26 @@ describe("task cache updates", () => {
       labelIds: [],
     });
     let bundle = appendTaskToBundle(emptyBundle(), task);
-    bundle = appendSubtaskInBundle(bundle, task.id, createOptimisticSubtask({
+    bundle = appendChildTaskInBundle(bundle, task.id, createOptimisticChildTask({
       taskId: task.id,
       userId: "user",
       title: "L2",
       position: 0,
       optimisticId: "l2",
     }));
-    bundle = appendSubtaskInBundle(bundle, task.id, createOptimisticSubtask({
+    bundle = appendChildTaskInBundle(bundle, task.id, createOptimisticChildTask({
       taskId: task.id,
       userId: "user",
       title: "L3",
       position: 0,
-      parentSubtaskId: "l2",
+      parentChildTaskId: "l2",
       optimisticId: "l3",
     }));
-    bundle = removeSubtaskFromBundle(bundle, "l2");
-    expect(bundle.tasks[0]?.subtasks).toEqual([]);
+    bundle = removeChildTaskFromBundle(bundle, "l2");
+    expect(bundle.tasks[0]?.children).toEqual([]);
   });
 
-  it("creates and replaces optimistic subtasks without duplicates", () => {
+  it("creates and replaces optimistic children without duplicates", () => {
     const task = createOptimisticTask({
       workspaceId: "workspace",
       userId: "user",
@@ -462,21 +481,21 @@ describe("task cache updates", () => {
       now: "2026-08-03T00:00:00.000Z",
     });
     let bundle = appendTaskToBundle(emptyBundle(), task);
-    const optimistic = createOptimisticSubtask({
+    const optimistic = createOptimisticChildTask({
       taskId: task.id,
       userId: "user",
-      title: "新子任务",
+      title: "新子级任务",
       position: 0,
       dueAt: "2026-08-06T00:00:00.000Z",
       assigneeId: "member-1",
-      optimisticId: "optimistic-subtask:draft",
+      optimisticId: "optimistic-task:draft",
     });
-    expect(isOptimisticSubtaskId(optimistic.id)).toBe(true);
-    bundle = appendSubtaskInBundle(bundle, task.id, optimistic);
-    expect(bundle.tasks[0].subtasks).toHaveLength(1);
-    expect(bundle.tasks[0].subtasks[0]).toMatchObject({
+    expect(isOptimisticChildTaskId(optimistic.id)).toBe(true);
+    bundle = appendChildTaskInBundle(bundle, task.id, optimistic);
+    expect(bundle.tasks[0].children).toHaveLength(1);
+    expect(bundle.tasks[0].children[0]).toMatchObject({
       id: optimistic.id,
-      title: "新子任务",
+      title: "新子级任务",
       due_at: "2026-08-06T00:00:00.000Z",
       assignee_id: "member-1",
     });
@@ -486,22 +505,24 @@ describe("task cache updates", () => {
       id: "sub-server-1",
     };
     // Simulate realtime already appending the server row before replace.
-    bundle = appendSubtaskInBundle(bundle, task.id, created);
-    expect(bundle.tasks[0].subtasks).toHaveLength(2);
+    bundle = appendChildTaskInBundle(bundle, task.id, created);
+    expect(bundle.tasks[0].children).toHaveLength(2);
 
-    bundle = replaceOptimisticSubtask(bundle, task.id, optimistic.id, created);
-    expect(bundle.tasks[0].subtasks).toEqual([created]);
+    bundle = replaceOptimisticChildTask(bundle, task.id, optimistic.id, created);
+    expect(bundle.tasks[0].children).toHaveLength(1);
+    expect(bundle.tasks[0].children[0]).toMatchObject({ id: created.id, workspace_id: "workspace" });
 
-    const failedOptimistic = createOptimisticSubtask({
+    const failedOptimistic = createOptimisticChildTask({
       taskId: task.id,
       userId: "user",
-      title: "失败子任务",
+      title: "失败子级任务",
       position: 1,
-      optimisticId: "optimistic-subtask:failed",
+      optimisticId: "optimistic-task:failed",
     });
-    bundle = appendSubtaskInBundle(bundle, task.id, failedOptimistic);
-    expect(bundle.tasks[0].subtasks).toHaveLength(2);
-    bundle = removeSubtaskFromBundle(bundle, failedOptimistic.id);
-    expect(bundle.tasks[0].subtasks).toEqual([created]);
+    bundle = appendChildTaskInBundle(bundle, task.id, failedOptimistic);
+    expect(bundle.tasks[0].children).toHaveLength(2);
+    bundle = removeChildTaskFromBundle(bundle, failedOptimistic.id);
+    expect(bundle.tasks[0].children).toHaveLength(1);
+    expect(bundle.tasks[0].children[0]?.id).toBe(created.id);
   });
 });

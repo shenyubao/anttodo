@@ -4,6 +4,7 @@ import {
   listWorkspaces,
 } from "./api.js";
 import { authenticatedContext } from "./client.js";
+import { setActiveServiceKey } from "./storage.js";
 import {
   taskCacheKey,
   taskListCacheKey,
@@ -13,12 +14,13 @@ import {
 } from "./cache.js";
 
 export async function runCacheRefresh(request: CacheRefreshRequest) {
-  const context = await authenticatedContext();
+  setActiveServiceKey(request.serviceKey);
+  const context = await authenticatedContext({ serviceUrl: request.serviceUrl });
   if (context.user.id !== request.userId) return;
 
   if (request.type === "workspaces") {
     const data = await listWorkspaces(context);
-    await writeCacheEntry(workspaceCacheKey(request.userId), data);
+    await writeCacheEntry(workspaceCacheKey(request.userId), data, request.serviceKey);
     return;
   }
 
@@ -32,6 +34,7 @@ export async function runCacheRefresh(request: CacheRefreshRequest) {
     await writeCacheEntry(
       taskListCacheKey(request.userId, request.workspaceId, request.taskKind, request.options),
       data,
+      request.serviceKey,
     );
     return;
   }
@@ -45,5 +48,6 @@ export async function runCacheRefresh(request: CacheRefreshRequest) {
   await writeCacheEntry(
     taskCacheKey(request.userId, request.workspaceId, request.taskKind, request.taskId),
     data,
+    request.serviceKey,
   );
 }

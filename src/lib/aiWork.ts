@@ -1,4 +1,4 @@
-import type { AiCliTool, AiWorkSettings, AssigneeTarget, Subtask, Task } from "../types";
+import type { AiCliTool, AiWorkSettings, AssigneeTarget, Task } from "../types";
 import { untrackAiTerminalSession } from "./aiTerminalSessions";
 
 export const AI_CLI_OPTIONS: Array<{ value: AiCliTool; label: string }> = [
@@ -35,14 +35,6 @@ export function taskAssigneeTarget(task: Pick<Task, "assignee_id" | "cli_assigne
   return { kind: "none" };
 }
 
-export function subtaskAssigneeTarget(
-  subtask: Pick<Subtask, "assignee_id" | "cli_assignee">,
-): AssigneeTarget {
-  if (subtask.cli_assignee) return { kind: "cli", tool: subtask.cli_assignee };
-  if (subtask.assignee_id) return { kind: "user", userId: subtask.assignee_id };
-  return { kind: "none" };
-}
-
 export function sameAssignee(left: AssigneeTarget, right: AssigneeTarget) {
   if (left.kind !== right.kind) return false;
   if (left.kind === "user" && right.kind === "user") return left.userId === right.userId;
@@ -54,18 +46,14 @@ export function taskTerminalSessionKey(taskId: string) {
   return `task:${taskId}`;
 }
 
-export function subtaskTerminalSessionKey(subtaskId: string) {
-  return `subtask:${subtaskId}`;
-}
-
 export function stopCliTerminalsForTask(
   taskId: string,
-  subtaskIds: Iterable<string> = [],
+  targetTaskIds: Iterable<string> = [],
 ) {
   const bridge = window.anttodoDesktop?.aiWork?.terminal;
   const sessionIds = [
     taskTerminalSessionKey(taskId),
-    ...[...subtaskIds].map((subtaskId) => subtaskTerminalSessionKey(subtaskId)),
+    ...[...targetTaskIds].map((targetTaskId) => taskTerminalSessionKey(targetTaskId)),
   ];
   for (const sessionId of sessionIds) {
     if (bridge) void bridge.stop(sessionId);
@@ -86,12 +74,12 @@ export function buildTaskCliPrompt(task: Pick<Task, "title" | "description">) {
   return lines.join("\n");
 }
 
-export function buildSubtaskCliPrompt(
+export function buildChildTaskCliPrompt(
   task: Pick<Task, "title" | "description">,
-  subtask: Pick<Subtask, "title">,
+  childTask: Pick<Task, "title">,
 ) {
   const lines = [
-    "请只处理下面指定的 AntTodo 子任务，并使用父任务信息作为上下文。",
+    "请只处理下面指定的 AntTodo 子级任务，并使用父任务信息作为上下文。",
     "",
     `父任务标题：${task.title.trim() || "（无标题）"}`,
   ];
@@ -99,6 +87,6 @@ export function buildSubtaskCliPrompt(
   if (description) {
     lines.push("父任务描述：", description);
   }
-  lines.push("", `当前子任务：${subtask.title.trim() || "（无标题）"}`);
+  lines.push("", `当前子级任务：${childTask.title.trim() || "（无标题）"}`);
   return lines.join("\n");
 }

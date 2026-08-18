@@ -176,14 +176,14 @@ function eventCopy(input: {
     }
     case "participant_new_comment":
       return { heading: "💬 新评论", summary: `${actor} 评论了你参与的此${object}` };
-    case "participant_subtask_created": {
-      const subtask = safeText(input.payload?.title, "未命名子任务", 160);
-      return { heading: "➕ 新子任务", summary: `${actor} 添加了子任务「${subtask}」` };
+    case "participant_task_created": {
+      const childTask = safeText(input.payload?.title, "未命名子级任务", 160);
+      return { heading: "➕ 新子级任务", summary: `${actor} 添加了子级任务「${childTask}」` };
     }
-    case "participant_subtask_status_changed":
-      return { heading: "✅ 子任务状态", summary: `${actor} 更新了子任务状态` };
-    case "participant_subtask_title_changed":
-      return { heading: "✏️ 子任务标题", summary: `${actor} 更新了子任务标题` };
+    case "participant_status_changed":
+      return { heading: "✅ 子级任务状态", summary: `${actor} 更新了子级任务状态` };
+    case "participant_title_changed":
+      return { heading: "✏️ 子级任务标题", summary: `${actor} 更新了子级任务标题` };
     default:
       return { heading: "🔔 AntTodo 通知", summary: "你有一条新通知" };
   }

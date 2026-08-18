@@ -42,12 +42,12 @@ select has_column(
   'AI feature settings expose the smart format prompt override'
 );
 select has_column(
-  'public', 'user_ai_feature_settings', 'subtask_decompose_enabled',
-  'AI feature settings expose the subtask decompose switch'
+  'public', 'user_ai_feature_settings', 'task_decompose_enabled',
+  'AI feature settings expose the task decompose switch'
 );
 select has_column(
-  'public', 'user_ai_feature_settings', 'subtask_decompose_prompt_override',
-  'AI feature settings expose the subtask decompose prompt override'
+  'public', 'user_ai_feature_settings', 'task_decompose_prompt_override',
+  'AI feature settings expose the task decompose prompt override'
 );
 select ok(has_table_privilege('authenticated', 'public.user_ai_feature_settings', 'SELECT'));
 select ok(has_table_privilege('authenticated', 'public.user_ai_feature_settings', 'INSERT'));
@@ -73,9 +73,9 @@ select is(
   'smart formatting defaults to enabled'
 );
 select is(
-  (select subtask_decompose_enabled from public.user_ai_feature_settings),
+  (select task_decompose_enabled from public.user_ai_feature_settings),
   true,
-  'subtask decomposition defaults to enabled'
+  'task decomposition defaults to enabled'
 );
 select is(
   (select count(*)::integer from public.user_ai_feature_settings),
@@ -104,7 +104,7 @@ select throws_ok(
 );
 select throws_ok(
   $$update public.user_ai_feature_settings
-    set subtask_decompose_prompt_override = repeat('x', 8001)
+    set task_decompose_prompt_override = repeat('x', 8001)
     where user_id = '16000000-0000-0000-0000-000000000001'$$,
   '23514', null,
   'oversized prompt overrides are rejected'

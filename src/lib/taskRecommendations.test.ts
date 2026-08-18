@@ -26,7 +26,7 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   updated_at: "2026-08-03T00:00:00.000Z",
   label_ids: [],
   participant_ids: [],
-  subtasks: [],
+  children: [],
   cli_assignee: null,
   kind: "todo",
   reminders: [],
@@ -36,6 +36,8 @@ const task = (id: string, patch: Partial<Task> = {}): Task => ({
   actual_hours: null,
   description_mentions: [],
   ...patch,
+  parent_task_id: patch.parent_task_id ?? null,
+  position: patch.position ?? 0,
   estimate_pomodoros: patch.estimate_pomodoros ?? null,
   actual_pomodoros: patch.actual_pomodoros ?? null,
 });

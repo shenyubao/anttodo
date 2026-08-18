@@ -37,10 +37,10 @@ import type {
 } from "../types";
 import {
   normalizeAiFormatSuggestion,
-  normalizeAiSuggestedSubtasks,
+  normalizeAiSuggestedTasks,
   type AiFormatSuggestion,
-  type AiSuggestedSubtask,
-} from "./aiSubtaskDecompose";
+  type AiSuggestedTask,
+} from "./aiTaskDecompose";
 import {
   createDefaultAiFeatureSettings,
   normalizeAiFeatureSettings,
@@ -60,15 +60,14 @@ import {
   suggestWorkspaceSlug,
 } from "./workspaceSlug";
 
-export type { AiSuggestedSubtask };
+export type { AiSuggestedTask };
 
-const TASK_DETAIL_SELECT = "*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), subtasks(*, subtask_reminder_settings(persistent)), task_reminders(*), task_reminder_settings(persistent), task_dependencies(*)";
+const TASK_DETAIL_SELECT = "*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), task_reminders(*), task_reminder_settings(persistent), task_dependencies:task_dependencies!task_dependencies_task_id_fkey(*)";
 
 type TaskRow = Omit<
   Task,
   | "label_ids"
   | "participant_ids"
-  | "subtasks"
   | "reminders"
   | "reminder_persistent"
   | "description_mentions"
@@ -77,11 +76,6 @@ type TaskRow = Omit<
   task_labels?: Array<{ label_id: string }>;
   task_participants?: Array<{ user_id: string }>;
   task_description_mentions?: Array<{ user_id: string; display_name_snapshot: string }>;
-  subtasks?: Array<
-    Task["subtasks"][number] & {
-      subtask_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
-    }
-  >;
   task_reminders?: Task["reminders"];
   task_reminder_settings?: Array<{ persistent: boolean }> | { persistent: boolean } | null;
   task_dependencies?: TaskDependency[];
@@ -94,12 +88,43 @@ export type WorkspaceTaskPage = {
   hasMore: boolean;
 };
 
+async function enrichTaskIds(client: SupabaseClient, ids: string[]) {
+  if (ids.length === 0) return [] as TaskRow[];
+  const { data, error } = await client.from("tasks").select(TASK_DETAIL_SELECT).in("id", ids);
+  assertNoError(error);
+  return (data ?? []) as TaskRow[];
+}
+
+export async function loadWorkspaceTaskPage(
+  client: SupabaseClient,
+  workspaceId: string,
+  offset = 0,
+  limit = WORKSPACE_TASK_PAGE_SIZE,
+): Promise<WorkspaceTaskPage> {
+  const { data, error } = await client.rpc("get_task_page", {
+    p_workspace_id: workspaceId,
+    p_offset: offset,
+    p_limit: limit,
+  });
+  assertNoError(error);
+  const snapshotRows = (data ?? []) as Array<{ id: string; parent_task_id: string | null }>;
+  const rows = await enrichTaskIds(client, snapshotRows.map((row) => row.id));
+  const rootCount = snapshotRows.filter((row) => row.parent_task_id === null).length;
+  return { tasks: normalizeTaskRows(rows), hasMore: rootCount >= limit };
+}
+
+export async function loadTaskTree(client: SupabaseClient, taskId: string) {
+  const { data, error } = await client.rpc("get_task_tree", { p_task_id: taskId });
+  assertNoError(error);
+  const rows = await enrichTaskIds(client, (data ?? []).map((row: { id: string }) => row.id));
+  return normalizeTaskRows(rows);
+}
+
 function normalizeTaskRow(row: TaskRow): Task {
   const settings = Array.isArray(row.task_reminder_settings)
     ? row.task_reminder_settings[0]
     : row.task_reminder_settings;
   const allReminders = [...(row.task_reminders ?? [])].sort((a, b) => a.position - b.position);
-  const parentReminders = allReminders.filter((reminder) => !reminder.subtask_id);
   const allDependencies = [...(row.task_dependencies ?? [])].sort((a, b) => a.position - b.position);
   return {
     ...row,
@@ -112,38 +137,33 @@ function normalizeTaskRow(row: TaskRow): Task {
     label_ids: row.task_labels?.map((item) => item.label_id) ?? [],
     participant_ids: row.task_participants?.map((item) => item.user_id) ?? [],
     description_mentions: row.task_description_mentions ?? [],
-    dependencies: allDependencies.filter((item) => !item.subtask_id),
-    subtasks: [...(row.subtasks ?? [])]
-      .sort((a, b) => a.position - b.position)
-      .map((subtask) => {
-        const { subtask_reminder_settings: nestedSettings, ...rest } = subtask;
-        const subtaskSettings = Array.isArray(nestedSettings)
-          ? nestedSettings[0]
-          : nestedSettings;
-        return {
-          ...rest,
-          parent_subtask_id: rest.parent_subtask_id ?? null,
-          description: rest.description ?? "",
-          priority: rest.priority ?? "none",
-          due_start_at: rest.due_start_at ?? null,
-          due_is_all_day: Boolean(rest.due_is_all_day),
-          due_timezone: rest.due_timezone ?? null,
-          estimate_hours: coerceHours(rest.estimate_hours),
-          actual_hours: coerceHours(rest.actual_hours),
-          estimate_pomodoros: coercePomodoros(rest.estimate_pomodoros),
-          actual_pomodoros: coercePomodoros(rest.actual_pomodoros),
-          reminders: allReminders.filter((reminder) => reminder.subtask_id === rest.id),
-          reminder_persistent: subtaskSettings?.persistent ?? false,
-          dependencies: allDependencies.filter((item) => item.subtask_id === rest.id),
-        };
-      }),
-    reminders: parentReminders,
+    dependencies: allDependencies,
+    children: [],
+    reminders: allReminders,
     reminder_persistent: settings?.persistent ?? false,
   };
 }
 
 function normalizeTaskRows(rows: TaskRow[]): Task[] {
-  return rows.map(normalizeTaskRow);
+  const tasks = rows.map(normalizeTaskRow);
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const rootOf = (task: Task) => {
+    let cursor = task;
+    const seen = new Set<string>();
+    while (cursor.parent_task_id && !seen.has(cursor.id)) {
+      seen.add(cursor.id);
+      cursor = byId.get(cursor.parent_task_id) ?? cursor;
+      if (cursor.id === task.id) break;
+    }
+    return cursor;
+  };
+  return tasks.map((task) => ({
+    ...task,
+    label_ids: task.parent_task_id ? rootOf(task).label_ids : task.label_ids,
+    children: tasks
+      .filter((candidate) => candidate.parent_task_id === task.id && !candidate.deleted_at)
+      .sort((a, b) => a.position - b.position),
+  }));
 }
 
 function assertNoError(error: { message: string } | null) {
@@ -195,18 +215,12 @@ export async function updateLabelWithAccess(
 export async function loadTaskComments(
   client: SupabaseClient,
   taskId: string,
-  options?: { subtaskId?: string | null },
 ): Promise<TaskComment[]> {
-  let query = client
+  const query = client
     .from("task_comments")
     .select("*, mentions:task_comment_mentions(user_id, display_name_snapshot)")
     .eq("task_id", taskId)
     .order("created_at", { ascending: true });
-  if (options?.subtaskId) {
-    query = query.eq("subtask_id", options.subtaskId);
-  } else {
-    query = query.is("subtask_id", null);
-  }
   const { data, error } = await query;
   assertNoError(error);
 
@@ -224,7 +238,7 @@ export async function loadTaskComments(
   );
   return rows.map((comment) => ({
     ...comment,
-    subtask_id: comment.subtask_id ?? null,
+    task_id: comment.task_id,
     mentions: comment.mentions ?? [],
     author: profiles.get(comment.author_id),
   }));
@@ -300,7 +314,6 @@ export async function createTaskComment(
     body: string;
     imageUris: string[];
     mentionedUserIds: string[];
-    subtaskId?: string | null;
   },
 ) {
   const { data, error } = await client.rpc("create_task_comment", {
@@ -308,7 +321,6 @@ export async function createTaskComment(
     p_body: input.body,
     p_image_uris: input.imageUris,
     p_mentioned_user_ids: input.mentionedUserIds,
-    p_subtask_id: input.subtaskId ?? null,
   });
   assertNoError(error);
   return data as TaskComment;
@@ -549,8 +561,8 @@ export async function saveAiFeatureSettings(
       user_id: normalized.user_id,
       smart_format_enabled: normalized.smart_format_enabled,
       smart_format_prompt_override: normalized.smart_format_prompt_override,
-      subtask_decompose_enabled: normalized.subtask_decompose_enabled,
-      subtask_decompose_prompt_override: normalized.subtask_decompose_prompt_override,
+      task_decompose_enabled: normalized.task_decompose_enabled,
+      task_decompose_prompt_override: normalized.task_decompose_prompt_override,
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id" })
     .select("*")
@@ -646,7 +658,6 @@ export async function createFocusSession(
       user_id: input.user_id,
       workspace_id: input.workspace_id,
       task_id: input.task_id,
-      subtask_id: input.subtask_id ?? null,
       mode: input.mode,
       kind: input.kind,
       planned_seconds: input.planned_seconds,
@@ -701,14 +712,21 @@ export async function loadWorkspaceBundle(
       .select("workspace_id, user_id, role")
       .eq("workspace_id", workspaceId),
     client.from("labels").select("*").eq("workspace_id", workspaceId).order("position"),
-    client
-      .from("tasks")
-      .select(TASK_DETAIL_SELECT)
-      .eq("workspace_id", workspaceId)
-      .or(`deleted_at.is.null,deleted_at.gte.${new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()}`)
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false })
-      .range(0, WORKSPACE_TASK_PAGE_SIZE - 1),
+    (async () => {
+      const page = await loadWorkspaceTaskPage(client, workspaceId);
+      const { data: deleted, error } = await client
+        .from("tasks")
+        .select(TASK_DETAIL_SELECT)
+        .eq("workspace_id", workspaceId)
+        .not("deleted_at", "is", null)
+        .gte("deleted_at", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+        .order("deleted_at", { ascending: false })
+        .limit(WORKSPACE_TASK_PAGE_SIZE);
+      assertNoError(error);
+      const byId = new Map([...page.tasks, ...normalizeTaskRows((deleted ?? []) as TaskRow[])]
+        .map((task) => [task.id, task]));
+      return { data: [...byId.values()], error: null };
+    })(),
     client
       .from("connector_instances")
       .select("*")
@@ -843,7 +861,7 @@ export async function loadWorkspaceBundle(
         ],
       ),
     ),
-    tasks: normalizeTaskRows((tasksResult.data ?? []) as TaskRow[]),
+    tasks: (tasksResult.data ?? []) as Task[],
     connectors,
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
@@ -933,25 +951,6 @@ export async function saveTaskSchedule(
     p_reminders: schedule.reminders,
     p_persistent: schedule.persistent,
     p_recurrence: schedule.recurrence,
-  });
-  assertNoError(error);
-  return (data ?? []) as TaskReminder[];
-}
-
-export async function saveSubtaskSchedule(
-  client: SupabaseClient,
-  subtaskId: string,
-  patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
-  schedule: ReminderSchedule,
-) {
-  const { data, error } = await client.rpc("save_subtask_schedule", {
-    p_subtask_id: subtaskId,
-    p_due_at: patch.due_at,
-    p_due_start_at: patch.due_start_at,
-    p_due_is_all_day: patch.due_is_all_day,
-    p_due_timezone: patch.due_timezone,
-    p_reminders: schedule.reminders,
-    p_persistent: schedule.persistent,
   });
   assertNoError(error);
   return (data ?? []) as TaskReminder[];
@@ -1211,8 +1210,42 @@ export async function createTask(
     priority?: TaskPriority;
     kind?: TaskKind;
     assigneeId?: string | null;
+    parentTaskId?: string | null;
+    position?: number;
   },
 ) {
+  if (input.parentTaskId) {
+    const { data: userData, error: userError } = await client.auth.getUser();
+    assertNoError(userError);
+    const taskId = crypto.randomUUID();
+    const { error } = await client.from("tasks").insert({
+      id: taskId,
+      workspace_id: input.workspaceId,
+      parent_task_id: input.parentTaskId,
+      position: input.position ?? 0,
+      title: input.title,
+      description: input.description ?? "",
+      due_at: input.dueAt ?? null,
+      due_timezone: input.dueTimezone ?? null,
+      priority: input.priority ?? "low",
+      kind: "todo",
+      created_by: userData.user?.id,
+      estimate_hours: input.estimateHours ?? null,
+    });
+    assertNoError(error);
+
+    // Do not use INSERT ... RETURNING here. The task SELECT policy resolves
+    // visibility by querying the tasks table itself, which cannot see the
+    // just-inserted row during RETURNING. Fetching it in a separate statement
+    // keeps the insert compatible with the production RLS policy.
+    const { data, error: selectError } = await client
+      .from("tasks")
+      .select("*")
+      .eq("id", taskId)
+      .single();
+    assertNoError(selectError);
+    return normalizeTaskRow(data as TaskRow);
+  }
   const { data, error } = await client.rpc("create_task_with_labels", {
     p_workspace_id: input.workspaceId,
     p_title: input.title,
@@ -1234,6 +1267,14 @@ export async function createTask(
       estimate_pomodoros: coercePomodoros(created.estimate_pomodoros),
       actual_pomodoros: coercePomodoros(created.actual_pomodoros),
       description_mentions: created.description_mentions ?? [],
+      parent_task_id: created.parent_task_id ?? null,
+      position: created.position ?? 0,
+      label_ids: created.label_ids ?? input.labelIds,
+      participant_ids: created.participant_ids ?? [],
+      children: [],
+      reminders: created.reminders ?? [],
+      reminder_persistent: created.reminder_persistent ?? false,
+      dependencies: created.dependencies ?? [],
     };
   }
 
@@ -1252,7 +1293,30 @@ export async function createTask(
     estimate_pomodoros: coercePomodoros(next.estimate_pomodoros),
     actual_pomodoros: coercePomodoros(next.actual_pomodoros),
     description_mentions: next.description_mentions ?? [],
+    parent_task_id: next.parent_task_id ?? null,
+    position: next.position ?? 0,
+    label_ids: next.label_ids ?? input.labelIds,
+    participant_ids: next.participant_ids ?? [],
+    children: [],
+    reminders: next.reminders ?? [],
+    reminder_persistent: next.reminder_persistent ?? false,
+    dependencies: next.dependencies ?? [],
   };
+}
+
+export async function moveTask(
+  client: SupabaseClient,
+  taskId: string,
+  parentTaskId: string | null,
+  position = 0,
+) {
+  const { data, error } = await client.rpc("move_task", {
+    p_task_id: taskId,
+    p_parent_task_id: parentTaskId,
+    p_position: position,
+  });
+  assertNoError(error);
+  return data as Task;
 }
 
 export async function listTaskAssigneeIds(
@@ -1278,20 +1342,6 @@ export async function assignTask(
   });
   assertNoError(error);
   return data as Task;
-}
-
-export async function assignSubtask(
-  client: SupabaseClient,
-  subtaskId: string,
-  target: AssigneeTarget,
-) {
-  const { data, error } = await client.rpc("assign_subtask", {
-    p_subtask_id: subtaskId,
-    p_assignee_id: target.kind === "user" ? target.userId : null,
-    p_cli_assignee: target.kind === "cli" ? target.tool : null,
-  });
-  assertNoError(error);
-  return data as import("../types").Subtask;
 }
 
 export async function toggleTaskLabel(
@@ -1332,9 +1382,7 @@ export async function insertTaskDependency(
     id: string;
     workspaceId: string;
     taskId: string;
-    subtaskId: string | null;
     dependsOnTaskId: string;
-    dependsOnSubtaskId: string | null;
   },
 ) {
   const { data, error } = await client
@@ -1343,9 +1391,7 @@ export async function insertTaskDependency(
       id: row.id,
       workspace_id: row.workspaceId,
       task_id: row.taskId,
-      subtask_id: row.subtaskId,
       depends_on_task_id: row.dependsOnTaskId,
-      depends_on_subtask_id: row.dependsOnSubtaskId,
     })
     .select("*")
     .single();
@@ -1358,7 +1404,7 @@ export async function deleteTaskDependency(client: SupabaseClient, dependencyId:
   assertNoError(error);
 }
 
-export async function decomposeSubtasks(
+export async function decomposeTask(
   client: SupabaseClient,
   input: {
     workspaceId: string;
@@ -1367,7 +1413,7 @@ export async function decomposeSubtasks(
     timeZone: string;
     assignableUserIds?: Iterable<string>;
   },
-): Promise<{ subtasks: AiSuggestedSubtask[] }> {
+): Promise<{ tasks: AiSuggestedTask[] }> {
   const {
     data: { session },
   } = await client.auth.getSession();
@@ -1378,7 +1424,7 @@ export async function decomposeSubtasks(
 
   // Always hit the edge function (no client cache / demo short-circuit).
   // Nonce forces a unique payload so intermediate proxies won't reuse a response.
-  const { data, error } = await client.functions.invoke("ai-subtask-decompose", {
+  const { data, error } = await client.functions.invoke("ai-task-decompose", {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Cache-Control": "no-store",
@@ -1412,16 +1458,16 @@ export async function decomposeSubtasks(
       throw new Error(message.trim());
     }
   }
-  const subtasks = normalizeAiSuggestedSubtasks(
+  const tasks = normalizeAiSuggestedTasks(
     data && typeof data === "object" && data !== null
-      ? (data as { subtasks?: unknown }).subtasks
+      ? (data as { tasks?: unknown }).tasks
       : null,
     { assignableUserIds: input.assignableUserIds },
   );
-  if (!subtasks.length) {
-    throw new Error("未能生成可用的子任务建议，请完善任务描述后重试。");
+  if (!tasks.length) {
+    throw new Error("未能生成可用的子级任务建议，请完善任务描述后重试。");
   }
-  return { subtasks };
+  return { tasks };
 }
 
 export async function formatTaskWithAi(
@@ -1441,7 +1487,7 @@ export async function formatTaskWithAi(
     throw new Error("请先登录后再使用智能格式化。");
   }
 
-  const { data, error } = await client.functions.invoke("ai-subtask-decompose", {
+  const { data, error } = await client.functions.invoke("ai-task-decompose", {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Cache-Control": "no-store",

@@ -1,5 +1,28 @@
 const MAINLAND_PHONE_PATTERN = /^1[3-9]\d{9}$/;
 const OTP_PATTERN = /^\d{6}$/;
+export const AUTH_LOGIN_MODE_KEY = "anttodo:auth-login-mode";
+
+export type AuthLoginMode = "account" | "enterprise";
+
+export function parseAuthLoginMode(value: string | null | undefined): AuthLoginMode {
+  return value === "enterprise" ? "enterprise" : "account";
+}
+
+export function readAuthLoginMode(): AuthLoginMode {
+  try {
+    return parseAuthLoginMode(window.sessionStorage.getItem(AUTH_LOGIN_MODE_KEY));
+  } catch {
+    return "account";
+  }
+}
+
+export function writeAuthLoginMode(mode: AuthLoginMode) {
+  try {
+    window.sessionStorage.setItem(AUTH_LOGIN_MODE_KEY, mode);
+  } catch {
+    // Ignore quota / private-mode failures; the in-memory tab still works.
+  }
+}
 
 export function normalizeMainlandPhone(value: string) {
   const digits = value.replace(/\D/g, "");

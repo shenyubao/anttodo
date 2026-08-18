@@ -2,6 +2,7 @@ import {
   isValidWorkspaceSlug,
   normalizeWorkspaceSlug,
 } from "./workspaceSlug";
+import { instanceStorageKey } from "./instanceConfig";
 
 export type AppEntry =
   | { kind: "main" }
@@ -94,15 +95,15 @@ let downloadGuideClaimed = false;
 
 export function markPendingDownloadGuide() {
   downloadGuideClaimed = false;
-  window.sessionStorage.setItem(PENDING_DOWNLOAD_GUIDE_KEY, "1");
+  window.sessionStorage.setItem(instanceStorageKey(PENDING_DOWNLOAD_GUIDE_KEY), "1");
 }
 
 /** Returns true once if a download guide was pending, then clears the flag. */
 export function consumePendingDownloadGuide() {
-  if (window.sessionStorage.getItem(PENDING_DOWNLOAD_GUIDE_KEY) !== "1") {
+  if (window.sessionStorage.getItem(instanceStorageKey(PENDING_DOWNLOAD_GUIDE_KEY)) !== "1") {
     return false;
   }
-  window.sessionStorage.removeItem(PENDING_DOWNLOAD_GUIDE_KEY);
+  window.sessionStorage.removeItem(instanceStorageKey(PENDING_DOWNLOAD_GUIDE_KEY));
   return true;
 }
 
@@ -114,7 +115,7 @@ export function claimPendingDownloadGuide() {
   if (downloadGuideClaimed) return false;
   downloadGuideClaimed = true;
   if (typeof window !== "undefined" && window.anttodoDesktop) {
-    window.sessionStorage.removeItem(PENDING_DOWNLOAD_GUIDE_KEY);
+    window.sessionStorage.removeItem(instanceStorageKey(PENDING_DOWNLOAD_GUIDE_KEY));
     return false;
   }
   return consumePendingDownloadGuide();

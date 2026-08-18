@@ -1,21 +1,22 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { loadPublicConfig } from "./config.js";
 import { CliError } from "./errors.js";
-import { FileAuthStorage } from "./storage.js";
-import type { PublicConfig } from "./types.js";
+import { FileAuthStorage, setActiveServiceKey } from "./storage.js";
+import type { PublicConfig, ServiceConfig } from "./types.js";
 
 export type ClientContext = {
   client: SupabaseClient;
-  config: PublicConfig;
+  config: ServiceConfig;
 };
 
-export async function createClientContext(): Promise<ClientContext> {
-  const config = await loadPublicConfig();
+export async function createClientContext(options: { serviceUrl?: string; config?: ServiceConfig } = {}): Promise<ClientContext> {
+  const config = options.config ?? await loadPublicConfig({ serviceUrl: options.serviceUrl });
+  setActiveServiceKey(config.serviceKey);
   return {
     config,
     client: createClient(config.supabaseUrl, config.publishableKey, {
       auth: {
-        storage: new FileAuthStorage(),
+        storage: new FileAuthStorage(config.serviceKey),
         persistSession: true,
         autoRefreshToken: false,
         detectSessionInUrl: false,
@@ -24,8 +25,8 @@ export async function createClientContext(): Promise<ClientContext> {
   };
 }
 
-export async function authenticatedContext(): Promise<ClientContext & { user: User }> {
-  const context = await createClientContext();
+export async function authenticatedContext(options: { serviceUrl?: string; config?: ServiceConfig } = {}): Promise<ClientContext & { user: User }> {
+  const context = await createClientContext(options);
   const { data: sessionData, error: sessionError } = await context.client.auth.getSession();
   if (sessionError || !sessionData.session) {
     throw new CliError({

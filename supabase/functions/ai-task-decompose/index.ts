@@ -6,7 +6,7 @@ import {
 } from "../_shared/deepseek.ts";
 import {
   buildSmartFormatPrompt,
-  buildSubtaskDecomposePrompt,
+  buildTaskDecomposePrompt,
   normalizeAiPromptOverride,
   type AiPromptContact,
 } from "../_shared/ai-feature-prompts.ts";
@@ -20,7 +20,7 @@ type AiTaskRequest = {
   timeZone?: string;
 };
 
-type SuggestedSubtask = {
+type SuggestedTask = {
   title: string;
   assignee_user_id: string | null;
   due_at: string | null;
@@ -61,17 +61,17 @@ function normalizeOptionalText(value: unknown, maxLength: number): string | null
 function normalizeSuggestions(
   raw: unknown,
   contactIds: Set<string>,
-): SuggestedSubtask[] {
+): SuggestedTask[] {
   let items: unknown[] = [];
   if (Array.isArray(raw)) {
     items = raw;
-  } else if (isRecord(raw) && Array.isArray(raw.subtasks)) {
-    items = raw.subtasks;
+  } else if (isRecord(raw) && Array.isArray(raw.tasks)) {
+    items = raw.tasks;
   } else if (isRecord(raw) && Array.isArray(raw.items)) {
     items = raw.items;
   }
 
-  const result: SuggestedSubtask[] = [];
+  const result: SuggestedTask[] = [];
   const seenTitles = new Set<string>();
 
   for (const item of items) {
@@ -140,7 +140,7 @@ export default {
       await ctx.supabaseAdmin
         .from("user_ai_feature_settings")
         .select(
-          "smart_format_enabled, smart_format_prompt_override, subtask_decompose_enabled, subtask_decompose_prompt_override",
+          "smart_format_enabled, smart_format_prompt_override, task_decompose_enabled, task_decompose_prompt_override",
         )
         .eq("user_id", user.id)
         .maybeSingle();
@@ -150,12 +150,12 @@ export default {
 
     const featureEnabled = action === "format"
       ? featureSettings?.smart_format_enabled ?? true
-      : featureSettings?.subtask_decompose_enabled ?? true;
+      : featureSettings?.task_decompose_enabled ?? true;
     if (!featureEnabled) {
       return jsonError(
         action === "format"
           ? "智能格式化已在设置中关闭。"
-          : "智能分解子任务已在设置中关闭。",
+          : "智能分解子级任务已在设置中关闭。",
         403,
       );
     }
@@ -183,7 +183,7 @@ export default {
     }
 
     if (action === "decompose" && task.kind === "note") {
-      return jsonError("Notes cannot have subtasks", 400);
+      return jsonError("Notes cannot have tasks", 400);
     }
 
     const nowIso =
@@ -248,15 +248,15 @@ export default {
     }
 
     // action === "decompose"
-    const [{ data: members }, { data: existingSubtasks }] = await Promise.all([
+    const [{ data: members }, { data: existingTasks }] = await Promise.all([
       ctx.supabaseAdmin
         .from("workspace_members")
         .select("user_id")
         .eq("workspace_id", workspaceId),
       ctx.supabaseAdmin
-        .from("subtasks")
+        .from("tasks")
         .select("title")
-        .eq("task_id", taskId)
+        .eq("parent_task_id", taskId)
         .order("position", { ascending: true }),
     ]);
 
@@ -288,17 +288,17 @@ export default {
           {
             role: "system",
             content:
-              "你是任务分解助手。必须遵守用户消息中的固定输出协议，只输出合法 JSON 对象，键为 subtasks（数组）。",
+              "你是任务分解助手。必须遵守用户消息中的固定输出协议，只输出合法 JSON 对象，键为 tasks（数组）。",
           },
           {
             role: "user",
-            content: buildSubtaskDecomposePrompt({
+            content: buildTaskDecomposePrompt({
               instruction: normalizeAiPromptOverride(
-                featureSettings?.subtask_decompose_prompt_override,
+                featureSettings?.task_decompose_prompt_override,
               ),
               title: taskTitle,
               description: taskDescription,
-              existingSubtasks: (existingSubtasks ?? [])
+              existingTasks: (existingTasks ?? [])
                 .map((item) => String(item.title ?? "").trim())
                 .filter(Boolean),
               contacts,
@@ -326,11 +326,11 @@ export default {
       return jsonError("AI 返回格式无法解析，请重试。", 502);
     }
 
-    const subtasks = normalizeSuggestions(parsed, contactIds);
-    if (!subtasks.length) {
-      return jsonError("未能生成可用的子任务建议，请完善任务描述后重试。", 422);
+    const tasks = normalizeSuggestions(parsed, contactIds);
+    if (!tasks.length) {
+      return jsonError("未能生成可用的子级任务建议，请完善任务描述后重试。", 422);
     }
 
-    return Response.json({ subtasks });
+    return Response.json({ tasks });
   }),
 };

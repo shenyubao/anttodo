@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 import clsx from "clsx";
-import { DueDateControl, dueTargetFromSubtask } from "./DueDateControl";
+import { DueDateControl, dueTargetFromChildTask } from "./DueDateControl";
 import { FocusTaskPicker } from "./FocusTaskPicker";
 import { PRIORITY_OPTIONS } from "./PriorityControl";
 import { taskShareUrl } from "./lib/appRoute";
@@ -28,11 +28,10 @@ import {
   filterPickerTasksForDependency,
   listItemDependencies,
 } from "./lib/taskDependencies";
-import { canAddChild } from "./lib/subtaskTree";
+import { canAddChild } from "./lib/taskTree";
 import type {
   DateTimePreferences,
   ReminderSchedule,
-  Subtask,
   Task,
   TaskDependencyTarget,
   TaskPriority,
@@ -62,15 +61,15 @@ function duePatchFromPreset(preset: DuePreset, allDay = false) {
   };
 }
 
-function subtaskScheduleFromSubtask(subtask: Subtask): ReminderSchedule {
+function childTaskScheduleFromChildTask(childTask: Task): ReminderSchedule {
   return {
-    reminders: subtask.reminders.map((reminder) => ({
+    reminders: childTask.reminders.map((reminder) => ({
       anchor: reminder.anchor,
       offset_value: reminder.offset_value,
       offset_unit: reminder.offset_unit,
       local_time: reminder.local_time,
     })),
-    persistent: subtask.reminder_persistent,
+    persistent: childTask.reminder_persistent,
     recurrence: null,
   };
 }
@@ -81,7 +80,7 @@ async function copyTaskLink(workspaceId: string, task: Task) {
 
 export function TaskContextMenu({
   task,
-  subtask = null,
+  childTask = null,
   workspaceId,
   x,
   y,
@@ -92,19 +91,19 @@ export function TaskContextMenu({
   onClose,
   onUpdateTask,
   onSaveTaskSchedule,
-  onSaveSubtaskSchedule,
+  onSaveChildTaskSchedule,
   onCreateTask,
-  onCreateSubtask,
-  onUpdateSubtask,
-  onDeleteSubtask,
+  onCreateChildTask,
+  onUpdateChildTask,
+  onDeleteChildTask,
   onPurgeTask,
-  onExpandSubtasks,
+  onExpandChildTasks,
   onNotice,
   pickerTasks = [],
   onAddDependencies,
 }: {
   task: Task;
-  subtask?: Subtask | null;
+  childTask?: Task | null;
   workspaceId: string;
   x: number;
   y: number;
@@ -119,8 +118,8 @@ export function TaskContextMenu({
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
-  onSaveSubtaskSchedule: (
-    subtaskId: string,
+  onSaveChildTaskSchedule: (
+    targetTaskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
@@ -132,33 +131,33 @@ export function TaskContextMenu({
     priority?: TaskPriority;
     kind?: Task["kind"];
   }) => Promise<unknown>;
-  onCreateSubtask: (
+  onCreateChildTask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
+    extras?: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_task_id">>,
   ) => Promise<void>;
-  onUpdateSubtask: (
-    subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "priority">>,
+  onUpdateChildTask: (
+    targetTaskId: string,
+    patch: Partial<Pick<Task, "due_at" | "title" | "priority">>,
   ) => Promise<void>;
-  onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onDeleteChildTask: (targetTaskId: string) => Promise<void>;
   onPurgeTask: (taskId: string) => Promise<void>;
-  onExpandSubtasks: () => void;
+  onExpandChildTasks: () => void;
   onNotice: (message: string) => void;
   pickerTasks?: Task[];
-  onAddDependencies?: (targets: TaskDependencyTarget[], subtaskId?: string | null) => Promise<void>;
+  onAddDependencies?: (taskId: string, targets: TaskDependencyTarget[]) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [duePickerOpen, setDuePickerOpen] = useState(false);
   const [dependencyPickerOpen, setDependencyPickerOpen] = useState(false);
   const writable = online && !busy;
-  const isSubtask = Boolean(subtask);
-  const isNote = !isSubtask && task.kind === "note";
-  const currentDueAt = subtask ? subtask.due_at : task.due_at;
+  const isChildTask = Boolean(childTask);
+  const isNote = !isChildTask && task.kind === "note";
+  const currentDueAt = childTask ? childTask.due_at : task.due_at;
   const menuWidth = 220;
   const estimatedHeight = variant === "trash"
     ? 110
-    : isNote ? 300 : isSubtask ? 340 : 360;
+    : isNote ? 300 : isChildTask ? 340 : 360;
   const menuLeft = Math.min(Math.max(12, x), window.innerWidth - menuWidth - 12);
   const menuTop = Math.min(Math.max(12, y), window.innerHeight - estimatedHeight - 12);
 
@@ -190,8 +189,8 @@ export function TaskContextMenu({
 
   async function applyDuePreset(preset: DuePreset) {
     await run(async () => {
-      if (subtask) {
-        await onSaveSubtaskSchedule(subtask.id, duePatchFromPreset(preset, true), subtaskScheduleFromSubtask(subtask));
+      if (childTask) {
+        await onSaveChildTaskSchedule(childTask.id, duePatchFromPreset(preset, true), childTaskScheduleFromChildTask(childTask));
         return;
       }
       await onSaveTaskSchedule(task.id, duePatchFromPreset(preset), scheduleForTask(task));
@@ -200,8 +199,8 @@ export function TaskContextMenu({
 
   async function clearDue() {
     await run(async () => {
-      if (subtask) {
-        await onSaveSubtaskSchedule(subtask.id, clearSchedulePatch(), {
+      if (childTask) {
+        await onSaveChildTaskSchedule(childTask.id, clearSchedulePatch(), {
           reminders: [],
           persistent: false,
           recurrence: null,
@@ -217,9 +216,9 @@ export function TaskContextMenu({
   }
 
   async function setPriority(priority: TaskPriority) {
-    if (subtask) {
-      if (priority === subtask.priority) return;
-      await run(() => onUpdateSubtask(subtask.id, { priority }), { closeAfter: false });
+    if (childTask) {
+      if (priority === childTask.priority) return;
+      await run(() => onUpdateChildTask(childTask.id, { priority }), { closeAfter: false });
       return;
     }
     if (priority === task.priority) return;
@@ -228,28 +227,28 @@ export function TaskContextMenu({
     }, { closeAfter: false });
   }
 
-  async function addSubtask() {
-    if (subtask && !canAddChild(task.subtasks, subtask.id)) return;
+  async function addChildTask() {
+    if (childTask && !canAddChild(task.children, childTask.id)) return;
     await run(async () => {
-      onExpandSubtasks();
-      await onCreateSubtask(task.id, "新子任务", subtask
-        ? { parent_subtask_id: subtask.id }
+      onExpandChildTasks();
+      await onCreateChildTask(task.id, "新子级任务", childTask
+        ? { parent_task_id: childTask.id }
         : undefined);
     });
   }
 
   async function duplicateTarget() {
     await run(async () => {
-      if (subtask) {
-        await onCreateSubtask(task.id, subtask.title, {
-          parent_subtask_id: subtask.parent_subtask_id,
-          due_at: subtask.due_at,
-          due_start_at: subtask.due_start_at,
-          due_is_all_day: subtask.due_is_all_day,
-          due_timezone: subtask.due_timezone,
-          assignee_id: subtask.assignee_id,
-          cli_assignee: subtask.cli_assignee,
-          priority: subtask.priority,
+      if (childTask) {
+        await onCreateChildTask(task.id, childTask.title, {
+          parent_task_id: childTask.parent_task_id,
+          due_at: childTask.due_at,
+          due_start_at: childTask.due_start_at,
+          due_is_all_day: childTask.due_is_all_day,
+          due_timezone: childTask.due_timezone,
+          assignee_id: childTask.assignee_id,
+          cli_assignee: childTask.cli_assignee,
+          priority: childTask.priority,
         });
         onNotice("已在本任务下创建副本");
         return;
@@ -285,7 +284,7 @@ export function TaskContextMenu({
   }
 
   async function convertKind() {
-    if (isSubtask) return;
+    if (isChildTask) return;
     await run(async () => {
       await onUpdateTask(task.id, {
         kind: isNote ? "todo" : "note",
@@ -295,10 +294,10 @@ export function TaskContextMenu({
   }
 
   async function deleteTarget() {
-    if (subtask) {
-      if (!window.confirm(`删除子任务“${subtask.title}”？`)) return;
+    if (childTask) {
+      if (!window.confirm(`删除子级任务“${childTask.title}”？`)) return;
       await run(async () => {
-        await onDeleteSubtask(subtask.id);
+        await onDeleteChildTask(childTask.id);
       });
       return;
     }
@@ -379,17 +378,17 @@ export function TaskContextMenu({
           }}
         />
         <DueDateControl
-          task={subtask ? dueTargetFromSubtask(subtask) : task}
+          task={childTask ? dueTargetFromChildTask(childTask) : task}
           online={online}
           now={now}
           preferences={dateTimePreferences}
           autoOpen
           showTrigger={false}
-          allowRecurrence={!subtask}
+          allowRecurrence={!childTask}
           anchorPoint={{ left: menuLeft, top: Math.min(y, window.innerHeight - 560) }}
           onClose={onClose}
           onSave={async (patch, schedule) => {
-            if (subtask) await onSaveSubtaskSchedule(subtask.id, patch, schedule);
+            if (childTask) await onSaveChildTaskSchedule(childTask.id, patch, schedule);
             else await onSaveTaskSchedule(task.id, patch, schedule);
             onClose();
           }}
@@ -405,17 +404,14 @@ export function TaskContextMenu({
         mode="dependency"
         tasks={filterPickerTasksForDependency(
           pickerTasks,
-          { taskId: task.id, subtaskId: subtask?.id ?? null },
-          listItemDependencies(task, subtask?.id ?? null),
+          { taskId: childTask?.id ?? task.id },
+          listItemDependencies(childTask ?? task),
         )}
         selectedTaskId={null}
         excludeKeys={[
-          dependencyTargetKey({ taskId: task.id, subtaskId: subtask?.id ?? null }),
-          ...listItemDependencies(task, subtask?.id ?? null).map((row) =>
-            dependencyTargetKey({
-              taskId: row.depends_on_task_id,
-              subtaskId: row.depends_on_subtask_id,
-            })),
+          dependencyTargetKey({ taskId: childTask?.id ?? task.id }),
+          ...listItemDependencies(childTask ?? task).map((row) =>
+            dependencyTargetKey({ taskId: row.depends_on_task_id })),
         ]}
         anchorPoint={{ left: menuLeft, top: menuTop }}
         onOpenChange={(nextOpen) => {
@@ -424,7 +420,7 @@ export function TaskContextMenu({
         }}
         onSelect={() => undefined}
         onConfirm={(targets) => {
-          void onAddDependencies(targets, subtask?.id ?? null);
+          void onAddDependencies(childTask?.id ?? task.id, targets);
         }}
       />
     );
@@ -509,9 +505,9 @@ export function TaskContextMenu({
                   type="button"
                   title={option.label}
                   aria-label={option.label}
-                  aria-pressed={(subtask?.priority ?? task.priority) === option.value}
+                  aria-pressed={(childTask?.priority ?? task.priority) === option.value}
                   data-priority={option.value}
-                  className={clsx((subtask?.priority ?? task.priority) === option.value && "selected")}
+                  className={clsx((childTask?.priority ?? task.priority) === option.value && "selected")}
                   disabled={!writable}
                   style={{ "--priority-color": option.color } as CSSProperties}
                   onClick={() => void setPriority(option.value)}
@@ -529,11 +525,11 @@ export function TaskContextMenu({
           <button
             type="button"
             role="menuitem"
-            disabled={!writable || (subtask ? !canAddChild(task.subtasks, subtask.id) : false)}
-            onClick={() => void addSubtask()}
+            disabled={!writable || (childTask ? !canAddChild(task.children, childTask.id) : false)}
+            onClick={() => void addChildTask()}
           >
             <ListPlus />
-            <span>添加子任务</span>
+            <span>添加子级任务</span>
           </button>
         )}
         {!isNote && onAddDependencies && (
@@ -567,7 +563,7 @@ export function TaskContextMenu({
         <button
           type="button"
           role="menuitem"
-          disabled={!writable || isSubtask}
+          disabled={!writable || isChildTask}
           onClick={() => void convertKind()}
         >
           {isNote ? <ListTodo /> : <NotebookPen />}

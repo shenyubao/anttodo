@@ -14,6 +14,37 @@ export function offlineCacheBannerText(localFirst = isLocalFirstHost()) {
     : "当前显示上次缓存，恢复网络后会自动刷新";
 }
 
+export async function loadLocalFirstSnapshot<T>(input: {
+  localEnabled: boolean;
+  online: boolean;
+  preferLocal: boolean;
+  pendingLocalWrites?: boolean;
+  readLocal: () => Promise<T | null>;
+  readRemote: () => Promise<T>;
+  writeLocal: (value: T) => Promise<void>;
+}) {
+  const shouldReadLocalFirst = input.localEnabled && (
+    input.preferLocal
+    || !input.online
+    || Boolean(input.pendingLocalWrites)
+  );
+  if (shouldReadLocalFirst) {
+    const cached = await input.readLocal();
+    if (cached !== null) return cached;
+  }
+
+  try {
+    const value = await input.readRemote();
+    if (input.localEnabled) await input.writeLocal(value);
+    return value;
+  } catch (error) {
+    if (!input.localEnabled) throw error;
+    const cached = await input.readLocal();
+    if (cached === null) throw error;
+    return cached;
+  }
+}
+
 type LocalState = {
   workspaces: Workspace[];
   bundles: Record<string, WorkspaceBundle>;
@@ -28,11 +59,10 @@ export type LocalFirstStore = {
   saveWorkspaces: (workspaces: Workspace[]) => Promise<void>;
   getBundle: (workspaceId: string) => Promise<WorkspaceBundle | null>;
   saveBundle: (workspaceId: string, bundle: WorkspaceBundle) => Promise<void>;
-  getComments: (taskId: string, subtaskId?: string | null) => Promise<TaskComment[] | null>;
-  saveComments: (taskId: string, subtaskId: string | null | undefined, comments: TaskComment[]) => Promise<void>;
+  getComments: (taskId: string) => Promise<TaskComment[] | null>;
+  saveComments: (taskId: string, comments: TaskComment[]) => Promise<void>;
   commitComments: (input: {
     taskId: string;
-    subtaskId?: string | null;
     comments: TaskComment[];
     command: LocalCommand;
   }) => Promise<void>;
@@ -49,14 +79,20 @@ function emptyState(): LocalState {
   return { workspaces: [], bundles: {}, comments: {}, outbox: [] };
 }
 
-function stateKey(userId: string) {
-  return `anttodo:local-first:${userId}`;
+function stateKey(userId: string, namespace: string) {
+  return namespace === "official"
+    ? `anttodo:local-first:${userId}`
+    : `anttodo:local-first:${namespace}:${userId}`;
 }
 
-export function createLocalFirstStore(userId: string, enabled: boolean): LocalFirstStore {
+export function createLocalFirstStore(
+  userId: string,
+  enabled: boolean,
+  namespace = "official",
+): LocalFirstStore {
   const bridge = window.anttodoDesktop?.sync;
   const desktop = enabled && Boolean(bridge);
-  const key = stateKey(userId);
+  const key = stateKey(userId, namespace);
   let opened = false;
   let statePromise: Promise<LocalState> | null = null;
 
@@ -80,7 +116,7 @@ export function createLocalFirstStore(userId: string, enabled: boolean): LocalFi
     async open() {
       if (!enabled || opened) return;
       if (desktop) {
-        await bridge!.open(userId);
+        await bridge!.open(namespace, userId);
       } else {
         await readState();
       }
@@ -118,15 +154,15 @@ export function createLocalFirstStore(userId: string, enabled: boolean): LocalFi
         bundles: { ...current.bundles, [workspaceId]: bundle },
       });
     },
-    async getComments(taskId, subtaskId = null) {
+    async getComments(taskId) {
       if (!enabled) return null;
-      const commentKey = `${taskId}:${subtaskId ?? "task"}`;
+      const commentKey = taskId;
       if (desktop) return bridge!.getComments(commentKey);
       return (await readState()).comments[commentKey] ?? null;
     },
-    async saveComments(taskId, subtaskId = null, comments) {
+    async saveComments(taskId, comments) {
       if (!enabled) return;
-      const commentKey = `${taskId}:${subtaskId ?? "task"}`;
+      const commentKey = taskId;
       if (desktop) {
         await bridge!.saveComments({ commentKey, comments });
         return;
@@ -134,9 +170,9 @@ export function createLocalFirstStore(userId: string, enabled: boolean): LocalFi
       const current = await readState();
       await writeState({ ...current, comments: { ...current.comments, [commentKey]: comments } });
     },
-    async commitComments({ taskId, subtaskId = null, comments, command }) {
+    async commitComments({ taskId, comments, command }) {
       if (!enabled) return;
-      const commentKey = `${taskId}:${subtaskId ?? "task"}`;
+      const commentKey = taskId;
       if (desktop) {
         await bridge!.commitComments({ commentKey, comments, operation: command });
         return;

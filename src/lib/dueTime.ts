@@ -9,6 +9,18 @@ export type DueFields = {
 
 export type DuePreset = "today" | "tomorrow" | "next-week" | "next-month";
 
+export const DEFAULT_RANGE_START_TIME = "00:00";
+export const DEFAULT_RANGE_END_TIME = "23:59";
+
+export function createDefaultRangeDraft(dateValue: string) {
+  return {
+    startDate: dateValue,
+    startTime: DEFAULT_RANGE_START_TIME,
+    endDate: dateValue,
+    endTime: DEFAULT_RANGE_END_TIME,
+  };
+}
+
 export type DueStatus = {
   label: string;
   overdue: boolean;
@@ -101,3 +113,8 @@ export const HALF_HOUR_OPTIONS = Array.from({ length: 48 }, (_, index) => {
   const minutes = index % 2 === 0 ? "00" : "30";
   return `${String(hours).padStart(2, "0")}:${minutes}`;
 });
+
+export const RANGE_END_TIME_OPTIONS = [
+  ...HALF_HOUR_OPTIONS,
+  DEFAULT_RANGE_END_TIME,
+];

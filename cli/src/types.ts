@@ -11,7 +11,6 @@ export type FocusSession = {
   user_id: string;
   workspace_id: string;
   task_id: string | null;
-  subtask_id: string | null;
   mode: FocusSessionMode;
   kind: FocusSessionKind;
   planned_seconds: number;
@@ -48,6 +47,15 @@ export type PublicConfig = {
   deviceAuthorizationEndpoint: string;
 };
 
+export type ServiceConfig = PublicConfig & {
+  schemaVersion: 1;
+  instanceId: string;
+  displayName: string;
+  serviceKey: string;
+  official: boolean;
+  source: "builtin" | "network" | "cache" | "environment";
+};
+
 export type PendingAuthorization = {
   requestId: string;
   deviceCode: string;
@@ -55,6 +63,8 @@ export type PendingAuthorization = {
   verificationUrl: string;
   expiresAt: string;
   interval: number;
+  serviceKey: string;
+  config: ServiceConfig;
 };
 
 export type DeviceCiphertext = {

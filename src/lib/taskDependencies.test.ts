@@ -3,7 +3,7 @@ import {
   filterPickerTasksForDependency,
   wouldCreateDependencyCycle,
 } from "./taskDependencies";
-import type { Subtask, Task, TaskDependency } from "../types";
+import type { Task, TaskDependency } from "../types";
 
 function task(patch: Partial<Task> = {}): Task {
   return {
@@ -34,53 +34,35 @@ function task(patch: Partial<Task> = {}): Task {
     label_ids: [],
     participant_ids: [],
     description_mentions: [],
-    subtasks: [],
+    children: [],
     reminders: [],
     reminder_persistent: false,
     dependencies: [],
     ...patch,
+    parent_task_id: patch.parent_task_id ?? null,
+    position: patch.position ?? 0,
   };
 }
 
-function subtask(patch: Partial<Subtask> = {}): Subtask {
-  return {
+function childTask(patch: Partial<Task> = {}): Task {
+  return task({
     id: "s1",
-    task_id: "t1",
-    parent_subtask_id: null,
-    title: "子任务",
-    description: "",
-    completed: false,
+    parent_task_id: "t1",
+    title: "子级任务",
     position: 0,
-    priority: "none",
-    due_at: null,
-    due_start_at: null,
-    due_is_all_day: false,
-    due_timezone: null,
-    estimate_hours: null,
-    actual_hours: null,
-    estimate_pomodoros: null,
-    actual_pomodoros: null,
-    assignee_id: null,
-    cli_assignee: null,
-    created_by: "u1",
-    reminders: [],
-    reminder_persistent: false,
-    dependencies: [],
     ...patch,
-  };
+  });
 }
 
 function edge(
-  successor: { taskId: string; subtaskId?: string | null },
-  predecessor: { taskId: string; subtaskId?: string | null },
+  successor: { taskId: string },
+  predecessor: { taskId: string },
 ): TaskDependency {
   return {
     id: `${successor.taskId}-${predecessor.taskId}`,
     workspace_id: "ws",
     task_id: successor.taskId,
-    subtask_id: successor.subtaskId ?? null,
     depends_on_task_id: predecessor.taskId,
-    depends_on_subtask_id: predecessor.subtaskId ?? null,
     position: 0,
     created_by: "u1",
     created_at: "2026-01-01T00:00:00.000Z",
@@ -92,9 +74,9 @@ describe("task dependencies", () => {
     const a = task({ id: "a", dependencies: [edge({ taskId: "a" }, { taskId: "b" })] });
     const b = task({ id: "b", dependencies: [edge({ taskId: "b" }, { taskId: "c" })] });
     const c = task({ id: "c" });
-    expect(wouldCreateDependencyCycle([a, b, c], { taskId: "a", subtaskId: null }, { taskId: "a", subtaskId: null })).toBe(true);
-    expect(wouldCreateDependencyCycle([a, b, c], { taskId: "c", subtaskId: null }, { taskId: "a", subtaskId: null })).toBe(true);
-    expect(wouldCreateDependencyCycle([a, b, c], { taskId: "a", subtaskId: null }, { taskId: "c", subtaskId: null })).toBe(false);
+    expect(wouldCreateDependencyCycle([a, b, c], { taskId: "a" }, { taskId: "a" })).toBe(true);
+    expect(wouldCreateDependencyCycle([a, b, c], { taskId: "c" }, { taskId: "a" })).toBe(true);
+    expect(wouldCreateDependencyCycle([a, b, c], { taskId: "a" }, { taskId: "c" })).toBe(false);
   });
 
   it("hides the current item, notes, and already attached predecessors", () => {
@@ -102,17 +84,16 @@ describe("task dependencies", () => {
     const current = task({
       id: "current",
       dependencies: [edge({ taskId: "current" }, { taskId: "linked" })],
-      subtasks: [subtask({ id: "child", task_id: "current" })],
+      children: [childTask({ id: "child", parent_task_id: "current" })],
     });
     const linked = task({ id: "linked", title: "已挂载" });
-    const other = task({ id: "other", title: "可选", subtasks: [subtask({ id: "other-child", task_id: "other" })] });
+    const other = task({ id: "other", title: "可选", children: [childTask({ id: "other-child", parent_task_id: "other" })] });
     const filtered = filterPickerTasksForDependency(
       [note, current, linked, other],
-      { taskId: "current", subtaskId: null },
+      { taskId: "current" },
       current.dependencies,
     );
-    expect(filtered.map((item) => item.id).sort()).toEqual(["current", "other"]);
-    expect(filtered.find((item) => item.id === "current")?.subtasks.map((item) => item.id)).toEqual(["child"]);
-    expect(filtered.find((item) => item.id === "other")?.subtasks.map((item) => item.id)).toEqual(["other-child"]);
+    expect(filtered.map((item) => item.id).sort()).toEqual(["other"]);
+    expect(filtered.find((item) => item.id === "other")?.children.map((item) => item.id)).toEqual(["other-child"]);
   });
 });

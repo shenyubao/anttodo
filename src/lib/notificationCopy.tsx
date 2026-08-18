@@ -26,12 +26,12 @@ export function notificationHeadlineText(item: AppNotification) {
     }
     case "participant_new_comment":
       return `${actor} 评论了你参与的待办`;
-    case "participant_subtask_created":
-      return `${actor} 添加了子任务`;
-    case "participant_subtask_status_changed":
-      return `${actor} 更新了子任务状态`;
-    case "participant_subtask_title_changed":
-      return `${actor} 更新了子任务标题`;
+    case "participant_task_created":
+      return `${actor} 添加了子级任务`;
+    case "participant_status_changed":
+      return `${actor} 更新了子级任务状态`;
+    case "participant_title_changed":
+      return `${actor} 更新了子级任务标题`;
     default:
       return `${actor} 更新了${kindLabel}`;
   }
@@ -99,22 +99,22 @@ export function notificationHeadline(item: AppNotification) {
           <strong>{actor}</strong> 评论了你参与的待办
         </>
       );
-    case "participant_subtask_created":
+    case "participant_task_created":
       return (
         <>
-          <strong>{actor}</strong> 添加了子任务
+          <strong>{actor}</strong> 添加了子级任务
         </>
       );
-    case "participant_subtask_status_changed":
+    case "participant_status_changed":
       return (
         <>
-          <strong>{actor}</strong> 更新了子任务状态
+          <strong>{actor}</strong> 更新了子级任务状态
         </>
       );
-    case "participant_subtask_title_changed":
+    case "participant_title_changed":
       return (
         <>
-          <strong>{actor}</strong> 更新了子任务标题
+          <strong>{actor}</strong> 更新了子级任务标题
         </>
       );
     default:
@@ -142,10 +142,7 @@ export function notificationSummary(item: AppNotification) {
   if (item.notification_type === "participant_title_changed") {
     return String(item.payload?.after ?? "");
   }
-  if (
-    item.notification_type === "participant_subtask_created" ||
-    item.notification_type === "participant_subtask_title_changed"
-  ) {
+  if (item.notification_type === "participant_task_created") {
     return String(item.payload?.after ?? item.payload?.title ?? "");
   }
   return "";

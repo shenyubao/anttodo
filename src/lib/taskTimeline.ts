@@ -5,9 +5,10 @@ import {
   format,
   startOfDay,
 } from "date-fns";
-import type { Subtask, Task, TaskDependency } from "../types";
+import type { Task, TaskDependency } from "../types";
 import { fromZonedDateTime, toDateInput } from "./dateTimePreferences";
 import { schedulePatchFromDrop } from "./calendarScheduling";
+import { isRootTask } from "./taskTree";
 
 export type TimelineZoom = "day" | "week" | "month";
 
@@ -373,29 +374,23 @@ export function buildTimelineDependencyPath(
   );
 }
 
-export function timelineDependencyEndpointId(
-  taskId: string,
-  subtaskId: string | null,
-) {
-  return subtaskId ? `subtask:${subtaskId}` : taskId;
+export function timelineDependencyEndpointId(taskId: string) {
+  return taskId;
 }
 
 export function collectTimelineDependencyPaths(
   boxes: readonly TimelineBarBox[],
   dependencies: readonly Pick<
     TaskDependency,
-    "id" | "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+    "id" | "task_id" | "depends_on_task_id"
   >[],
 ): TimelineDependencyPath[] {
   const byId = new Map(boxes.map((box) => [box.id, box]));
   const corridorCount = new Map<string, number>();
   const paths: TimelineDependencyPath[] = [];
   for (const edge of dependencies) {
-    const fromId = timelineDependencyEndpointId(
-      edge.depends_on_task_id,
-      edge.depends_on_subtask_id,
-    );
-    const toId = timelineDependencyEndpointId(edge.task_id, edge.subtask_id);
+    const fromId = timelineDependencyEndpointId(edge.depends_on_task_id);
+    const toId = timelineDependencyEndpointId(edge.task_id);
     const from = byId.get(fromId);
     const to = byId.get(toId);
     if (!from || !to) continue;
@@ -563,41 +558,41 @@ export function isSameCalendarDay(left: Date, right: Date) {
 
 export type TimelineBarSource = {
   id: string;
-  kind: "task" | "subtask";
+  kind: "task" | "childTask";
   task: Task;
-  subtask: Subtask | null;
+  childTask: Task | null;
   title: string;
   completed: boolean;
 };
 
-/** Visible timeline bars for a group: dated parent tasks and dated subtasks. */
+/** Visible timeline bars for a group: dated parent tasks and dated children. */
 export function collectTimelineBars(
   tasks: readonly Task[],
   showCompleted: boolean,
 ): TimelineBarSource[] {
   const bars: TimelineBarSource[] = [];
   for (const task of tasks) {
-    if (task.deleted_at) continue;
+    if (task.deleted_at || !isRootTask(task)) continue;
     if (task.due_at && (showCompleted || task.status !== "completed")) {
       bars.push({
         id: task.id,
         kind: "task",
         task,
-        subtask: null,
+        childTask: null,
         title: task.title,
         completed: task.status === "completed",
       });
     }
-    for (const subtask of task.subtasks) {
-      if (!subtask.due_at) continue;
-      if (!showCompleted && subtask.completed) continue;
+    for (const childTask of task.children) {
+      if (childTask.deleted_at || !childTask.due_at) continue;
+      if (!showCompleted && (childTask.status === "completed")) continue;
       bars.push({
-        id: `subtask:${subtask.id}`,
-        kind: "subtask",
+        id: childTask.id,
+        kind: "childTask",
         task,
-        subtask,
-        title: subtask.title,
-        completed: subtask.completed,
+        childTask,
+        title: childTask.title,
+        completed: (childTask.status === "completed"),
       });
     }
   }
@@ -608,8 +603,8 @@ export function timelineBarRange(
   source: TimelineBarSource,
   timeZone: string | null,
 ): TimelineBarRange | null {
-  if (source.kind === "subtask") {
-    const dueAt = source.subtask?.due_at;
+  if (source.kind === "childTask") {
+    const dueAt = source.childTask?.due_at;
     if (!dueAt) return null;
     const zone = timeZone ?? source.task.due_timezone;
     const day = taskDayValue(dueAt, zone);
@@ -655,7 +650,7 @@ function linkDependencyNeighbors(
   present: ReadonlySet<string>,
   dependencies: readonly Pick<
     TaskDependency,
-    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+    "task_id" | "depends_on_task_id"
   >[],
 ) {
   const neighbors = new Map<string, Set<string>>();
@@ -670,8 +665,8 @@ function linkDependencyNeighbors(
   };
   for (const edge of dependencies) {
     link(
-      timelineDependencyEndpointId(edge.depends_on_task_id, edge.depends_on_subtask_id),
-      timelineDependencyEndpointId(edge.task_id, edge.subtask_id),
+      timelineDependencyEndpointId(edge.depends_on_task_id),
+      timelineDependencyEndpointId(edge.task_id),
     );
   }
   return { find, neighbors };
@@ -681,7 +676,7 @@ function packRangedBars(
   ranged: Array<{ source: TimelineBarSource; range: TimelineBarRange }>,
   dependencies: readonly Pick<
     TaskDependency,
-    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+    "task_id" | "depends_on_task_id"
   >[] = [],
 ): { items: TimelineLaneItem[]; laneCount: number } {
   const present = new Set(ranged.map((item) => item.source.id));
@@ -765,7 +760,7 @@ export function rehomeTimelineGroupBars<T extends { bars: TimelineBarSource[] }>
   groups: T[],
   dependencies: readonly Pick<
     TaskDependency,
-    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+    "task_id" | "depends_on_task_id"
   >[],
 ): T[] {
   if (groups.length <= 1 || dependencies.length === 0) {
@@ -808,7 +803,7 @@ export function packTimelineBarLanes(
   timeZone: string | null,
   dependencies: readonly Pick<
     TaskDependency,
-    "task_id" | "subtask_id" | "depends_on_task_id" | "depends_on_subtask_id"
+    "task_id" | "depends_on_task_id"
   >[] = [],
 ): { items: TimelineLaneItem[]; laneCount: number } {
   const ranged: Array<{ source: TimelineBarSource; range: TimelineBarRange }> = [];
@@ -831,7 +826,7 @@ export function packTimelineLanes(
       id: task.id,
       kind: "task",
       task,
-      subtask: null,
+      childTask: null,
       title: task.title,
       completed: task.status === "completed",
     });

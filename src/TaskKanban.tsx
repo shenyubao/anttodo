@@ -48,7 +48,6 @@ import type {
   LabelPermissionLevel,
   Member,
   ReminderSchedule,
-  Subtask,
   Task,
   TaskKind,
   TaskPriority,
@@ -124,11 +123,11 @@ export function TaskKanban({
   onSelectTask,
   onUpdateTask,
   onSaveTaskSchedule,
-  onSaveSubtaskSchedule,
+  onSaveChildTaskSchedule,
   onCreateTask,
-  onCreateSubtask,
-  onUpdateSubtask,
-  onDeleteSubtask,
+  onCreateChildTask,
+  onUpdateChildTask,
+  onDeleteChildTask,
   onAddTaskDependencies,
   pickerTasks,
   onPurgeTask,
@@ -174,26 +173,26 @@ export function TaskKanban({
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
-  onSaveSubtaskSchedule: (
-    subtaskId: string,
+  onSaveChildTaskSchedule: (
+    targetTaskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
     schedule: ReminderSchedule,
   ) => Promise<void>;
   onCreateTask: (input: CreateTaskInput) => Promise<unknown>;
-  onCreateSubtask: (
+  onCreateChildTask: (
     taskId: string,
     title: string,
-    extras?: Partial<Pick<Subtask, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_subtask_id">>,
+    extras?: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_task_id">>,
   ) => Promise<void>;
-  onUpdateSubtask: (
-    subtaskId: string,
-    patch: Partial<Pick<Subtask, "due_at" | "title" | "priority" | "parent_subtask_id" | "position">>,
+  onUpdateChildTask: (
+    targetTaskId: string,
+    patch: Partial<Pick<Task, "due_at" | "title" | "priority" | "parent_task_id" | "position">>,
   ) => Promise<void>;
-  onDeleteSubtask: (subtaskId: string) => Promise<void>;
+  onDeleteChildTask: (targetTaskId: string) => Promise<void>;
   onAddTaskDependencies: (
     taskId: string,
     targets: import("./types").TaskDependencyTarget[],
-    subtaskId?: string | null,
+    targetTaskId?: string | null,
   ) => Promise<void>;
   pickerTasks?: Task[];
   onPurgeTask: (taskId: string) => Promise<void>;
@@ -423,17 +422,16 @@ export function TaskKanban({
           onClose={() => setTaskMenu(null)}
           onUpdateTask={onUpdateTask}
           onSaveTaskSchedule={onSaveTaskSchedule}
-          onSaveSubtaskSchedule={onSaveSubtaskSchedule}
+          onSaveChildTaskSchedule={onSaveChildTaskSchedule}
           onCreateTask={onCreateTask}
-          onCreateSubtask={onCreateSubtask}
-          onUpdateSubtask={onUpdateSubtask}
-          onDeleteSubtask={onDeleteSubtask}
+          onCreateChildTask={onCreateChildTask}
+          onUpdateChildTask={onUpdateChildTask}
+          onDeleteChildTask={onDeleteChildTask}
           onPurgeTask={onPurgeTask}
-          onExpandSubtasks={() => undefined}
+          onExpandChildTasks={() => undefined}
           onNotice={onNotice}
           pickerTasks={pickerTasks ?? columns.flatMap((column) => column.tasks)}
-          onAddDependencies={(targets, subtaskId) =>
-            onAddTaskDependencies(taskMenu.task.id, targets, subtaskId)}
+          onAddDependencies={onAddTaskDependencies}
         />
       )}
     </div>
@@ -892,8 +890,8 @@ const KanbanCard = memo(function KanbanCard({
       <div className="kanban-card-meta">
         {dueStatus && <time className={dueStatus.overdue ? "overdue" : ""}>{dueStatus.label}</time>}
         {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
-        {task.subtasks.length > 0 && (
-          <span>{task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}</span>
+        {task.children.length > 0 && (
+          <span>{task.children.filter((childTask) => (childTask.status === "completed")).length}/{task.children.length}</span>
         )}
         {showLabels && taskLabels.slice(0, 2).map((label) => (
           <span
@@ -971,8 +969,8 @@ function KanbanCardOverlay({
       <div className="kanban-card-meta">
         {dueStatus && <time className={dueStatus.overdue ? "overdue" : ""}>{dueStatus.label}</time>}
         {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
-        {task.subtasks.length > 0 && (
-          <span>{task.subtasks.filter((subtask) => subtask.completed).length}/{task.subtasks.length}</span>
+        {task.children.length > 0 && (
+          <span>{task.children.filter((childTask) => (childTask.status === "completed")).length}/{task.children.length}</span>
         )}
         {showLabels && taskLabels.slice(0, 2).map((label) => (
           <span

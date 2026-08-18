@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608141109",
+  "version": "1.0.202608142006",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -28,6 +28,10 @@
     "bump:app-version": "node scripts/bump-app-version.mjs",
     "deploy:app": "pnpm bump:app-version && pnpm deploy:web",
     "deploy:web": "pnpm supabase:push && VITE_PUBLIC_APP_URL=https://app.anttodo.com pnpm build && wrangler deploy",
+    "docker:web:build": "docker build -f deploy/ubuntu/Dockerfile -t anttodo-web:local .",
+    "docker:web:test": "sh deploy/ubuntu/smoke-test.sh",
+    "deploy:ubuntu": "sh deploy/ubuntu/deploy.sh",
+    "deploy:web:yuce": "node scripts/deploy-yuce-web.mjs",
     "deploy:docs": "pnpm --filter docs run deploy",
     "deploy:landing": "pnpm --filter anttodo-landing run deploy",
     "mac:submit": "node scripts/mac-notarize-submit.mjs",
@@ -128,6 +132,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "build/icon.png",
       "package.json",
       "!**/*.map"
     ],

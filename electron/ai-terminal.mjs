@@ -19,7 +19,7 @@ export function bracketedPaste(value) {
 
 export function isTerminalSessionId(value) {
   return typeof value === "string"
-    && /^(task|subtask):[a-zA-Z0-9-]{1,100}$/.test(value);
+    && /^task:[a-zA-Z0-9-]{1,100}$/.test(value);
 }
 
 export function terminalCommand(tool) {

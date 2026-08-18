@@ -1,5 +1,6 @@
 import { isBefore, isToday, startOfDay } from "date-fns";
-import type { FocusSession, FocusSettings, Subtask, Task } from "../types";
+import type { FocusSession, FocusSettings, Task } from "../types";
+import { instanceStorageKey } from "./instanceConfig";
 
 export type FocusTimerPhase =
   | "idle"
@@ -14,7 +15,6 @@ export type FocusRuntimeState = {
   phase: FocusTimerPhase;
   mode: FocusTimerMode;
   taskId: string | null;
-  subtaskId: string | null;
   notes: string;
   plannedSeconds: number;
   elapsedSeconds: number;
@@ -62,7 +62,6 @@ export function createIdleRuntimeState(
     phase: "idle",
     mode: "pomodoro",
     taskId: null,
-    subtaskId: null,
     notes: "",
     plannedSeconds: settings.pomodoro_minutes * 60,
     elapsedSeconds: 0,
@@ -141,7 +140,6 @@ export function totalElapsedSeconds(state: FocusRuntimeState, nowMs = Date.now()
 
 export type FocusTarget = {
   taskId: string | null;
-  subtaskId?: string | null;
 };
 
 export type SwitchFocusTaskSession = {
@@ -153,7 +151,6 @@ export type SwitchFocusTaskSession = {
   endedAt: string;
   notes: string;
   taskId: string | null;
-  subtaskId: string | null;
 };
 
 export type SwitchFocusTaskResult = {
@@ -161,27 +158,22 @@ export type SwitchFocusTaskResult = {
   nextRuntime: FocusRuntimeState;
 };
 
-export function normalizeFocusTarget(target: FocusTarget): {
-  taskId: string | null;
-  subtaskId: string | null;
-} {
-  const taskId = target.taskId;
-  const subtaskId = taskId ? (target.subtaskId ?? null) : null;
-  return { taskId, subtaskId };
+export function normalizeFocusTarget(target: FocusTarget): FocusTarget {
+  return { taskId: target.taskId ?? null };
 }
 
 export function sameFocusTarget(
-  left: { taskId: string | null; subtaskId?: string | null },
+  left: { taskId: string | null },
   right: FocusTarget,
 ) {
   const next = normalizeFocusTarget(right);
-  return left.taskId === next.taskId && (left.subtaskId ?? null) === next.subtaskId;
+  return left.taskId === next.taskId;
 }
 
 /**
  * When the linked task changes during an active stopwatch, settle the previous
  * segment onto the old task (if long enough) and start a fresh stopwatch for the
- * new task. Other phases only update taskId/subtaskId.
+ * new task. Other phases only update the exact task ID.
  */
 export function switchFocusTask(
   state: FocusRuntimeState,
@@ -196,7 +188,7 @@ export function switchFocusTask(
   if (state.phase !== "stopwatch") {
     return {
       sessionToPersist: null,
-      nextRuntime: { ...state, taskId: next.taskId, subtaskId: next.subtaskId },
+      nextRuntime: { ...state, taskId: next.taskId },
     };
   }
 
@@ -214,7 +206,6 @@ export function switchFocusTask(
         endedAt,
         notes: state.notes,
         taskId: state.taskId,
-        subtaskId: state.subtaskId,
       }
     : null;
 
@@ -223,7 +214,6 @@ export function switchFocusTask(
     nextRuntime: {
       ...state,
       taskId: next.taskId,
-      subtaskId: next.subtaskId,
       phase: "stopwatch",
       mode: "stopwatch",
       plannedSeconds: 0,
@@ -238,44 +228,38 @@ export function switchFocusTask(
 export function resolveFocusTargetTitle(
   tasks: Task[],
   taskId: string | null,
-  subtaskId?: string | null,
 ): string | null {
   if (!taskId) return null;
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return null;
-  if (subtaskId) {
-    const subtask = task.subtasks.find((item) => item.id === subtaskId);
-    if (subtask) return subtask.title;
-  }
   return task.title;
 }
 
 export function resolveFocusRecordTitle(
   tasks: Task[],
   taskId: string | null,
-  subtaskId?: string | null,
 ): string {
   if (!taskId) return "未关联任务";
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return "未关联任务";
-  if (subtaskId) {
-    const subtask = task.subtasks.find((item) => item.id === subtaskId);
-    if (subtask) return `${task.title} · ${subtask.title}`;
-  }
+  const parent = task.parent_task_id
+    ? tasks.find((item) => item.id === task.parent_task_id) ?? null
+    : null;
+  if (parent) return `${parent.title} · ${task.title}`;
   return task.title;
 }
 
 export type FocusPickerTree = {
   task: Task;
-  subtasks: Subtask[];
+  children: Task[];
 };
 
 export function listFocusableTasks(tasks: Task[]) {
-  return tasks.filter((task) => !task.deleted_at && task.kind !== "note");
+  return tasks.filter((task) => !task.deleted_at && task.kind !== "note" && task.parent_task_id === null);
 }
 
-function sortedSubtasks(task: Task) {
-  return [...task.subtasks].sort((a, b) => a.position - b.position || a.title.localeCompare(b.title));
+function sortedChildTasks(task: Task) {
+  return [...task.children].sort((a, b) => a.position - b.position || a.title.localeCompare(b.title));
 }
 
 function matchesFocusQuery(title: string, needle: string) {
@@ -284,17 +268,20 @@ function matchesFocusQuery(title: string, needle: string) {
 
 export function buildFocusPickerTree(task: Task, query = ""): FocusPickerTree | null {
   const needle = query.trim().toLowerCase();
-  const subtasks = sortedSubtasks(task);
+  const children = sortedChildTasks(task);
   const parentHit = matchesFocusQuery(task.title, needle);
-  if (parentHit) return { task, subtasks };
-  const matching = subtasks.filter((item) => matchesFocusQuery(item.title, needle));
+  if (parentHit) return { task, children };
+  const matching = children.filter((item) => matchesFocusQuery(item.title, needle));
   if (matching.length === 0) return null;
-  return { task, subtasks: matching };
+  return { task, children: matching };
 }
 
 export function buildFocusPickerTrees(tasks: Task[], query = "") {
   return listFocusableTasks(tasks)
-    .map((task) => buildFocusPickerTree(task, query))
+    .map((task) => buildFocusPickerTree({
+      ...task,
+      children: tasks.filter((item) => item.parent_task_id === task.id && !item.deleted_at),
+    }, query))
     .filter((tree): tree is FocusPickerTree => Boolean(tree));
 }
 
@@ -324,37 +311,39 @@ export function buildRecentFocusPickerTrees(
   query = "",
 ): FocusPickerTree[] {
   const list = listFocusableTasks(tasks);
-  const byId = new Map(list.map((task) => [task.id, task]));
+  const byId = new Map(tasks.map((task) => [task.id, task]));
   const recentTaskIds: string[] = [];
-  const recentSubtaskIds = new Map<string, string[]>();
+  const recentChildTaskIds = new Map<string, string[]>();
 
   for (const session of sessions) {
     if (!session.task_id) continue;
-    const task = byId.get(session.task_id);
-    if (!task) continue;
-    if (!recentTaskIds.includes(session.task_id)) recentTaskIds.push(session.task_id);
-    if (!session.subtask_id) continue;
-    if (!task.subtasks.some((item) => item.id === session.subtask_id)) continue;
-    const ids = recentSubtaskIds.get(session.task_id) ?? [];
-    if (!ids.includes(session.subtask_id)) {
-      ids.push(session.subtask_id);
-      recentSubtaskIds.set(session.task_id, ids);
+    const exact = byId.get(session.task_id);
+    if (!exact) continue;
+    const rootId = exact.parent_task_id ?? exact.id;
+    if (!recentTaskIds.includes(rootId)) recentTaskIds.push(rootId);
+    if (exact.parent_task_id) {
+      const ids = recentChildTaskIds.get(rootId) ?? [];
+      if (!ids.includes(exact.id)) recentChildTaskIds.set(rootId, [...ids, exact.id]);
     }
   }
 
   const recent = recentTaskIds.flatMap((taskId) => {
     const task = byId.get(taskId);
     if (!task) return [];
-    const ids = recentSubtaskIds.get(taskId) ?? [];
-    const subtasks = ids
-      .map((id) => task.subtasks.find((item) => item.id === id))
-      .filter((item): item is Subtask => Boolean(item));
-    const tree = buildFocusPickerTree({ ...task, subtasks }, query);
+    const ids = recentChildTaskIds.get(taskId) ?? [];
+    const children = ids
+      .map((id) => byId.get(id))
+      .filter((item): item is Task => Boolean(item));
+    const tree = buildFocusPickerTree({ ...task, children }, query);
     return tree ? [tree] : [];
   });
 
   const extras = list
     .filter((task) => !recentTaskIds.includes(task.id))
+    .map((task) => ({
+      ...task,
+      children: tasks.filter((item) => item.parent_task_id === task.id && !item.deleted_at),
+    }))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .slice(0, 12)
     .flatMap((task) => {
@@ -398,7 +387,6 @@ export type FocusTimelineBlock = {
   endMs: number;
   segment: FocusTimelineSegment;
   taskId?: string | null;
-  subtaskId?: string | null;
   live?: boolean;
 };
 
@@ -429,7 +417,6 @@ export function buildFocusDayTimeline(input: {
     elapsedSeconds: number;
     segment: FocusTimelineSegment;
     taskId?: string | null;
-    subtaskId?: string | null;
   } | null;
 }): FocusTimelineLayout {
   const now = new Date(input.nowMs);
@@ -447,7 +434,6 @@ export function buildFocusDayTimeline(input: {
       endMs: Math.min(endMs, dayEnd),
       segment: focusTimelineSegment(session.kind),
       taskId: session.task_id,
-      subtaskId: session.subtask_id,
     });
   }
 
@@ -461,7 +447,6 @@ export function buildFocusDayTimeline(input: {
         endMs: Math.min(endMs, dayEnd),
         segment: input.liveSession.segment,
         taskId: input.liveSession.taskId ?? null,
-        subtaskId: input.liveSession.subtaskId ?? null,
         live: true,
       });
     }
@@ -620,7 +605,7 @@ export function applyFocusSettingsToRuntime(
 }
 
 export function focusRuntimeStorageKey(userId: string, workspaceId: string) {
-  return `anttodo:focus-runtime:${userId}:${workspaceId}`;
+  return instanceStorageKey(`anttodo:focus-runtime:${userId}:${workspaceId}`);
 }
 
 export function loadFocusRuntimeState(
@@ -630,11 +615,11 @@ export function loadFocusRuntimeState(
   try {
     const raw = localStorage.getItem(focusRuntimeStorageKey(userId, workspaceId));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as FocusRuntimeState;
+    const parsed = JSON.parse(raw) as FocusRuntimeState & { targetTaskId?: string | null };
     if (!parsed || typeof parsed !== "object" || !parsed.phase) return null;
     return {
       ...parsed,
-      subtaskId: parsed.subtaskId ?? null,
+      taskId: parsed.targetTaskId ?? parsed.taskId ?? null,
     };
   } catch {
     return null;
@@ -677,7 +662,7 @@ export function claimFocusRuntimeCompletion(
   claimKey: string,
 ) {
   if (typeof localStorage === "undefined") return true;
-  const key = `anttodo:focus-completion:${userId}:${workspaceId}:${claimKey}`;
+  const key = instanceStorageKey(`anttodo:focus-completion:${userId}:${workspaceId}:${claimKey}`);
   try {
     if (localStorage.getItem(key)) return false;
     localStorage.setItem(key, new Date().toISOString());

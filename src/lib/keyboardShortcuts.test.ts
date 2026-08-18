@@ -164,7 +164,7 @@ describe("keyboardShortcuts", () => {
   it("detects conflicts within overlapping scopes", () => {
     expect(findBindingConflict("task.focusQuickAdd", { key: "n" })).toBeNull();
     expect(findBindingConflict("general.search", { key: "k", mod: true })).toBeNull();
-    expect(findBindingConflict("task.complete", { key: "Enter", shift: true })).toBe("task.addSubtask");
+    expect(findBindingConflict("task.complete", { key: "Enter", shift: true })).toBe("task.addChildTask");
     expect(findBindingConflict("calendar.viewDay", { key: "1" })).toBeNull();
     expect(findBindingConflict("calendar.viewWeek", { key: "1" })).toBe("calendar.viewDay");
     expect(findBindingConflict("general.goTasks", { key: "2", mod: true })).toBe("general.goCalendar");

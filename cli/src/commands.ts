@@ -4,30 +4,26 @@ import {
   bulkTaskAction,
   createComment,
   createFocusSession,
-  createSubtask,
   createTag,
   createTask,
   createWorkspace,
   deleteAttachment,
   deleteComment,
-  deleteSubtask,
   deleteTag,
   deleteWorkspace,
   downloadAttachment,
-  getSubtask,
   getTag,
   getTask,
   listActivity,
   listComments,
-  listSubtasks,
   listTags,
   listUserGroups,
   listTasks,
+  moveTask,
   listUsers,
   listWorkspaces,
   purgeTask,
   removeWorkspaceMember,
-  reorderSubtasks,
   reorderTags,
   resolveWorkspace,
   restoreTask,
@@ -39,24 +35,29 @@ import {
   softDeleteTask,
   tagDeletePreview,
   updateComment,
-  updateSubtask,
   updateTag,
   updateTask,
   updateWorkspace,
   updateWorkspaceMemberRole,
   uploadAttachment,
-  updateSubtaskDueTime,
   useWorkspace,
   workspaceInvite,
 } from "./api.js";
 import { authStatus, completeLogin, logout, renderQrCode, startLogin } from "./auth.js";
 import { authenticatedContext } from "./client.js";
-import type { CacheReadOptions, CacheRefreshRequest, TaskListCacheOptions } from "./cache.js";
+import { DEFAULT_APP_URL, getRuntimeServiceUrl, setRuntimeServiceUrl, useService } from "./config.js";
+import type { CacheReadOptions, CacheRefreshInput, CacheRefreshRequest, TaskListCacheOptions } from "./cache.js";
 import { requireConfirmation } from "./confirmation.js";
 import { CliError } from "./errors.js";
 import { formatMan } from "./man.js";
 import { renderSuccess } from "./output.js";
-import { getDefaultWorkspace } from "./storage.js";
+import {
+  getDefaultWorkspace,
+  getSelectedServiceKey,
+  getStoredService,
+  listStoredServices,
+  selectServiceKey,
+} from "./storage.js";
 import type { OutputFormat, TaskSchedule } from "./types.js";
 import {
   assertUuid,
@@ -84,12 +85,17 @@ function emit(command: Command, data: unknown, meta: Record<string, unknown> = {
   process.stdout.write(renderSuccess(data, meta, formatFor(command)));
 }
 
-function cacheFor(context: { user: { id: string } }, refresh: CacheRefreshRequest): CacheReadOptions {
-  return { userId: context.user.id, refresh };
+function cacheFor(context: { user: { id: string }; config: { serviceKey: string } }, refresh: CacheRefreshInput): CacheReadOptions {
+  const refreshWithService = {
+    ...refresh,
+    serviceKey: context.config.serviceKey,
+    ...(getRuntimeServiceUrl() ? { serviceUrl: getRuntimeServiceUrl() } : {}),
+  } as CacheRefreshRequest;
+  return { userId: context.user.id, serviceKey: context.config.serviceKey, refresh: refreshWithService };
 }
 
 function taskListCacheFor(
-  context: { user: { id: string } },
+  context: { user: { id: string; }; config: { serviceKey: string }; },
   workspaceId: string,
   taskKind: "todo" | "note",
   options: TaskListCacheOptions,
@@ -98,7 +104,7 @@ function taskListCacheFor(
 }
 
 function taskCacheFor(
-  context: { user: { id: string } },
+  context: { user: { id: string; }; config: { serviceKey: string }; },
   workspaceId: string,
   taskKind: "todo" | "note",
   taskId: string,
@@ -210,8 +216,49 @@ export function buildProgram() {
     .description("AntTodo command-line client")
     .version("0.1.0")
     .option("--workspace <id-or-slug>", "override the active workspace")
+    .option("--service-url <url>", "override the service address for this command")
     .option("--json", "output the JSON envelope")
     .addOption(new Option("--format <format>", "json|pretty|table|ndjson|csv").choices(["json", "pretty", "table", "ndjson", "csv"]).default("json"));
+
+  program.hook("preAction", (_program, actionCommand) => {
+    setRuntimeServiceUrl(actionCommand.optsWithGlobals().serviceUrl);
+  });
+
+  const service = program.command("service").description("Manage AntTodo service addresses");
+  setRisk(service.command("use <address>").description("Discover and select a service").action(async (address, _options, command) => {
+    const config = await useService(address);
+    emit(command, {
+      address: config.appUrl,
+      display_name: config.displayName,
+      active: true,
+    });
+  }), "write");
+  setRisk(service.command("list").description("List configured services").action(async (_options, command) => {
+    const selected = await getSelectedServiceKey();
+    const data = (await listStoredServices()).map((config) => ({
+      address: config.appUrl,
+      display_name: config.displayName,
+      active: config.serviceKey === selected,
+      last_verified_at: config.lastVerifiedAt,
+    }));
+    emit(command, data, { count: data.length });
+  }), "read");
+  setRisk(service.command("current").description("Show the selected service").action(async (_options, command) => {
+    const selected = await getSelectedServiceKey();
+    const config = selected ? await getStoredService(selected) : null;
+    emit(command, config
+      ? {
+          address: config.appUrl,
+          display_name: config.displayName,
+          active: true,
+          last_verified_at: config.lastVerifiedAt,
+        }
+      : { address: DEFAULT_APP_URL, display_name: "AntTodo 官方服务", active: true } );
+  }), "read");
+  setRisk(service.command("reset").description("Restore the official service").action(async (_options, command) => {
+    await selectServiceKey("official");
+    emit(command, { address: DEFAULT_APP_URL, active: true });
+  }), "write");
 
   const auth = program.command("auth").description("Authentication and local session management");
   setRisk(auth.command("login").description("Authorize this CLI in a browser")
@@ -306,10 +353,11 @@ export function buildProgram() {
     }), "write");
 
   const task = program.command("task").description("Todo task operations");
-  setRisk(addListOptions(task.command("list").description("List tasks")).action(async (options, command) => {
+  setRisk(addListOptions(task.command("list").description("List tasks")).option("--parent <task-id>", "list direct children").action(async (options, command) => {
     const context = await businessContext(command);
     if (options.tag) assertUuid(options.tag, "tag");
     if (options.assignee) assertUuid(options.assignee, "assignee");
+    if (options.parent) assertUuid(options.parent, "parent");
     const data = await listTasks(context.client, context.workspace.id, "todo", {
       status: parseStatus(options.status),
       priority: options.priority ? parsePriority(options.priority) : undefined,
@@ -318,6 +366,7 @@ export function buildProgram() {
       search: options.search,
       trash: Boolean(options.trash),
       includeTrash: Boolean(options.includeTrash),
+      parent: options.parent ?? null,
       limit: positiveInteger(options.limit, "limit", 1000, 1),
       offset: positiveInteger(options.offset, "offset", 1_000_000),
     }, taskListCacheFor(context, context.workspace.id, "todo", {
@@ -328,6 +377,7 @@ export function buildProgram() {
       search: options.search,
       trash: Boolean(options.trash),
       includeTrash: Boolean(options.includeTrash),
+      parent: options.parent ?? null,
       limit: positiveInteger(options.limit, "limit", 1000, 1),
       offset: positiveInteger(options.offset, "offset", 1_000_000),
     }));
@@ -355,10 +405,12 @@ export function buildProgram() {
     .option("--repeat <frequency>", "daily|weekdays|weekly|monthly|yearly")
     .option("--persistent-reminders", "keep reminders after delivery")
     .option("--assignee <user-id>")
+    .option("--parent <task-id>", "create beneath a parent task")
     .action(async (options, command) => {
       const context = await businessContext(command);
       options.tag.forEach((id: string) => assertUuid(id, "tag"));
       if (options.assignee) assertUuid(options.assignee, "assignee");
+      if (options.parent) assertUuid(options.parent, "parent");
       const dueAt = options.dueTime ? parseDueTime(options.dueTime, false) : null;
       const hasSchedule = Boolean(options.reminder?.length || options.repeat || options.persistentReminders);
       const schedule = hasSchedule ? scheduleFromOptions(options, dueAt, dueAt ? validateTimeZone(options.timezone) : null) : null;
@@ -372,9 +424,25 @@ export function buildProgram() {
         dueAt,
         dueTimezone: dueAt ? validateTimeZone(options.timezone) : null,
         assigneeId: options.assignee,
+        parentTaskId: options.parent ?? null,
       });
       if (schedule) await saveTaskSchedule(context.client, context.workspace.id, created.id, schedule);
       emit(command, hasSchedule ? await getTask(context.client, context.workspace.id, created.id, "todo") : created);
+    }), "write");
+  setRisk(task.command("move <task-id>").description("Move a task in the tree")
+    .addOption(new Option("--parent <task-id>").conflicts("root"))
+    .addOption(new Option("--root").conflicts("parent"))
+    .action(async (id, options, command) => {
+      if (!options.parent && !options.root) {
+        throw new CliError({ type: "validation", code: "move_target_required", message: "Pass --parent or --root" });
+      }
+      const context = await businessContext(command);
+      emit(command, await moveTask(
+        context.client,
+        context.workspace.id,
+        assertUuid(id, "task-id"),
+        options.root ? null : assertUuid(options.parent, "parent"),
+      ));
     }), "write");
   setRisk(task.command("update <task-id>").description("Update task title, description, or tags")
     .option("--title <text>")
@@ -485,79 +553,6 @@ export function buildProgram() {
         assigneeId: options.clear ? null : options.user ? assertUuid(options.user, "user") : undefined,
       }));
     }), "write");
-
-  const subtask = program.command("subtask").description("Subtask operations");
-  setRisk(addListOptions(subtask.command("list").description("List subtasks"), false)
-    .requiredOption("--task <task-id>")
-    .option("--status <status>", "open|completed|all", "all")
-    .option("--priority <priority>")
-    .option("--assignee <user-id>")
-    .action(async (options, command) => {
-      const context = await businessContext(command);
-      let data = await listSubtasks(context.client, context.workspace.id, assertUuid(options.task, "task")) as Array<Record<string, unknown>>;
-      if (options.status !== "all") data = data.filter((item) => Boolean(item.completed) === (options.status === "completed"));
-      if (options.priority) data = data.filter((item) => item.priority === parsePriority(options.priority));
-      if (options.assignee) data = data.filter((item) => item.assignee_id === assertUuid(options.assignee, "assignee"));
-      const offset = positiveInteger(options.offset, "offset", 1_000_000);
-      const limit = positiveInteger(options.limit, "limit", 1000, 1);
-      emit(command, data.slice(offset, offset + limit), { count: data.length });
-    }), "read");
-  setRisk(subtask.command("get <subtask-id>").description("Get one subtask").action(async (id, _options, command) => {
-    const context = await businessContext(command);
-    emit(command, await getSubtask(context.client, context.workspace.id, assertUuid(id, "subtask-id")));
-  }), "read");
-  setRisk(subtask.command("create").description("Create a subtask")
-    .requiredOption("--task <task-id>")
-    .requiredOption("--title <text>")
-    .option("--priority <priority>", "none|low|medium|high", "none")
-    .action(async (options, command) => {
-      const context = await businessContext(command);
-      const created = await createSubtask(context.client, context.user.id, context.workspace.id, assertUuid(options.task, "task"), nonEmpty(options.title, "title"));
-      emit(command, options.priority === "none" ? created : await updateSubtask(context.client, context.workspace.id, created.id, { priority: parsePriority(options.priority) }));
-    }), "write");
-  setRisk(subtask.command("update <subtask-id>").description("Update subtask title").requiredOption("--title <text>").action(async (id, options, command) => {
-    const context = await businessContext(command);
-    emit(command, await updateSubtask(context.client, context.workspace.id, assertUuid(id, "subtask-id"), { title: nonEmpty(options.title, "title") }));
-  }), "write");
-  setRisk(subtask.command("set-status <subtask-id> <status>").description("Set subtask completion status").action(async (id, status, _options, command) => {
-    if (!["open", "completed"].includes(status)) throw new CliError({ type: "validation", code: "invalid_status", message: "Subtask status must be open or completed" });
-    const context = await businessContext(command);
-    emit(command, await updateSubtask(context.client, context.workspace.id, assertUuid(id, "subtask-id"), { completed: status === "completed" }));
-  }), "write");
-  setRisk(subtask.command("assign <subtask-id>").description("Assign or unassign a subtask")
-    .addOption(new Option("--user <user-id>").conflicts("clear"))
-    .addOption(new Option("--clear").conflicts("user"))
-    .action(async (id, options, command) => {
-      if (!options.user && !options.clear) throw new CliError({ type: "validation", code: "assignee_required", message: "Pass --user or --clear" });
-      const context = await businessContext(command);
-      emit(command, await updateSubtask(context.client, context.workspace.id, assertUuid(id, "subtask-id"), { assignee_id: options.user ? assertUuid(options.user, "user") : null }));
-    }), "write");
-  setRisk(subtask.command("set-priority <subtask-id> <priority>").description("Set subtask priority").action(async (id, priority, _options, command) => {
-    const context = await businessContext(command);
-    emit(command, await updateSubtask(context.client, context.workspace.id, assertUuid(id, "subtask-id"), { priority: parsePriority(priority) }));
-  }), "write");
-  setRisk(subtask.command("reorder").description("Reorder subtasks")
-    .requiredOption("--task <task-id>")
-    .requiredOption("--id <subtask-id>", "repeatable ordered ID", collect, [])
-    .action(async (options, command) => {
-      const context = await businessContext(command);
-      emit(command, await reorderSubtasks(context.client, context.workspace.id, assertUuid(options.task, "task"), parseIdList(options.id, "subtask-id")));
-    }), "write");
-  setRisk(subtask.command("set-duetime <subtask-id> [due-time]").description("Set or clear subtask due time")
-    .option("--clear")
-    .action(async (id, dueTime, options, command) => {
-      const context = await businessContext(command);
-      if (dueTime && options.clear) throw new CliError({ type: "validation", code: "conflicting_due_time", message: "Pass a due time or --clear, not both" });
-      emit(command, await updateSubtaskDueTime(context.client, context.workspace.id, assertUuid(id, "subtask-id"), parseDueTime(dueTime, Boolean(options.clear))));
-    }), "write");
-  setRisk(subtask.command("delete <subtask-id>").description("Permanently delete a subtask")
-    .option("--yes")
-    .action(async (id, options, command) => {
-      const context = await businessContext(command);
-      const item = await getSubtask(context.client, context.workspace.id, assertUuid(id, "subtask-id"));
-      await requireConfirmation("subtask delete", item, Boolean(options.yes));
-      emit(command, await deleteSubtask(context.client, context.workspace.id, id));
-    }), "high-risk-write");
 
   const note = program.command("note").description("Note operations");
   setRisk(addListOptions(note.command("list").description("List notes"), false)
@@ -778,22 +773,19 @@ export function buildProgram() {
     }), "read");
 
   const comment = program.command("comment").description("Task comments");
-  setRisk(comment.command("list <task-id>").description("List task comments").option("--subtask <subtask-id>").action(async (taskId, options, command) => {
+  setRisk(comment.command("list <task-id>").description("List task comments").action(async (taskId, _options, command) => {
     const context = await businessContext(command);
     const id = assertUuid(taskId, "task-id");
-    if (options.subtask) assertUuid(options.subtask, "subtask-id");
-    emit(command, await listComments(context.client, id, options.subtask));
+    emit(command, await listComments(context.client, id));
   }), "read");
   setRisk(comment.command("create <task-id>").description("Create a task comment")
     .requiredOption("--body <text>")
     .option("--image-uri <uri>", "repeatable", collect, [])
     .option("--mention <user-id>", "repeatable", collect, [])
-    .option("--subtask <subtask-id>")
     .action(async (taskId, options, command) => {
       const context = await businessContext(command);
       parseIdList(options.mention, "mention");
-      if (options.subtask) assertUuid(options.subtask, "subtask-id");
-      emit(command, await createComment(context.client, { taskId: assertUuid(taskId, "task-id"), body: nonEmpty(options.body, "body"), imageUris: options.imageUri, mentionedUserIds: options.mention, subtaskId: options.subtask ?? null }));
+      emit(command, await createComment(context.client, { taskId: assertUuid(taskId, "task-id"), body: nonEmpty(options.body, "body"), imageUris: options.imageUri, mentionedUserIds: options.mention }));
     }), "write");
   setRisk(comment.command("update <comment-id>").description("Update a task comment")
     .requiredOption("--body <text>")

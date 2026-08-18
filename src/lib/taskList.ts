@@ -22,6 +22,7 @@ import type {
 } from "../types";
 import { aiCliLabel } from "./aiWork";
 import { compareSiblingLabels, userLabelOrderMap } from "./labels";
+import { isRootTask } from "./taskTree";
 
 export type TaskListGroup = {
   id: string;
@@ -601,7 +602,7 @@ export function countTasksForLabelSubtree(
   labelId: string,
 ) {
   const scope = labelSubtreeIds(labels, labelId);
-  return tasks.filter((task) => task.label_ids.some((id) => scope.has(id))).length;
+  return tasks.filter((task) => isRootTask(task) && task.label_ids.some((id) => scope.has(id))).length;
 }
 
 export function filterTasksForView(input: {
@@ -618,7 +619,7 @@ export function filterTasksForView(input: {
       .filter((task) => Boolean(task.deleted_at))
       .sort((left, right) => String(right.deleted_at).localeCompare(String(left.deleted_at)));
   }
-  let result = tasks.filter((task) => !task.deleted_at);
+  let result = tasks.filter((task) => !task.deleted_at && isRootTask(task));
   if (customView?.definition.scope === "inbox") {
     return result.filter((task) => task.label_ids.length === 0);
   }

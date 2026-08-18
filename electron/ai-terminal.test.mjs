@@ -32,9 +32,9 @@ function fakePty() {
 }
 
 describe("AI terminal security helpers", () => {
-  it("allows only stable task and subtask session identifiers", () => {
+  it("allows only stable task session identifiers", () => {
     expect(isTerminalSessionId("task:123e4567-e89b-12d3-a456-426614174000")).toBe(true);
-    expect(isTerminalSessionId("subtask:abc-123")).toBe(true);
+    expect(isTerminalSessionId("childTask:abc-123")).toBe(false);
     expect(isTerminalSessionId("task:../escape")).toBe(false);
   });
 
@@ -55,7 +55,7 @@ describe("AI terminal security helpers", () => {
 });
 
 describe("AI terminal sessions", () => {
-  it("keeps task and subtask sessions independent and supports resize/cleanup", async () => {
+  it("keeps task and childTask sessions independent and supports resize/cleanup", async () => {
     const pty = fakePty();
     const timers = [];
     const sent = [];
@@ -80,10 +80,10 @@ describe("AI terminal sessions", () => {
       rows: 24,
     });
     await manager.start(7, {
-      sessionId: "subtask:sub-1",
+      sessionId: "task:nested-1",
       tool: "claude",
       cwd: process.cwd(),
-      prompt: "子任务",
+      prompt: "子级任务",
       cols: 90,
       rows: 30,
     });
@@ -94,14 +94,14 @@ describe("AI terminal sessions", () => {
     expect(pty.processes[0].writes).toEqual([bracketedPaste("主任务")]);
     expect(pty.processes[1].writes).toEqual([]);
 
-    expect(manager.resize("subtask:sub-1", 7, 1000, 1)).toBe(true);
+    expect(manager.resize("task:nested-1", 7, 1000, 1)).toBe(true);
     expect(pty.processes[1].resize).toHaveBeenCalledWith(500, 5);
     expect(manager.write("task:task-1", 7, "x")).toBe(true);
     expect(pty.processes[0].writes.at(-1)).toBe("x");
 
     pty.processes[1].emitExit({ exitCode: 1, signal: 0 });
     expect(sent.at(-1)?.[1]).toBe("anttodo:ai-terminal-exit");
-    expect(manager.write("subtask:sub-1", 7, "x")).toBe(false);
+    expect(manager.write("task:nested-1", 7, "x")).toBe(false);
 
     manager.stopOwner(7);
     expect(pty.processes[0].kill).toHaveBeenCalledOnce();

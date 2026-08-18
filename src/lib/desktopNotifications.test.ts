@@ -48,11 +48,13 @@ function task(patch: Partial<Task> & Pick<Task, "id" | "created_by">): Task {
     updated_at: "2026-08-01T00:00:00.000Z",
     label_ids: [],
     participant_ids: [],
-    subtasks: [],
+    children: [],
     reminders: [],
     reminder_persistent: false,
     description_mentions: [],
     ...patch,
+    parent_task_id: patch.parent_task_id ?? null,
+    position: patch.position ?? 0,
   };
 }
 
@@ -71,7 +73,6 @@ describe("desktopNotifications", () => {
           reminders: [{
             id: "reminder-1",
             task_id: "task-1",
-            subtask_id: null,
             position: 0,
             anchor: "start",
             offset_value: 0,
@@ -90,7 +91,6 @@ describe("desktopNotifications", () => {
           reminders: [{
             id: "reminder-2",
             task_id: "task-2",
-            subtask_id: null,
             position: 0,
             anchor: "start",
             offset_value: 0,

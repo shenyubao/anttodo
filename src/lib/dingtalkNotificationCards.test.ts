@@ -77,9 +77,9 @@ describe("DingTalk notification cards", () => {
     "participant_title_changed",
     "participant_status_changed",
     "participant_new_comment",
-    "participant_subtask_created",
-    "participant_subtask_status_changed",
-    "participant_subtask_title_changed",
+    "participant_task_created",
+    "participant_status_changed",
+    "participant_title_changed",
     "unknown_type",
   ])("builds a complete card for %s", (notificationType) => {
     const card = buildEventNotificationCard({

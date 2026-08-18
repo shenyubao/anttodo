@@ -39,6 +39,8 @@ export async function startLogin(options: { noWait?: boolean; noOpen?: boolean }
     verificationUrl: String(payload.verificationUrl),
     expiresAt: String(payload.expiresAt),
     interval: Number(payload.interval ?? 5),
+    serviceKey: config.serviceKey,
+    config,
   };
   await savePendingAuthorization(pending);
   if (!options.noOpen) await open(pending.verificationUrl, { wait: false }).catch(() => undefined);
@@ -61,7 +63,7 @@ export async function startLogin(options: { noWait?: boolean; noOpen?: boolean }
 
 export async function completeLogin(deviceCode: string) {
   const pending = await loadPendingAuthorization(deviceCode);
-  if (!pending) {
+  if (!pending || !pending.config || !pending.serviceKey) {
     throw new CliError({
       type: "authentication",
       code: "device_code_not_found",
@@ -69,7 +71,7 @@ export async function completeLogin(deviceCode: string) {
       hint: "Start a new login with `anttodo auth login --no-wait`",
     });
   }
-  const { client, config } = await createClientContext();
+  const { client, config } = await createClientContext({ config: pending.config });
   try {
     while (Date.now() < Date.parse(pending.expiresAt)) {
       const result = await invokeDeviceAuthorization(config, {
@@ -83,11 +85,11 @@ export async function completeLogin(deviceCode: string) {
         continue;
       }
       if (status === "expired") {
-        await removePendingAuthorization(deviceCode);
+        await removePendingAuthorization(deviceCode, pending.serviceKey);
         throw new CliError({ type: "authentication", code: "device_code_expired", message: "Device authorization expired" });
       }
       if (status === "denied") {
-        await removePendingAuthorization(deviceCode);
+        await removePendingAuthorization(deviceCode, pending.serviceKey);
         throw new CliError({ type: "authorization", code: "authorization_denied", message: "Authorization was denied" });
       }
       if (status !== "approved" || !result.encryptedSession || !result.authorizedUserId) {
@@ -100,7 +102,7 @@ export async function completeLogin(deviceCode: string) {
         String(result.authorizedUserId),
       );
       if (session.userId !== result.authorizedUserId) {
-        await removePendingAuthorization(deviceCode);
+        await removePendingAuthorization(deviceCode, pending.serviceKey);
         throw new CliError({ type: "authentication", code: "session_user_mismatch", message: "Authorized user does not match the encrypted session" });
       }
       const { data, error } = await client.auth.setSession({
@@ -112,7 +114,7 @@ export async function completeLogin(deviceCode: string) {
       }
       const verified = await client.auth.getUser();
       if (verified.error || verified.data.user?.id !== session.userId) {
-        await clearAuthStorage();
+        await clearAuthStorage(pending.serviceKey);
         throw new CliError({ type: "authentication", code: "session_verification_failed", message: "Unable to verify the authorized session" });
       }
       await invokeDeviceAuthorization(config, {
@@ -120,7 +122,7 @@ export async function completeLogin(deviceCode: string) {
         requestId: pending.requestId,
         deviceCode,
       });
-      await removePendingAuthorization(deviceCode);
+      await removePendingAuthorization(deviceCode, pending.serviceKey);
       return {
         logged_in: true,
         user: {
@@ -132,7 +134,7 @@ export async function completeLogin(deviceCode: string) {
     }
     throw new CliError({ type: "authentication", code: "device_code_expired", message: "Device authorization expired" });
   } catch (error) {
-    if (Date.now() >= Date.parse(pending.expiresAt)) await removePendingAuthorization(deviceCode);
+    if (Date.now() >= Date.parse(pending.expiresAt)) await removePendingAuthorization(deviceCode, pending.serviceKey);
     throw error;
   }
 }
@@ -162,17 +164,19 @@ export async function authStatus(verify: boolean) {
 
 export async function logout() {
   let signOutError: unknown;
+  let serviceKey: string | undefined;
   try {
-    const { client } = await createClientContext();
+    const { client, config } = await createClientContext();
+    serviceKey = config.serviceKey;
     const { error } = await client.auth.signOut({ scope: "local" });
     signOutError = error;
   } catch (error) {
     signOutError = error;
   } finally {
-    await clearAuthStorage();
-    await clearWorkspaceSettings();
-    await clearPendingAuthorizations();
-    await clearCache();
+    await clearAuthStorage(serviceKey);
+    await clearWorkspaceSettings(serviceKey);
+    await clearPendingAuthorizations(serviceKey);
+    await clearCache(serviceKey);
   }
   if (signOutError) throw signOutError;
   return { logged_out: true };

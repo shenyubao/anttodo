@@ -59,9 +59,12 @@ export function TrayFocusPanel({
   });
 
   const selectedTitle = useMemo(
-    () => resolveFocusTargetTitle(tasks, runtime.taskId, runtime.subtaskId),
-    [runtime.subtaskId, runtime.taskId, tasks],
+    () => resolveFocusTargetTitle(tasks, runtime.taskId),
+    [runtime.taskId, tasks],
   );
+  const selectedTask = tasks.find((task) => task.id === runtime.taskId) ?? null;
+  const selectedRootTaskId = selectedTask?.parent_task_id ?? runtime.taskId;
+  const selectedNestedTaskId = selectedTask?.parent_task_id ? selectedTask.id : null;
   const groups = useMemo(() => groupFocusSessionsByDay(sessions), [sessions]);
   const canSwitchMode = runtime.phase === "idle" || runtime.phase === "harvested";
 
@@ -139,9 +142,8 @@ export function TrayFocusPanel({
               tasks={tasks}
               sessions={sessions}
               selectedTaskId={runtime.taskId}
-              selectedSubtaskId={runtime.subtaskId}
               onOpenChange={setPickerOpen}
-              onSelect={(taskId, subtaskId) => void selectFocusTask(taskId, subtaskId ?? null)}
+              onSelect={(taskId) => void selectFocusTask(taskId)}
             />
           )}
           {notice && (
@@ -170,7 +172,7 @@ export function TrayFocusPanel({
                             {formatFocusTimeRange(session.started_at, session.ended_at)}
                           </div>
                           <div className="tray-focus-record-title">
-                            {resolveFocusRecordTitle(tasks, session.task_id, session.subtask_id)}
+                            {resolveFocusRecordTitle(tasks, session.task_id)}
                           </div>
                           {session.notes && (
                             <div className="tray-focus-record-notes">{session.notes}</div>

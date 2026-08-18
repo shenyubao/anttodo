@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_APP_URL, loadPublicConfig } from "./config.js";
+import { DEFAULT_APP_URL, loadPublicConfig, normalizeServiceOrigin, parseServiceManifest } from "./config.js";
 
-vi.mock("./storage.js", () => ({
-  cachePublicConfig: vi.fn(),
-  readCachedPublicConfig: vi.fn().mockResolvedValue(null),
-}));
+vi.mock("./storage.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./storage.js")>();
+  return {
+    ...actual,
+    cachePublicConfig: vi.fn(),
+    readCachedPublicConfig: vi.fn().mockResolvedValue(null),
+  };
+});
 
 const original = {
   url: process.env.ANTTODO_SUPABASE_URL,
@@ -27,15 +31,45 @@ afterEach(() => {
 });
 
 describe("public configuration", () => {
+  it("normalizes service origins and rejects unsafe addresses", () => {
+    expect(normalizeServiceOrigin("todo.example.com")).toBe("https://todo.example.com");
+    expect(normalizeServiceOrigin("https://todo.example.com/")).toBe("https://todo.example.com");
+    expect(() => normalizeServiceOrigin("https://user:pass@todo.example.com")).toThrow();
+    expect(() => normalizeServiceOrigin("https://todo.example.com/path")).toThrow();
+    expect(() => normalizeServiceOrigin("http://todo.example.com")).toThrow();
+    expect(normalizeServiceOrigin("http://localhost:54321", true)).toBe("http://localhost:54321");
+  });
+
+  it("validates the full instance manifest and matching service origins", () => {
+    const manifest = {
+      schemaVersion: 1,
+      instanceId: "8e78719f-8d1f-4d0d-90fc-b18c7f99fd84",
+      displayName: "Example AntTodo",
+      appUrl: "https://todo.example.com",
+      supabaseUrl: "https://supabase.example.com",
+      publishableKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
+      deviceAuthorizationEndpoint: "https://supabase.example.com/functions/v1/cli-device-auth",
+    };
+    expect(parseServiceManifest(manifest, manifest.appUrl)).toMatchObject({
+      appUrl: manifest.appUrl,
+      displayName: "Example AntTodo",
+    });
+    expect(() => parseServiceManifest({ ...manifest, appUrl: "https://other.example.com" }, manifest.appUrl)).toThrow();
+    expect(() => parseServiceManifest({ ...manifest, deviceAuthorizationEndpoint: "https://evil.example.com/functions/v1/cli-device-auth" }, manifest.appUrl)).toThrow();
+  });
+
   it("uses the AntTodo production host without environment variables", async () => {
     delete process.env.ANTTODO_SUPABASE_URL;
     delete process.env.ANTTODO_SUPABASE_PUBLISHABLE_KEY;
     delete process.env.ANTTODO_APP_URL;
     delete process.env.ANTTODO_DEVICE_AUTH_URL;
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      schemaVersion: 1,
+      instanceId: "00000000-0000-4000-8000-000000000001",
+      displayName: "AntTodo 官方服务",
+      appUrl: DEFAULT_APP_URL,
       supabaseUrl: "https://supabase.example.com",
       publishableKey: "sb_publishable_production_key",
-      appUrl: DEFAULT_APP_URL,
       deviceAuthorizationEndpoint: "https://supabase.example.com/functions/v1/cli-device-auth",
     }), {
       status: 200,
@@ -45,7 +79,7 @@ describe("public configuration", () => {
 
     await expect(loadPublicConfig()).resolves.toMatchObject({ appUrl: DEFAULT_APP_URL });
     expect(fetchMock).toHaveBeenCalledWith(
-      `${DEFAULT_APP_URL}/.well-known/anttodo-cli.json`,
+      `${DEFAULT_APP_URL}/.well-known/anttodo.json`,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });

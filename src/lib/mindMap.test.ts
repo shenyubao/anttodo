@@ -32,8 +32,10 @@ function task(overrides: Partial<Task> = {}): Task {
     updated_at: "2026-08-01T00:00:00.000Z",
     label_ids: [],
     participant_ids: [],
-    subtasks: [],
+    children: [],
     ...overrides,
+    parent_task_id: overrides.parent_task_id ?? null,
+    position: overrides.position ?? 0,
     cli_assignee: overrides.cli_assignee ?? null,
     kind: overrides.kind ?? "todo",
     reminders: overrides.reminders ?? [],
@@ -92,6 +94,30 @@ describe("mind map tree", () => {
       ...node.children.flatMap(collectTaskIds),
     ];
     expect(collectTaskIds(root)).toEqual(["todo"]);
+  });
+
+  it("does not place nested tasks beside their parent under inherited labels", () => {
+    const parent = task({
+      id: "parent",
+      title: "父任务",
+      label_ids: ["tag"],
+    });
+    const child = task({
+      id: "child",
+      title: "子任务",
+      parent_task_id: "parent",
+      label_ids: ["tag"],
+    });
+    const root = buildMindMapTree({
+      tasks: [parent, child],
+      labels: [label("tag", 0, null, "标签")],
+      preferences: DEFAULT_DATE_TIME_PREFERENCES,
+    });
+    const collectTaskIds = (node: typeof root): string[] => [
+      ...(node.task ? [node.task.id] : []),
+      ...node.children.flatMap(collectTaskIds),
+    ];
+    expect(collectTaskIds(root)).toEqual(["parent"]);
   });
 
   it("builds date, inbox and unscheduled branches without deleted tasks", () => {

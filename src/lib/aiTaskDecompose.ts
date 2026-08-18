@@ -1,4 +1,4 @@
-export type AiSuggestedSubtask = {
+export type AiSuggestedTask = {
   title: string;
   assignee_user_id: string | null;
   due_at: string | null;
@@ -28,11 +28,11 @@ export function isLocalDemoTaskContext(workspaceId: string, taskId: string) {
  * Offline / `?demo=1` stand-in so the confirm panel can be exercised without a
  * signed-in user or Edge Function call.
  */
-export function buildDemoAiSuggestedSubtasks(input: {
+export function buildDemoAiSuggestedTasks(input: {
   title: string;
   description?: string;
   existingTitles?: string[];
-}): AiSuggestedSubtask[] {
+}): AiSuggestedTask[] {
   const title = input.title.trim() || "任务";
   const existing = new Set(
     (input.existingTitles ?? []).map((item) => item.trim().toLowerCase()).filter(Boolean),
@@ -44,7 +44,7 @@ export function buildDemoAiSuggestedSubtasks(input: {
     `安排跟进节奏与截止时间`,
     `复盘结果并更新任务状态`,
   ];
-  const result: AiSuggestedSubtask[] = [];
+  const result: AiSuggestedTask[] = [];
   for (const draft of drafts) {
     if (existing.has(draft.toLowerCase())) continue;
     result.push({
@@ -67,21 +67,21 @@ export function normalizeDueAt(value: unknown): string | null {
 }
 
 /** Normalize raw AI / edge response rows for UI and insert. */
-export function normalizeAiSuggestedSubtasks(
+export function normalizeAiSuggestedTasks(
   raw: unknown,
   options?: { assignableUserIds?: Iterable<string> },
-): AiSuggestedSubtask[] {
+): AiSuggestedTask[] {
   let items: unknown[] = [];
   if (Array.isArray(raw)) {
     items = raw;
-  } else if (isRecord(raw) && Array.isArray(raw.subtasks)) {
-    items = raw.subtasks;
+  } else if (isRecord(raw) && Array.isArray(raw.tasks)) {
+    items = raw.tasks;
   }
 
   const assignable = options?.assignableUserIds
     ? new Set(options.assignableUserIds)
     : null;
-  const result: AiSuggestedSubtask[] = [];
+  const result: AiSuggestedTask[] = [];
   const seen = new Set<string>();
 
   for (const item of items) {
@@ -125,8 +125,8 @@ export function formatAiSuggestedDueAt(dueAt: string | null | undefined): string
   return `${month}月${day}日 ${hh}:${mm}`;
 }
 
-export function buildSubtaskExtrasFromSuggestion(
-  suggestion: AiSuggestedSubtask,
+export function buildChildTaskExtrasFromSuggestion(
+  suggestion: AiSuggestedTask,
   assignableUserIds?: Iterable<string>,
 ): Partial<{ due_at: string | null; assignee_id: string | null }> {
   const assignable = assignableUserIds ? new Set(assignableUserIds) : null;
