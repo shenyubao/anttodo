@@ -385,6 +385,110 @@ test("calendar opens the reusable task dialog and manages labels", async ({ page
   await expect(dialog).toBeHidden();
 });
 
+test("calendar quick-create matches the reference and commits drafts on close", async ({ page }) => {
+  await page.setViewportSize({ width: 1486, height: 900 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+
+  const createButton = page.getByRole("button", { name: "创建任务" });
+  const viewButton = page.locator(".calendar-view-trigger");
+  const createBounds = await createButton.boundingBox();
+  const viewBounds = await viewButton.boundingBox();
+  expect(createBounds).toMatchObject({ width: 30, height: 30 });
+  expect(createBounds!.x).toBeLessThan(viewBounds!.x);
+
+  await createButton.click();
+  let createDialog = page.getByRole("dialog", { name: "创建任务" });
+  await expect(createDialog).toBeVisible();
+  await expect(createDialog).toHaveCSS("width", "400px");
+  await expect(createDialog).toHaveCSS("height", "300px");
+  await expect(createDialog).toHaveCSS("border-radius", "14px");
+  await expect(createDialog).toHaveCSS(
+    "box-shadow",
+    "rgba(0, 0, 0, 0.2) 0px 5px 18px 0px",
+  );
+  await expect.poll(async () => {
+    const current = await createDialog.boundingBox();
+    return current ? Math.round(current.y - (createBounds!.y + createBounds!.height)) : null;
+  }).toBe(12);
+  const dialogBounds = await createDialog.boundingBox();
+  expect(Math.abs(
+    dialogBounds!.x + dialogBounds!.width / 2
+      - (createBounds!.x + createBounds!.width / 2),
+  )).toBeLessThanOrEqual(1);
+  expect(Math.round(dialogBounds!.y - (createBounds!.y + createBounds!.height))).toBe(12);
+
+  const title = createDialog.getByRole("textbox", { name: "任务标题" });
+  await expect(title).toBeFocused();
+  await expect(title).toHaveAttribute("placeholder", "准备做什么？");
+  await expect(createDialog.getByRole("button", { name: "设置到期时间" }))
+    .toContainText("2026/08/24 · 全天");
+  await expect(createDialog.getByRole("button", { name: "选择任务标签" }))
+    .toContainText("收集箱");
+
+  await page.keyboard.press("Escape");
+  await expect(createDialog).toBeHidden();
+
+  const createdTitle = `日历快捷创建 ${Date.now()}`;
+  await createButton.click();
+  createDialog = page.getByRole("dialog", { name: "创建任务" });
+  const createTitle = createDialog.getByRole("textbox", { name: "任务标题" });
+  const createDescription = createDialog.getByRole("textbox", { name: "任务描述" });
+  await createTitle.fill(createdTitle);
+  await createTitle.press("Enter");
+  await expect(createTitle).toHaveValue(createdTitle);
+  await expect(createDescription).toBeFocused();
+  await createDescription.fill("来自日历创建弹层");
+
+  await createDialog.getByRole("button", { name: "设置到期时间" }).click();
+  const dueDialog = page.getByRole("dialog", { name: "设置到期时间" });
+  await expect(dueDialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dueDialog).toBeHidden();
+  await expect(createDialog).toBeVisible();
+
+  await createDialog.getByRole("button", { name: /设置优先级/ }).click();
+  await page.getByRole("menuitemradio", { name: "高优先级" }).click();
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByRole("button", { name: "选择任务标签" }).click();
+  await createDialog.getByRole("menuitemcheckbox", { name: "产品研发" }).click();
+  await expect(createDialog).toBeVisible();
+
+  await createButton.click();
+  await expect(createDialog).toBeHidden();
+  const event = page.getByText(createdTitle, { exact: true });
+  await expect(event).toHaveCount(1);
+  await event.click();
+
+  const detail = page.getByRole("dialog", { name: `任务详情：${createdTitle}` });
+  await expect(detail.getByRole("textbox", { name: "任务标题" })).toHaveValue(createdTitle);
+  await expect(detail.getByRole("button", { name: /设置优先级，当前高优先级/ }))
+    .toBeVisible();
+  await expect(detail.getByText("产品研发", { exact: true })).toBeVisible();
+});
+
+test("calendar quick-create uses the mobile task-detail surface", async ({ page }) => {
+  await page.setViewportSize({ width: 1486, height: 900 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.getByRole("button", { name: "关闭安排任务" }).last().click();
+  await page.getByRole("button", { name: "创建任务" }).click();
+  const dialog = page.getByRole("dialog", { name: "创建任务" });
+  await expect(dialog).toBeVisible();
+  await expect.poll(async () => {
+    const bounds = await dialog.boundingBox();
+    return bounds && {
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+    };
+  }).toEqual({ x: 8, y: 8, width: 374, height: 828 });
+  await expect(dialog).toHaveCSS("border-radius", "20px");
+});
+
 test("mind map fills the mobile workspace", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/?demo=1");
@@ -1241,6 +1345,26 @@ test("sidebar and detail panel resizing stops at the reference limits", async ({
   expect((await detail.boundingBox())!.width).toBe(440);
 });
 
+test("pressing enter in the task title focuses the description", async ({ page }) => {
+  const editor = await openDemoTask(page);
+  const title = page.getByRole("textbox", { name: "任务标题" });
+
+  await title.click();
+  await title.press("End");
+  await title.press("Enter");
+
+  await expect(title).toHaveValue(demoTaskTitle);
+  await expect(editor).toBeFocused();
+
+  await page.keyboard.type(" from title enter");
+  await expect(editor).toContainText("from title enter");
+  await expect(page.locator(".rich-editor-status")).toHaveText("已保存");
+  await expect(editor).toBeFocused();
+
+  await page.keyboard.type(" and keep typing");
+  await expect(editor).toContainText("from title enter and keep typing");
+});
+
 test("rich-text toolbar formats markdown and flushes before closing", async ({ page }) => {
   const editor = await openDemoTask(page);
   const styleButton = page.getByRole("button", { name: "文本样式", exact: true });
@@ -1616,12 +1740,21 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
   const listSection = page.locator(".task-group").filter({ hasText: "进行中" });
   await expect(listSection.getByText("自定义分组任务", { exact: true })).toBeVisible();
 
+  await listSection.hover();
+  await listSection.getByRole("button", { name: "在“进行中”中新建" }).click();
+  await listSection.getByRole("textbox", { name: "添加任务至“进行中”" })
+    .fill("列表分组新建");
+  await listSection.getByRole("textbox", { name: "添加任务至“进行中”" })
+    .press("Enter");
+  await expect(listSection.getByText("列表分组新建", { exact: true })).toBeVisible();
+
   await page.getByRole("button", { name: "管理分组“进行中”" }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("menuitem", { name: "删除" }).click();
-  await expect(page.getByRole("button", { name: "进行中 1" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "未分组 5" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "进行中 2" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "未分组 6" })).toBeVisible();
   await expect(page.getByText("自定义分组任务", { exact: true })).toBeVisible();
+  await expect(page.getByText("列表分组新建", { exact: true })).toBeVisible();
 });
 
 test("custom sorting supports pointer and keyboard sorting", async ({ page }) => {

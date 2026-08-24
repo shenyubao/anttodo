@@ -227,12 +227,12 @@ describe("task cache updates", () => {
 
     const reordered = applyTaskSectionOrderToBundle(bundle, {
       listKey: "all",
-      sectionIds: ["two", "one"],
+      sectionIds: ["ungrouped", "two", "one"],
     });
 
     expect(reordered.taskSections.map((section) => [section.id, section.position])).toEqual([
-      ["one", 1],
-      ["two", 0],
+      ["one", 2],
+      ["two", 1],
       ["other", 0],
     ]);
   });
@@ -240,14 +240,14 @@ describe("task cache updates", () => {
   it("inserts a section optimistically and renumbers neighbors", () => {
     const bundle = emptyBundle();
     bundle.taskSections = [
-      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 0, created_by: "user" },
-      { id: "two", workspace_id: "workspace", list_key: "all", name: "二", position: 1, created_by: "user" },
+      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 1, created_by: "user" },
+      { id: "two", workspace_id: "workspace", list_key: "all", name: "二", position: 2, created_by: "user" },
     ];
     const optimistic = createOptimisticTaskSection({
       workspaceId: "workspace",
       listKey: "all",
       name: "新分组",
-      position: 1,
+      position: 2,
       createdBy: "user",
       sectionId: "optimistic-section:new",
     });
@@ -255,13 +255,57 @@ describe("task cache updates", () => {
     const next = applyTaskSectionInsertToBundle(bundle, {
       listKey: "all",
       section: optimistic,
-      index: 1,
+      index: 2,
     });
 
     expect(next.taskSections.map((section) => [section.id, section.position])).toEqual([
+      ["one", 1],
+      ["two", 3],
+      ["optimistic-section:new", 2],
+    ]);
+  });
+
+  it("keeps the ungrouped slot when inserting before it", () => {
+    const bundle = emptyBundle();
+    bundle.taskSections = [
+      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 1, created_by: "user" },
+    ];
+    const optimistic = createOptimisticTaskSection({
+      workspaceId: "workspace",
+      listKey: "all",
+      name: "新分组",
+      position: 0,
+      createdBy: "user",
+      sectionId: "optimistic-section:new",
+    });
+
+    const next = applyTaskSectionInsertToBundle(bundle, {
+      listKey: "all",
+      section: optimistic,
+      index: 0,
+    });
+
+    expect(next.taskSections.map((section) => [section.id, section.position])).toEqual([
+      ["one", 2],
+      ["optimistic-section:new", 0],
+    ]);
+  });
+
+  it("moves ungrouped into the middle via mixed group keys", () => {
+    const bundle = emptyBundle();
+    bundle.taskSections = [
+      { id: "one", workspace_id: "workspace", list_key: "all", name: "一", position: 1, created_by: "user" },
+      { id: "two", workspace_id: "workspace", list_key: "all", name: "二", position: 2, created_by: "user" },
+    ];
+
+    const reordered = applyTaskSectionOrderToBundle(bundle, {
+      listKey: "all",
+      sectionIds: ["one", "ungrouped", "two"],
+    });
+
+    expect(reordered.taskSections.map((section) => [section.id, section.position])).toEqual([
       ["one", 0],
       ["two", 2],
-      ["optimistic-section:new", 1],
     ]);
   });
 

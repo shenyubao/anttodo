@@ -1234,8 +1234,8 @@ function MindMapCanvas({
         status: task.status === "completed" ? "open" : "completed",
         completed_at: task.status === "completed" ? null : new Date().toISOString(),
       });
-    } catch {
-      setError("任务状态更新失败，请重试");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "任务状态更新失败，请重试");
     }
   }, [onUpdateTask, online]);
 

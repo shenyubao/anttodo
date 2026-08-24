@@ -19,6 +19,30 @@ import {
 } from "./keyboardShortcuts";
 
 describe("keyboardShortcuts", () => {
+  it("defines a remappable global team-space switch shortcut", () => {
+    expect(SHORTCUT_ACTIONS.find((action) => action.id === "general.switchWorkspace"))
+      .toMatchObject({
+        group: "general",
+        label: "切换团队空间",
+        defaultBinding: { key: "k", mod: true, shift: true },
+        remappable: true,
+        allowInInput: false,
+        scopes: ["global"],
+      });
+    expect(formatBinding(
+      getEffectiveBindings("general.switchWorkspace")[0]!,
+      "mac",
+    )).toBe("⌘+⇧+K");
+    expect(formatBinding(
+      getEffectiveBindings("general.switchWorkspace")[0]!,
+      "other",
+    )).toBe("Ctrl+⇧+K");
+    expect(findBindingConflict(
+      "general.switchWorkspace",
+      { key: "k", mod: true, shift: true },
+    )).toBeNull();
+  });
+
   it("includes work hours and pomodoro controls with non-conflicting defaults", () => {
     expect(SHORTCUT_ACTIONS.find((action) => action.id === "task.logHours")).toMatchObject({
       group: "tasks",
@@ -149,6 +173,14 @@ describe("keyboardShortcuts", () => {
     });
     expect(loadShortcutOverrides(storage)).toEqual({
       "task.focusQuickAdd": { key: "c" },
+    });
+
+    saveShortcutOverrides(
+      { "general.switchWorkspace": { key: "o", mod: true, shift: true } },
+      storage,
+    );
+    expect(loadShortcutOverrides(storage)).toEqual({
+      "general.switchWorkspace": { key: "o", mod: true, shift: true },
     });
   });
 

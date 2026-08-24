@@ -2796,6 +2796,43 @@ html.dark .connector-sync-copy > small {
   stroke-width: 1.8;
 }
 
+.calendar-create-task {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgb(25 25 25 / 20%);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.calendar-create-task:hover,
+.calendar-create-task:focus-visible,
+.calendar-create-task[aria-expanded="true"] {
+  outline: 0;
+  color: #4772fa;
+  background: var(--hover);
+}
+
+.calendar-create-task:focus-visible {
+  box-shadow: 0 0 0 2px rgb(71 114 250 / 28%);
+}
+
+.calendar-create-task:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.calendar-create-task svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+
 .calendar-toolbar-title h1 {
   overflow: hidden;
   margin: 0;
@@ -6361,7 +6398,7 @@ html.dark .kanban-card {
 .task-group-collapse {
   min-width: 0;
   height: 28px;
-  flex: 1;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -6379,6 +6416,12 @@ html.dark .kanban-card {
 .task-group-collapse svg {
   width: 14px;
   color: #a1a6ae;
+}
+
+.task-group-collapse span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-group-collapse em {
@@ -6422,6 +6465,7 @@ html.dark .kanban-card {
 .task-group-select-all {
   flex: 0 0 auto;
   height: 28px;
+  margin-left: auto;
   padding: 0 8px;
   border: 0;
   background: transparent;
@@ -6443,6 +6487,9 @@ html.dark .kanban-card {
 
 .task-section-actions {
   position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
   opacity: 0;
   transition: opacity 120ms ease;
 }
@@ -6464,12 +6511,20 @@ html.dark .kanban-card {
   cursor: pointer;
 }
 
-.task-section-actions > button:hover {
+.task-section-actions > button:hover,
+.task-section-actions > button:focus-visible {
+  outline: none;
   background: rgb(25 25 25 / 5%);
 }
 
+.task-section-actions > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
 .task-section-actions svg {
-  width: 15px;
+  width: 18px;
+  height: 18px;
 }
 
 .task-section-menu {
@@ -6495,6 +6550,40 @@ html.dark .kanban-card {
   border-radius: 6px;
   outline: 0;
   font: inherit;
+}
+
+.task-group-quick-add {
+  margin: 2px 20px 8px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-group-quick-add .task-title-token-field {
+  height: auto;
+}
+
+.task-group-quick-add input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #4772fa;
+  border-radius: 10px;
+  outline: 0;
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 14px;
+  box-shadow: 0 2px 3px rgb(25 25 25 / 3%);
+}
+
+.task-group-quick-add .task-title-token-chips {
+  max-width: 100%;
+  padding: 0 2px;
+}
+
+.task-group-quick-add .task-title-token-menu {
+  right: 0;
 }
 
 .task-tree-item {
@@ -7505,6 +7594,74 @@ html.dark .task-detail {
   border: 0;
   border-radius: inherit;
   box-shadow: none;
+}
+
+.calendar-task-create-popover {
+  z-index: 1250;
+  height: 300px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+  transform: none;
+  animation: calendar-task-create-in 150ms ease-out;
+  transition: opacity 100ms ease, visibility 100ms ease;
+}
+
+.calendar-task-create-popover.is-submitting {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.calendar-task-create-popover > .calendar-task-create-detail {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+}
+
+.calendar-task-create-popover .detail-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.calendar-task-create-popover .detail-title::placeholder,
+.calendar-task-create-description::placeholder {
+  color: rgb(25 25 25 / 38%);
+}
+
+.calendar-task-create-description {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  margin-top: 8px;
+  padding: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  color: #191919;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.calendar-task-create-description:disabled,
+.calendar-task-create-popover .detail-title:disabled {
+  opacity: 0.58;
+}
+
+.calendar-task-create-label-control {
+  max-width: 100%;
+}
+
+@keyframes calendar-task-create-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
 }
 
 @keyframes task-detail-dialog-in {
@@ -11242,6 +11399,16 @@ html.dark .task-detail {
 }
 
 @media (max-width: 700px) {
+  .task-detail-dialog.calendar-task-create-popover {
+    top: calc(var(--safe-area-top, 0px) + 8px) !important;
+    right: calc(var(--safe-area-right, 0px) + 8px);
+    bottom: calc(var(--safe-area-bottom, 0px) + 8px);
+    left: calc(var(--safe-area-left, 0px) + 8px) !important;
+    width: auto !important;
+    height: auto;
+    border-radius: 20px;
+  }
+
   .task-detail-dialog {
     width: calc(100vw - 16px);
     height: calc(100vh - 16px);
@@ -12277,6 +12444,204 @@ body.is-electron.is-macos .rich-editor-immersive .detail-toolbar {
 .task-search-result:focus-visible {
   background: var(--hover);
   outline: 0;
+}
+
+.workspace-switch-dialog {
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(456px, calc(100vh - 24px));
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 20%);
+}
+
+.workspace-switch-dialog-header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 20px;
+}
+
+.workspace-switch-dialog-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 21px;
+}
+
+.workspace-switch-dialog-close {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.workspace-switch-dialog-close:hover,
+.workspace-switch-dialog-close:focus-visible {
+  outline: 0;
+  color: var(--text);
+  background: var(--hover);
+}
+
+.workspace-switch-dialog-close:focus-visible {
+  box-shadow: 0 0 0 2px rgb(71 114 250 / 28%);
+}
+
+.workspace-switch-dialog-close svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.7;
+}
+
+.workspace-switch-search {
+  position: relative;
+  height: 36px;
+  margin: 0 20px 12px;
+  display: flex;
+  align-items: center;
+}
+
+.workspace-switch-search > svg {
+  position: absolute;
+  left: 11px;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  stroke-width: 1.7;
+  pointer-events: none;
+}
+
+.workspace-switch-search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 35px;
+  border: 1px solid rgb(25 25 25 / 10%);
+  border-radius: 8px;
+  outline: 0;
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.workspace-switch-search input::placeholder {
+  color: var(--muted);
+}
+
+.workspace-switch-search input:focus {
+  border-color: #4772fa;
+  box-shadow: 0 0 0 2px rgb(71 114 250 / 12%);
+}
+
+html.dark .workspace-switch-search input {
+  border-color: rgb(255 255 255 / 14%);
+}
+
+html.dark .workspace-switch-search input:focus {
+  border-color: #4772fa;
+}
+
+.workspace-switch-list {
+  max-height: 320px;
+  overflow: auto;
+  padding: 0 12px 16px;
+}
+
+.workspace-switch-item {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+}
+
+.workspace-switch-item:hover,
+.workspace-switch-item.keyboard-active,
+.workspace-switch-item:focus-visible {
+  outline: 0;
+  background: var(--hover);
+}
+
+.workspace-switch-item:focus-visible {
+  box-shadow: inset 0 0 0 2px rgb(71 114 250 / 42%);
+}
+
+.workspace-switch-item.current {
+  color: #4772fa;
+  background: rgb(71 114 250 / 8%);
+}
+
+.workspace-switch-item > .workspace-initial {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  font-size: 12px;
+}
+
+.workspace-switch-item > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-switch-item > svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  stroke-width: 2;
+}
+
+.workspace-switch-empty {
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.workspace-switch-empty > svg {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 10px;
+  stroke-width: 1.4;
+}
+
+.workspace-switch-empty strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.workspace-switch-empty span {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .task-search-status {
@@ -16374,7 +16739,7 @@ body.is-electron.is-macos .desktop-update-banner {
   position: fixed;
   z-index: 80;
   left: 50%;
-  bottom: 22px;
+  top: calc(var(--safe-area-top, 0px) + 22px);
   min-width: 280px;
   max-width: min(520px, calc(100vw - 40px));
   min-height: 42px;
@@ -16393,6 +16758,11 @@ body.is-electron.is-macos .desktop-update-banner {
 
 .toast > svg {
   color: #39ad77;
+  flex-shrink: 0;
+}
+
+.toast.error > svg {
+  color: var(--danger);
 }
 
 .toast span {

@@ -15,7 +15,11 @@ import {
   countLiveTasksByLabel,
 } from "./labelTaskLimits";
 import { descendantIds, isLiveTask } from "./taskTree";
-import { orderedTaskSections, taskSectionOrderAfterInsert } from "./taskList";
+import {
+  orderedTaskSections,
+  positionsFromGroupKeys,
+  taskSectionOrderAfterInsert,
+} from "./taskList";
 
 export const OPTIMISTIC_TASK_ID_PREFIX = "optimistic-task:";
 export const OPTIMISTIC_SECTION_ID_PREFIX = "optimistic-section:";
@@ -301,9 +305,7 @@ export function applyTaskSectionOrderToBundle(
     sectionIds: string[];
   },
 ): WorkspaceBundle {
-  const positionById = new Map(
-    input.sectionIds.map((sectionId, position) => [sectionId, position]),
-  );
+  const positionById = positionsFromGroupKeys(input.sectionIds);
   return {
     ...bundle,
     taskSections: bundle.taskSections.map((section) =>
@@ -346,9 +348,10 @@ export function applyTaskSectionInsertToBundle(
   const ordered = orderedTaskSections(
     bundle.taskSections.filter((section) => section.list_key === input.listKey),
   ).filter((section) => section.id !== input.section.id);
-  const position = Math.max(0, Math.min(input.index ?? ordered.length, ordered.length));
-  const nextIds = taskSectionOrderAfterInsert(ordered, input.section.id, position);
-  const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
+  const nextIds = taskSectionOrderAfterInsert(ordered, input.section.id, input.index);
+  const positionById = positionsFromGroupKeys(nextIds);
+  const position = positionById.get(input.section.id)
+    ?? Math.max(0, Math.min(input.index ?? nextIds.length - 1, nextIds.length - 1));
   return {
     ...bundle,
     taskSections: [

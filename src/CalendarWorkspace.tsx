@@ -30,6 +30,7 @@ import {
   Inbox,
   LockKeyhole,
   PanelLeft,
+  Plus,
   Tag,
   UserRound,
   Users,
@@ -37,6 +38,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import {
+  CalendarTaskCreatePopover,
+  type CalendarTaskCreatePopoverHandle,
+  type CalendarTaskDraft,
+} from "./CalendarTaskCreatePopover";
 import { useShortcutHandler } from "./ShortcutProvider";
 import {
   chineseCalendarDetail,
@@ -702,6 +708,7 @@ export function CalendarWorkspace({
   visibleAssigneeIds,
   dateTimePreferences,
   onSelectTask,
+  onCreateTask,
   onSaveTaskSchedule,
   onNotice,
   sidebarVisible,
@@ -716,6 +723,7 @@ export function CalendarWorkspace({
   visibleAssigneeIds: Set<string>;
   dateTimePreferences: DateTimePreferences;
   onSelectTask: (taskId: string) => void;
+  onCreateTask: (draft: CalendarTaskDraft) => Promise<void>;
   onSaveTaskSchedule: (
     taskId: string,
     patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
@@ -729,6 +737,8 @@ export function CalendarWorkspace({
 }) {
   const calendarRef = useRef<CalendarRef>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const createButtonRef = useRef<HTMLButtonElement>(null);
+  const createPopoverRef = useRef<CalendarTaskCreatePopoverHandle>(null);
   const schedulePanelRef = useRef<HTMLDivElement>(null);
   const unscheduleDropTaskIdsRef = useRef<Set<string>>(new Set());
   const [view, setView] = useState<CalendarViewId>(readStoredView);
@@ -738,6 +748,8 @@ export function CalendarWorkspace({
     readStoredNumber(MULTI_WEEK_STORAGE_KEY, 4, 2, 12));
   const [title, setTitle] = useState("");
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [createPopoverOpen, setCreatePopoverOpen] = useState(false);
+  const [createNow, setCreateNow] = useState(() => new Date());
   const [schedulePanelOpen, setSchedulePanelOpen] = useState(readSchedulePanelOpen);
   const [pendingTaskIds, setPendingTaskIds] = useState<Set<string>>(() => new Set());
   const [calendarMutationTaskIds, setCalendarMutationTaskIds] = useState<Set<string>>(
@@ -1015,6 +1027,26 @@ export function CalendarWorkspace({
           <h1>{title}</h1>
         </div>
         <div className="calendar-toolbar-actions">
+          <button
+            ref={createButtonRef}
+            type="button"
+            className="calendar-create-task"
+            aria-label="创建任务"
+            aria-expanded={createPopoverOpen}
+            disabled={!online}
+            title={online ? "创建任务" : "离线模式下不可创建任务"}
+            onClick={() => {
+              if (createPopoverOpen) {
+                void createPopoverRef.current?.close();
+                return;
+              }
+              setViewMenuOpen(false);
+              setCreateNow(new Date());
+              setCreatePopoverOpen(true);
+            }}
+          >
+            <Plus />
+          </button>
           <div className="calendar-view-anchor" ref={menuRef}>
             <button
               className="calendar-view-trigger"
@@ -1139,6 +1171,22 @@ export function CalendarWorkspace({
         />
       </div>
       </div>
+      {createPopoverOpen && createButtonRef.current && (
+        <CalendarTaskCreatePopover
+          ref={createPopoverRef}
+          anchor={createButtonRef.current}
+          bundle={bundle}
+          online={online}
+          now={createNow}
+          dateTimePreferences={dateTimePreferences}
+          onCreate={onCreateTask}
+          onClose={() => {
+            setCreatePopoverOpen(false);
+            window.setTimeout(() => createButtonRef.current?.focus(), 0);
+          }}
+          onNotice={onNotice}
+        />
+      )}
       {schedulePanelOpen && (
         <>
           <button

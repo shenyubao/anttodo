@@ -18,6 +18,7 @@ export const TASK_DETAIL_DISMISS_IGNORE_SELECTOR = [
   ".kanban-card",
   ".task-list-childTask-row",
   ".task-group-header",
+  ".task-group-quick-add",
   ".task-hours-dialog",
   ".comment-mention-menu",
   ".task-title-token-menu",

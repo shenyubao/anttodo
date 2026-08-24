@@ -204,8 +204,8 @@ describe("task kanban", () => {
       labels,
       members,
       sections: [
-        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 1, created_by: "u" },
-        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 2, created_by: "u" },
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 1, created_by: "u" },
       ],
       placements: [
         { workspace_id: "w", list_key: "all", task_id: "todo", section_id: "first", position: 0 },
@@ -248,7 +248,7 @@ describe("task kanban", () => {
       labels,
       members,
       sections: [
-        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 1, created_by: "u" },
       ],
       placements: [
         { workspace_id: "w", list_key: "all", task_id: "todo", section_id: "first", position: 0 },
@@ -270,7 +270,7 @@ describe("task kanban", () => {
       preference: { grouping: "custom", sort: "custom", direction: "asc", show_completed: true },
       labels,
       members,
-      sections: [{ id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" }],
+      sections: [{ id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 1, created_by: "u" }],
       placements: [
         { workspace_id: "w", list_key: "all", task_id: "todo", section_id: "first", position: 0 },
         { workspace_id: "w", list_key: "all", task_id: "done", section_id: "first", position: 1 },
@@ -290,7 +290,7 @@ describe("task kanban", () => {
       preference: { grouping: "custom", sort: "custom", direction: "asc", show_completed: false },
       labels,
       members,
-      sections: [{ id: "next", workspace_id: "w", list_key: "all", name: "下一步", position: 0, created_by: "u" }],
+      sections: [{ id: "next", workspace_id: "w", list_key: "all", name: "下一步", position: 1, created_by: "u" }],
       placements: [],
       now,
       dateTimePreferences: { weekStartsOn: 1 },
@@ -303,6 +303,31 @@ describe("task kanban", () => {
       now,
       weekStartsOn: 1,
     })).toEqual({ kind: "section", sourceSectionId: null, targetSectionId: "next" });
+  });
+
+  it("places the ungrouped column from the missing section position", () => {
+    const result = buildKanbanColumns({
+      tasks: [task("loose"), task("planned")],
+      preference: { grouping: "custom", sort: "custom", direction: "asc", show_completed: false },
+      labels,
+      members,
+      sections: [
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 2, created_by: "u" },
+      ],
+      placements: [
+        { workspace_id: "w", list_key: "all", task_id: "planned", section_id: "first", position: 0 },
+      ],
+      now,
+      dateTimePreferences: { weekStartsOn: 1 },
+      listTitle: "所有",
+      selectedLabelId: null,
+    });
+    expect(result.map((column) => column.id)).toEqual([
+      "section:first",
+      "section:ungrouped",
+      "section:later",
+    ]);
   });
 
   it("adds CLI assignee columns without treating CLI tasks as unassigned", () => {

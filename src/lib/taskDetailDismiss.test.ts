@@ -34,6 +34,10 @@ describe("shouldDismissTaskDetailOnPointerDown", () => {
       el('<div class="task-group-header"><button class="task-group-select-all">全选</button></div>')
         ?.querySelector("button") ?? null,
     )).toBe(false);
+    expect(shouldDismissTaskDetailOnPointerDown(
+      el('<form class="task-group-quick-add"><input /></form>')
+        ?.querySelector("input") ?? null,
+    )).toBe(false);
   });
 
   it("ignores non-primary buttons", () => {

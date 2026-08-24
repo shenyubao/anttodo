@@ -19,7 +19,10 @@ import {
   groupTasks,
   isHideableSystemSmartView,
   normalizeAssigneeFilter,
+  orderedGroupKeys,
   orderedTaskSections,
+  positionsFromGroupKeys,
+  resolveCustomGroupKey,
   resolveSystemSmartViewOrder,
   resolveTaskListFilters,
   resolveTaskListPreference,
@@ -32,6 +35,8 @@ import {
   TIMELINE_GROUPING_OPTIONS,
   toggleAssigneeUserFilter,
   toggleDueFilter,
+  UNGROUPED_GROUP_KEY,
+  ungroupedPosition,
 } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
@@ -387,7 +392,7 @@ describe("task list grouping and sorting", () => {
       direction: "asc",
       labels,
       members,
-      sections: [{ id: "s", workspace_id: "w", list_key: "all", name: "计划", position: 0, created_by: "u" }],
+      sections: [{ id: "s", workspace_id: "w", list_key: "all", name: "计划", position: 1, created_by: "u" }],
       placements: [
         { workspace_id: "w", list_key: "all", task_id: "two", section_id: "s", position: 0 },
         { workspace_id: "w", list_key: "all", task_id: "one", section_id: "s", position: 1 },
@@ -408,8 +413,8 @@ describe("task list grouping and sorting", () => {
       labels,
       members,
       sections: [
-        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 1, created_by: "u" },
-        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 2, created_by: "u" },
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 1, created_by: "u" },
       ],
       placements: [],
       now,
@@ -424,14 +429,84 @@ describe("task list grouping and sorting", () => {
 
   it("orders sections deterministically and moves ordinary sections", () => {
     const sections = [
-      { id: "c", workspace_id: "w", list_key: "all", name: "丙", position: 2, created_by: "u" },
-      { id: "b", workspace_id: "w", list_key: "all", name: "乙", position: 1, created_by: "u" },
-      { id: "a", workspace_id: "w", list_key: "all", name: "甲", position: 1, created_by: "u" },
+      { id: "c", workspace_id: "w", list_key: "all", name: "丙", position: 3, created_by: "u" },
+      { id: "b", workspace_id: "w", list_key: "all", name: "乙", position: 2, created_by: "u" },
+      { id: "a", workspace_id: "w", list_key: "all", name: "甲", position: 2, created_by: "u" },
     ];
     expect(orderedTaskSections(sections).map((section) => section.id)).toEqual(["a", "b", "c"]);
-    expect(taskSectionOrderAfterMove(sections, "c", "a")).toEqual(["c", "a", "b"]);
-    expect(taskSectionOrderAfterMove(sections, "missing", "a")).toEqual(["a", "b", "c"]);
-    expect(taskSectionOrderAfterInsert(sections, "new", 1)).toEqual(["a", "new", "b", "c"]);
+    expect(orderedGroupKeys(sections)).toEqual(["ungrouped", "a", "b", "c"]);
+    expect(taskSectionOrderAfterMove(sections, "c", "a")).toEqual(["ungrouped", "c", "a", "b"]);
+    expect(taskSectionOrderAfterMove(sections, "missing", "a")).toEqual(["ungrouped", "a", "b", "c"]);
+    expect(taskSectionOrderAfterInsert(sections, "new", 1)).toEqual(["ungrouped", "new", "a", "b", "c"]);
+  });
+
+  it("places the ungrouped bucket from the missing position slot", () => {
+    const first = { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 1, created_by: "u" };
+    const later = { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 2, created_by: "u" };
+    expect(ungroupedPosition([])).toBe(0);
+    expect(ungroupedPosition([first, later])).toBe(0);
+    expect(ungroupedPosition([{ ...first, position: 0 }, { ...later, position: 2 }])).toBe(1);
+    expect(ungroupedPosition([{ ...first, position: 0 }, { ...later, position: 1 }])).toBe(2);
+    expect(orderedGroupKeys([{ ...first, position: 0 }, { ...later, position: 2 }]))
+      .toEqual(["first", UNGROUPED_GROUP_KEY, "later"]);
+    expect(positionsFromGroupKeys(["first", UNGROUPED_GROUP_KEY, "later"]))
+      .toEqual(new Map([["first", 0], ["later", 2]]));
+  });
+
+  it("keeps the ungrouped slot when inserting or moving groups", () => {
+    const sections = [
+      { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 1, created_by: "u" },
+      { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 2, created_by: "u" },
+    ];
+    expect(taskSectionOrderAfterMove(sections, UNGROUPED_GROUP_KEY, "later"))
+      .toEqual(["first", "later", UNGROUPED_GROUP_KEY]);
+    expect(taskSectionOrderAfterInsert(sections, "new")).toEqual([
+      UNGROUPED_GROUP_KEY,
+      "first",
+      "later",
+      "new",
+    ]);
+    expect(taskSectionOrderAfterInsert(sections, "new", 0)).toEqual([
+      "new",
+      UNGROUPED_GROUP_KEY,
+      "first",
+      "later",
+    ]);
+    expect(resolveCustomGroupKey({
+      overId: "group:section:ungrouped",
+      groups: [{ id: "section:ungrouped", sectionId: null, tasks: [{ id: "task-1" }] }],
+    })).toBe(UNGROUPED_GROUP_KEY);
+    expect(resolveCustomGroupKey({
+      overId: "task-1",
+      groups: [{ id: "section:ungrouped", sectionId: null, tasks: [{ id: "task-1" }] }],
+    })).toBe(UNGROUPED_GROUP_KEY);
+  });
+
+  it("renders ungrouped in the middle or at the end after a custom move", () => {
+    const groups = groupTasks({
+      tasks: [task("loose"), task("planned")],
+      grouping: "custom",
+      sort: "custom",
+      direction: "asc",
+      labels,
+      members,
+      sections: [
+        { id: "first", workspace_id: "w", list_key: "all", name: "先做", position: 0, created_by: "u" },
+        { id: "later", workspace_id: "w", list_key: "all", name: "稍后", position: 2, created_by: "u" },
+      ],
+      placements: [
+        { workspace_id: "w", list_key: "all", task_id: "planned", section_id: "first", position: 0 },
+      ],
+      now,
+      preferences: { weekStartsOn: 1 },
+    });
+    expect(groups.map((group) => group.id)).toEqual([
+      "section:first",
+      "section:ungrouped",
+      "section:later",
+    ]);
+    expect(groups.find((group) => group.id === "section:ungrouped")?.tasks.map((item) => item.id))
+      .toEqual(["loose"]);
   });
 
   it("computes the same cross-section task order for list and kanban moves", () => {

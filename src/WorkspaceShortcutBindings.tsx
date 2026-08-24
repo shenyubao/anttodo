@@ -5,16 +5,18 @@ import {
   useShortcuts,
 } from "./ShortcutProvider";
 import type { ShortcutScope } from "./lib/keyboardShortcuts";
-import type { Task } from "./types";
+import type { NoticeHandler, Task } from "./types";
 
 export function WorkspaceShortcutBindings({
   appSection,
   settingsOpen,
+  workspaceSwitcherOpen,
   smartView,
   selectedTask,
   selectedTasks,
   online,
   onOpenSearch,
+  onOpenWorkspaceSwitcher,
   onOpenSettings,
   onOpenShortcutsSettings,
   onChangeSection,
@@ -27,11 +29,13 @@ export function WorkspaceShortcutBindings({
 }: {
   appSection: ShortcutScope;
   settingsOpen: boolean;
+  workspaceSwitcherOpen: boolean;
   smartView: string;
   selectedTask: Task | null;
   selectedTasks: Task[];
   online: boolean;
   onOpenSearch: () => void;
+  onOpenWorkspaceSwitcher: () => void;
   onOpenSettings: () => void;
   onOpenShortcutsSettings: () => void;
   onChangeSection: (section: "tasks" | "calendar" | "mindmap" | "focus") => void;
@@ -40,7 +44,7 @@ export function WorkspaceShortcutBindings({
   onBulkComplete: () => Promise<void>;
   onBulkDelete: () => Promise<void>;
   onCloseTask: () => void;
-  onNotice: (message: string) => void;
+  onNotice: NoticeHandler;
 }) {
   const { setActiveScope, setSuspended } = useShortcuts();
   const multiSelected = selectedTasks.length >= 2;
@@ -50,8 +54,8 @@ export function WorkspaceShortcutBindings({
   }, [appSection, setActiveScope]);
 
   useEffect(() => {
-    setSuspended(settingsOpen);
-  }, [settingsOpen, setSuspended]);
+    setSuspended(settingsOpen || workspaceSwitcherOpen);
+  }, [settingsOpen, setSuspended, workspaceSwitcherOpen]);
 
   useShortcutHandler("general.flushSave", () => {
     requestFlushPendingEdits();
@@ -59,6 +63,10 @@ export function WorkspaceShortcutBindings({
 
   useShortcutHandler("general.search", () => {
     onOpenSearch();
+  });
+
+  useShortcutHandler("general.switchWorkspace", () => {
+    onOpenWorkspaceSwitcher();
   });
 
   useShortcutHandler("general.settings", () => {
@@ -109,7 +117,7 @@ export function WorkspaceShortcutBindings({
     if (appSection !== "tasks" || !online) return false;
     if (multiSelected) {
       void onBulkComplete().catch((error) => {
-        onNotice(error instanceof Error ? error.message : "更新任务失败，请重试");
+        onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
       });
       return;
     }
@@ -119,7 +127,7 @@ export function WorkspaceShortcutBindings({
       status: selectedTask.status === "completed" ? "open" : "completed",
       completed_at: selectedTask.status === "completed" ? null : new Date().toISOString(),
     }).catch((error) => {
-      onNotice(error instanceof Error ? error.message : "更新任务失败，请重试");
+      onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
     });
   });
 

@@ -1,3 +1,5 @@
+export type NoticeTone = "success" | "error";
+export type NoticeHandler = (message: string, tone?: NoticeTone) => void;
 export type WorkspaceRole = "owner" | "admin" | "member";
 export type WorkspaceInviteRole = Exclude<WorkspaceRole, "owner">;
 export type LabelKind = "private" | "team";

@@ -17,8 +17,10 @@ import {
   isCompletedTask,
   labelSubtreeIds,
   leafLabelsInScope,
-  orderedTaskSections,
+  orderedGroupKeys,
   sortTasks,
+  UNGROUPED_GROUP_ID,
+  UNGROUPED_GROUP_KEY,
 } from "./taskList";
 import { isRootTask } from "./taskTree";
 
@@ -202,7 +204,8 @@ export function buildKanbanColumns(input: {
     const placementByTask = new Map(input.placements.map((item) => [item.task_id, item]));
     const buckets = new Map<string | null, Task[]>();
     buckets.set(null, []);
-    for (const section of orderedTaskSections(input.sections)) {
+    const sectionById = new Map(input.sections.map((section) => [section.id, section]));
+    for (const section of input.sections) {
       buckets.set(section.id, []);
     }
     for (const task of tasks) {
@@ -222,20 +225,24 @@ export function buildKanbanColumns(input: {
             input.placements,
             input.userLabelOrder,
           );
-    return [
-      {
-        id: "section:ungrouped",
-        title: "未分组",
-        target: { kind: "section" as const, sectionId: null },
-        tasks: sortGroup(buckets.get(null) ?? []),
-      },
-      ...orderedTaskSections(input.sections).map((section): KanbanColumn => ({
+    return orderedGroupKeys(input.sections).flatMap((key): KanbanColumn[] => {
+      if (key === UNGROUPED_GROUP_KEY) {
+        return [{
+          id: UNGROUPED_GROUP_ID,
+          title: "未分组",
+          target: { kind: "section", sectionId: null },
+          tasks: sortGroup(buckets.get(null) ?? []),
+        }];
+      }
+      const section = sectionById.get(key);
+      if (!section) return [];
+      return [{
         id: `section:${section.id}`,
         title: section.name,
         target: { kind: "section", sectionId: section.id },
         tasks: sortGroup(buckets.get(section.id) ?? []),
-      })),
-    ] satisfies KanbanColumn[];
+      }];
+    });
   }
 
   const listTasks = input.tasks.filter(isRootTask);

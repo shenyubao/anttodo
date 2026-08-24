@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, powerMonitor, shell } from "electron";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,6 +26,18 @@ import { shouldMinimizeMainWindowOnClose } from "./main-window-behavior.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+
+if (isDev) {
+  // Keep development Chromium data and the single-instance lock separate from
+  // the installed app so both can run at the same time.
+  const developmentUserDataPath = path.join(
+    app.getPath("appData"),
+    `${app.getName()}-development`,
+  );
+  mkdirSync(developmentUserDataPath, { recursive: true });
+  app.setPath("userData", developmentUserDataPath);
+}
+
 const authCallbackQueue = createAuthCallbackQueue(5);
 const deepLinkQueue = createDeepLinkQueue(20);
 let mainWindow = null;

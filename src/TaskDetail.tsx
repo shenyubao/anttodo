@@ -124,6 +124,7 @@ import type {
   AssigneeTarget,
   DateTimePreferences,
   Member,
+  NoticeHandler,
   ReminderSchedule,
   Task,
   TaskActivityPage,
@@ -207,7 +208,7 @@ export type TaskDetailProps = {
   ) => Promise<void>;
   onUpdateComment: (comment: TaskComment, input: CreateCommentInput) => Promise<void>;
   onDeleteComment: (comment: TaskComment) => Promise<void>;
-  onNotice?: (message: string) => void;
+  onNotice?: NoticeHandler;
 };
 
 function TaskAssigneeControl({
@@ -2178,6 +2179,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         void onUpdate({
           status: task.status === "completed" ? "open" : "completed",
           completed_at: task.status === "completed" ? null : new Date().toISOString(),
+        }).catch((error) => {
+          onNotice?.(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
         });
       }}
     >
@@ -2338,8 +2341,16 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               disabled={!writable}
               aria-label={task.kind === "note" ? "笔记标题" : "任务标题"}
               onChange={(event) => {
-                setDraftTitle(event.target.value);
-                scheduleSave({ title: event.target.value });
+                const title = event.target.value.replace(/[\r\n]+/g, " ");
+                setDraftTitle(title);
+                scheduleSave({ title });
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                event.preventDefault();
+                if (event.ctrlKey || event.metaKey || event.altKey) return;
+                editorRef.current?.focus();
               }}
               rows={1}
             />
@@ -2389,8 +2400,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           />
         ) : (
           <>
+        {/* A saved description is echoed through the task cache; it must not remount the editor. */}
         <TaskRichTextEditor
-          key={`${task.id}:${descriptionRevision}:${displayDescription}`}
+          key={`${task.id}:${descriptionRevision}`}
           ref={editorRef}
           attachmentContext={{ workspaceId: task.workspace_id, taskId: task.id }}
           attachmentService={attachmentService}
@@ -2477,7 +2489,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     aria-label={`完成子级任务：${childTask.title}`}
                     checked={(childTask.status === "completed")}
                     disabled={!writable}
-                    onChange={(event) => void onToggleChildTask(childTask.id, event.target.checked).catch(() => {})}
+                    onChange={(event) => void onToggleChildTask(childTask.id, event.target.checked).catch((error) => {
+                      onNotice?.(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
+                    })}
                   />
                   <div className="childTask-main">
                     <div className="childTask-headline">

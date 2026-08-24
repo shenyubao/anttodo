@@ -769,9 +769,39 @@ export function resolveTaskListPreference(
   };
 }
 
+export const UNGROUPED_GROUP_KEY = "ungrouped";
+export const UNGROUPED_GROUP_ID = `section:${UNGROUPED_GROUP_KEY}`;
+
+export function customGroupKey(sectionId: string | null | undefined) {
+  return sectionId ?? UNGROUPED_GROUP_KEY;
+}
+
 export function orderedTaskSections(sections: TaskSection[]) {
   return [...sections].sort((left, right) =>
     left.position - right.position || left.id.localeCompare(right.id));
+}
+
+export function ungroupedPosition(sections: TaskSection[]) {
+  const ordered = orderedTaskSections(sections);
+  const occupied = new Set(ordered.map((section) => section.position));
+  for (let index = 0; index <= ordered.length; index += 1) {
+    if (!occupied.has(index)) return index;
+  }
+  return 0;
+}
+
+export function orderedGroupKeys(sections: TaskSection[]) {
+  const keys = orderedTaskSections(sections).map((section) => section.id);
+  keys.splice(Math.max(0, Math.min(ungroupedPosition(sections), keys.length)), 0, UNGROUPED_GROUP_KEY);
+  return keys;
+}
+
+export function positionsFromGroupKeys(keys: readonly string[]) {
+  const positionById = new Map<string, number>();
+  keys.forEach((key, position) => {
+    if (key !== UNGROUPED_GROUP_KEY) positionById.set(key, position);
+  });
+  return positionById;
 }
 
 export function taskSectionOrderAfterMove(
@@ -779,7 +809,7 @@ export function taskSectionOrderAfterMove(
   activeSectionId: string,
   overSectionId: string,
 ) {
-  const orderedIds = orderedTaskSections(sections).map((section) => section.id);
+  const orderedIds = orderedGroupKeys(sections);
   const from = orderedIds.indexOf(activeSectionId);
   const to = orderedIds.indexOf(overSectionId);
   if (from < 0 || to < 0 || from === to) return orderedIds;
@@ -791,13 +821,31 @@ export function taskSectionOrderAfterMove(
 export function taskSectionOrderAfterInsert(
   sections: TaskSection[],
   sectionId: string,
-  index = sections.length,
+  index?: number,
 ) {
-  const orderedIds = orderedTaskSections(sections)
-    .map((section) => section.id)
-    .filter((id) => id !== sectionId);
-  orderedIds.splice(Math.max(0, Math.min(index, orderedIds.length)), 0, sectionId);
+  const orderedIds = orderedGroupKeys(sections).filter((id) => id !== sectionId);
+  orderedIds.splice(
+    Math.max(0, Math.min(index ?? orderedIds.length, orderedIds.length)),
+    0,
+    sectionId,
+  );
   return orderedIds;
+}
+
+export function resolveCustomGroupKey(input: {
+  overId: string;
+  groups: Array<{
+    id: string;
+    sectionId?: string | null;
+    tasks: Array<{ id: string }>;
+  }>;
+}) {
+  if (input.overId.startsWith("section:")) return input.overId.slice("section:".length);
+  const group = input.groups.find((item) =>
+    item.tasks.some((task) => task.id === input.overId)
+    || `group:${item.id}` === input.overId);
+  if (!group?.id.startsWith("section:")) return null;
+  return customGroupKey(group.sectionId);
 }
 
 export function taskOrdersAfterCrossSectionMove(input: {
@@ -955,20 +1003,25 @@ export function groupTasks(input: {
 
   if (grouping === "custom") {
     const placementByTask = new Map(placements.map((item) => [item.task_id, item]));
-    const ungroupedTasks = tasks.filter(
-      (task) => !placementByTask.get(task.id)?.section_id,
-    );
-    groups.push({
-      id: "section:ungrouped",
-      title: "未分组",
-      tasks: sortGroup(ungroupedTasks),
-      sectionId: null,
-    });
-    for (const section of orderedTaskSections(sections)) {
+    const tasksBySection = new Map<string | null, Task[]>();
+    tasksBySection.set(null, []);
+    const sectionById = new Map(sections.map((section) => [section.id, section]));
+    for (const section of sections) tasksBySection.set(section.id, []);
+    for (const task of tasks) {
+      const sectionId = placementByTask.get(task.id)?.section_id ?? null;
+      (tasksBySection.get(sectionId) ?? tasksBySection.get(null)!).push(task);
+    }
+    for (const key of orderedGroupKeys(sections)) {
+      if (key === UNGROUPED_GROUP_KEY) {
+        add(UNGROUPED_GROUP_ID, "未分组", tasksBySection.get(null) ?? [], null);
+        continue;
+      }
+      const section = sectionById.get(key);
+      if (!section) continue;
       add(
         `section:${section.id}`,
         section.name,
-        tasks.filter((task) => placementByTask.get(task.id)?.section_id === section.id),
+        tasksBySection.get(section.id) ?? [],
         section.id,
       );
     }

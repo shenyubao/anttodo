@@ -31,6 +31,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  CircleAlert,
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
@@ -121,7 +122,9 @@ import { ShortcutsSettingsPanel } from "./ShortcutsSettingsPanel";
 import { SmartViewsSettingsPanel } from "./SmartViewsSettingsPanel";
 import { SaveTaskViewDialog } from "./SaveTaskViewDialog";
 import { TaskContextMenu } from "./TaskContextMenu";
-import { TaskKanban } from "./TaskKanban";
+import { TaskKanban, type KanbanCreatePayload } from "./TaskKanban";
+import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
+import { useTaskTitleTokens } from "./useTaskTitleTokens";
 import { TaskTimeline } from "./TaskTimeline";
 import { TaskSectionComposer } from "./TaskSectionComposer";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
@@ -134,6 +137,7 @@ import type {
 import { formatUpdateProgressLabel } from "./lib/desktopUpdate";
 import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
 import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
+import { WorkspaceSwitcherDialog } from "./WorkspaceSwitcherDialog";
 import {
   assignTask as assignTaskApi,
   createTaskComment as createTaskCommentApi,
@@ -218,6 +222,7 @@ import {
   appendActualHours,
   formatHoursList,
   hoursFromFocusSeconds,
+  parseEstimateHoursText,
 } from "./lib/taskHours";
 import { reminderTriggerAt } from "./lib/reminders";
 import { nextOccurrenceFields } from "./lib/recurrence";
@@ -299,6 +304,7 @@ import {
   canHideSmartView,
   clampGroupingForViewMode,
   countTasksForLabelSubtree,
+  customGroupKey,
   customTaskViewId,
   customTaskViewKey,
   defaultSystemSmartViewPosition,
@@ -309,7 +315,10 @@ import {
   isCustomTaskView,
   isHideableSystemSmartView,
   labelSubtreeIds,
+  orderedGroupKeys,
   orderedTaskSections,
+  positionsFromGroupKeys,
+  resolveCustomGroupKey,
   resolveSystemSmartViewOrder,
   resolveTaskListPreference,
   resolveTaskListFilters,
@@ -319,6 +328,7 @@ import {
   taskSectionOrderAfterInsert,
   taskSectionOrderAfterMove,
   taskListKey,
+  UNGROUPED_GROUP_ID,
 } from "./lib/taskList";
 import { TaskFilterMenu } from "./TaskFilterMenu";
 import { TaskRecommendationButton } from "./TaskRecommendationButton";
@@ -485,6 +495,8 @@ import type {
   LabelAccessDraft,
   LabelAccessScope,
   Member,
+  NoticeHandler,
+  NoticeTone,
   NotificationChannelPreferences,
   NotificationPreferences,
   NotificationScenario,
@@ -2141,7 +2153,12 @@ function RemoteApplication({
   );
   const requestedWorkspaceId = currentApplicationRoute()?.workspaceId ?? null;
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
+  const [notice, setNoticeMessage] = useState("");
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>("success");
+  function setNotice(message: string, tone: NoticeTone = "success") {
+    setNoticeMessage(message);
+    setNoticeTone(tone);
+  }
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [activityRevision, setActivityRevision] = useState(0);
   const pendingTaskCreatesRef = useRef(0);
@@ -3617,21 +3634,21 @@ function RemoteApplication({
     const ordered = orderedTaskSections(
       (previous ?? activeBundle).taskSections.filter((section) => section.list_key === listKey),
     );
-    const position = Math.max(0, Math.min(index ?? ordered.length, ordered.length));
     const optimistic = createOptimisticTaskSection({
       workspaceId: activeWorkspaceId,
       listKey,
       name,
-      position,
+      position: 0,
       createdBy: userId,
     });
-    const nextIds = taskSectionOrderAfterInsert(ordered, optimistic.id, position);
-    const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
+    const groupKeys = taskSectionOrderAfterInsert(ordered, optimistic.id, index);
+    const positionById = positionsFromGroupKeys(groupKeys);
+    const position = positionById.get(optimistic.id) ?? 0;
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
       ? applyTaskSectionInsertToBundle(current, {
           listKey,
-          section: optimistic,
-          index: position,
+          section: { ...optimistic, position },
+          index,
         })
       : current);
     pendingSectionMutationsRef.current += 1;
@@ -3672,11 +3689,13 @@ function RemoteApplication({
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
       ? applyTaskSectionOrderToBundle(current, { listKey, sectionIds })
       : current);
+    const positionById = positionsFromGroupKeys(sectionIds);
+    const changedIds = [...positionById.keys()];
     pendingSectionMutationsRef.current += 1;
     try {
-      await Promise.all(sectionIds.map((sectionId, position) =>
-        updateTaskSection(client, sectionId, { position })));
-      rememberLocalRealtimeChanges("task_sections", sectionIds);
+      await Promise.all(changedIds.map((sectionId) =>
+        updateTaskSection(client, sectionId, { position: positionById.get(sectionId)! })));
+      rememberLocalRealtimeChanges("task_sections", changedIds);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3797,6 +3816,7 @@ function RemoteApplication({
       notifications={notificationsQuery.data ?? []}
       notificationsLoading={notificationsQuery.isLoading}
       notice={notice}
+      noticeTone={noticeTone}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onLoadMoreTasks={loadMoreTasks}
@@ -3994,7 +4014,12 @@ function DemoApplication({
     setFocusSettings((current) => ({ ...current, workspace_id: workspaceId }));
   }, [workspaceId]);
   const [bundle, setBundle] = useState(createDemoBundle);
-  const [notice, setNotice] = useState("你正在浏览演示空间，所有改动只保存在当前页面");
+  const [notice, setNoticeMessage] = useState("你正在浏览演示空间，所有改动只保存在当前页面");
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>("success");
+  function setNotice(message: string, tone: NoticeTone = "success") {
+    setNoticeMessage(message);
+    setNoticeTone(tone);
+  }
   const [inviteLink, setInviteLink] = useState<WorkspaceInviteLink | null>(null);
   const [dateTimePreferences, setDateTimePreferences] = useState(
     DEFAULT_DATE_TIME_PREFERENCES,
@@ -4230,6 +4255,7 @@ function DemoApplication({
         item.workspace_id === workspaceId && item.recipient_id === "demo-user")}
       notificationsLoading={false}
       notice={notice}
+      noticeTone={noticeTone}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onLoadMoreTasks={async () => undefined}
@@ -5018,30 +5044,15 @@ function DemoApplication({
       }}
       onCreateTaskSection={async (listKey, name, index) => {
         setBundle((current) => {
-          const ordered = orderedTaskSections(
-            current.taskSections.filter((section) => section.list_key === listKey),
-          );
-          const position = Math.max(0, Math.min(index ?? ordered.length, ordered.length));
-          const sectionId = crypto.randomUUID();
-          const nextIds = taskSectionOrderAfterInsert(ordered, sectionId, position);
-          const positionById = new Map(nextIds.map((id, nextPosition) => [id, nextPosition]));
-          return {
-            ...current,
-            taskSections: [
-              ...current.taskSections.map((section) =>
-                section.list_key === listKey
-                  ? { ...section, position: positionById.get(section.id) ?? section.position }
-                  : section),
-              {
-                id: sectionId,
-                workspace_id: workspaceId,
-                list_key: listKey,
-                name,
-                position,
-                created_by: "demo-user",
-              },
-            ],
-          };
+          const section = createOptimisticTaskSection({
+            workspaceId,
+            listKey,
+            name,
+            position: 0,
+            createdBy: "demo-user",
+            sectionId: crypto.randomUUID(),
+          });
+          return applyTaskSectionInsertToBundle(current, { listKey, section, index });
         });
       }}
       onReorderTaskSections={async (listKey, sectionIds) => {
@@ -5117,8 +5128,9 @@ type WorkspaceAppProps = {
   notifications: AppNotification[];
   notificationsLoading: boolean;
   notice: string;
+  noticeTone: NoticeTone;
   onDismissNotice: () => void;
-  onNotice: (message: string) => void;
+  onNotice: NoticeHandler;
   onLoadMoreTasks: () => Promise<void>;
   desktopDeepLinks: DesktopDeepLinkEnvelope[];
   onConsumeDesktopDeepLink: (id: number) => void;
@@ -5420,6 +5432,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [mobileAppSidebar, setMobileAppSidebar] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
+  const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | null>(null);
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false);
@@ -6171,11 +6184,13 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     <WorkspaceShortcutBindings
       appSection={shortcutScope}
       settingsOpen={settingsDialogOpen}
+      workspaceSwitcherOpen={workspaceSwitcherOpen}
       smartView={smartView}
       selectedTask={selectedTask}
       selectedTasks={selectedTasks}
       online={props.online}
       onOpenSearch={() => setSearchDialogOpen(true)}
+      onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
       onOpenSettings={() => openSettings("account")}
       onOpenShortcutsSettings={() => openSettings("shortcuts")}
       onChangeSection={changeSection}
@@ -6460,6 +6475,33 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           visibleAssigneeIds={visibleAssigneeIds}
           dateTimePreferences={props.dateTimePreferences}
           onSelectTask={selectTask}
+          onCreateTask={async (draft) => {
+            const created = await props.onCreateTask({
+              title: draft.title,
+              description: draft.description,
+              labelIds: draft.labelIds,
+              dueAt: draft.schedulePatch.due_at,
+              dueTimezone: draft.schedulePatch.due_timezone,
+              priority: draft.priority,
+              kind: "todo",
+              assigneeId: null,
+            });
+            const createdId = typeof created === "object" && created && "id" in created
+              ? String(created.id)
+              : null;
+            if (!createdId) throw new Error("创建任务失败，请重试");
+            try {
+              await props.onSaveTaskSchedule(
+                createdId,
+                draft.schedulePatch,
+                draft.schedule,
+              );
+            } catch (cause) {
+              props.onNotice(cause instanceof Error
+                ? `任务已创建，但排期保存失败：${cause.message}`
+                : "任务已创建，但排期保存失败，请重试");
+            }
+          }}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
           onNotice={props.onNotice}
           sidebarVisible={!calendarSidebarCollapsed}
@@ -6679,6 +6721,13 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setSearchDialogOpen(false);
         }}
       />
+      <WorkspaceSwitcherDialog
+        open={workspaceSwitcherOpen}
+        onOpenChange={setWorkspaceSwitcherOpen}
+        workspaces={props.workspaces}
+        currentWorkspaceId={props.workspaceId}
+        onSelectWorkspace={changeWorkspace}
+      />
       <SettingsDialog
         open={settingsDialogOpen}
         onOpenChange={(open) => {
@@ -6765,8 +6814,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         />
       )}
       {props.notice && (
-        <div className="toast" role="status">
-          <CheckCircle2 size={18} />
+        <div
+          className={clsx("toast", props.noticeTone === "error" && "error")}
+          role={props.noticeTone === "error" ? "alert" : "status"}
+        >
+          {props.noticeTone === "error" ? <CircleAlert size={18} /> : <CheckCircle2 size={18} />}
           <span>{props.notice}</span>
           <button aria-label="关闭提示" onClick={props.onDismissNotice}><X size={15} /></button>
         </div>
@@ -9758,6 +9810,7 @@ function TaskWorkspace({
     [bundle.taskSections, listKey],
   );
   const sortedSections = useMemo(() => orderedTaskSections(sections), [sections]);
+  const groupKeys = useMemo(() => orderedGroupKeys(sortedSections), [sortedSections]);
   const placements = useMemo(
     () => bundle.taskPlacements.filter((placement) => placement.list_key === listKey),
     [bundle.taskPlacements, listKey],
@@ -9920,6 +9973,9 @@ function TaskWorkspace({
     tasks,
     viewMode,
   ]);
+  const ungroupedListTasks = preference.grouping === "custom"
+    ? groups.find((group) => group.id === UNGROUPED_GROUP_ID)?.tasks ?? []
+    : groups[0]?.tasks ?? [];
   const completedTasks = useMemo(
     () => {
       if (viewMode === "kanban" || isTrashView) return [];
@@ -10085,9 +10141,9 @@ function TaskWorkspace({
     }
   }
 
-  async function beginAddSection(index = sortedSections.length) {
+  async function beginAddSection(index = groupKeys.length) {
     if (!online || !canManageSelectedLabel || isTrashView) return;
-    setSectionDraftIndex(Math.max(0, Math.min(index, sortedSections.length)));
+    setSectionDraftIndex(Math.max(0, Math.min(index, groupKeys.length)));
     setSectionDraftName("");
     if (preference.grouping === "custom") return;
     try {
@@ -10369,7 +10425,7 @@ function TaskWorkspace({
           ? {
               listKey,
               sectionId: null,
-              taskIds: groups[0]?.tasks.map((task) => task.id) ?? [],
+              taskIds: ungroupedListTasks.map((task) => task.id),
             }
           : undefined,
       });
@@ -10396,7 +10452,7 @@ function TaskWorkspace({
         await onSetTaskListOrder(
           listKey,
           null,
-          [createdId, ...(groups[0]?.tasks.map((task) => task.id) ?? [])],
+          [createdId, ...ungroupedListTasks.map((task) => task.id)],
         );
       }
     } catch (error) {
@@ -10431,17 +10487,13 @@ function TaskWorkspace({
       const overId = String(event.over.id);
       if (activeId.startsWith("section:")) {
         if (!canManageSections) return;
-        const activeSectionId = activeId.slice("section:".length);
-        const overSectionId = overId.startsWith("section:")
-          ? overId.slice("section:".length)
-          : groups.find((group) =>
-              group.tasks.some((task) => task.id === overId)
-              || `group:${group.id}` === overId)?.sectionId;
-        if (!overSectionId) return;
+        const activeGroupKey = activeId.slice("section:".length);
+        const overGroupKey = resolveCustomGroupKey({ overId, groups });
+        if (!overGroupKey) return;
         const nextOrder = taskSectionOrderAfterMove(
           sortedSections,
-          activeSectionId,
-          overSectionId,
+          activeGroupKey,
+          overGroupKey,
         );
         await onReorderTaskSections(listKey, nextOrder);
         return;
@@ -10713,21 +10765,18 @@ function TaskWorkspace({
             onDragEnd={(event) => void handleDragEnd(event)}
           >
             <SortableContext
-              items={sortedSections.map((section) => `section:${section.id}`)}
+              items={groupKeys.map((key) => `section:${key}`)}
               strategy={verticalListSortingStrategy}
             >
-              {groups.map((group) => {
-                const sectionIndex = group.sectionId
-                  ? sortedSections.findIndex((section) => section.id === group.sectionId)
-                  : -1;
+              {groups.map((group, visualIndex) => {
                 const editableSection = group.sectionId
                   ? sortedSections.find((section) => section.id === group.sectionId)
                   : undefined;
+                const column = kanbanColumns.find((item) => item.id === group.id);
                 return (
                   <Fragment key={group.id}>
                     {preference.grouping === "custom"
-                      && sectionIndex >= 0
-                      && sectionDraftIndex === sectionIndex && (
+                      && sectionDraftIndex === visualIndex && (
                       <TaskSectionComposer
                         variant="list"
                         name={sectionDraftName}
@@ -10760,10 +10809,19 @@ function TaskWorkspace({
                       canEditTask={canEditTask}
                       canCompleteTask={canCompleteTask}
                       contextMenuVariant={isTrashView ? "trash" : "default"}
+                      currentUserId={currentUserId}
+                      labelPermissionLevels={bundle.labelPermissionLevels}
+                      userLabelOrder={bundle.userLabelOrder}
+                      composerMembers={assigneeMembers}
+                      defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
+                      canCreate={column ? !isTrashView && canCreateInKanbanColumn(column) : false}
+                      onCreateInGroup={column && !isTrashView
+                        ? (payload) => createInKanbanColumn(column, payload)
+                        : undefined}
                       onRenameSection={(sectionId, name) =>
                         onUpdateTaskSection(sectionId, { name })}
                       onInsertSection={(sectionId, placement) => {
-                        const index = sortedSections.findIndex((section) => section.id === sectionId);
+                        const index = groupKeys.indexOf(sectionId);
                         if (index >= 0) {
                           void beginAddSection(index + (placement === "after" ? 1 : 0)).catch((error) =>
                             onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"));
@@ -10778,6 +10836,8 @@ function TaskWorkspace({
                         onUpdateTask(task.id, {
                           status: task.status === "completed" ? "open" : "completed",
                           completed_at: task.status === "completed" ? null : new Date().toISOString(),
+                        }).catch((error) => {
+                          onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
                         })
                       }
                       onToggleChildTask={onToggleChildTask}
@@ -10815,7 +10875,7 @@ function TaskWorkspace({
             )}
           </DndContext>
         )}
-        {preference.grouping === "custom" && sectionDraftIndex === sortedSections.length && (
+        {preference.grouping === "custom" && sectionDraftIndex === groupKeys.length && (
           <TaskSectionComposer
             variant="list"
             name={sectionDraftName}
@@ -10863,7 +10923,10 @@ function TaskWorkspace({
             canCompleteTask={canCompleteTask}
             contextMenuVariant="default"
             onToggle={async (task) =>
-              onUpdateTask(task.id, { status: "open", completed_at: null })}
+              onUpdateTask(task.id, { status: "open", completed_at: null }).catch((error) => {
+                onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
+              })
+            }
             onToggleChildTask={onToggleChildTask}
             onUpdateTask={onUpdateTask}
             onSaveTaskSchedule={onSaveTaskSchedule}
@@ -11116,6 +11179,111 @@ function LabelActionsMenu({
   );
 }
 
+function TaskGroupQuickAdd({
+  groupTitle,
+  members,
+  labels,
+  labelPermissionLevels,
+  userLabelOrder,
+  currentUserId,
+  defaultAssigneeId = null,
+  canCreate,
+  onCreate,
+  onCancel,
+  onError,
+}: {
+  groupTitle: string;
+  members: Member[];
+  labels: Label[];
+  labelPermissionLevels: WorkspaceBundle["labelPermissionLevels"];
+  userLabelOrder?: WorkspaceBundle["userLabelOrder"];
+  currentUserId: string;
+  defaultAssigneeId?: string | null;
+  canCreate: boolean;
+  onCreate: (payload: KanbanCreatePayload) => Promise<void>;
+  onCancel: () => void;
+  onError: (message: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tokens = useTaskTitleTokens({
+    members,
+    labels,
+    labelPermissionLevels,
+    userLabelOrder,
+    currentUserId,
+    defaultAssigneeId,
+    features: { assignee: true, labels: true },
+    inputRef,
+  });
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (tokens.token) return;
+    const payload = tokens.toSubmitPayload();
+    if (!payload.title || !canCreate) return;
+    const hoursParsed = parseEstimateHoursText(payload.title);
+    const nextPayload: KanbanCreatePayload = hoursParsed
+      ? {
+          ...payload,
+          title: hoursParsed.title.trim() || payload.title,
+          estimateHours: hoursParsed.estimateHours,
+        }
+      : { ...payload, estimateHours: null };
+    if (!nextPayload.title) return;
+    tokens.reset();
+    onCancel();
+    void onCreate(nextPayload).catch((error) => {
+      onError(error instanceof Error ? error.message : "新建失败，请重试");
+    });
+  }
+
+  return (
+    <form className="task-group-quick-add" onSubmit={submit}>
+      <div className="task-title-token-field">
+        <input
+          ref={inputRef}
+          autoFocus
+          value={tokens.title}
+          aria-label={`添加任务至“${groupTitle}”`}
+          placeholder="添加任务"
+          onChange={tokens.handleChange}
+          onKeyDown={(event) => {
+            if (tokens.handleKeyDown(event)) return;
+            if (event.key === "Escape") {
+              tokens.reset();
+              onCancel();
+            }
+          }}
+          onBlur={() => {
+            const onlyDefaultAssignee = !tokens.assigneeId
+              || tokens.assigneeId === (defaultAssigneeId ?? null);
+            if (!tokens.title.trim() && onlyDefaultAssignee && tokens.labelIds.length === 0) {
+              tokens.reset();
+              onCancel();
+            }
+          }}
+        />
+        {tokens.token && (
+          <TaskTitleTokenMenu
+            kind={tokens.token.kind}
+            assigneeCandidates={tokens.assigneeCandidates}
+            labelCandidates={tokens.labelCandidates}
+            activeIndex={tokens.activeIndex}
+            onSelectAssignee={tokens.selectAssignee}
+            onSelectLabel={tokens.selectLabel}
+          />
+        )}
+      </div>
+      <TaskTitleTokenChips
+        assignee={tokens.assignee}
+        labels={tokens.selectedLabels}
+        onRemoveAssignee={tokens.removeAssignee}
+        onRemoveLabel={tokens.removeLabel}
+      />
+    </form>
+  );
+}
+
 function TaskGroup({
   id,
   title,
@@ -11137,6 +11305,13 @@ function TaskGroup({
   collapsedTaskChildTasks,
   editableSection,
   contextMenuVariant = "default",
+  currentUserId,
+  labelPermissionLevels,
+  userLabelOrder,
+  composerMembers,
+  defaultAssigneeId = null,
+  canCreate = false,
+  onCreateInGroup,
   onRenameSection,
   onInsertSection,
   onDeleteSection,
@@ -11179,6 +11354,13 @@ function TaskGroup({
   collapsedTaskChildTasks: ReadonlySet<string>;
   editableSection?: TaskSection;
   contextMenuVariant?: "default" | "trash";
+  currentUserId?: string;
+  labelPermissionLevels?: WorkspaceBundle["labelPermissionLevels"];
+  userLabelOrder?: WorkspaceBundle["userLabelOrder"];
+  composerMembers?: Member[];
+  defaultAssigneeId?: string | null;
+  canCreate?: boolean;
+  onCreateInGroup?: (payload: KanbanCreatePayload) => Promise<void>;
   onRenameSection?: (sectionId: string, name: string) => Promise<void>;
   onInsertSection?: (sectionId: string, placement: "before" | "after") => void;
   onDeleteSection?: (sectionId: string) => Promise<void>;
@@ -11207,6 +11389,7 @@ function TaskGroup({
       ? [selectedTaskId]
       : [];
   const [collapsed, setCollapsed] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [sectionMenuOpen, setSectionMenuOpen] = useState(false);
   const [taskMenu, setTaskMenu] = useState<{
     taskId: string;
@@ -11222,9 +11405,12 @@ function TaskGroup({
     disabled: !draggable,
   });
   const sectionSortable = useSortable({
-    id: `section:${editableSection?.id ?? id}`,
-    disabled: !sectionDraggable || !editableSection,
+    id,
+    disabled: !sectionDraggable,
   });
+  const sectionKey = id.startsWith("section:") ? customGroupKey(editableSection?.id) : null;
+  const showAdd = Boolean(onCreateInGroup);
+  const showMore = Boolean(sectionDraggable && sectionKey);
   const menuTask = taskMenu
     ? tasks.find((task) => task.id === taskMenu.taskId) ?? null
     : null;
@@ -11285,7 +11471,7 @@ function TaskGroup({
     >
       {title && (
         <div className="task-group-header">
-          {editableSection && sectionDraggable && (
+          {sectionDraggable && (
             <button
               className="task-section-drag-handle"
               aria-label={`拖动分组“${title}”`}
@@ -11314,12 +11500,93 @@ function TaskGroup({
           ) : (
             <button
               className="task-group-collapse"
-              onClick={() => setCollapsed((value) => !value)}
+              onClick={() => {
+                setCollapsed((value) => !value);
+                setAdding(false);
+              }}
             >
               {collapsed ? <ChevronRight /> : <ChevronDown />}
               <span>{title}</span>
               <em>{tasks.length}</em>
             </button>
+          )}
+          {!renaming && (showAdd || showMore) && (
+            <div className="task-section-actions">
+              {showAdd && (
+                <button
+                  type="button"
+                  aria-label={`在“${title}”中新建`}
+                  disabled={!canCreate}
+                  onClick={() => {
+                    setSectionMenuOpen(false);
+                    setCollapsed(false);
+                    setAdding(true);
+                  }}
+                >
+                  <Plus />
+                </button>
+              )}
+              {showMore && (
+                <button
+                  type="button"
+                  aria-label={`管理分组“${title}”`}
+                  aria-haspopup="menu"
+                  aria-expanded={sectionMenuOpen}
+                  onClick={() => setSectionMenuOpen((value) => !value)}
+                >
+                  <Ellipsis />
+                </button>
+              )}
+              {showMore && sectionMenuOpen && (
+                <div className="task-section-menu" role="menu">
+                  {editableSection && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        setSectionMenuOpen(false);
+                        setName(title);
+                        setRenaming(true);
+                      }}
+                    >
+                      重命名
+                    </button>
+                  )}
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setSectionMenuOpen(false);
+                      onInsertSection?.(sectionKey!, "before");
+                    }}
+                  >
+                    在上方添加分组
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setSectionMenuOpen(false);
+                      onInsertSection?.(sectionKey!, "after");
+                    }}
+                  >
+                    在下方添加分组
+                  </button>
+                  {editableSection && (
+                    <button
+                      role="menuitem"
+                      className="danger"
+                      onClick={() => {
+                        setSectionMenuOpen(false);
+                        if (window.confirm(`删除分组“${title}”？任务和笔记会移至未分组。`)) {
+                          void onDeleteSection?.(editableSection.id).catch((error) =>
+                            onNotice(error instanceof Error ? error.message : "删除分组失败，请重试"));
+                        }
+                      }}
+                    >
+                      删除
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {onSelectGroup && !renaming && (
             <button
@@ -11338,64 +11605,22 @@ function TaskGroup({
               全选
             </button>
           )}
-          {editableSection && sectionDraggable && (
-            <div className="task-section-actions">
-              <button
-                aria-label={`管理分组“${title}”`}
-                aria-haspopup="menu"
-                aria-expanded={sectionMenuOpen}
-                onClick={() => setSectionMenuOpen((value) => !value)}
-              >
-                <Ellipsis />
-              </button>
-              {sectionMenuOpen && (
-                <div className="task-section-menu" role="menu">
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setSectionMenuOpen(false);
-                      setName(title);
-                      setRenaming(true);
-                    }}
-                  >
-                    重命名
-                  </button>
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setSectionMenuOpen(false);
-                      onInsertSection?.(editableSection.id, "before");
-                    }}
-                  >
-                    在上方添加分组
-                  </button>
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setSectionMenuOpen(false);
-                      onInsertSection?.(editableSection.id, "after");
-                    }}
-                  >
-                    在下方添加分组
-                  </button>
-                  <button
-                    role="menuitem"
-                    className="danger"
-                    onClick={() => {
-                      setSectionMenuOpen(false);
-                      if (window.confirm(`删除分组“${title}”？任务和笔记会移至未分组。`)) {
-                        void onDeleteSection?.(editableSection.id).catch((error) =>
-                          onNotice(error instanceof Error ? error.message : "删除分组失败，请重试"));
-                      }
-                    }}
-                  >
-                    删除
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
         </div>
+      )}
+      {adding && !collapsed && onCreateInGroup && currentUserId && labelPermissionLevels && (
+        <TaskGroupQuickAdd
+          groupTitle={title}
+          members={composerMembers ?? members}
+          labels={labels}
+          labelPermissionLevels={labelPermissionLevels}
+          userLabelOrder={userLabelOrder}
+          currentUserId={currentUserId}
+          defaultAssigneeId={defaultAssigneeId}
+          canCreate={canCreate}
+          onCreate={onCreateInGroup}
+          onCancel={() => setAdding(false)}
+          onError={(message) => onNotice(message)}
+        />
       )}
       {!collapsed && (
         <SortableContext
@@ -11427,6 +11652,7 @@ function TaskGroup({
               onToggleChildTasks={() => onToggleChildTasks(task.id)}
               onToggle={() => onToggle(task)}
               onToggleChildTask={onToggleChildTask}
+              onNotice={onNotice}
               onContextMenu={(x, y, targetTaskId) => {
                 if (isOptimisticTaskId(task.id) || !(canEditTask(task) || Boolean(task.connector_id))) return;
                 const focusId = targetTaskId ?? task.id;
@@ -11621,6 +11847,7 @@ function TaskRow({
   onToggleChildTasks,
   onToggle,
   onToggleChildTask,
+  onNotice,
   onContextMenu,
 }: {
   task: Task;
@@ -11641,6 +11868,7 @@ function TaskRow({
   onToggleChildTasks: () => void;
   onToggle: () => Promise<void>;
   onToggleChildTask: WorkspaceAppProps["onToggleChildTask"];
+  onNotice: WorkspaceAppProps["onNotice"];
   onContextMenu: (x: number, y: number, targetTaskId?: string) => void;
 }) {
   const {
@@ -11672,8 +11900,8 @@ function TaskRow({
 
   function toggleChildTask(childTask: Task) {
     if (!online) return;
-    void onToggleChildTask(childTask.id, !(childTask.status === "completed")).catch(() => {
-      // App.toggleChildTask already rolls back and surfaces a notice.
+    void onToggleChildTask(childTask.id, !(childTask.status === "completed")).catch((error) => {
+      onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
     });
   }
 

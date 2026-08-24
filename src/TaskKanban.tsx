@@ -43,11 +43,13 @@ import { formatContactDisplayName, useShowContactNames } from "./lib/displayPref
 import { formatHoursList, parseEstimateHoursText } from "./lib/taskHours";
 import { aiCliLabel } from "./lib/aiWork";
 import type { KanbanColumn } from "./lib/taskKanban";
+import { customGroupKey } from "./lib/taskList";
 import type {
   DateTimePreferences,
   Label,
   LabelPermissionLevel,
   Member,
+  NoticeHandler,
   ReminderSchedule,
   Task,
   TaskKind,
@@ -197,7 +199,7 @@ export function TaskKanban({
   ) => Promise<void>;
   pickerTasks?: Task[];
   onPurgeTask: (taskId: string) => Promise<void>;
-  onNotice: (message: string) => void;
+  onNotice: NoticeHandler;
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -222,13 +224,7 @@ export function TaskKanban({
     [members],
   );
   const customSectionColumns = useMemo(
-    () => columns.filter((column) =>
-      column.target.kind === "section" && column.target.sectionId !== null),
-    [columns],
-  );
-  const ungroupedColumns = useMemo(
-    () => columns.filter((column) =>
-      column.target.kind === "section" && column.target.sectionId === null),
+    () => columns.filter((column) => column.target.kind === "section"),
     [columns],
   );
   const trailingColumns = useMemo(
@@ -240,21 +236,26 @@ export function TaskKanban({
     if (!event.over) return;
     if (event.active.data.current?.type === "section") {
       if (!canManageSections || event.active.id === event.over.id) return;
-      const activeSectionId = String(event.active.data.current.sectionId ?? "");
-      const targetColumnId = String(event.over.data.current?.columnId ?? "");
-      const target = columnsById.get(targetColumnId);
-      const overSectionId = String(
-        event.over.data.current?.sectionId
-          ?? (target?.target.kind === "section" ? target.target.sectionId : "")
+      const orderedKeys = customSectionColumns.map((column) =>
+        column.target.kind === "section" ? customGroupKey(column.target.sectionId) : "");
+      const activeKey = String(
+        event.active.data.current.groupKey
+          ?? event.active.data.current.sectionId
           ?? "",
       );
-      const orderedIds = customSectionColumns.map((column) =>
-        column.target.kind === "section" ? column.target.sectionId! : "");
-      const from = orderedIds.indexOf(activeSectionId);
-      const to = orderedIds.indexOf(overSectionId);
-      if (from < 0 || to < 0) return;
+      const targetColumnId = String(event.over.data.current?.columnId ?? "");
+      const target = columnsById.get(targetColumnId);
+      const overKey = String(
+        event.over.data.current?.groupKey
+          ?? (target?.target.kind === "section"
+            ? customGroupKey(target.target.sectionId)
+            : ""),
+      );
+      const from = orderedKeys.indexOf(activeKey);
+      const to = orderedKeys.indexOf(overKey);
+      if (from < 0 || to < 0 || from === to) return;
       try {
-        await onReorderSections(arrayMove(orderedIds, from, to));
+        await onReorderSections(arrayMove(orderedKeys, from, to));
       } catch (error) {
         onNotice(error instanceof Error ? error.message : "分组排序失败，请重试");
       }
@@ -318,9 +319,7 @@ export function TaskKanban({
       canEditTask={canEditTask}
       canCreate={canCreateInColumn(column)}
       canReceive={canReceiveInColumn(column)}
-      canManageSection={canManageSections
-        && column.target.kind === "section"
-        && column.target.sectionId !== null}
+      canManageSection={canManageSections && column.target.kind === "section"}
       sectionIndex={customSectionColumns.findIndex((item) => item.id === column.id)}
       onCreate={onCreateInColumn}
       onStartAddSection={onStartAddSection}
@@ -354,7 +353,6 @@ export function TaskKanban({
               items={customSectionColumns.map((column) => `kanban-section:${column.id}`)}
               strategy={horizontalListSortingStrategy}
             >
-              {ungroupedColumns.map(renderColumn)}
               {customSectionColumns.map((column, index) => (
                 <Fragment key={column.id}>
                   {sectionDraftIndex === index && (
@@ -497,18 +495,24 @@ function KanbanColumnView({
   onDeleteSection: (sectionId: string) => Promise<void>;
   onSelectTask: (taskId: string) => void;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
-  onError: (message: string) => void;
+  onError: NoticeHandler;
   onContextMenu: (task: Task, x: number, y: number) => void;
 }) {
   const { active, over, setNodeRef, isOver } = useDroppable({
     id: `kanban-column:${column.id}`,
-    data: { columnId: column.id },
+    data: {
+      columnId: column.id,
+      ...(column.target.kind === "section"
+        ? { groupKey: customGroupKey(column.target.sectionId) }
+        : {}),
+    },
     disabled: !canReceive,
   });
   const sectionId = column.target.kind === "section" ? column.target.sectionId : null;
+  const groupKey = column.target.kind === "section" ? customGroupKey(sectionId) : null;
   const sectionSortable = useSortable({
     id: `kanban-section:${column.id}`,
-    data: { type: "section", sectionId, columnId: column.id },
+    data: { type: "section", sectionId, groupKey, columnId: column.id },
     disabled: !canManageSection,
   });
   const [adding, setAdding] = useState(false);
@@ -644,30 +648,31 @@ function KanbanColumnView({
           >
             <Plus />
           </button>
-          {sectionId && (
+          {canManageSection && (
             <button
               type="button"
               aria-label={`管理分组“${column.title}”`}
               aria-haspopup="menu"
               aria-expanded={sectionMenuOpen}
-              disabled={!canManageSection}
               onClick={() => setSectionMenuOpen((value) => !value)}
             >
               <Ellipsis />
             </button>
           )}
-          {sectionId && sectionMenuOpen && (
+          {canManageSection && sectionMenuOpen && (
             <div className="task-section-menu kanban-section-menu" role="menu">
-              <button
-                role="menuitem"
-                onClick={() => {
-                  setSectionMenuOpen(false);
-                  setSectionName(column.title);
-                  setRenaming(true);
-                }}
-              >
-                重命名
-              </button>
+              {sectionId && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setSectionMenuOpen(false);
+                    setSectionName(column.title);
+                    setRenaming(true);
+                  }}
+                >
+                  重命名
+                </button>
+              )}
               <button
                 role="menuitem"
                 onClick={() => {
@@ -686,19 +691,21 @@ function KanbanColumnView({
               >
                 在右侧添加分组
               </button>
-              <button
-                role="menuitem"
-                className="danger"
-                onClick={() => {
-                  setSectionMenuOpen(false);
-                  if (window.confirm(`删除分组“${column.title}”？任务和笔记会移至未分组。`)) {
-                    void onDeleteSection(sectionId).catch((error) =>
-                      onError(error instanceof Error ? error.message : "删除分组失败，请重试"));
-                  }
-                }}
-              >
-                删除
-              </button>
+              {sectionId && (
+                <button
+                  role="menuitem"
+                  className="danger"
+                  onClick={() => {
+                    setSectionMenuOpen(false);
+                    if (window.confirm(`删除分组“${column.title}”？任务和笔记会移至未分组。`)) {
+                      void onDeleteSection(sectionId).catch((error) =>
+                        onError(error instanceof Error ? error.message : "删除分组失败，请重试"));
+                    }
+                  }}
+                >
+                  删除
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -835,7 +842,7 @@ const KanbanCard = memo(function KanbanCard({
   draggable: boolean;
   onSelectTask: (taskId: string) => void;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
-  onError: (message: string) => void;
+  onError: NoticeHandler;
   onContextMenu: (task: Task, x: number, y: number) => void;
 }) {
   const sortableId = `kanban-card:${columnId}:${task.id}`;
@@ -896,7 +903,7 @@ const KanbanCard = memo(function KanbanCard({
                 status: task.status === "completed" ? "open" : "completed",
                 completed_at: task.status === "completed" ? null : new Date().toISOString(),
               }).catch((error) => {
-                onError(error instanceof Error ? error.message : "任务更新失败，请重试");
+                onError(error instanceof Error ? error.message : "任务更新失败，请重试", "error");
               });
             }}
           >

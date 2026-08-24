@@ -5,6 +5,7 @@ export type ShortcutGroup = "general" | "tasks" | "calendar" | "mindmap" | "focu
 export type ShortcutActionId =
   | "general.flushSave"
   | "general.search"
+  | "general.switchWorkspace"
   | "general.settings"
   | "general.shortcutsHelp"
   | "general.goTasks"
@@ -73,6 +74,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     group: "general",
     label: "打开搜索",
     defaultBinding: { key: "k", mod: true },
+    remappable: true,
+    allowInInput: false,
+    scopes: ["global"],
+  },
+  {
+    id: "general.switchWorkspace",
+    group: "general",
+    label: "切换团队空间",
+    defaultBinding: { key: "k", mod: true, shift: true },
     remappable: true,
     allowInInput: false,
     scopes: ["global"],
