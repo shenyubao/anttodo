@@ -13,6 +13,11 @@ const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "ut
 const productName = packageJson.build?.productName;
 const publishVersion = typeof packageJson.version === "string" ? packageJson.version.trim() : "";
 const appBundleName = `${productName}.app`;
+const configuredPublish = Array.isArray(packageJson.build?.publish)
+  ? packageJson.build.publish[0]
+  : packageJson.build?.publish;
+const expectedUpdateProvider = configuredPublish?.provider;
+const expectedUpdateFeedUrl = configuredPublish?.url;
 
 if (architectures.length === 0) {
   console.error("Usage: node scripts/verify-macos-package.mjs <arch> [...arch]");
@@ -27,6 +32,34 @@ if (!productName) {
 function fail(message) {
   console.error(`macOS 产物验证失败：${message}`);
   process.exit(1);
+}
+
+function readYamlScalar(contents, key) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^${escapedKey}:\\s*(.+?)\\s*$`, "m").exec(contents);
+  return match?.[1]?.trim().replace(/^(['"])(.*)\1$/, "$2") ?? null;
+}
+
+function updaterConfigIssue(appPath) {
+  const updateConfigPath = path.join(appPath, "Contents", "Resources", "app-update.yml");
+  if (!existsSync(updateConfigPath)) {
+    return `缺少 Contents/Resources/app-update.yml：${appPath}`;
+  }
+
+  const contents = readFileSync(updateConfigPath, "utf8");
+  const provider = readYamlScalar(contents, "provider");
+  const url = readYamlScalar(contents, "url");
+  const updaterCacheDirName = readYamlScalar(contents, "updaterCacheDirName");
+  if (provider !== expectedUpdateProvider) {
+    return `app-update.yml provider 无效：${provider || "(空)"}`;
+  }
+  if (url !== expectedUpdateFeedUrl) {
+    return `app-update.yml url 无效：${url || "(空)"}`;
+  }
+  if (!updaterCacheDirName) {
+    return "app-update.yml 缺少 updaterCacheDirName";
+  }
+  return null;
 }
 
 function loadAsar() {
@@ -47,6 +80,8 @@ function assertValidAppBundle(appPath, label) {
   if (existsSync(nestedApp)) {
     fail(`${label} 出现嵌套 .app（${nestedApp}），安装包不可用。`);
   }
+  const configIssue = updaterConfigIssue(appPath);
+  if (configIssue) fail(`${label}${configIssue}`);
 }
 
 function assertNoSourceMaps(appPath, arch) {
@@ -153,6 +188,9 @@ function assertZipLayout(arch) {
   if (entries.some((entry) => entry.startsWith(`${appBundleName}/${appBundleName}/`))) {
     fail(`${arch} ZIP 出现嵌套 ${appBundleName}/${appBundleName}/，安装包不可用。`);
   }
+  if (!entries.includes(`${appBundleName}/Contents/Resources/app-update.yml`)) {
+    fail(`${arch} ZIP 缺少 ${appBundleName}/Contents/Resources/app-update.yml`);
+  }
 }
 
 function detachMount(mountPoint) {
@@ -199,6 +237,9 @@ function assertDmgLayout(arch) {
       } else if (existsSync(path.join(appPath, appBundleName))) {
         validationError =
           `${arch} DMG 内出现嵌套 ${appBundleName}/${appBundleName}，安装包不可用。`;
+      } else {
+        const configIssue = updaterConfigIssue(appPath);
+        if (configIssue) validationError = `${arch} DMG 内应用${configIssue}`;
       }
     }
   } catch (error) {

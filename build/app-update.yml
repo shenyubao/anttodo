@@ -1,0 +1,3 @@
+provider: generic
+url: https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com/release/macos
+updaterCacheDirName: anttodo-updater

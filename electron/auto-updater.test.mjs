@@ -4,7 +4,9 @@ import {
   formatDesktopUpdateError,
   formatDesktopUpdateErrorDetail,
   isDesktopUpdateLocationError,
+  isMissingDesktopUpdateConfigError,
   isAllowedUpdateFeedUrl,
+  requiresManualDesktopUpdate,
   UPDATE_FEED_URL,
 } from "./auto-updater.mjs";
 
@@ -30,6 +32,21 @@ describe("desktop auto updater helpers", () => {
     expect(formatDesktopUpdateErrorDetail(Object.assign(new Error("network timeout"), {
       code: "ETIMEDOUT",
     }))).toContain("code=ETIMEDOUT");
+  });
+
+  it("falls back to the installer when the packaged updater config is missing", () => {
+    const missingConfig = Object.assign(
+      new Error("ENOENT: no such file or directory, open '/Applications/蚂蚁清单.app/Contents/Resources/app-update.yml'"),
+      { code: "ENOENT" },
+    );
+    expect(isMissingDesktopUpdateConfigError(missingConfig)).toBe(true);
+    expect(requiresManualDesktopUpdate(missingConfig)).toBe(true);
+    expect(formatDesktopUpdateError(missingConfig)).toBe(
+      "当前版本无法应用内升级，已为你打开最新安装包",
+    );
+    expect(isMissingDesktopUpdateConfigError(
+      Object.assign(new Error("ENOENT: missing task.json"), { code: "ENOENT" }),
+    )).toBe(false);
   });
 
   it("reports unavailable outside packaged macOS builds", async () => {
@@ -113,6 +130,37 @@ describe("desktop auto updater helpers", () => {
       status: "manual",
       message: "macOS 阻止了应用内替换，请下载安装包重新安装",
       detail: expect.stringContaining("Cannot update while running from dmg"),
+    });
+  });
+
+  it("uses manual installation when app-update.yml is absent", async () => {
+    const missingConfig = Object.assign(
+      new Error("ENOENT: no such file or directory, open '/Applications/蚂蚁清单.app/Contents/Resources/app-update.yml'"),
+      { code: "ENOENT" },
+    );
+    const updater = createDesktopAutoUpdater({
+      isPackaged: true,
+      platform: "darwin",
+      broadcast: vi.fn(),
+      loadUpdater: () => ({
+        autoUpdater: {
+          autoDownload: true,
+          autoInstallOnAppQuit: false,
+          setFeedURL: vi.fn(),
+          on: vi.fn(),
+          checkForUpdates: vi.fn(async () => {
+            throw missingConfig;
+          }),
+          downloadUpdate: vi.fn(),
+          quitAndInstall: vi.fn(),
+        },
+      }),
+    });
+
+    await expect(updater.downloadAndInstall()).resolves.toEqual({
+      status: "manual",
+      message: "当前版本无法应用内升级，已为你打开最新安装包",
+      detail: expect.stringContaining("code=ENOENT"),
     });
   });
 });

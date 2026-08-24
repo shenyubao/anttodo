@@ -13434,6 +13434,14 @@ function AboutSettingsPanel() {
         setProgress(null);
         return;
       }
+      if (result.status === "manual") {
+        await window.anttodoDesktop.updates.openDownload(checkResult.downloadUrl);
+        setInstallError("已打开安装包，请将蚂蚁清单拖入「应用程序」文件夹后重新打开");
+        setInstallErrorDetail(result.detail || null);
+        setInstalling(false);
+        setProgress(null);
+        return;
+      }
       setInstallError(result.message);
       setInstallErrorDetail(result.detail || null);
       setInstalling(false);

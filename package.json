@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608241821",
+  "version": "1.0.202608241939",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -151,6 +151,12 @@
       "category": "public.app-category.productivity",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
+      "extraResources": [
+        {
+          "from": "build/app-update.yml",
+          "to": "app-update.yml"
+        }
+      ],
       "signIgnore": "\\.pak$",
       "extendInfo": {
         "CFBundleDisplayName": "蚂蚁清单",

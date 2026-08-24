@@ -22,10 +22,34 @@ export function isDesktopUpdateLocationError(error) {
 
 /**
  * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isMissingDesktopUpdateConfigError(error) {
+  const errorWithCode = error && typeof error === "object"
+    ? /** @type {{ code?: unknown, message?: unknown }} */ (error)
+    : null;
+  const code = typeof errorWithCode?.code === "string" ? errorWithCode.code : "";
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  return code === "ENOENT" && raw.toLowerCase().includes("app-update.yml");
+}
+
+/**
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function requiresManualDesktopUpdate(error) {
+  return isDesktopUpdateLocationError(error) || isMissingDesktopUpdateConfigError(error);
+}
+
+/**
+ * @param {unknown} error
  * @returns {string}
  */
 export function formatDesktopUpdateError(error) {
   const raw = error instanceof Error ? error.message : String(error ?? "");
+  if (isMissingDesktopUpdateConfigError(error)) {
+    return "当前版本无法应用内升级，已为你打开最新安装包";
+  }
   if (isDesktopUpdateLocationError(error)) {
     return "macOS 阻止了应用内替换，请下载安装包重新安装";
   }
@@ -190,7 +214,7 @@ export function createDesktopAutoUpdater(options = {}) {
       });
       return { status: "installing" };
     } catch (error) {
-      if (isDesktopUpdateLocationError(error)) {
+      if (requiresManualDesktopUpdate(error)) {
         return {
           status: "manual",
           ...formatDesktopUpdateErrorPayload(error),
