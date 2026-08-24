@@ -53,6 +53,8 @@ export function TaskDependencyList({
     setPickerOpen(true);
   }
 
+  if (dependencies.length === 0) return null;
+
   return (
     <section className="detail-section task-dependency-section">
       <div className="detail-section-title">
@@ -69,23 +71,19 @@ export function TaskDependencyList({
           </button>
         )}
       </div>
-      {dependencies.length === 0 ? (
-        <p className="task-dependency-empty">尚未挂载依赖任务</p>
-      ) : (
-        <ul className="task-dependency-list">
-          {dependencies.map((row) => (
-            <DependencyRow
-              key={row.id}
-              row={row}
-              tasks={tasks}
-              writable={writable}
-              dateTimePreferences={dateTimePreferences}
-              onOpen={onOpen}
-              onRemove={onRemove}
-            />
-          ))}
-        </ul>
-      )}
+      <ul className="task-dependency-list">
+        {dependencies.map((row) => (
+          <DependencyRow
+            key={row.id}
+            row={row}
+            tasks={tasks}
+            writable={writable}
+            dateTimePreferences={dateTimePreferences}
+            onOpen={onOpen}
+            onRemove={onRemove}
+          />
+        ))}
+      </ul>
       <FocusTaskPicker
         open={pickerOpen}
         mode="dependency"

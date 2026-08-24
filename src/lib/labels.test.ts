@@ -5,6 +5,7 @@ import {
   appendCreatedLabelToBundle,
   hasExplicitLabelColor,
   LABEL_COLORS,
+  taskLabelBarColor,
   labelDropPlacementFromY,
   labelIdFromRealtimeChange,
   moveIdInOrder,
@@ -51,8 +52,9 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelUserAcls: [],
   labelGroupAcls: [],
   labelPermissionLevels: {},
-  userLabelOrder: [],
-  tasks: [],
+    userLabelOrder: [],
+    labelTaskCounts: {},
+    tasks: [],
   connectors: [],
   syncRuns: [],
   conflicts: [],
@@ -84,6 +86,47 @@ describe("label colors", () => {
   it("keeps gray out of the user-selectable palette", () => {
     expect(LABEL_COLORS).not.toContain(DEFAULT_LABEL_COLOR);
     expect(LABEL_COLORS.every(hasExplicitLabelColor)).toBe(true);
+  });
+
+  it("hides the list color bar when no label has an explicit color", () => {
+    expect(taskLabelBarColor(
+      [{ id: "work", color: DEFAULT_LABEL_COLOR }],
+      ["work"],
+      null,
+    )).toBeNull();
+  });
+
+  it("uses the current list color when viewing a colored label", () => {
+    expect(taskLabelBarColor(
+      [
+        { id: "work", color: "#ffac38" },
+        { id: "home", color: "#4ca1ff" },
+      ],
+      ["work", "home"],
+      "home",
+    )).toBe("#4ca1ff");
+  });
+
+  it("uses the first explicit task label color in mixed views", () => {
+    expect(taskLabelBarColor(
+      [
+        { id: "inbox", color: DEFAULT_LABEL_COLOR },
+        { id: "work", color: "#ffac38" },
+      ],
+      ["inbox", "work"],
+      null,
+    )).toBe("#ffac38");
+  });
+
+  it("falls through to the task label when the current list has no color", () => {
+    expect(taskLabelBarColor(
+      [
+        { id: "parent", color: DEFAULT_LABEL_COLOR },
+        { id: "work", color: "#4ca1ff" },
+      ],
+      ["parent", "work"],
+      "parent",
+    )).toBe("#4ca1ff");
   });
 });
 
@@ -133,6 +176,7 @@ describe("label bundle updates", () => {
 
     expect(next.labels).toEqual([created]);
     expect(next.labelPermissionLevels["label-new"]).toBe(2);
+    expect(next.labelTaskCounts["label-new"]).toBe(0);
     expect(next.labelUserAcls).toEqual([
       {
         label_id: "label-new",
@@ -242,6 +286,12 @@ describe("label bundle updates", () => {
         { user_id: "user", workspace_id: "workspace", label_id: "team-parent", position: 0 },
         { user_id: "user", workspace_id: "workspace", label_id: "private-parent", position: 1 },
       ],
+      labelTaskCounts: {
+        "team-parent": 1,
+        "team-child": 0,
+        "team-grandchild": 1,
+        "private-parent": 1,
+      },
       tasks: [{
         id: "task",
         workspace_id: "workspace",
@@ -269,6 +319,9 @@ describe("label bundle updates", () => {
         version: 1,
         created_at: "",
         updated_at: "",
+        external_id: null,
+        connector_id: null,
+        connector_platform: null,
         label_ids: ["team-parent", "team-grandchild", "private-parent"],
         participant_ids: [],
         description_mentions: [],
@@ -285,6 +338,7 @@ describe("label bundle updates", () => {
     expect(next.labelGroupAcls).toEqual([]);
     expect(next.labelPermissionLevels).toEqual({ "private-parent": 2 });
     expect(next.userLabelOrder.map((row) => row.label_id)).toEqual(["private-parent"]);
+    expect(next.labelTaskCounts).toEqual({ "private-parent": 1 });
     expect(next.tasks[0]?.label_ids).toEqual(["private-parent"]);
   });
 });

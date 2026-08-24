@@ -27,8 +27,12 @@ describe("shouldDismissTaskDetailOnPointerDown", () => {
         ?.querySelector("button") ?? null,
     )).toBe(false);
     expect(shouldDismissTaskDetailOnPointerDown(
-      el('<article class="kanban-card"><span>看板任务</span></article>')
-        ?.querySelector("span") ?? null,
+      el('<div class="task-multi-select-menu"><button>标签</button></div>')
+        ?.querySelector("button") ?? null,
+    )).toBe(false);
+    expect(shouldDismissTaskDetailOnPointerDown(
+      el('<div class="task-group-header"><button class="task-group-select-all">全选</button></div>')
+        ?.querySelector("button") ?? null,
     )).toBe(false);
   });
 

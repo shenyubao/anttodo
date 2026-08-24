@@ -368,7 +368,7 @@ export function isDingtalkClientId(value: string) {
   return /^ding[a-z0-9]+$/i.test(value.trim());
 }
 
-/** Extract the Edge Function JSON `error` field hidden behind FunctionsHttpError. */
+/** Extract useful Edge Function details without exposing Supabase SDK internals. */
 export async function edgeFunctionErrorMessage(
   error: { message?: string; context?: unknown } | null | undefined,
   data: unknown,
@@ -380,15 +380,43 @@ export async function edgeFunctionErrorMessage(
   }
   const context =
     error && typeof error === "object" ? (error as { context?: unknown }).context : null;
-  if (context instanceof Response) {
+  if (context && typeof context === "object" && !Array.isArray(context) && "error" in context) {
+    const message = (context as { error?: unknown }).error;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+  const responseContext = context && typeof context === "object"
+    ? context as { status?: unknown; clone?: unknown }
+    : null;
+  const responseStatus = typeof responseContext?.status === "number"
+    ? responseContext.status
+    : null;
+  if (responseContext && typeof responseContext.clone === "function") {
     try {
-      const body = (await context.clone().json()) as { error?: unknown };
+      const cloned = responseContext.clone.call(context) as { json?: unknown };
+      const body = typeof cloned?.json === "function"
+        ? await cloned.json.call(cloned) as { error?: unknown }
+        : null;
       if (typeof body?.error === "string" && body.error.trim()) return body.error.trim();
     } catch {
       // ignore non-JSON error bodies
     }
   }
+  if (responseStatus !== null && responseStatus >= 500) {
+    return `服务暂时不可用（HTTP ${responseStatus}），请稍后重试。`;
+  }
+  if (responseStatus !== null && responseStatus >= 400) {
+    return `服务请求失败（HTTP ${responseStatus}），请稍后重试。`;
+  }
   const message = error?.message?.trim();
+  if (message === "Failed to send a request to the Edge Function") {
+    return "无法连接服务，请检查网络后重试。";
+  }
+  if (
+    message === "Edge Function returned a non-2xx status code" ||
+    message === "Relay Error invoking the Edge Function"
+  ) {
+    return fallback;
+  }
   return message || fallback;
 }
 

@@ -115,6 +115,27 @@ export function hasExplicitLabelColor(color: string) {
   return color.toLowerCase() !== DEFAULT_LABEL_COLOR;
 }
 
+export function taskLabelBarColor(
+  labels: readonly Pick<Label, "id" | "color">[],
+  taskLabelIds: readonly string[],
+  preferredLabelId?: string | null,
+): string | null {
+  if (preferredLabelId) {
+    const preferred = labels.find((label) => label.id === preferredLabelId);
+    if (preferred && hasExplicitLabelColor(preferred.color)) {
+      return preferred.color;
+    }
+  }
+  const byId = new Map(labels.map((label) => [label.id, label]));
+  for (const id of taskLabelIds) {
+    const label = byId.get(id);
+    if (label && hasExplicitLabelColor(label.color)) {
+      return label.color;
+    }
+  }
+  return null;
+}
+
 export type NewLabelAccessDefaults = {
   kind: LabelKind;
   viewScope: LabelAccessScope;
@@ -207,6 +228,10 @@ export function appendCreatedLabelToBundle(
         ...bundle.labelPermissionLevels,
         [created.id]: 2,
       },
+      labelTaskCounts: {
+        ...bundle.labelTaskCounts,
+        [created.id]: 0,
+      },
     },
     created.id,
     draft,
@@ -238,6 +263,9 @@ export function removeLabelSubtreeFromBundle(
       Object.entries(bundle.labelPermissionLevels).filter(([labelId]) => !removedIds.has(labelId)),
     ),
     userLabelOrder: bundle.userLabelOrder.filter((row) => !removedIds.has(row.label_id)),
+    labelTaskCounts: Object.fromEntries(
+      Object.entries(bundle.labelTaskCounts ?? {}).filter(([labelId]) => !removedIds.has(labelId)),
+    ),
     tasks: bundle.tasks.map((task) => {
       const labelIds = task.label_ids.filter((labelId) => !removedIds.has(labelId));
       return labelIds.length === task.label_ids.length ? task : { ...task, label_ids: labelIds };

@@ -45,6 +45,7 @@ import {
 import { MiniCalendar } from "./MiniCalendar";
 import {
   buildScheduleTaskGroups,
+  calendarEventRangeFromTask,
   canRescheduleTask,
   clearSchedulePatch,
   schedulePatchForCalendarMove,
@@ -128,16 +129,17 @@ function readSchedulePanelOpen() {
 }
 
 function taskEvent(task: Task, labels: Label[], editable = false): EventInput | null {
-  if (task.deleted_at || !task.due_at) return null;
+  if (task.deleted_at) return null;
+  const range = calendarEventRangeFromTask(task);
+  if (!range) return null;
   const label = labels.find((candidate) => task.label_ids.includes(candidate.id));
   const color = label?.color || "#9EB3FC";
-  const start = task.due_start_at || task.due_at;
   return {
     id: task.id,
     title: task.title,
-    start,
-    end: task.due_start_at ? task.due_at : undefined,
-    allDay: task.due_is_all_day,
+    start: range.start,
+    end: range.end,
+    allDay: range.allDay,
     editable,
     color,
     contrastColor: task.kind !== "note" && task.status === "completed"
@@ -1092,7 +1094,7 @@ export function CalendarWorkspace({
           expandRows
           nowIndicator
           navLinks
-          dayMaxEvents={3}
+          dayMaxEvents={true}
           eventDisplay="block"
           displayEventTime={false}
           allDayText="全天"

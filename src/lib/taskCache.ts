@@ -9,7 +9,12 @@ import type {
   TaskSection,
   WorkspaceBundle,
 } from "../types";
-import { descendantIds } from "./taskTree";
+import {
+  applyLiveLabelCountDelta,
+  adjustLabelTaskCounts,
+  countLiveTasksByLabel,
+} from "./labelTaskLimits";
+import { descendantIds, isLiveTask } from "./taskTree";
 import { orderedTaskSections, taskSectionOrderAfterInsert } from "./taskList";
 
 export const OPTIMISTIC_TASK_ID_PREFIX = "optimistic-task:";
@@ -48,6 +53,9 @@ export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBund
       ...task,
       parent_task_id: task.parent_task_id ?? inheritedParentId,
       position: task.position ?? 0,
+      external_id: task.external_id ?? null,
+      connector_id: task.connector_id ?? null,
+      connector_platform: task.connector_platform ?? null,
       children: [] as Task[],
     };
     flattened.push(normalized);
@@ -70,8 +78,13 @@ export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBund
   return {
     ...bundle,
     tasks,
+    connectors: (bundle.connectors ?? []).map((connector) => ({
+      ...connector,
+      target_label_id: connector.target_label_id ?? null,
+    })),
     customTaskViews: bundle.customTaskViews ?? [],
     taskSystemViewPreferences: bundle.taskSystemViewPreferences ?? [],
+    labelTaskCounts: bundle.labelTaskCounts ?? countLiveTasksByLabel(tasks),
   };
 }
 
@@ -113,6 +126,9 @@ export function createOptimisticTask(input: OptimisticTaskInput): Task {
     version: 1,
     created_at: timestamp,
     updated_at: timestamp,
+    external_id: null,
+    connector_id: null,
+    connector_platform: null,
     label_ids: input.labelIds,
     participant_ids: defaultCreatorParticipantIds(input.userId, input.assigneeId),
     description_mentions: [],
@@ -157,6 +173,9 @@ function taskFromCreatedRow(
     version: created.version ?? 1,
     created_at: created.created_at,
     updated_at: created.updated_at,
+    external_id: created.external_id ?? null,
+    connector_id: created.connector_id ?? null,
+    connector_platform: created.connector_platform ?? null,
     label_ids: labelIds,
     participant_ids: defaultCreatorParticipantIds(
       created.created_by,
@@ -172,7 +191,17 @@ function taskFromCreatedRow(
 
 export function appendTaskToBundle(bundle: WorkspaceBundle, task: Task): WorkspaceBundle {
   if (bundle.tasks.some((item) => item.id === task.id)) return bundle;
-  return normalizeWorkspaceBundle({ ...bundle, tasks: [task, ...bundle.tasks] });
+  return normalizeWorkspaceBundle({
+    ...bundle,
+    tasks: [task, ...bundle.tasks],
+    labelTaskCounts: isLiveTask(task)
+      ? adjustLabelTaskCounts(
+          bundle.labelTaskCounts ?? countLiveTasksByLabel(bundle.tasks),
+          task.label_ids,
+          1,
+        )
+      : bundle.labelTaskCounts,
+  });
 }
 
 export function replaceOptimisticTask(
@@ -205,6 +234,14 @@ export function replaceOptimisticTask(
 
 export function removeTaskFromBundle(bundle: WorkspaceBundle, taskId: string): WorkspaceBundle {
   const removedIds = new Set([taskId, ...descendantIds(bundle.tasks, taskId)]);
+  const removedTasks = bundle.tasks.filter((task) => removedIds.has(task.id));
+  let labelTaskCounts = bundle.labelTaskCounts;
+  if (labelTaskCounts) {
+    for (const task of removedTasks) {
+      if (!isLiveTask(task)) continue;
+      labelTaskCounts = adjustLabelTaskCounts(labelTaskCounts, task.label_ids, -1);
+    }
+  }
   return {
     ...bundle,
     tasks: bundle.tasks
@@ -216,6 +253,7 @@ export function removeTaskFromBundle(bundle: WorkspaceBundle, taskId: string): W
         children: task.children.filter((child) => !removedIds.has(child.id)),
       })),
     taskPlacements: bundle.taskPlacements.filter((placement) => !removedIds.has(placement.task_id)),
+    labelTaskCounts: labelTaskCounts ?? bundle.labelTaskCounts,
   };
 }
 
@@ -421,12 +459,18 @@ export function patchTaskInBundle(
   taskId: string,
   patch: Partial<Task> | ((task: Task) => Task),
 ): WorkspaceBundle {
+  const previous = bundle.tasks.find((task) => task.id === taskId);
+  const tasks = bundle.tasks.map((task) => {
+    if (task.id !== taskId) return task;
+    return typeof patch === "function" ? patch(task) : { ...task, ...patch };
+  });
+  const next = tasks.find((task) => task.id === taskId);
   return normalizeWorkspaceBundle({
     ...bundle,
-    tasks: bundle.tasks.map((task) => {
-      if (task.id !== taskId) return task;
-      return typeof patch === "function" ? patch(task) : { ...task, ...patch };
-    }),
+    tasks,
+    labelTaskCounts: previous && next && bundle.labelTaskCounts
+      ? applyLiveLabelCountDelta(bundle.labelTaskCounts, previous, next)
+      : bundle.labelTaskCounts,
   });
 }
 

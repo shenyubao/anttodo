@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(20);
+select plan(18);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -41,13 +41,13 @@ select has_column(
   'public', 'user_ai_feature_settings', 'smart_format_prompt_override',
   'AI feature settings expose the smart format prompt override'
 );
-select has_column(
+select hasnt_column(
   'public', 'user_ai_feature_settings', 'task_decompose_enabled',
-  'AI feature settings expose the task decompose switch'
+  'AI feature settings do not expose the removed task decompose switch'
 );
-select has_column(
+select hasnt_column(
   'public', 'user_ai_feature_settings', 'task_decompose_prompt_override',
-  'AI feature settings expose the task decompose prompt override'
+  'AI feature settings do not expose the removed task decompose prompt override'
 );
 select ok(has_table_privilege('authenticated', 'public.user_ai_feature_settings', 'SELECT'));
 select ok(has_table_privilege('authenticated', 'public.user_ai_feature_settings', 'INSERT'));
@@ -73,11 +73,6 @@ select is(
   'smart formatting defaults to enabled'
 );
 select is(
-  (select task_decompose_enabled from public.user_ai_feature_settings),
-  true,
-  'task decomposition defaults to enabled'
-);
-select is(
   (select count(*)::integer from public.user_ai_feature_settings),
   1,
   'a user can only read their own settings'
@@ -101,13 +96,6 @@ select throws_ok(
     where user_id = '16000000-0000-0000-0000-000000000001'$$,
   '23514', null,
   'blank prompt overrides are rejected'
-);
-select throws_ok(
-  $$update public.user_ai_feature_settings
-    set task_decompose_prompt_override = repeat('x', 8001)
-    where user_id = '16000000-0000-0000-0000-000000000001'$$,
-  '23514', null,
-  'oversized prompt overrides are rejected'
 );
 select throws_ok(
   $$insert into public.user_ai_feature_settings(user_id)

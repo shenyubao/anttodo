@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createDemoBundle } from "./demo";
 import {
   canAccessAllLabels,
+  canOrganizeTask,
   currentLabelPermissionLevel,
   currentTaskPermissionLevel,
   intersectPermissionLevels,
+  isExternalTask,
 } from "./permissions";
 
 describe("strict multi-label permission intersection", () => {
@@ -46,5 +48,17 @@ describe("strict multi-label permission intersection", () => {
     expect(currentTaskPermissionLevel(bundle, task, "demo-member")).toBe(1);
     task.assignee_id = "demo-member";
     expect(currentTaskPermissionLevel(bundle, task, "demo-member")).toBe(2);
+  });
+
+  it("lets editors organize connector-synced tasks without treating them as editable content", () => {
+    const bundle = createDemoBundle();
+    const task = bundle.tasks.find((item) => item.id === "task-1")!;
+    bundle.labelPermissionLevels.product = 2;
+    bundle.labelPermissionLevels.urgent = 2;
+    expect(canOrganizeTask(bundle, task, "demo-user")).toBe(true);
+    expect(isExternalTask(task)).toBe(false);
+    task.connector_id = "connector-1";
+    expect(isExternalTask(task)).toBe(true);
+    expect(canOrganizeTask(bundle, task, "demo-user")).toBe(true);
   });
 });

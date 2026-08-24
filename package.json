@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608142006",
+  "version": "1.0.202608211233",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -59,7 +59,8 @@
     "cli:test:browser": "pnpm --filter @anttodos/cli test:browser",
     "cli:pack": "pnpm --filter @anttodos/cli pack:check",
     "cli:verify": "pnpm --filter @anttodos/cli typecheck && pnpm --filter @anttodos/cli test && pnpm --filter @anttodos/cli pack:check",
-    "deploy:cli": "pnpm cli:verify && npm publish ./cli --access public"
+    "bump:cli-version": "node scripts/bump-app-version.mjs cli/package.json",
+    "deploy:cli": "pnpm bump:cli-version && pnpm cli:verify && node scripts/publish-cli.mjs"
   },
   "dependencies": {
     "@capacitor/app": "8.0.0",
@@ -88,6 +89,7 @@
     "electron-updater": "6.6.2",
     "idb-keyval": "6.3.0",
     "lucide-react": "1.26.0",
+    "node-html-markdown": "2.0.0",
     "node-pty": "1.1.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

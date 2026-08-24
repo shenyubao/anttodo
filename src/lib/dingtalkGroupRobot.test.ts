@@ -35,6 +35,18 @@ describe("DingTalk group robot task text", () => {
     });
   });
 
+  it("keeps task text when the user types immediately after the bot mention", () => {
+    const parsed = parseDingtalkGroupRobotTaskText(
+      "@蚂蚁清单明天下午5点，运维团队OKR沟通",
+      { now: new Date("2026-08-20T10:00:00.000Z") },
+    );
+
+    expect(parsed.kind).toBe("task");
+    if (parsed.kind !== "task") return;
+    expect(parsed.title).toBe("运维团队OKR沟通");
+    expect(new Date(parsed.due!.due_at!).toISOString()).toBe("2026-08-21T09:00:00.000Z");
+  });
+
   it("parses dotted numeric due dates without treating version numbers as dates", () => {
     const parsed = parseDingtalkGroupRobotTaskText(
       "RPA独立分支合并回魔方，出包3.60 2026.9.2 #研发团队",

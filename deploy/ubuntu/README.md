@@ -65,6 +65,11 @@ current worktree to the Yuce production service with:
 pnpm deploy:web:yuce
 ```
 
+The same command rsyncs `supabase/functions` to the self-hosted Supabase
+`volumes/functions` directory (keeping `main` and `hello`), writes a merged
+Deno import map, removes leftover function directories, and restarts the
+`functions` service until it is healthy.
+
 Set `ANTTODO_YUCE_WEB_SSH` (or `ANTTODO_SUPABASE_SELFHOST_SSH`) in
 `.env.local`. The command auto-detects the remote `deploy/ubuntu` directory;
 set `ANTTODO_YUCE_WEB_DEPLOY_DIR` when more than one checkout exists. It keeps

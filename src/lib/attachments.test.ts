@@ -8,6 +8,7 @@ import {
   escapeMarkdownLabel,
   isSafeEditorUrl,
   MAX_ATTACHMENT_BYTES,
+  normalizeEditorImageUri,
   parseAttachmentUri,
   validateAttachment,
   validateCommentImage,
@@ -39,6 +40,19 @@ describe("task attachments", () => {
     expect(parseAttachmentUri("anttodo-storage://task-attachments/not-a-task")).toBeNull();
     expect(isSafeEditorUrl("javascript:alert(1)")).toBe(false);
     expect(isSafeEditorUrl("https://anttodo.cn/help")).toBe(true);
+    const wrapped = `<${buildAttachmentUri(`${workspaceId}/${taskId}/${objectId}.png`)}>`;
+    expect(normalizeEditorImageUri(wrapped)).toBe(
+      `anttodo-storage://task-attachments/${workspaceId}/${taskId}/${objectId}.png`,
+    );
+    expect(parseAttachmentUri(wrapped)).toEqual({
+      bucket: "task-attachments",
+      path: `${workspaceId}/${taskId}/${objectId}.png`,
+      taskId,
+      workspaceId,
+    });
+    expect(normalizeEditorImageUri("https://cdn/a.png?x=1&amp;y=2")).toBe(
+      "https://cdn/a.png?x=1&y=2",
+    );
   });
 
   it("builds and parses comment image uris scoped to the uploader", () => {

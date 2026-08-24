@@ -27,6 +27,7 @@ export function canRescheduleTask(
   currentUserId: string,
 ) {
   return task.kind === "todo"
+    && !task.connector_id
     && task.status === "open"
     && !task.deleted_at
     && currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
@@ -174,5 +175,94 @@ export function clearSchedulePatch(): Pick<
     due_start_at: null,
     due_is_all_day: false,
     due_timezone: null,
+  };
+}
+
+type DueDateFields = Pick<Task, "due_at" | "due_start_at" | "due_timezone">;
+
+function parseYmdLocal(ymd: string) {
+  const [year, month, day] = ymd.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function formatYmdLocal(date: Date) {
+  return format(date, "yyyy-MM-dd");
+}
+
+function nextYmdLocal(ymd: string) {
+  return formatYmdLocal(addDays(parseYmdLocal(ymd), 1));
+}
+
+/**
+ * Inclusive calendar-day keys for a scheduled task, in the task timezone.
+ * Point due (no due_start_at) occupies a single day.
+ */
+export function inclusiveDueDateKeys(task: DueDateFields): {
+  startKey: string;
+  endKey: string;
+} | null {
+  if (!task.due_at) return null;
+  const zone = task.due_timezone;
+  const endKey = toDateInput(task.due_at, zone);
+  const startKey = task.due_start_at ? toDateInput(task.due_start_at, zone) : endKey;
+  if (startKey <= endKey) return { startKey, endKey };
+  return { startKey: endKey, endKey: startKey };
+}
+
+export function occupiedCalendarDateKeys(task: DueDateFields): string[] {
+  const range = inclusiveDueDateKeys(task);
+  if (!range) return [];
+  const keys: string[] = [];
+  const end = parseYmdLocal(range.endKey);
+  for (
+    let cursor = parseYmdLocal(range.startKey);
+    cursor.getTime() <= end.getTime();
+    cursor = addDays(cursor, 1)
+  ) {
+    keys.push(formatYmdLocal(cursor));
+  }
+  return keys;
+}
+
+export function taskOccupiesCalendarDate(task: DueDateFields, date: Date) {
+  const key = formatYmdLocal(date);
+  const range = inclusiveDueDateKeys(task);
+  if (!range) return false;
+  return key >= range.startKey && key <= range.endKey;
+}
+
+export type CalendarEventRange = {
+  start: string;
+  end?: string;
+  allDay: boolean;
+};
+
+/**
+ * FullCalendar event dates. All-day `end` is exclusive (the day after the last
+ * inclusive due date). Timed events keep ISO instants.
+ */
+export function calendarEventRangeFromTask(
+  task: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+): CalendarEventRange | null {
+  if (!task.due_at) return null;
+  if (task.due_is_all_day) {
+    const range = inclusiveDueDateKeys(task);
+    if (!range) return null;
+    return {
+      start: range.startKey,
+      end: nextYmdLocal(range.endKey),
+      allDay: true,
+    };
+  }
+  if (!task.due_start_at) {
+    return {
+      start: task.due_at,
+      allDay: false,
+    };
+  }
+  return {
+    start: task.due_start_at,
+    end: task.due_at,
+    allDay: false,
   };
 }

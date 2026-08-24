@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnvFiles } from "./load-local-env.mjs";
+import {
+  DEFAULT_SELFHOST_DOCKER_DIR,
+  buildSharedImportMap,
+  formatSharedDenoJsonc,
+  listLocalFunctionDirs,
+  remoteFunctionDirsToRemove,
+} from "./yuce-edge-functions.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadLocalEnvFiles(root);
@@ -15,12 +23,16 @@ if (help) {
 
 Builds the current worktree as a production Web container, smoke-tests it,
 streams it to the Yuce server over SSH, performs a health-checked Compose
-rollout with automatic rollback, and verifies the public site.
+rollout with automatic rollback, and verifies the public site. It also rsyncs
+supabase/functions to the self-hosted Edge Runtime volume, updates the shared
+Deno import map, and restarts the functions service.
 
 Configuration (environment or .env.local):
   ANTTODO_YUCE_WEB_SSH         SSH target; falls back to ANTTODO_SUPABASE_SELFHOST_SSH
   ANTTODO_YUCE_WEB_DEPLOY_DIR  Remote deploy/ubuntu directory; auto-detected if omitted
   ANTTODO_YUCE_WEB_URL         Public origin (default: https://todo.yuce-tech.cn)
+  ANTTODO_SUPABASE_SELFHOST_SSH         SSH target for Edge Functions; defaults to the Web SSH host
+  ANTTODO_SUPABASE_SELFHOST_DOCKER_DIR  Remote Supabase docker directory
 `);
   process.exit(0);
 }
@@ -40,6 +52,7 @@ const image = `anttodo-web:yuce-${version}-${stamp}`;
 
 console.log(`Yuce Web target: ${sshTarget}:${remote.deployDir}`);
 console.log(`Remote architecture: ${remote.architecture} (${platform})`);
+await deployEdgeFunctions();
 console.log("Building production Web assets with the locked local dependencies…");
 await run("pnpm", ["build:web"]);
 console.log(`Building ${image} from the current worktree…`);
@@ -127,6 +140,93 @@ printf 'ANTTODO_REMOTE_DEPLOY_DIR=%s\n' "$deploy_dir"
     throw new Error("The auto-detected remote deploy directory is unsafe.");
   }
   return { architecture, deployDir };
+}
+
+async function deployEdgeFunctions() {
+  const functionsSsh = setting("ANTTODO_SUPABASE_SELFHOST_SSH") || sshTarget;
+  const dockerDir = setting("ANTTODO_SUPABASE_SELFHOST_DOCKER_DIR") || DEFAULT_SELFHOST_DOCKER_DIR;
+  if (!/^[A-Za-z0-9_.@:-]+$/.test(functionsSsh)) {
+    throw new Error("The Supabase SSH target contains unsupported characters.");
+  }
+  if (!/^\/[A-Za-z0-9_./-]+$/.test(dockerDir)) {
+    throw new Error("ANTTODO_SUPABASE_SELFHOST_DOCKER_DIR must be an absolute path.");
+  }
+
+  const functionsRoot = path.join(root, "supabase/functions");
+  const localNames = listLocalFunctionDirs(functionsRoot);
+  if (!localNames.includes("_shared") || !localNames.includes("connector-sync")) {
+    throw new Error("Local supabase/functions is missing _shared or connector-sync.");
+  }
+
+  const rsyncSsh = "ssh -o BatchMode=yes -o ConnectTimeout=20";
+  console.log(`Syncing Edge Functions to ${functionsSsh}:${dockerDir}/volumes/functions/`);
+  for (const name of localNames) {
+    console.log(`  ${name}`);
+    await run("rsync", [
+      "-az",
+      "--delete",
+      "--exclude", ".DS_Store",
+      "-e", rsyncSsh,
+      `${path.join(functionsRoot, name)}/`,
+      `${functionsSsh}:${dockerDir}/volumes/functions/${name}/`,
+    ]);
+  }
+
+  const importMapFile = path.join(mkdtempSync(path.join(tmpdir(), "anttodo-functions-map-")), "deno.jsonc");
+  writeFileSync(importMapFile, formatSharedDenoJsonc(buildSharedImportMap(functionsRoot)));
+  await run("rsync", [
+    "-az",
+    "-e", rsyncSsh,
+    importMapFile,
+    `${functionsSsh}:${dockerDir}/volumes/functions/deno.jsonc`,
+  ]);
+
+  const remoteListing = await runRemoteScript(`set -eu
+cd ${shellQuote(dockerDir)}
+test -f volumes/functions/main/index.ts
+find volumes/functions -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' | sort
+`, { capture: true, sshTarget: functionsSsh });
+  const stale = remoteFunctionDirsToRemove(
+    remoteListing.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+    localNames,
+  );
+  for (const name of stale) {
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+      throw new Error(`Refusing to remove unexpected remote function directory: ${name}`);
+    }
+  }
+  const removeStale = stale.length === 0
+    ? ""
+    : stale.map((name) => `echo "Removing leftover function ${name}"
+rm -rf ${shellQuote(`${dockerDir}/volumes/functions/${name}`)}`).join("\n");
+
+  console.log("Restarting the self-hosted Edge Functions service…");
+  await runRemoteScript(`set -eu
+cd ${shellQuote(dockerDir)}
+test -f volumes/functions/main/index.ts
+test -f volumes/functions/connector-sync/index.ts
+test -f volumes/functions/_shared/yunxiao.ts
+test -f volumes/functions/deno.jsonc
+${removeStale}
+docker compose restart functions
+`, { sshTarget: functionsSsh });
+
+  let lastStatus = "";
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    lastStatus = (await runRemoteScript(`set -eu
+cd ${shellQuote(dockerDir)}
+docker compose ps --format '{{.Status}}' functions
+`, { capture: true, sshTarget: functionsSsh })).trim();
+    if (/\bhealthy\b/.test(lastStatus) && !/\bunhealthy\b/.test(lastStatus)) {
+      console.log(`Edge Functions are healthy (${lastStatus}).`);
+      return;
+    }
+    if (/\bunhealthy\b/.test(lastStatus)) {
+      throw new Error(`Edge Functions became unhealthy: ${lastStatus}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error(`Edge Functions did not become healthy: ${lastStatus || "missing status"}`);
 }
 
 function platformForArchitecture(architecture) {
@@ -276,7 +376,7 @@ function ignoreBrokenPipe(error) {
 }
 
 async function runRemoteScript(script, options = {}) {
-  return run("ssh", [sshTarget, "sh -s"], { ...options, input: script });
+  return run("ssh", [options.sshTarget ?? sshTarget, "sh -s"], { ...options, input: script });
 }
 
 function run(command, args, { capture = false, tee = false, input } = {}) {

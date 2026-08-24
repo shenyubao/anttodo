@@ -74,7 +74,9 @@ pnpm cli:test:browser
 pnpm deploy:cli
 ```
 
-该命令会先完成 CLI 校验，再执行 `npm publish ./cli --access public`。
+该命令会先按 macOS 相同规则把版本写成 `1.0.YYYYMMDDHHmm`，再完成 CLI 校验，
+最后执行 `npm publish ./cli --access public`。发布前请先 `npm login`，使用
+`@anttodos/cli` 的维护者账号。
 
 Pushing a `cli-v<version>` tag starts `.github/workflows/publish-cli.yml`; the
 tag must match `cli/package.json` and the repository must provide an `NPM_TOKEN`

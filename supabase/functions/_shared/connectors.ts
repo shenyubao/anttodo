@@ -64,7 +64,13 @@ export function validateConnectorConfig(
 ): string[] {
   if (type === "mock") return [];
   if (type === "yunxiao") {
-    return ["organizationId", "projectId"].filter(
+    return [
+      "organizationId",
+      "projectId",
+      "workitemTypeId",
+      "categoryId",
+      "completedStatusId",
+    ].filter(
       (key) => typeof config[key] !== "string" || String(config[key]).length === 0,
     );
   }

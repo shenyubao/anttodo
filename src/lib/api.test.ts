@@ -26,6 +26,35 @@ describe("task detail query", () => {
       "task_dependencies:task_dependencies!task_dependencies_task_id_fkey(*)",
     );
   });
+
+  it("loads task details in batches of at most 50 ids", async () => {
+    const ids = Array.from({ length: 112 }, (_, index) => `task-${index + 1}`);
+    const queriedBatches: string[][] = [];
+    const client = {
+      rpc: async () => ({ data: ids.map((id) => ({ id })), error: null }),
+      from: () => ({
+        select: () => ({
+          in: async (_column: string, batch: string[]) => {
+            queriedBatches.push(batch);
+            return {
+              data: batch.map((id) => ({
+                id,
+                parent_task_id: null,
+                task_dependencies: [],
+              })),
+              error: null,
+            };
+          },
+        }),
+      }),
+    } as unknown as SupabaseClient;
+
+    const tasks = await loadTaskTree(client, "task-1");
+
+    expect(queriedBatches.map((batch) => batch.length)).toEqual([50, 50, 12]);
+    expect(queriedBatches.flat()).toEqual(ids);
+    expect(tasks).toHaveLength(ids.length);
+  });
 });
 
 describe("nested task creation", () => {

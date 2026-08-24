@@ -54,10 +54,14 @@ export function wouldCreateDependencyCycle(
 
 export function filterPickerTasksForDependency(
   tasks: readonly Task[],
-  source: TaskDependencyTarget,
+  source: TaskDependencyTarget | readonly TaskDependencyTarget[],
   existing: readonly TaskDependency[] = [],
 ) {
-  const excluded = new Set([dependencyTargetKey(source), ...existing.map((row) => row.depends_on_task_id)]);
+  const sources = Array.isArray(source) ? source : [source];
+  const excluded = new Set([
+    ...sources.map((item) => dependencyTargetKey(item)),
+    ...existing.map((row) => row.depends_on_task_id),
+  ]);
   return tasks.filter((task) => !task.deleted_at && task.kind === "todo" && !excluded.has(task.id));
 }
 

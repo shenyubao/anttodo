@@ -131,7 +131,22 @@ values ('${item.version}', array[]::text[], '${escapedName}');
       throw new Error(`Failed to apply migration ${item.version}_${item.name}`);
     }
   }
+  reloadPostgrestSchema();
   console.log(`Applied ${pending.length} migration(s) to self-hosted.`);
+}
+
+function reloadPostgrestSchema() {
+  console.log("Reloading PostgREST schema cache…");
+  const result = runSelfHostPsql(
+    ["--variable", "ON_ERROR_STOP=1"],
+    "notify pgrst, 'reload schema';\n",
+  );
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error("Failed to reload the PostgREST schema cache");
+  }
 }
 
 try {

@@ -15,6 +15,7 @@ import {
   savePendingAuthorization,
 } from "./storage.js";
 import type { DeviceCiphertext, PendingAuthorization } from "./types.js";
+import { getCliVersion } from "./version.js";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -28,7 +29,7 @@ export async function startLogin(options: { noWait?: boolean; noOpen?: boolean }
     publicKey: pair.publicKey,
     client: {
       name: "AntTodo CLI",
-      version: process.env.npm_package_version ?? "0.1.0",
+      version: getCliVersion(),
       hostname: hostname() || null,
     },
   });

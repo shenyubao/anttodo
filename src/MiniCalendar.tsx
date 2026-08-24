@@ -18,6 +18,7 @@ import {
   chineseCalendarDetail,
   weekdayLabels,
 } from "./lib/dateTimePreferences";
+import { occupiedCalendarDateKeys } from "./lib/calendarScheduling";
 import { taskIsVisibleOnCalendar } from "./lib/calendarVisibility";
 import type { DateTimePreferences, WorkspaceBundle } from "./types";
 
@@ -78,12 +79,15 @@ export function MiniCalendar({
     return Array.from({ length: 42 }, (_, index) => addDays(first, index));
   }, [dateTimePreferences.weekStartsOn, displayMonth]);
 
-  const taskDates = useMemo(() => new Set(
-    bundle.tasks
-      .filter((task) => task.due_at && !task.deleted_at
-        && taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds))
-      .map((task) => format(new Date(task.due_at!), "yyyy-MM-dd")),
-  ), [bundle.tasks, visibleAssigneeIds, visibleCalendarIds]);
+  const taskDates = useMemo(() => {
+    const dates = new Set<string>();
+    for (const task of bundle.tasks) {
+      if (!task.due_at || task.deleted_at) continue;
+      if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds)) continue;
+      for (const key of occupiedCalendarDateKeys(task)) dates.add(key);
+    }
+    return dates;
+  }, [bundle.tasks, visibleAssigneeIds, visibleCalendarIds]);
 
   return (
     <section className="mini-calendar" aria-label="日期导航">

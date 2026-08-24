@@ -37,10 +37,8 @@ import type {
 } from "../types";
 import {
   normalizeAiFormatSuggestion,
-  normalizeAiSuggestedTasks,
   type AiFormatSuggestion,
-  type AiSuggestedTask,
-} from "./aiTaskDecompose";
+} from "./aiTaskFormat";
 import {
   createDefaultAiFeatureSettings,
   normalizeAiFeatureSettings,
@@ -54,15 +52,15 @@ import { createDefaultFocusSettings } from "./focusSession";
 import { mergeNotificationPreferenceRows } from "./notificationPreferences";
 import { coerceHours, coercePomodoros } from "./taskHours";
 import { edgeFunctionErrorMessage } from "./sso";
+import { mapLabelTaskLimitError } from "./labelTaskLimits";
 import {
   isValidWorkspaceSlug,
   normalizeWorkspaceSlug,
   suggestWorkspaceSlug,
 } from "./workspaceSlug";
 
-export type { AiSuggestedTask };
-
 const TASK_DETAIL_SELECT = "*, task_labels(label_id), task_participants(user_id), task_description_mentions(user_id, display_name_snapshot), task_reminders(*), task_reminder_settings(persistent), task_dependencies:task_dependencies!task_dependencies_task_id_fkey(*)";
+const TASK_ID_QUERY_BATCH_SIZE = 50;
 
 type TaskRow = Omit<
   Task,
@@ -90,9 +88,17 @@ export type WorkspaceTaskPage = {
 
 async function enrichTaskIds(client: SupabaseClient, ids: string[]) {
   if (ids.length === 0) return [] as TaskRow[];
-  const { data, error } = await client.from("tasks").select(TASK_DETAIL_SELECT).in("id", ids);
-  assertNoError(error);
-  return (data ?? []) as TaskRow[];
+  const rows: TaskRow[] = [];
+  for (let offset = 0; offset < ids.length; offset += TASK_ID_QUERY_BATCH_SIZE) {
+    const batch = ids.slice(offset, offset + TASK_ID_QUERY_BATCH_SIZE);
+    const { data, error } = await client
+      .from("tasks")
+      .select(TASK_DETAIL_SELECT)
+      .in("id", batch);
+    assertNoError(error);
+    rows.push(...((data ?? []) as TaskRow[]));
+  }
+  return rows;
 }
 
 export async function loadWorkspaceTaskPage(
@@ -128,6 +134,9 @@ function normalizeTaskRow(row: TaskRow): Task {
   const allDependencies = [...(row.task_dependencies ?? [])].sort((a, b) => a.position - b.position);
   return {
     ...row,
+    external_id: row.external_id ?? null,
+    connector_id: row.connector_id ?? null,
+    connector_platform: row.connector_platform ?? null,
     kind: row.kind ?? "todo",
     recurrence: row.recurrence ?? null,
     estimate_hours: coerceHours(row.estimate_hours),
@@ -142,6 +151,32 @@ function normalizeTaskRow(row: TaskRow): Task {
     reminders: allReminders,
     reminder_persistent: settings?.persistent ?? false,
   };
+}
+
+export async function completeExternalTask(
+  client: SupabaseClient,
+  taskId: string,
+): Promise<Task> {
+  const { data, error } = await client.functions.invoke("external-task-complete", {
+    body: { taskId },
+  });
+  if (error) throw new Error(await edgeFunctionErrorMessage(error, data, "云效状态更新失败"));
+  if (!data?.task) throw new Error("云效状态更新未返回任务");
+  return data.task as Task;
+}
+
+export async function setExternalTaskDeletedAt(
+  client: SupabaseClient,
+  taskId: string,
+  deletedAt: string | null,
+): Promise<Task> {
+  const { data, error } = await client.rpc("set_external_task_deleted_at", {
+    p_task_id: taskId,
+    p_deleted_at: deletedAt,
+  });
+  assertNoError(error);
+  if (!data) throw new Error("外部任务删除状态更新失败");
+  return data as Task;
 }
 
 function normalizeTaskRows(rows: TaskRow[]): Task[] {
@@ -167,7 +202,8 @@ function normalizeTaskRows(rows: TaskRow[]): Task[] {
 }
 
 function assertNoError(error: { message: string } | null) {
-  if (error) throw new Error(error.message);
+  if (!error) return;
+  throw new Error(mapLabelTaskLimitError(error.message) ?? error.message);
 }
 
 function labelAccessRpcParams(draft: LabelAccessDraft) {
@@ -348,6 +384,11 @@ export async function purgeTrashedTask(
   if (!data?.length) {
     throw new Error("只能彻底删除回收站中的任务");
   }
+  // The delete trigger has durably queued every task-owned Storage object.
+  // Run the worker now for prompt cleanup; the database cron remains the retry path.
+  await client.functions.invoke("attachment-cleanup", {
+    body: { reason: "task-purged" },
+  }).catch(() => undefined);
 }
 
 export async function updateTaskComment(
@@ -561,8 +602,6 @@ export async function saveAiFeatureSettings(
       user_id: normalized.user_id,
       smart_format_enabled: normalized.smart_format_enabled,
       smart_format_prompt_override: normalized.smart_format_prompt_override,
-      task_decompose_enabled: normalized.task_decompose_enabled,
-      task_decompose_prompt_override: normalized.task_decompose_prompt_override,
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id" })
     .select("*")
@@ -706,6 +745,7 @@ export async function loadWorkspaceBundle(
     userGroupMembersResult,
     labelPermissionLevelsResult,
     userLabelOrderResult,
+    labelTaskCountsResult,
   ] = await Promise.all([
     client
       .from("workspace_members")
@@ -772,6 +812,7 @@ export async function loadWorkspaceBundle(
       .select("user_id, workspace_id, label_id, position")
       .eq("workspace_id", workspaceId)
       .order("position", { ascending: true }),
+    client.rpc("list_label_task_counts", { p_workspace_id: workspaceId }),
   ]);
   assertNoError(membersResult.error);
   assertNoError(labelsResult.error);
@@ -786,6 +827,7 @@ export async function loadWorkspaceBundle(
   assertNoError(userGroupMembersResult.error);
   assertNoError(labelPermissionLevelsResult.error);
   assertNoError(userLabelOrderResult.error);
+  assertNoError(labelTaskCountsResult.error);
 
   const memberIds = (membersResult.data ?? []).map((member) => member.user_id);
   const profilesResult = memberIds.length
@@ -866,6 +908,11 @@ export async function loadWorkspaceBundle(
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
     userLabelOrder: (userLabelOrderResult.data ?? []) as UserLabelOrder[],
+    labelTaskCounts: Object.fromEntries(
+      (labelTaskCountsResult.data ?? []).map(
+        (row: { label_id: string; task_count: number }) => [row.label_id, row.task_count],
+      ),
+    ),
     taskListPreferences: (preferencesResult.data ?? []) as WorkspaceBundle["taskListPreferences"],
     customTaskViews: (customTaskViewsResult.data ?? []) as CustomTaskView[],
     taskSystemViewPreferences: (taskSystemViewPreferencesResult.data ?? []) as TaskSystemViewPreference[],
@@ -1404,72 +1451,6 @@ export async function deleteTaskDependency(client: SupabaseClient, dependencyId:
   assertNoError(error);
 }
 
-export async function decomposeTask(
-  client: SupabaseClient,
-  input: {
-    workspaceId: string;
-    taskId: string;
-    nowIso: string;
-    timeZone: string;
-    assignableUserIds?: Iterable<string>;
-  },
-): Promise<{ tasks: AiSuggestedTask[] }> {
-  const {
-    data: { session },
-  } = await client.auth.getSession();
-  const accessToken = session?.access_token?.trim();
-  if (!accessToken) {
-    throw new Error("请先登录后再使用 AI 分解。");
-  }
-
-  // Always hit the edge function (no client cache / demo short-circuit).
-  // Nonce forces a unique payload so intermediate proxies won't reuse a response.
-  const { data, error } = await client.functions.invoke("ai-task-decompose", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Cache-Control": "no-store",
-    },
-    body: {
-      action: "decompose",
-      workspaceId: input.workspaceId,
-      taskId: input.taskId,
-      nowIso: input.nowIso,
-      timeZone: input.timeZone,
-      clientRequestId: crypto.randomUUID(),
-    },
-  });
-  if (error) {
-    const message = await edgeFunctionErrorMessage(
-      error,
-      data,
-      "AI 分解失败，请稍后重试。",
-    );
-    if (/authentication required/i.test(message)) {
-      throw new Error("登录已失效，请重新登录后再使用 AI 分解。");
-    }
-    throw new Error(message);
-  }
-  if (data && typeof data === "object" && data !== null && "error" in data) {
-    const message = (data as { error?: unknown }).error;
-    if (typeof message === "string" && message.trim()) {
-      if (/authentication required/i.test(message)) {
-        throw new Error("登录已失效，请重新登录后再使用 AI 分解。");
-      }
-      throw new Error(message.trim());
-    }
-  }
-  const tasks = normalizeAiSuggestedTasks(
-    data && typeof data === "object" && data !== null
-      ? (data as { tasks?: unknown }).tasks
-      : null,
-    { assignableUserIds: input.assignableUserIds },
-  );
-  if (!tasks.length) {
-    throw new Error("未能生成可用的子级任务建议，请完善任务描述后重试。");
-  }
-  return { tasks };
-}
-
 export async function formatTaskWithAi(
   client: SupabaseClient,
   input: {
@@ -1487,13 +1468,12 @@ export async function formatTaskWithAi(
     throw new Error("请先登录后再使用智能格式化。");
   }
 
-  const { data, error } = await client.functions.invoke("ai-task-decompose", {
+  const { data, error } = await client.functions.invoke("ai-task-format", {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Cache-Control": "no-store",
     },
     body: {
-      action: "format",
       workspaceId: input.workspaceId,
       taskId: input.taskId,
       nowIso: input.nowIso,

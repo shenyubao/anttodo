@@ -77,6 +77,7 @@ import {
   Eye,
   Workflow,
   X,
+  Zap,
 } from "lucide-react";
 import {
   useEffect,
@@ -87,6 +88,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
   type FormEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -99,6 +101,7 @@ import { AiFeatureSettingsPanel } from "./AiFeatureSettingsPanel";
 import { AiWorkSettingsDialog } from "./AiWorkSettingsDialog";
 import { CalendarSidebar, CalendarWorkspace } from "./CalendarWorkspace";
 import { ConnectorSettingsPanel } from "./ConnectorSettingsPanel";
+import { QuickCreateSettingsPanel } from "./QuickCreateSettingsPanel";
 import { QuickAddForm } from "./QuickAddForm";
 import {
   DesktopUpdateBanner,
@@ -108,6 +111,7 @@ import {
 } from "./DesktopUpdateBanner";
 import { initials, MemberAvatar } from "./MemberAvatar";
 import { MindMapWorkspace } from "./MindMapWorkspace";
+import { ConnectorSyncButton } from "./ConnectorSyncButton";
 import { NotificationBell } from "./NotificationBell";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
@@ -121,6 +125,7 @@ import { TaskKanban } from "./TaskKanban";
 import { TaskTimeline } from "./TaskTimeline";
 import { TaskSectionComposer } from "./TaskSectionComposer";
 import { TaskDetailDialog, TaskDetailPanel } from "./TaskDetail";
+import { TaskMultiSelectPanel } from "./TaskMultiSelectPanel";
 import type { CreateCommentInput } from "./TaskComments";
 import type {
   DesktopUpdateCheckResult,
@@ -150,6 +155,8 @@ import {
   loadFocusSessions,
   loadFocusSettings,
   createFocusSession as createFocusSessionApi,
+  completeExternalTask as completeExternalTaskApi,
+  setExternalTaskDeletedAt as setExternalTaskDeletedAtApi,
   listTaskCommentCandidateIds,
   loadNotificationPreferences,
   loadNotifications,
@@ -264,8 +271,21 @@ import {
   taskIdFromRealtimeChange,
 } from "./lib/taskCache";
 import {
+  applyTaskPointerSelect,
+  formatBulkNotice,
+  isModifiedTaskSelect,
+  modifiersFromMouseEvent,
+  runBulkTaskUpdates,
+  tasksForIds,
+  uniqueTaskIds,
+  visibleListTaskIds,
+  visibleTaskIdsFromElement,
+  type TaskPointerModifiers,
+} from "./lib/taskMultiSelect";
+import {
   canAddChild,
   childrenOf,
+  descendantIds,
   isRootTask,
   nextSiblingPosition,
   visibleFlattenedTasks,
@@ -374,6 +394,7 @@ import {
   appendCreatedLabelToBundle,
   hasExplicitLabelColor,
   LABEL_COLORS,
+  taskLabelBarColor,
   labelDropPlacementFromY,
   labelIdFromRealtimeChange,
   moveIdInOrder,
@@ -383,6 +404,7 @@ import {
   userLabelOrderRows,
   type LabelDropIntent,
 } from "./lib/labels";
+import { assertCanAssociateTaskLabels } from "./lib/labelTaskLimits";
 import {
   areAllUserGroupsFullyVisible,
   calendarAssigneeFilterIds,
@@ -411,8 +433,8 @@ import { memberDisplayName } from "./lib/taskTitleTokens";
 import { aiCliLabel, aiWorkSettingsTitleFromEvent, OPEN_AI_WORK_SETTINGS_EVENT, requestAiWorkSettings, stopCliTerminalsForTask } from "./lib/aiWork";
 import { useAiTerminalRunningTaskIds } from "./lib/aiTerminalSessions";
 import {
+  canOrganizeTask,
   currentLabelPermissionLevel,
-  currentTaskPermissionLevel,
 } from "./lib/permissions";
 import {
   buildWorkspaceInviteUrl,
@@ -503,6 +525,7 @@ type SettingsTab =
   | "team"
   | "user-groups"
   | "sso"
+  | "quick-create"
   | "connectors"
   | "shortcuts"
   | "about";
@@ -2550,6 +2573,66 @@ function RemoteApplication({
     const queryKey = ["workspace-bundle", activeWorkspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const current = previous?.tasks.find((task) => task.id === taskId);
+    if (current?.connector_id) {
+      const keys = Object.keys(patch);
+      if (keys.every((key) => key === "deleted_at") && "deleted_at" in patch) {
+        const deletedAt = patch.deleted_at ?? null;
+        const updatedAt = deletedAt ?? new Date().toISOString();
+        rememberLocalRealtimeChanges("tasks", [taskId]);
+        queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+          bundle ? patchTaskInBundle(bundle, taskId, {
+            deleted_at: deletedAt,
+            updated_at: updatedAt,
+          }) : bundle,
+        );
+        try {
+          const saved = await setExternalTaskDeletedAtApi(client, taskId, deletedAt);
+          queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+            bundle ? patchTaskInBundle(bundle, taskId, {
+              deleted_at: saved.deleted_at ?? deletedAt,
+              updated_at: saved.updated_at ?? updatedAt,
+              version: saved.version ?? current.version + 1,
+            }) : bundle,
+          );
+        } catch (error) {
+          queryClient.setQueryData(queryKey, previous);
+          throw error;
+        }
+        return;
+      }
+      const connector = previous?.connectors.find((item) => item.id === current.connector_id);
+      const allowedCompletion = current.connector_platform === "yunxiao"
+        && current.status !== "completed"
+        && patch.status === "completed"
+        && keys.every((key) => key === "status" || key === "completed_at")
+        && current.created_by === userId
+        && connector?.created_by === userId
+        && connector.enabled;
+      if (!allowedCompletion) throw new Error("外部任务内容只读，只能由连接器所有者完成");
+      const completedAt = patch.completed_at ?? new Date().toISOString();
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+        bundle ? patchTaskInBundle(bundle, taskId, {
+          status: "completed",
+          completed_at: completedAt,
+          updated_at: completedAt,
+        }) : bundle,
+      );
+      try {
+        const completed = await completeExternalTaskApi(client, taskId);
+        queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
+          bundle ? patchTaskInBundle(bundle, taskId, {
+            status: "completed",
+            completed_at: completed.completed_at ?? completedAt,
+            updated_at: completed.updated_at ?? completedAt,
+            version: completed.version ?? current.version + 1,
+          }) : bundle,
+        );
+      } catch (error) {
+        queryClient.setQueryData(queryKey, previous);
+        throw error;
+      }
+      return;
+    }
     const normalizedPatch: Partial<Task> = patch.kind === "note"
       ? { ...patch, assignee_id: null, cli_assignee: null }
       : patch;
@@ -2731,18 +2814,18 @@ function RemoteApplication({
   ) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const currentTask = previous?.tasks.find((task) => task.id === taskId);
+    if (selected && currentTask && !currentTask.label_ids.includes(labelId)) {
+      assertCanAssociateTaskLabels(previous?.labelTaskCounts, [labelId]);
+    }
     queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
       current
-        ? {
-            ...current,
-            tasks: current.tasks.map((task) => {
-              if (task.id !== taskId) return task;
-              const labelIds = new Set(task.label_ids);
-              if (selected) labelIds.add(labelId);
-              else labelIds.delete(labelId);
-              return { ...task, label_ids: [...labelIds] };
-            }),
-          }
+        ? patchTaskInBundle(current, taskId, (task) => {
+            const labelIds = new Set(task.label_ids);
+            if (selected) labelIds.add(labelId);
+            else labelIds.delete(labelId);
+            return { ...task, label_ids: [...labelIds] };
+          })
         : current,
     );
 
@@ -3753,6 +3836,9 @@ function RemoteApplication({
         const queryKey = ["workspace-bundle", workspaceId];
         const currentBundle = queryClient.getQueryData<WorkspaceBundle>(queryKey);
         const parentTaskId = input.parentTaskId ?? null;
+        if (!parentTaskId) {
+          assertCanAssociateTaskLabels(currentBundle?.labelTaskCounts, input.labelIds);
+        }
         const taskInput = {
           ...input,
           parentTaskId,
@@ -4207,51 +4293,30 @@ function DemoApplication({
         if (workspaceId === targetWorkspaceId) setWorkspaceId(remaining[0]?.id ?? "");
       }}
       onCreateTask={async (input) => {
+        if (!input.parentTaskId) {
+          assertCanAssociateTaskLabels(bundle.labelTaskCounts, input.labelIds);
+        }
         const createdAt = new Date().toISOString();
         const createdId = crypto.randomUUID();
-        setBundle((current) => ({
-          ...current,
-          tasks: [
-            {
-              id: createdId,
-              workspace_id: workspaceId,
-              parent_task_id: input.parentTaskId ?? null,
-              position: input.parentTaskId
-                ? nextSiblingPosition(bundle.tasks, input.parentTaskId)
-                : 0,
-              title: input.title,
-              description: input.description ?? "",
-              kind: input.kind ?? "todo",
-              status: "open",
-              priority: input.kind === "note" ? "none" : input.priority ?? "low",
-              due_at: input.dueAt ?? null,
-              due_start_at: null,
-              due_is_all_day: false,
-              due_timezone: null,
-              assignee_id: input.assigneeId ?? null,
-              cli_assignee: null,
-              created_by: "demo-user",
-              completed_at: null,
-              deleted_at: null,
-              version: 1,
-              created_at: createdAt,
-              updated_at: createdAt,
-              label_ids: input.parentTaskId ? [] : input.labelIds,
-              participant_ids:
-                input.assigneeId === "demo-user" ? [] : ["demo-user"],
-              description_mentions: [],
-              children: [],
-              reminders: [],
-              reminder_persistent: false,
-              recurrence: null,
-              estimate_hours: input.estimateHours ?? null,
-              actual_hours: null,
-              estimate_pomodoros: null,
-              actual_pomodoros: null,
-            },
-            ...current.tasks,
-          ],
-        }));
+        const createdTask = createOptimisticTask({
+          workspaceId,
+          userId: "demo-user",
+          title: input.title,
+          labelIds: input.parentTaskId ? [] : input.labelIds,
+          description: input.description,
+          dueAt: input.dueAt ?? null,
+          estimateHours: input.estimateHours,
+          priority: input.kind === "note" ? "none" : input.priority ?? "low",
+          kind: input.kind,
+          assigneeId: input.assigneeId ?? null,
+          parentTaskId: input.parentTaskId ?? null,
+          position: input.parentTaskId
+            ? nextSiblingPosition(bundle.tasks, input.parentTaskId)
+            : 0,
+          optimisticId: createdId,
+          now: createdAt,
+        });
+        setBundle((current) => appendTaskToBundle(current, createdTask));
         appendDemoActivity(createdId, "task.created", { title: input.title });
         return { id: createdId };
       }}
@@ -4319,16 +4384,18 @@ function DemoApplication({
         appendDemoActivity(targetTaskId, "task.updated", { changes: patch });
       }}
       onToggleTaskLabel={async (taskId, labelId, selected) => {
-        setBundle((current) => ({
-          ...current,
-          tasks: current.tasks.map((task) => {
-            if (task.id !== taskId) return task;
+        setBundle((current) => {
+          const currentTask = current.tasks.find((task) => task.id === taskId);
+          if (selected && currentTask && !currentTask.label_ids.includes(labelId)) {
+            assertCanAssociateTaskLabels(current.labelTaskCounts, [labelId]);
+          }
+          return patchTaskInBundle(current, taskId, (task) => {
             const labelIds = new Set(task.label_ids);
             if (selected) labelIds.add(labelId);
             else labelIds.delete(labelId);
             return { ...task, label_ids: [...labelIds] };
-          }),
-        }));
+          });
+        });
         const label = bundle.labels.find((item) => item.id === labelId);
         appendDemoActivity(taskId, selected ? "task.label_added" : "task.label_removed", {
           label_id: labelId,
@@ -5339,6 +5406,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
     workspaceInitialRoute?.kind === "task" ? workspaceInitialRoute.taskId : null,
   );
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>(
+    workspaceInitialRoute?.kind === "task" ? [workspaceInitialRoute.taskId] : [],
+  );
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(
+    workspaceInitialRoute?.kind === "task" ? workspaceInitialRoute.taskId : null,
+  );
   const [viewMode, setViewMode] = useState<TaskViewMode>(
     initialListRoute?.kind === "view" || initialListRoute?.kind === "tag"
       ? initialListRoute.mode ?? "list"
@@ -5388,9 +5461,49 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }, []);
 
   const selectedTask = props.bundle.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedTasks = selectedTaskIds
+    .map((id) => props.bundle.tasks.find((task) => task.id === id) ?? null)
+    .filter((task): task is Task => Boolean(task));
   const selectedTaskEditable = selectedTask
-    ? currentTaskPermissionLevel(props.bundle, selectedTask, props.currentUserId) >= 2
+    ? !selectedTask.connector_id
+      && canOrganizeTask(props.bundle, selectedTask, props.currentUserId)
     : false;
+  const selectedTaskCompletable = selectedTask
+    ? selectedTaskEditable || Boolean(
+      selectedTask.connector_platform === "yunxiao"
+      && selectedTask.status !== "completed"
+      && selectedTask.created_by === props.currentUserId
+      && props.bundle.connectors.some((connector) =>
+        connector.id === selectedTask.connector_id
+        && connector.created_by === props.currentUserId
+        && connector.enabled),
+    )
+    : false;
+  const multiSelectTrashView = !selectedLabelId && (
+    smartView === "trash"
+    || props.bundle.customTaskViews.find((view) => view.id === customTaskViewId(smartView))
+      ?.definition.scope === "trash"
+  );
+
+  function workspaceCanEditTask(task: Task) {
+    return !task.connector_id && canOrganizeTask(props.bundle, task, props.currentUserId);
+  }
+
+  function workspaceCanOrganizeTask(task: Task) {
+    return canOrganizeTask(props.bundle, task, props.currentUserId);
+  }
+
+  function workspaceCanCompleteTask(task: Task) {
+    return workspaceCanEditTask(task) || Boolean(
+      task.connector_platform === "yunxiao"
+      && task.status !== "completed"
+      && task.created_by === props.currentUserId
+      && props.bundle.connectors.some((connector) =>
+        connector.id === task.connector_id
+        && connector.created_by === props.currentUserId
+        && connector.enabled),
+    );
+  }
 
   function writeRoute(route: AppRoute, replace = false, state: unknown = null) {
     const path = appRoutePath(route);
@@ -5420,25 +5533,87 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     ).view_mode;
   }
 
-  function selectTask(taskId: string) {
+  function syncTaskSelection(taskId: string | null) {
+    setSelectedTaskId(taskId);
+    setSelectedTaskIds(taskId ? [taskId] : []);
+    setSelectionAnchorId(taskId);
+  }
+
+  function applyTaskSelection(next: { selectedIds: string[]; anchorId: string | null }) {
+    const existing = next.selectedIds.filter((id) =>
+      props.bundle.tasks.some((task) => task.id === id));
+    setSelectionAnchorId(
+      next.anchorId && existing.includes(next.anchorId) ? next.anchorId : existing.at(-1) ?? null,
+    );
+    setSelectedTaskIds(existing);
+    if (existing.length === 0) {
+      writeRoute(currentTaskReturnRoute(props.workspaceId) ?? sectionRoute(), true);
+      setSelectedTaskId(null);
+      return;
+    }
+    const focusId = existing.length === 1
+      ? existing[0]!
+      : (next.anchorId && existing.includes(next.anchorId) ? next.anchorId : existing.at(-1)!);
+    const task = props.bundle.tasks.find((item) => item.id === focusId);
+    setSelectedTaskId(focusId);
+    if (existing.length === 1 && task) {
+      writeRoute({
+        workspaceId: props.workspaceId,
+        kind: "task",
+        taskId: focusId,
+        itemKind: task.kind === "note" ? "note" : "task",
+      }, false, { taskReturnRoute: sectionRoute() });
+    }
+  }
+
+  function selectTask(
+    taskId: string,
+    modifiers?: TaskPointerModifiers,
+    orderedIds?: readonly string[],
+  ) {
     const task = props.bundle.tasks.find((item) => item.id === taskId);
     if (!task) return;
+    if (
+      modifiers
+      && isModifiedTaskSelect(modifiers)
+      && appSection === "tasks"
+      && viewMode === "list"
+    ) {
+      applyTaskSelection(applyTaskPointerSelect({
+        taskId,
+        modifiers,
+        orderedIds: orderedIds ?? [taskId],
+        selectedIds: selectedTaskIds.length > 0
+          ? selectedTaskIds
+          : (selectedTaskId ? [selectedTaskId] : []),
+        anchorId: selectionAnchorId ?? selectedTaskId,
+      }));
+      return;
+    }
     writeRoute({
       workspaceId: props.workspaceId,
       kind: "task",
       taskId,
       itemKind: task.kind === "note" ? "note" : "task",
     }, false, { taskReturnRoute: sectionRoute() });
-    setSelectedTaskId(taskId);
+    syncTaskSelection(taskId);
   }
 
-  function selectChildTask(taskId: string) {
-    selectTask(taskId);
+  function selectChildTask(taskId: string, modifiers?: TaskPointerModifiers, orderedIds?: readonly string[]) {
+    selectTask(taskId, modifiers, orderedIds);
   }
 
   function closeTask() {
     writeRoute(currentTaskReturnRoute(props.workspaceId) ?? sectionRoute(), true);
-    setSelectedTaskId(null);
+    syncTaskSelection(null);
+  }
+
+  function selectTaskGroup(ids: string[]) {
+    if (appSection !== "tasks" || viewMode !== "list" || ids.length === 0) return;
+    applyTaskSelection({
+      selectedIds: uniqueTaskIds([...selectedTaskIds, ...ids]),
+      anchorId: ids[ids.length - 1] ?? selectionAnchorId,
+    });
   }
 
   function selectSmartView(view: SmartView) {
@@ -5447,7 +5622,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setSmartView(view);
     setViewMode(mode);
     setSelectedLabelId(null);
-    setSelectedTaskId(null);
+    syncTaskSelection(null);
   }
 
   function selectLabel(labelId: string) {
@@ -5455,7 +5630,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     writeRoute({ workspaceId: props.workspaceId, kind: "tag", tagId: labelId, mode });
     setSelectedLabelId(labelId);
     setViewMode(mode);
-    setSelectedTaskId(null);
+    syncTaskSelection(null);
   }
 
   function changeWorkspace(workspaceId: string) {
@@ -5464,11 +5639,17 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   useEffect(() => {
+    const existing = new Set(props.bundle.tasks.map((task) => task.id));
+    const nextIds = selectedTaskIds.filter((id) => existing.has(id));
+    if (nextIds.length !== selectedTaskIds.length) {
+      applyTaskSelection({ selectedIds: nextIds, anchorId: selectionAnchorId });
+      return;
+    }
     if (selectedTaskId && !selectedTask) {
-      setSelectedTaskId(null);
+      syncTaskSelection(null);
       writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
-  }, [selectedTask, selectedTaskId]);
+  }, [props.bundle.tasks, selectedTask, selectedTaskId, selectedTaskIds, selectionAnchorId]);
 
   useEffect(() => {
     const route = currentApplicationRoute();
@@ -5503,7 +5684,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setSmartView(DEFAULT_SMART_VIEW);
           setViewMode("list");
           setSelectedLabelId(null);
-          setSelectedTaskId(null);
+          syncTaskSelection(null);
         }
         return;
       }
@@ -5512,7 +5693,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setMobileAppSidebar(false);
       if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
         setAppSection(route.kind);
-        setSelectedTaskId(null);
+        syncTaskSelection(null);
         return;
       }
       setAppSection("tasks");
@@ -5528,7 +5709,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       if (listRoute?.kind === "view" || listRoute?.kind === "tag") {
         setViewMode(listRoute.mode ?? "list");
       }
-      setSelectedTaskId(route.kind === "task" ? route.taskId : null);
+      syncTaskSelection(route.kind === "task" ? route.taskId : null);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -5542,12 +5723,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSmartView(DEFAULT_SMART_VIEW);
       setViewMode("list");
       setSelectedLabelId(null);
-      setSelectedTaskId(null);
+      syncTaskSelection(null);
       return;
     }
     if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
       setAppSection(route.kind);
-      setSelectedTaskId(null);
+      syncTaskSelection(null);
       return;
     }
     setAppSection("tasks");
@@ -5565,7 +5746,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     }
     if (route.kind === "task") {
       if (task) {
-        setSelectedTaskId(task.id);
+        syncTaskSelection(task.id);
         writeRoute({
           ...route,
           itemKind: task.kind === "note" ? "note" : "task",
@@ -5575,7 +5756,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         });
       }
     } else {
-      setSelectedTaskId(null);
+      syncTaskSelection(null);
     }
   }, [props.workspaceId]);
 
@@ -5611,9 +5792,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const dialogSection = appSection === "calendar"
     || appSection === "mindmap"
     || (appSection === "tasks" && viewMode === "timeline");
+  const multiSelectOpen = appSection === "tasks"
+    && viewMode === "list"
+    && selectedTasks.length >= 2;
   const detailPanelOpen = appSection === "tasks"
-    && !!selectedTask
-    && viewMode !== "timeline";
+    && viewMode !== "timeline"
+    && (multiSelectOpen || !!selectedTask);
 
   function changeSection(section: AppSection) {
     writeRoute({
@@ -5626,7 +5810,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSmartView(DEFAULT_SMART_VIEW);
       setSelectedLabelId(null);
     }
-    setSelectedTaskId(null);
+    syncTaskSelection(null);
     setMobileSidebar(false);
     setMobileAppSidebar(false);
     setMindMapCreateLabel(null);
@@ -5681,7 +5865,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             setSmartView(view);
             setViewMode("list");
             setSelectedLabelId(null);
-            setSelectedTaskId(null);
+            syncTaskSelection(null);
             writeRoute({ workspaceId: targetWorkspaceId, kind: "view", view, mode: "list" });
           } else if (command.target === "task") {
             const task = props.bundle.tasks.find((item) => item.id === command.taskId);
@@ -5694,7 +5878,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               ? sectionRoute()
               : { workspaceId: targetWorkspaceId, kind: "view" as const, view: DEFAULT_SMART_VIEW, mode: "list" as const };
             setAppSection("tasks");
-            setSelectedTaskId(task.id);
+            syncTaskSelection(task.id);
             writeRoute({
               workspaceId: targetWorkspaceId,
               kind: "task",
@@ -5709,7 +5893,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         }
 
         setAppSection("focus");
-        setSelectedTaskId(null);
+        syncTaskSelection(null);
         writeRoute({ workspaceId: targetWorkspaceId, kind: "focus" });
         setFocusDeepLink(envelope as DesktopFocusDeepLinkEnvelope);
       } catch (error) {
@@ -5761,13 +5945,218 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         taskId: target.taskId,
         itemKind: task.kind === "note" ? "note" : "task",
       }, false, { taskReturnRoute: sectionRoute() });
-      setSelectedTaskId(target.taskId);
+      syncTaskSelection(target.taskId);
     });
     return () => {
       unsubscribeSettings();
       unsubscribeTask();
     };
   }, [props.bundle.tasks, props.onWorkspaceChange, props.workspaceId]);
+
+  async function runBulkSelected(
+    filter: (task: Task) => boolean,
+    action: (task: Task) => Promise<void>,
+    verb: string,
+  ) {
+    const targets = selectedTasks.filter(filter);
+    const skipped = selectedTasks.length - targets.length;
+    const result = await runBulkTaskUpdates(targets, action);
+    const notice = formatBulkNotice({ ...result, skipped, action: verb });
+    if (notice) props.onNotice(notice);
+    return result;
+  }
+
+  async function completeSelectedTasks(completed = true) {
+    await runBulkSelected(
+      (task) => task.kind !== "note" && !task.deleted_at && workspaceCanCompleteTask(task),
+      (task) => props.onUpdateTask(task.id, {
+        status: completed ? "completed" : "open",
+        completed_at: completed ? new Date().toISOString() : null,
+      }),
+      completed ? "完成" : "重新打开",
+    );
+  }
+
+  async function deleteSelectedTasks() {
+    await runBulkSelected(
+      (task) => workspaceCanOrganizeTask(task) && !task.deleted_at,
+      (task) => props.onUpdateTask(task.id, { deleted_at: new Date().toISOString() }),
+      "删除",
+    );
+    closeTask();
+  }
+
+  async function restoreSelectedTasks() {
+    await runBulkSelected(
+      (task) => workspaceCanOrganizeTask(task) && Boolean(task.deleted_at),
+      (task) => props.onUpdateTask(task.id, { deleted_at: null }),
+      "恢复",
+    );
+  }
+
+  async function purgeSelectedTasks() {
+    await runBulkSelected(
+      (task) => Boolean(task.deleted_at),
+      (task) => props.onPurgeTask(task.id),
+      "彻底删除",
+    );
+    closeTask();
+  }
+
+  function rootIdOf(task: Task) {
+    const byId = new Map(props.bundle.tasks.map((item) => [item.id, item]));
+    let cursor = task;
+    const seen = new Set<string>();
+    while (cursor.parent_task_id) {
+      if (seen.has(cursor.id)) break;
+      seen.add(cursor.id);
+      const parent = byId.get(cursor.parent_task_id);
+      if (!parent) break;
+      cursor = parent;
+    }
+    return cursor.id;
+  }
+
+  async function pinSelectedTasks() {
+    const groups = new Map<string, Task[]>();
+    for (const task of selectedTasks.filter((item) => workspaceCanEditTask(item) && !item.deleted_at)) {
+      const key = itemParentKey(task);
+      groups.set(key, [...(groups.get(key) ?? []), task]);
+    }
+    let ok = 0;
+    let failed = 0;
+    const skipped = selectedTasks.length - [...groups.values()].reduce((sum, items) => sum + items.length, 0);
+    for (const tasks of groups.values()) {
+      for (const [index, task] of tasks.entries()) {
+        try {
+          await props.onUpdateTask(task.id, {
+            parent_task_id: task.parent_task_id,
+            position: index,
+          });
+          ok += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+    }
+    const notice = formatBulkNotice({ ok, failed, skipped, action: "置顶" });
+    if (notice) props.onNotice(notice);
+  }
+
+  function itemParentKey(task: Task) {
+    return task.parent_task_id ?? "";
+  }
+
+  async function linkSelectedToParent(parentId: string, verb = "关联主任务") {
+    if (!canAddChild(props.bundle.tasks, parentId)) {
+      props.onNotice("无法关联到该任务下");
+      return;
+    }
+    const blocked = new Set([parentId, ...descendantIds(props.bundle.tasks, parentId)]);
+    let position = nextSiblingPosition(props.bundle.tasks, parentId);
+    await runBulkSelected(
+      (task) =>
+        workspaceCanEditTask(task)
+        && !task.deleted_at
+        && !blocked.has(task.id)
+        && !descendantIds(props.bundle.tasks, task.id).has(parentId),
+      async (task) => {
+        const nextPosition = position;
+        position += 1;
+        await props.onUpdateTask(task.id, {
+          parent_task_id: parentId,
+          position: nextPosition,
+        });
+      },
+      verb,
+    );
+  }
+
+  async function mergeSelectedTasks() {
+    const editable = selectedTasks.filter((task) => workspaceCanEditTask(task) && !task.deleted_at);
+    const parent = editable[0];
+    if (!parent || editable.length < 2) {
+      props.onNotice("没有可合并的任务");
+      return;
+    }
+    if (!canAddChild(props.bundle.tasks, parent.id)) {
+      props.onNotice("无法合并到该任务下");
+      return;
+    }
+    await linkSelectedToParent(parent.id, "合并");
+  }
+
+  async function duplicateSelectedTasks() {
+    await runBulkSelected(
+      (task) => workspaceCanEditTask(task) && !task.deleted_at,
+      async (task) => {
+        if (task.parent_task_id) {
+          await props.onCreateChildTask(rootIdOf(task), task.title, {
+            parent_task_id: task.parent_task_id,
+            due_at: task.due_at,
+            due_start_at: task.due_start_at,
+            due_is_all_day: task.due_is_all_day,
+            due_timezone: task.due_timezone,
+            assignee_id: task.assignee_id,
+            cli_assignee: task.cli_assignee,
+            priority: task.priority,
+          });
+          return;
+        }
+        const created = await props.onCreateTask({
+          title: task.title,
+          labelIds: [...task.label_ids],
+          kind: task.kind,
+          priority: task.kind === "note" ? "none" : task.priority,
+          dueAt: task.due_at,
+          dueTimezone: task.due_timezone,
+        });
+        const createdId = typeof created === "object" && created && "id" in created
+          ? String(created.id)
+          : null;
+        if (createdId && (task.due_start_at || task.due_is_all_day)) {
+          await props.onSaveTaskSchedule(createdId, {
+            due_at: task.due_at,
+            due_start_at: task.due_start_at,
+            due_is_all_day: task.due_is_all_day,
+            due_timezone: task.due_timezone,
+          }, {
+            reminders: task.reminders.map((reminder) => ({
+              anchor: reminder.anchor,
+              offset_value: reminder.offset_value,
+              offset_unit: reminder.offset_unit,
+              local_time: reminder.local_time,
+            })),
+            persistent: task.reminder_persistent,
+            recurrence: task.recurrence,
+          });
+        }
+      },
+      "创建副本",
+    );
+  }
+
+  async function convertSelectedToNotes() {
+    await runBulkSelected(
+      (task) =>
+        !task.parent_task_id
+        && task.kind !== "note"
+        && workspaceCanEditTask(task)
+        && !task.deleted_at,
+      (task) => props.onUpdateTask(task.id, { kind: "note", priority: "none" }),
+      "转换为笔记",
+    );
+  }
+
+  async function copySelectedText() {
+    const text = selectedTasks.map((task) => task.title).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      props.onNotice("已复制文本");
+    } catch {
+      props.onNotice("复制失败，请重试");
+    }
+  }
 
   const shortcutScope = appSection === "calendar"
     ? "calendar" as const
@@ -5784,6 +6173,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       settingsOpen={settingsDialogOpen}
       smartView={smartView}
       selectedTask={selectedTask}
+      selectedTasks={selectedTasks}
       online={props.online}
       onOpenSearch={() => setSearchDialogOpen(true)}
       onOpenSettings={() => openSettings("account")}
@@ -5791,6 +6181,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       onChangeSection={changeSection}
       onCreateChildTask={(taskId, title) => props.onCreateChildTask(taskId, title)}
       onUpdateTask={props.onUpdateTask}
+      onBulkComplete={() => completeSelectedTasks(
+        !selectedTasks.filter((task) => task.kind !== "note" && !task.deleted_at)
+          .every((task) => task.status === "completed"),
+      )}
+      onBulkDelete={deleteSelectedTasks}
       onCloseTask={closeTask}
       onNotice={props.onNotice}
     />
@@ -5802,7 +6197,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         appSection === "mindmap" && "mind-map-section",
         appSection === "focus" && "focus-section",
         calendarSection && calendarSidebarCollapsed && "calendar-sidebar-collapsed",
-        appSection === "tasks" && selectedTask && viewMode !== "timeline" && "detail-open",
+        appSection === "tasks" && (multiSelectOpen || selectedTask) && viewMode !== "timeline" && "detail-open",
       )}
       style={{
         "--sidebar-width": `${calendarSection ? calendarSidebarWidth : sidebarWidth}px`,
@@ -5819,6 +6214,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         }
         workspaces={props.workspaces}
         workspaceId={props.workspaceId}
+        connectors={props.bundle.connectors}
         notifications={props.notifications}
         notificationsLoading={props.notificationsLoading}
         onWorkspaceChange={changeWorkspace}
@@ -5835,6 +6231,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           selectTask(taskId);
         }}
         onDownloadClient={() => setDownloadClientDialogOpen(true)}
+        onNotice={props.onNotice}
         onSignOut={props.onSignOut}
       />
       <MobileAppSidebar
@@ -5918,6 +6315,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           setMobileAppSidebar(false);
           setDownloadClientDialogOpen(true);
         }}
+        onNotice={props.onNotice}
         onSignOut={props.onSignOut}
         onCreateCustomTaskView={props.onCreateCustomTaskView}
         onDeleteCustomTaskView={props.onDeleteCustomTaskView}
@@ -6009,6 +6407,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           viewMode={viewMode}
           selectedLabelId={selectedLabelId}
           selectedTaskId={selectedTaskId}
+          selectedTaskIds={selectedTaskIds}
           online={props.online}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
@@ -6017,6 +6416,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onSearch={() => setSearchDialogOpen(true)}
           onSelectTask={selectTask}
           onSelectChildTask={selectChildTask}
+          onSelectTasks={selectTaskGroup}
           onCreateTask={props.onCreateTask}
           onUpdateTask={props.onUpdateTask}
           onSaveTaskSchedule={props.onSaveTaskSchedule}
@@ -6043,6 +6443,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onDeleteTaskSection={props.onDeleteTaskSection}
           onSetTaskListOrder={props.onSetTaskListOrder}
           onViewModeChange={(mode) => {
+            if (mode !== "list" && selectedTaskIds.length > 1) {
+              syncTaskSelection(selectedTaskId);
+            }
             setViewMode(mode);
             writeRoute(selectedLabelId
               ? { workspaceId: props.workspaceId, kind: "tag", tagId: selectedLabelId, mode }
@@ -6097,7 +6500,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onSaveTaskListPreference={props.onSaveTaskListPreference}
         />}
       </section>
-      {detailPanelOpen && selectedTask && (
+      {detailPanelOpen && (
         <>
           <PanelResizeHandle
             label="调整详情面板宽度"
@@ -6108,12 +6511,62 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             className="detail-resize-handle"
             onResize={setDetailWidth}
           />
+          {multiSelectOpen ? (
+            <TaskMultiSelectPanel
+              tasks={selectedTasks}
+              bundle={props.bundle}
+              currentUserId={props.currentUserId}
+              online={props.online}
+              now={now}
+              dateTimePreferences={props.dateTimePreferences}
+              aiWorkSettings={props.aiWorkSettings}
+              isTrashView={multiSelectTrashView}
+              canEditTask={workspaceCanEditTask}
+              canOrganizeTask={workspaceCanOrganizeTask}
+              canCompleteTask={workspaceCanCompleteTask}
+              onSaveSchedule={async (patch, schedule) => {
+                await runBulkSelected(
+                  (task) => workspaceCanEditTask(task) && !task.deleted_at,
+                  (task) => props.onSaveTaskSchedule(task.id, patch, schedule),
+                  "更新日期",
+                );
+              }}
+              onSetPriority={async (priority) => {
+                await runBulkSelected(
+                  (task) => task.kind !== "note" && workspaceCanEditTask(task) && !task.deleted_at,
+                  (task) => props.onUpdateTask(task.id, { priority }),
+                  "更新优先级",
+                );
+              }}
+              onToggleLabel={async (labelId, selected) => {
+                await runBulkSelected(
+                  (task) => workspaceCanOrganizeTask(task)
+                    && !task.deleted_at
+                    && task.label_ids.includes(labelId) !== selected,
+                  (task) => props.onToggleTaskLabel(task.id, labelId, selected),
+                  "更新标签",
+                );
+              }}
+              onComplete={(completed) => completeSelectedTasks(completed)}
+              onDelete={deleteSelectedTasks}
+              onRestore={restoreSelectedTasks}
+              onPurge={purgeSelectedTasks}
+              onPin={pinSelectedTasks}
+              onLinkParent={linkSelectedToParent}
+              onMerge={mergeSelectedTasks}
+              onDuplicate={duplicateSelectedTasks}
+              onConvertToNote={convertSelectedToNotes}
+              onCopyText={copySelectedText}
+              onClose={closeTask}
+            />
+          ) : selectedTask ? (
           <TaskDetailPanel
             task={selectedTask}
             bundle={props.bundle}
             currentUserId={props.currentUserId}
             online={props.online}
             editable={selectedTaskEditable}
+            completable={selectedTaskCompletable}
             attachmentService={props.attachmentService}
             now={now}
             dateTimePreferences={props.dateTimePreferences}
@@ -6153,6 +6606,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             onDeleteComment={props.onDeleteComment}
             onNotice={props.onNotice}
           />
+          ) : null}
         </>
       )}
       {dialogSection && selectedTask && (
@@ -6163,6 +6617,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           currentUserId={props.currentUserId}
           online={props.online}
           editable={selectedTaskEditable}
+          completable={selectedTaskCompletable}
           attachmentService={props.attachmentService}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
@@ -6328,6 +6783,7 @@ function NavigationRail({
   avatarUrl,
   workspaces,
   workspaceId,
+  connectors,
   notifications,
   notificationsLoading,
   onWorkspaceChange,
@@ -6339,6 +6795,7 @@ function NavigationRail({
   onMarkAllNotificationsRead,
   onOpenNotificationTask,
   onDownloadClient,
+  onNotice,
   onSignOut,
 }: {
   activeSection: AppSection;
@@ -6347,6 +6804,7 @@ function NavigationRail({
   avatarUrl: string | null;
   workspaces: Workspace[];
   workspaceId: string;
+  connectors: WorkspaceBundle["connectors"];
   notifications: AppNotification[];
   notificationsLoading: boolean;
   onWorkspaceChange: (id: string) => void;
@@ -6358,6 +6816,7 @@ function NavigationRail({
   onMarkAllNotificationsRead: () => Promise<void>;
   onOpenNotificationTask: (taskId: string) => void;
   onDownloadClient: () => void;
+  onNotice: (message: string) => void;
   onSignOut: () => unknown;
 }) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -6520,6 +6979,12 @@ function NavigationRail({
         <Search />
       </button>
       <div className="rail-spacer" />
+      <ConnectorSyncButton
+        workspaceId={workspaceId}
+        connectors={connectors}
+        online={online}
+        onNotice={onNotice}
+      />
       {showDownloadClient && (
         <button
           className="rail-button"
@@ -6577,6 +7042,7 @@ function MobileAppSidebar({
   onMarkAllNotificationsRead,
   onOpenNotificationTask,
   onDownloadClient,
+  onNotice,
   onSignOut,
   onCreateCustomTaskView,
   onDeleteCustomTaskView,
@@ -6617,6 +7083,7 @@ function MobileAppSidebar({
   onMarkAllNotificationsRead: () => Promise<void>;
   onOpenNotificationTask: (taskId: string) => void;
   onDownloadClient: () => void;
+  onNotice: (message: string) => void;
   onSignOut: () => unknown;
   onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
   onDeleteCustomTaskView: WorkspaceAppProps["onDeleteCustomTaskView"];
@@ -6861,6 +7328,12 @@ function MobileAppSidebar({
             <button type="button" className="mobile-sidebar-icon-button" aria-label="搜索" onClick={onSearch}>
               <Search />
             </button>
+            <ConnectorSyncButton
+              workspaceId={workspaceId}
+              connectors={bundle.connectors}
+              online={online}
+              onNotice={onNotice}
+            />
             {showDownloadClient && (
               <button
                 type="button"
@@ -9114,6 +9587,7 @@ function TaskWorkspace({
   viewMode,
   selectedLabelId,
   selectedTaskId,
+  selectedTaskIds,
   online,
   now,
   dateTimePreferences,
@@ -9121,7 +9595,8 @@ function TaskWorkspace({
   onMenu,
   onSearch,
   onSelectTask,
-  onSelectChildTask,
+  onSelectChildTask: _onSelectChildTask,
+  onSelectTasks,
   onCreateTask,
   onUpdateTask,
   onSaveTaskSchedule,
@@ -9157,13 +9632,23 @@ function TaskWorkspace({
   viewMode: TaskViewMode;
   selectedLabelId: string | null;
   selectedTaskId: string | null;
+  selectedTaskIds: readonly string[];
   online: boolean;
   now: Date;
   aiWorkSettings: AiWorkSettings;
   onMenu: () => void;
   onSearch: () => void;
-  onSelectTask: (id: string) => void;
-  onSelectChildTask: (taskId: string) => void;
+  onSelectTask: (
+    id: string,
+    modifiers?: TaskPointerModifiers,
+    orderedIds?: readonly string[],
+  ) => void;
+  onSelectChildTask: (
+    taskId: string,
+    modifiers?: TaskPointerModifiers,
+    orderedIds?: readonly string[],
+  ) => void;
+  onSelectTasks: (ids: string[]) => void;
   onCreateTask: WorkspaceAppProps["onCreateTask"];
   onUpdateTask: WorkspaceAppProps["onUpdateTask"];
   onSaveTaskSchedule: WorkspaceAppProps["onSaveTaskSchedule"];
@@ -9234,7 +9719,16 @@ function TaskWorkspace({
   const canManageSelectedLabel = !selectedLabel
     || currentLabelPermissionLevel(bundle, selectedLabel.id) >= 2;
   const canEditTask = (task: Task) =>
-    currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
+    !task.connector_id && canOrganizeTask(bundle, task, currentUserId);
+  const canCompleteTask = (task: Task) => canEditTask(task) || Boolean(
+    task.connector_platform === "yunxiao"
+    && task.status !== "completed"
+    && task.created_by === currentUserId
+    && bundle.connectors.some((connector) =>
+      connector.id === task.connector_id
+      && connector.created_by === currentUserId
+      && connector.enabled),
+  );
   const isTrashView = !selectedLabelId && (smartView === "trash" || customView?.definition.scope === "trash");
   const title = selectedLabel?.name ?? customView?.name ?? ({
     all: "所有",
@@ -9450,6 +9944,33 @@ function TaskWorkspace({
       viewMode,
     ],
   );
+
+  function orderedIdsForSelect() {
+    const fromDom = visibleTaskIdsFromElement(taskScrollRef.current);
+    if (fromDom.length > 0) return fromDom;
+    return visibleListTaskIds({
+      groups: [
+        ...groups,
+        ...(preference.show_completed && completedTasks.length > 0
+          ? [{ tasks: completedTasks }]
+          : []),
+      ],
+      treeTasks: bundle.tasks,
+      collapsedChildIds: collapsedTaskChildTasks,
+    });
+  }
+
+  function handleSelectTask(
+    taskId: string,
+    event?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean },
+  ) {
+    onSelectTask(
+      taskId,
+      event ? modifiersFromMouseEvent(event) : undefined,
+      orderedIdsForSelect(),
+    );
+  }
+
   const kanbanColumns = useMemo(
     () => buildKanbanColumns({
       tasks,
@@ -9878,6 +10399,8 @@ function TaskWorkspace({
           [createdId, ...(groups[0]?.tasks.map((task) => task.id) ?? [])],
         );
       }
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "创建任务失败，请重试");
     } finally {
       setBusy(false);
     }
@@ -10167,7 +10690,7 @@ function TaskWorkspace({
           onNotice={onNotice}
         />
       ) : (
-      <div className="task-scroll" ref={taskScrollRef}>
+      <div className={clsx("task-scroll", selectedTaskIds.length > 0 && "is-selecting")} ref={taskScrollRef}>
         {!online && (
           <div className="offline-banner">
             <CloudOff size={16} />
@@ -10222,17 +10745,20 @@ function TaskWorkspace({
                       labels={bundle.labels}
                       members={bundle.members}
                       selectedTaskId={selectedTaskId}
+                      selectedTaskIds={selectedTaskIds}
                       workspaceId={workspaceId}
                       online={writable}
                       now={now}
                       dateTimePreferences={dateTimePreferences}
                       showLabels={preference.show_labels}
                       showHours={preference.show_hours}
+                      selectedLabelId={selectedLabelId}
                       draggable={taskDragEnabled}
                       sectionDraggable={canManageSections}
                       collapsedTaskChildTasks={collapsedTaskChildTasks}
                       editableSection={editableSection}
                       canEditTask={canEditTask}
+                      canCompleteTask={canCompleteTask}
                       contextMenuVariant={isTrashView ? "trash" : "default"}
                       onRenameSection={(sectionId, name) =>
                         onUpdateTaskSection(sectionId, { name })}
@@ -10244,8 +10770,9 @@ function TaskWorkspace({
                         }
                       }}
                       onDeleteSection={onDeleteTaskSection}
-                      onSelect={onSelectTask}
-                      onSelectChildTask={onSelectChildTask}
+                      onSelect={handleSelectTask}
+                      onSelectChildTask={handleSelectTask}
+                      onSelectGroup={onSelectTasks}
                       onToggleChildTasks={toggleTaskChildTasks}
                       onToggle={async (task) =>
                         onUpdateTask(task.id, {
@@ -10280,6 +10807,7 @@ function TaskWorkspace({
                     now={now}
                     showLabels={preference.show_labels}
                     showHours={preference.show_hours}
+                    selectedLabelId={selectedLabelId}
                   />
                 ) : null}
               </DragOverlay>,
@@ -10318,17 +10846,21 @@ function TaskWorkspace({
             labels={bundle.labels}
             members={bundle.members}
             selectedTaskId={selectedTaskId}
+            selectedTaskIds={selectedTaskIds}
             workspaceId={workspaceId}
             online={writable}
             now={now}
             dateTimePreferences={dateTimePreferences}
             showLabels={preference.show_labels}
             showHours={preference.show_hours}
+            selectedLabelId={selectedLabelId}
             collapsedTaskChildTasks={collapsedTaskChildTasks}
-            onSelect={onSelectTask}
-            onSelectChildTask={onSelectChildTask}
+            onSelect={handleSelectTask}
+            onSelectChildTask={handleSelectTask}
+            onSelectGroup={onSelectTasks}
             onToggleChildTasks={toggleTaskChildTasks}
             canEditTask={canEditTask}
+            canCompleteTask={canCompleteTask}
             contextMenuVariant="default"
             onToggle={async (task) =>
               onUpdateTask(task.id, { status: "open", completed_at: null })}
@@ -10519,17 +11051,19 @@ function LabelActionsMenu({
               <span>设置权限</span>
             </button>
           )}
-          <button
-            role="menuitem"
-            disabled={!online || !canManageSelectedLabel}
-            onClick={() => {
-              setOpen(false);
-              onAddGroup();
-            }}
-          >
-            <Plus />
-            <span>添加分组</span>
-          </button>
+          {hasSelectedLabel && (
+            <button
+              role="menuitem"
+              disabled={!online || !canManageSelectedLabel}
+              onClick={() => {
+                setOpen(false);
+                onAddGroup();
+              }}
+            >
+              <Plus />
+              <span>添加分组</span>
+            </button>
+          )}
           <button
             role="menuitem"
             disabled={!online}
@@ -10590,12 +11124,14 @@ function TaskGroup({
   labels,
   members,
   selectedTaskId,
+  selectedTaskIds,
   workspaceId,
   online,
   now,
   dateTimePreferences,
   showLabels = false,
   showHours = false,
+  selectedLabelId = null,
   draggable = false,
   sectionDraggable = false,
   collapsedTaskChildTasks,
@@ -10606,6 +11142,7 @@ function TaskGroup({
   onDeleteSection,
   onSelect,
   onSelectChildTask,
+  onSelectGroup,
   onToggle,
   onToggleChildTasks,
   onToggleChildTask,
@@ -10620,6 +11157,7 @@ function TaskGroup({
   onPurgeTask,
   onNotice,
   canEditTask,
+  canCompleteTask,
 }: {
   id: string;
   title: string;
@@ -10628,12 +11166,14 @@ function TaskGroup({
   labels: Label[];
   members: Member[];
   selectedTaskId: string | null;
+  selectedTaskIds: readonly string[];
   workspaceId: string;
   online: boolean;
   now: Date;
   dateTimePreferences: DateTimePreferences;
   showLabels?: boolean;
   showHours?: boolean;
+  selectedLabelId?: string | null;
   draggable?: boolean;
   sectionDraggable?: boolean;
   collapsedTaskChildTasks: ReadonlySet<string>;
@@ -10642,8 +11182,9 @@ function TaskGroup({
   onRenameSection?: (sectionId: string, name: string) => Promise<void>;
   onInsertSection?: (sectionId: string, placement: "before" | "after") => void;
   onDeleteSection?: (sectionId: string) => Promise<void>;
-  onSelect: (id: string) => void;
-  onSelectChildTask: (taskId: string) => void;
+  onSelect: (id: string, event?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => void;
+  onSelectChildTask: (taskId: string, event?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => void;
+  onSelectGroup?: (ids: string[]) => void;
   onToggle: (task: Task) => Promise<void>;
   onToggleChildTasks: (taskId: string) => void;
   onToggleChildTask: WorkspaceAppProps["onToggleChildTask"];
@@ -10658,7 +11199,13 @@ function TaskGroup({
   onPurgeTask: WorkspaceAppProps["onPurgeTask"];
   onNotice: WorkspaceAppProps["onNotice"];
   canEditTask: (task: Task) => boolean;
+  canCompleteTask: (task: Task) => boolean;
 }) {
+  const selectedIds = selectedTaskIds.length > 0
+    ? selectedTaskIds
+    : selectedTaskId
+      ? [selectedTaskId]
+      : [];
   const [collapsed, setCollapsed] = useState(false);
   const [sectionMenuOpen, setSectionMenuOpen] = useState(false);
   const [taskMenu, setTaskMenu] = useState<{
@@ -10774,6 +11321,23 @@ function TaskGroup({
               <em>{tasks.length}</em>
             </button>
           )}
+          {onSelectGroup && !renaming && (
+            <button
+              type="button"
+              className="task-group-select-all"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onSelectGroup(visibleListTaskIds({
+                  groups: [{ tasks }],
+                  treeTasks: pickerTasks ?? tasks,
+                  collapsedChildIds: collapsedTaskChildTasks,
+                }));
+              }}
+            >
+              全选
+            </button>
+          )}
           {editableSection && sectionDraggable && (
             <div className="task-section-actions">
               <button
@@ -10845,26 +11409,30 @@ function TaskGroup({
               treeTasks={pickerTasks ?? tasks}
               labels={labels}
               members={members}
-              selected={selectedTaskId === task.id}
-              selectedTaskId={selectedTaskId}
-              online={online && !isOptimisticTaskId(task.id) && canEditTask(task)}
+              selected={selectedIds.includes(task.id)}
+              selectedTaskIds={selectedIds}
+              online={online && !isOptimisticTaskId(task.id) && canCompleteTask(task)}
               now={now}
               showLabels={showLabels}
               showHours={showHours}
+              selectedLabelId={selectedLabelId}
               draggable={draggable && !isOptimisticTaskId(task.id) && canEditTask(task)}
               childrenCollapsed={collapsedTaskChildTasks.has(task.id)}
-              onSelect={() => {
-                if (!isOptimisticTaskId(task.id)) onSelect(task.id);
+              onSelect={(event) => {
+                if (!isOptimisticTaskId(task.id)) onSelect(task.id, event);
               }}
-              onSelectChildTask={(taskId) => {
-                if (!isOptimisticTaskId(task.id)) onSelectChildTask(taskId);
+              onSelectChildTask={(taskId, event) => {
+                if (!isOptimisticTaskId(task.id)) onSelectChildTask(taskId, event);
               }}
               onToggleChildTasks={() => onToggleChildTasks(task.id)}
               onToggle={() => onToggle(task)}
               onToggleChildTask={onToggleChildTask}
               onContextMenu={(x, y, targetTaskId) => {
-                if (isOptimisticTaskId(task.id) || !canEditTask(task)) return;
-                onSelect(task.id);
+                if (isOptimisticTaskId(task.id) || !(canEditTask(task) || Boolean(task.connector_id))) return;
+                const focusId = targetTaskId ?? task.id;
+                if (!selectedIds.includes(focusId) && !selectedIds.includes(task.id)) {
+                  onSelect(focusId);
+                }
                 setSectionMenuOpen(false);
                 setTaskMenu({
                   taskId: task.id,
@@ -10904,10 +11472,22 @@ function TaskGroup({
           }}
           onNotice={onNotice}
           pickerTasks={pickerTasks ?? tasks}
+          selectedTasks={tasksForIds(pickerTasks ?? tasks, selectedIds)}
           onAddDependencies={onAddTaskDependencies}
         />
       )}
     </section>
+  );
+}
+
+function TaskLabelBar({ color }: { color: string | null }) {
+  if (!color) return null;
+  return (
+    <span
+      className="task-label-bar"
+      aria-hidden="true"
+      style={{ "--task-label-bar-color": color } as CSSProperties}
+    />
   );
 }
 
@@ -10919,6 +11499,7 @@ function TaskListDragOverlay({
   now,
   showLabels,
   showHours,
+  selectedLabelId = null,
 }: {
   task: Task;
   width: number;
@@ -10927,8 +11508,10 @@ function TaskListDragOverlay({
   now: Date;
   showLabels: boolean;
   showHours: boolean;
+  selectedLabelId?: string | null;
 }) {
   const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
+  const labelBarColor = taskLabelBarColor(labels, task.label_ids, selectedLabelId);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
   const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
   const showContactNames = useShowContactNames();
@@ -10949,6 +11532,7 @@ function TaskListDragOverlay({
       {task.kind !== "note" && task.priority !== "none" && (
         <span className="priority-bar" aria-hidden="true" />
       )}
+      <TaskLabelBar color={labelBarColor} />
       <span className="task-children-expander-slot" aria-hidden="true" />
       {task.kind === "note" ? (
         <span className="task-note-icon"><NotebookPen /></span>
@@ -10987,6 +11571,9 @@ function TaskListDragOverlay({
               </time>
             )}
             {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
+            {task.connector_platform === "yunxiao" && (
+              <span className="task-source-badge" title="此任务由云效同步">云效</span>
+            )}
             {assignee && (
               <span className="task-assignee">
                 <MemberAvatar
@@ -11021,11 +11608,12 @@ function TaskRow({
   labels,
   members,
   selected,
-  selectedTaskId,
+  selectedTaskIds,
   online,
   now,
   showLabels = false,
   showHours = false,
+  selectedLabelId = null,
   draggable = false,
   childrenCollapsed,
   onSelect,
@@ -11040,15 +11628,16 @@ function TaskRow({
   labels: Label[];
   members: Member[];
   selected: boolean;
-  selectedTaskId: string | null;
+  selectedTaskIds: readonly string[];
   online: boolean;
   now: Date;
   showLabels?: boolean;
   showHours?: boolean;
+  selectedLabelId?: string | null;
   draggable?: boolean;
   childrenCollapsed: boolean;
-  onSelect: () => void;
-  onSelectChildTask: (targetTaskId: string) => void;
+  onSelect: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onSelectChildTask: (targetTaskId: string, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onToggleChildTasks: () => void;
   onToggle: () => Promise<void>;
   onToggleChildTask: WorkspaceAppProps["onToggleChildTask"];
@@ -11063,6 +11652,7 @@ function TaskRow({
     isDragging,
   } = useSortable({ id: task.id, disabled: !draggable });
   const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
+  const labelBarColor = taskLabelBarColor(labels, task.label_ids, selectedLabelId);
   const optimistic = isOptimisticTaskId(task.id);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
   const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
@@ -11098,9 +11688,11 @@ function TaskRow({
     >
       <article
         aria-busy={optimistic || undefined}
+        data-task-id={task.id}
         className={clsx(
           "task-row",
           selected && "selected",
+          labelBarColor && "has-label-bar",
           task.kind !== "note" && task.status === "completed" && "completed",
           optimistic && "pending",
           isDragging && "dragging",
@@ -11121,6 +11713,7 @@ function TaskRow({
           } as React.CSSProperties}
         />
       )}
+      <TaskLabelBar color={labelBarColor} />
       {draggable && (
         <button
           className="task-drag-handle"
@@ -11166,7 +11759,13 @@ function TaskRow({
           {task.status === "completed" ? <Check /> : <Circle />}
         </button>
       )}
-      <button className="task-row-content" onClick={onSelect}>
+      <button
+        className="task-row-content"
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
+        onClick={onSelect}
+      >
         <span className="task-main-line">
           <span className="task-title">{task.title}</span>
           {showLabels && taskLabels.length > 0 && (
@@ -11197,6 +11796,9 @@ function TaskRow({
               </time>
             )}
             {hoursLabel && <span className="task-hours">{hoursLabel}</span>}
+            {task.connector_platform === "yunxiao" && (
+              <span className="task-source-badge" title="此任务由云效同步">云效</span>
+            )}
             {assignee && (
               <span className="task-assignee">
                 <MemberAvatar
@@ -11254,10 +11856,12 @@ function TaskRow({
             return (
               <article
                 key={childTask.id}
+                data-task-id={childTask.id}
                 className={clsx(
                   "task-list-childTask-row",
                   (childTask.status === "completed") && "completed",
-                  selectedTaskId === childTask.id && "selected",
+                  selectedTaskIds.includes(childTask.id) && "selected",
+                  labelBarColor && "has-label-bar",
                 )}
                 style={{ paddingLeft: 58 + nestOffset }}
                 role="listitem"
@@ -11278,6 +11882,7 @@ function TaskRow({
                     } as React.CSSProperties}
                   />
                 )}
+                <TaskLabelBar color={labelBarColor} />
                 {childCount > 0 ? (
                   <button
                     type="button"
@@ -11317,7 +11922,10 @@ function TaskRow({
                 <button
                   type="button"
                   className="task-list-childTask-content"
-                  onClick={() => onSelectChildTask(childTask.id)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                  }}
+                  onClick={(event) => onSelectChildTask(childTask.id, event)}
                 >
                   <span className="task-main-line">
                     <span className="task-list-childTask-title">{childTask.title}</span>
@@ -12798,6 +13406,7 @@ function SettingsDialog({
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState("");
+  const [connectorConfigOpen, setConnectorConfigOpen] = useState(false);
 
   useEffect(() => {
     if (open && initialTab) {
@@ -12832,6 +13441,7 @@ function SettingsDialog({
         { id: "team", label: "成员管理", icon: Users },
         { id: "user-groups", label: "用户组", icon: Workflow },
         { id: "sso", label: "单点登录", icon: KeyRound },
+        { id: "quick-create", label: "快速创建", icon: Zap },
         { id: "connectors", label: "连接器", icon: Plug },
       ],
     },
@@ -12847,7 +13457,10 @@ function SettingsDialog({
   }> = settingsTabGroups.flatMap((group) => group.tabs);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setConnectorConfigOpen(false);
+      return;
+    }
     setActiveTab("account");
     setAccountAction(null);
     setNicknameDraft(userName);
@@ -12856,6 +13469,7 @@ function SettingsDialog({
     setAvatarPreviewUrl(null);
     setDeleteConfirmation("");
     setAccountError("");
+    setConnectorConfigOpen(false);
   }, [open]);
 
   useEffect(() => {
@@ -12875,13 +13489,30 @@ function SettingsDialog({
 
   return (
     <>
-      <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Root
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && connectorConfigOpen) {
+            setConnectorConfigOpen(false);
+            return;
+          }
+          onOpenChange(nextOpen);
+        }}
+      >
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay settings-overlay" />
-        <Dialog.Content className="dialog-content settings-dialog">
+        <Dialog.Content className={clsx(
+          "dialog-content settings-dialog",
+          connectorConfigOpen && "settings-dialog-replaced",
+        )}>
           <Dialog.Description className="sr-only">
-            管理 AntTodo 的账户、安全和应用偏好。
+            {connectorConfigOpen
+              ? "配置云效连接器。令牌只写入 Vault。"
+              : "管理 AntTodo 的账户、安全和应用偏好。"}
           </Dialog.Description>
+          {connectorConfigOpen ? (
+            <Dialog.Title className="sr-only">接入云效中心版</Dialog.Title>
+          ) : (
           <aside className="settings-sidebar">
             <Dialog.Title className="settings-modal-title">设置</Dialog.Title>
             <nav className="settings-tabs" aria-label="设置分类">
@@ -12915,8 +13546,28 @@ function SettingsDialog({
               ))}
             </nav>
           </aside>
-          <section className="settings-main">
-            {activeTab === "account" ? (
+          )}
+          <section className={clsx("settings-main", connectorConfigOpen && "settings-main-replaced")}>
+            {connectorConfigOpen || activeTab === "connectors" ? (
+              <ConnectorSettingsPanel
+                workspace={workspace}
+                connectors={bundle.connectors}
+                labels={bundle.labels}
+                labelPermissionLevels={bundle.labelPermissionLevels}
+                online={online}
+                configOpen={connectorConfigOpen}
+                onConfigOpenChange={setConnectorConfigOpen}
+                onNotice={onNotice}
+              />
+            ) : activeTab === "quick-create" ? (
+              <QuickCreateSettingsPanel
+                workspace={workspace}
+                connectors={bundle.connectors}
+                online={online}
+                onNavigateToSso={() => setActiveTab("sso")}
+                onNotice={onNotice}
+              />
+            ) : activeTab === "account" ? (
               <div className="account-settings">
                 <header className="account-profile">
                   <button
@@ -13125,14 +13776,6 @@ function SettingsDialog({
                 online={online}
                 onNotice={onNotice}
               />
-            ) : activeTab === "connectors" ? (
-              <ConnectorSettingsPanel
-                workspace={workspace}
-                connectors={bundle.connectors}
-                online={online}
-                onNavigateToSso={() => setActiveTab("sso")}
-                onNotice={onNotice}
-              />
             ) : activeTab === "about" ? (
               <AboutSettingsPanel />
             ) : activeTab === "shortcuts" ? (
@@ -13153,9 +13796,23 @@ function SettingsDialog({
               </div>
             )}
           </section>
+          {connectorConfigOpen ? (
+            <button
+              type="button"
+              className="settings-dialog-close"
+              aria-label="关闭设置"
+              onClick={() => {
+                setConnectorConfigOpen(false);
+                onOpenChange(false);
+              }}
+            >
+              <X />
+            </button>
+          ) : (
           <Dialog.Close className="settings-dialog-close" aria-label="关闭设置">
             <X />
           </Dialog.Close>
+          )}
         </Dialog.Content>
       </Dialog.Portal>
       </Dialog.Root>

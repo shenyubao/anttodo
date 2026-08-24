@@ -417,7 +417,7 @@ export function TaskKanban({
           workspaceId={workspaceId}
           x={taskMenu.x}
           y={taskMenu.y}
-          online={online && canEditTask(taskMenu.task)}
+          online={online && (canEditTask(taskMenu.task) || Boolean(taskMenu.task.connector_id))}
           now={now}
           dateTimePreferences={dateTimePreferences}
           onClose={() => setTaskMenu(null)}

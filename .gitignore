@@ -17,3 +17,4 @@ landing/.wrangler/
 *.tsbuildinfo
 .pnpm-store/
 release-arm64-smoke
+release-local

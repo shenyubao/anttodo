@@ -404,6 +404,20 @@ test("mind map fills the mobile workspace", async ({ page }) => {
   await expect(page.getByRole("button", { name: "打开导航" })).toBeVisible();
 });
 
+test("mind map remains mounted after saving an active filter", async ({ page }) => {
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "思维导图" }).click();
+
+  const filterButton = page.getByRole("button", { name: "过滤" });
+  await filterButton.click();
+  await page.getByRole("menuitem", { name: /时间/ }).click();
+  await page.getByRole("menuitemcheckbox", { name: "今天" }).click();
+
+  await expect(filterButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("heading", { name: "思维导图" })).toBeVisible();
+  await expect(page.locator(".mind-map-canvas .react-flow")).toBeVisible();
+});
+
 test("mind map is full width and supports creation, details, and date dragging", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/?demo=1");
@@ -825,6 +839,49 @@ test("task detail and labels follow the desktop reference layout", async ({ page
   });
 });
 
+test("colored labels show a list color bar on matching task rows", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "所有" }).click();
+
+  const coloredRow = page.locator(".task-row").filter({ hasText: demoTaskTitle });
+  const uncoloredRow = page.locator(".task-row").filter({ hasText: "整理云效字段映射表" });
+  await expect(coloredRow.locator(".task-label-bar")).toHaveCount(0);
+  await expect(uncoloredRow.locator(".task-label-bar")).toHaveCount(0);
+
+  await page.locator('.label-row[data-label-id="urgent"]').click({ button: "right" });
+  await page.getByRole("menuitem", { name: "编辑" }).click();
+  const dialog = page.getByRole("dialog", { name: "编辑标签" });
+  await dialog.locator('.label-color-option[title="#ffac38"]').click();
+  await dialog.getByRole("button", { name: "保存" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect(page.locator('.label-row[data-label-id="urgent"] .label-color-dot'))
+    .toHaveCSS("background-color", "rgb(255, 172, 56)");
+  await expect(coloredRow.locator(".task-label-bar")).toHaveCSS(
+    "background-color",
+    "rgb(255, 172, 56)",
+  );
+  await expect(coloredRow.locator(".task-label-bar")).toHaveCSS("width", "3px");
+  await expect(coloredRow.locator(".task-label-bar")).toHaveCSS("left", "16px");
+  await expect(coloredRow.locator(".task-label-bar")).toHaveCSS("z-index", "1");
+  const barBox = await coloredRow.locator(".task-label-bar").boundingBox();
+  expect(barBox?.height).toBe(40);
+  await expect(uncoloredRow.locator(".task-label-bar")).toHaveCount(0);
+
+  const childExpander = coloredRow.getByRole("button", { name: /展开子级任务/ });
+  if (await childExpander.count()) await childExpander.click();
+  await expect(
+    page.locator(".task-list-childTask-row").filter({ hasText: "检查 Mac 安装包" })
+      .locator(".task-label-bar"),
+  ).toHaveCSS("background-color", "rgb(255, 172, 56)");
+
+  await page.locator('.label-row[data-label-id="urgent"]').click();
+  await expect(page.locator(".task-row .task-label-bar")).toHaveCount(
+    await page.locator(".task-row").count(),
+  );
+});
+
 test("task assignee menu assigns, unassigns, and updates list avatars", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await openDemoTask(page);
@@ -895,26 +952,20 @@ test("offline mode disables task assignment", async ({ context, page }) => {
   ).toBeDisabled();
 });
 
-test("connector settings exposes marketplace and installed DingTalk robot", async ({ page }) => {
+test("quick create settings shows the installed DingTalk robot", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
   await page.getByRole("menuitem", { name: "设置" }).click();
 
   const dialog = page.getByRole("dialog", { name: "设置" });
-  await dialog.getByRole("button", { name: "连接器", exact: true }).click();
-  await expect(dialog.getByRole("heading", { name: "连接器" })).toBeVisible();
-  await expect(dialog.getByRole("tab", { name: "连接器市场" })).toBeVisible();
-  await expect(dialog.getByRole("tab", { name: "已接入 1" })).toBeVisible();
-  await expect(dialog.getByRole("tab", { name: "快速创建" })).toBeVisible();
+  await dialog.getByRole("button", { name: "快速创建", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "快速创建" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "连接器市场" })).toHaveCount(0);
+  await expect(dialog.getByRole("tab", { name: "已接入" })).toHaveCount(0);
   await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("已接入", { exact: true })).toBeVisible();
 
-  await dialog.getByRole("tab", { name: "研发工具" }).click();
-  await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("暂未开放", { exact: true })).toBeVisible();
-
-  await dialog.getByRole("tab", { name: "已接入 1" }).click();
+  await dialog.getByRole("button", { name: "查看详情" }).click();
   const setupGuide = dialog.getByRole("region", { name: "钉钉机器人配置步骤" });
   await expect(setupGuide).toBeVisible();
   await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
@@ -925,6 +976,29 @@ test("connector settings exposes marketplace and installed DingTalk robot", asyn
     "flex-direction",
     "column",
   );
+});
+
+test("connector settings exposes the Yunxiao marketplace", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
+  await page.getByRole("menuitem", { name: "设置" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "设置" });
+  await dialog.getByRole("button", { name: "连接器", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "连接器" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "连接器市场" })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "已接入", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "快速创建" })).toHaveCount(0);
+  await expect(dialog.getByText("钉钉群机器人", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
+
+  await dialog.getByRole("tab", { name: "研发工具" }).click();
+  await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "接入", exact: true })).toBeVisible();
+
+  await dialog.getByRole("tab", { name: "已接入", exact: true }).click();
+  await expect(dialog.getByText("还没有接入连接器")).toBeVisible();
 });
 
 test("settings matches the reference geometry and reads account data", async ({ page }) => {
@@ -958,12 +1032,16 @@ test("settings matches the reference geometry and reads account data", async ({ 
     settingsTabLabels.indexOf("单点登录") - 1,
   );
   expect(settingsTabLabels.indexOf("单点登录")).toBe(
+    settingsTabLabels.indexOf("快速创建") - 1,
+  );
+  expect(settingsTabLabels.indexOf("快速创建")).toBe(
     settingsTabLabels.indexOf("连接器") - 1,
   );
   expect(settingsTabLabels).toEqual([
     "账户与安全",
     "日期与时间",
     "外观",
+    "智能视图",
     "通知配置",
     "AI功能",
     "快捷键",
@@ -971,6 +1049,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
     "成员管理",
     "用户组",
     "单点登录",
+    "快速创建",
     "连接器",
     "关于",
   ]);
@@ -978,6 +1057,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
     "基础配置",
     "团队配置",
   ]);
+  await expect(dialog.getByRole("button", { name: "快速创建", exact: true })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "连接器", exact: true })).toBeVisible();
 
   await dialog.getByRole("button", { name: "外观", exact: true }).click();
@@ -1034,18 +1114,25 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await expect(dialog.getByRole("heading", { name: "单点登录" })).toBeVisible();
   await expect(dialog.getByText("钉钉企业登录", { exact: true })).toBeVisible();
 
+  await dialog.getByRole("button", { name: "快速创建", exact: true }).click();
+  await expect(dialog.getByRole("heading", { name: "快速创建" })).toBeVisible();
+  await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "查看详情" }).click();
+  await expect(dialog.getByRole("region", { name: "钉钉机器人配置步骤" })).toBeVisible();
+  await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
+
   await dialog.getByRole("button", { name: "连接器", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "连接器" })).toBeVisible();
   await expect(dialog.getByRole("tab", { name: "连接器市场" })).toBeVisible();
-  await expect(dialog.getByRole("tab", { name: "已接入 1" })).toBeVisible();
-  await expect(dialog.getByRole("tab", { name: "快速创建" })).toBeVisible();
-  await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "已接入", exact: true })).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "快速创建" })).toHaveCount(0);
+  await expect(dialog.getByText("钉钉群机器人", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
   await dialog.getByRole("tab", { name: "研发工具" }).click();
   await expect(dialog.getByText("云效", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("暂未开放", { exact: true })).toBeVisible();
-  await dialog.getByRole("tab", { name: "已接入 1" }).click();
-  await expect(dialog.getByRole("region", { name: "钉钉机器人配置步骤" })).toBeVisible();
-  await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "接入", exact: true })).toBeVisible();
+  await dialog.getByRole("tab", { name: "已接入", exact: true }).click();
+  await expect(dialog.getByText("还没有接入连接器")).toBeVisible();
 
   await dialog.getByRole("button", { name: "日期与时间", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "日期与时间" })).toBeVisible();
@@ -1486,8 +1573,14 @@ test("task list preferences are independent for smart and label lists", async ({
 test("custom grouping is shared by list and kanban views", async ({ page }) => {
   await page.goto("/?demo=1");
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await expect(page.getByRole("menu", { name: "标签设置" }).getByRole("menuitem", { name: "添加分组" }))
+    .toHaveCount(0);
+  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+
+  await page.locator('.label-row[data-label-id="product"]').click();
+  await page.getByRole("button", { name: "标签设置", exact: true }).click();
   await page.getByRole("menuitem", { name: "添加分组" }).click();
-  await expect(page.getByRole("button", { name: "未分组 5" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "未分组 4" })).toBeVisible();
   await page.getByRole("textbox", { name: "分组名称" }).fill("进行中");
   await page.getByRole("button", { name: "添加", exact: true }).click();
 
@@ -1501,7 +1594,7 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
   await expect(sectionMenu.getByRole("menuitem", { name: "删除" })).toBeVisible();
   await page.getByRole("button", { name: "管理分组“进行中”" }).click();
 
-  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("button", { name: "标签设置", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
   const board = page.getByLabel("任务看板");
   await expect(board.getByRole("region", { name: "未分组" })).toBeVisible();
@@ -1518,7 +1611,7 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
     .press("Enter");
   await expect(sectionColumn.getByText("自定义分组任务", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "更多操作", exact: true }).click();
+  await page.getByRole("button", { name: "标签设置", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "列表" }).click();
   const listSection = page.locator(".task-group").filter({ hasText: "进行中" });
   await expect(listSection.getByText("自定义分组任务", { exact: true })).toBeVisible();
@@ -1527,7 +1620,7 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("menuitem", { name: "删除" }).click();
   await expect(page.getByRole("button", { name: "进行中 1" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "未分组 6" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "未分组 5" })).toBeVisible();
   await expect(page.getByText("自定义分组任务", { exact: true })).toBeVisible();
 });
 
@@ -1601,6 +1694,10 @@ test("connector page is removed from the main navigation", async ({ page }) => {
   await expect(page.getByRole("navigation", { name: "主导航" }).getByRole(
     "button",
     { name: "连接器" },
+  )).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole(
+    "button",
+    { name: "同步连接器" },
   )).toHaveCount(0);
   await expect(page.getByText("产品演示同步")).toHaveCount(0);
 });

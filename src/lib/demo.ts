@@ -11,6 +11,7 @@ import type {
   WorkspaceBundle,
 } from "../types";
 import { DEFAULT_LABEL_COLOR } from "./labels";
+import { countLiveTasksByLabel } from "./labelTaskLimits";
 
 const now = new Date();
 const userId = "demo-user";
@@ -118,6 +119,9 @@ const task = (
   version: 1,
   created_at: now.toISOString(),
   updated_at: now.toISOString(),
+  external_id: null,
+  connector_id: null,
+  connector_platform: null,
   children: [],
   reminders: [],
   reminder_persistent: false,
@@ -186,9 +190,11 @@ const connectors: Connector[] = [
     enabled: true,
     schedule_minutes: 5,
     public_config: { kind: "group_robot", timezone: "Asia/Shanghai" },
+    target_label_id: null,
     credential_hint: null,
     last_synced_at: subDays(now, 0.05).toISOString(),
     next_sync_at: addDays(now, 0.01).toISOString(),
+    created_by: userId,
   },
 ];
 
@@ -252,6 +258,7 @@ export function createDemoBundle(): WorkspaceBundle {
       ...task,
       children: tasks.filter((candidate) => candidate.parent_task_id === task.id && !candidate.deleted_at),
     })),
+    labelTaskCounts: countLiveTasksByLabel(tasks),
     connectors: structuredClone(connectors),
     syncRuns: structuredClone(syncRuns),
     conflicts: structuredClone(conflicts),

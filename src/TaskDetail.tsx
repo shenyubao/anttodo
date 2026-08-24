@@ -39,6 +39,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { rewriteYunxiaoStoredDescription } from "./lib/yunxiaoDescription";
 import { shouldDismissTaskDetailOnPointerDown } from "./lib/taskDetailDismiss";
 import { DueDateControl, dueTargetFromChildTask } from "./DueDateControl";
 import { TaskDependencyList } from "./TaskDependencyList";
@@ -57,17 +58,16 @@ import {
 import type { AttachmentService } from "./lib/attachments";
 import {
   buildFormattedDescription,
-  buildChildTaskExtrasFromSuggestion,
-  formatAiSuggestedDueAt,
+  formatAiDueAt,
   isMidnightLocalDueAt,
   type AiFormatSuggestion,
-  type AiSuggestedTask,
-} from "./lib/aiTaskDecompose";
-import { decomposeTask, formatTaskWithAi } from "./lib/api";
+} from "./lib/aiTaskFormat";
+import { formatTaskWithAi } from "./lib/api";
 import { taskShareUrl } from "./lib/appRoute";
 import { formatDueWithPreferences, systemTimeZone, toDateInput } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
+import { canOrganizeTask } from "./lib/permissions";
 import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
 import {
   dependencyTargetKey,
@@ -156,6 +156,7 @@ export type TaskDetailProps = {
   currentUserId: string;
   online: boolean;
   editable: boolean;
+  completable?: boolean;
   attachmentService: AttachmentService;
   now: Date;
   dateTimePreferences: DateTimePreferences;
@@ -1314,12 +1315,7 @@ function ChildTaskMoreMenu({
   );
 }
 
-function memberDisplayName(member: Member | undefined) {
-  return member?.profile?.display_name?.trim() || "团队成员";
-}
-
-type AiSuggestListItem = AiSuggestedTask & { clientKey: string };
-type AiSmartPanel = "menu" | "decompose" | "format" | null;
+type AiSmartPanel = "menu" | "format" | null;
 
 function scheduleFromTask(task: Task): ReminderSchedule {
   return {
@@ -1336,28 +1332,17 @@ function scheduleFromTask(task: Task): ReminderSchedule {
 
 function AiSmartProcessControl({
   task,
-  bundle,
-  currentUserId,
   aiFeatureSettings,
   online,
   editable,
-  onCreateChildTask,
-  onEnsureChildTasksVisible,
   onUpdate,
   onSaveSchedule,
   onFormatApplied,
 }: {
   task: Task;
-  bundle: WorkspaceBundle;
-  currentUserId: string;
   aiFeatureSettings: AiFeatureSettings;
   online: boolean;
   editable: boolean;
-  onCreateChildTask: (
-    title: string,
-    extras?: Partial<Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone" | "assignee_id" | "cli_assignee" | "priority" | "parent_task_id">>,
-  ) => Promise<void>;
-  onEnsureChildTasksVisible?: () => void;
   onUpdate: (
     patch: Partial<Task>,
     options?: { mentionedUserIds?: string[] },
@@ -1371,10 +1356,8 @@ function AiSmartProcessControl({
   const writable = editable && online;
   const [panel, setPanel] = useState<AiSmartPanel>(null);
   const [loading, setLoading] = useState(false);
-  const [adding, setAdding] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
-  const [items, setItems] = useState<AiSuggestListItem[]>([]);
   const [formatSuggestion, setFormatSuggestion] = useState<AiFormatSuggestion | null>(null);
   const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1382,32 +1365,14 @@ function AiSmartProcessControl({
   const panelRef = useRef<HTMLDivElement>(null);
   const requestIdRef = useRef(0);
 
-  const assignableMembers = useMemo(
-    () => getAssignableMembers(bundle, task, currentUserId),
-    [bundle, currentUserId, task],
-  );
-  const assignableIds = useMemo(
-    () => assignableMembers.map((member) => member.user_id),
-    [assignableMembers],
-  );
-  const membersById = useMemo(() => {
-    const map = new Map<string, Member>();
-    for (const member of bundle.members) {
-      map.set(member.user_id, member);
-    }
-    return map;
-  }, [bundle.members]);
-
-  const busy = loading || adding || applying;
+  const busy = loading || applying;
   const open = panel !== null;
 
   function closePanel() {
     setPanel(null);
     setLoading(false);
-    setAdding(false);
     setApplying(false);
     setError("");
-    setItems([]);
     setFormatSuggestion(null);
   }
 
@@ -1417,20 +1382,11 @@ function AiSmartProcessControl({
   }, [task.id]);
 
   useEffect(() => {
-    const currentFeatureDisabled =
-      (panel === "format" && !aiFeatureSettings.smart_format_enabled)
-      || (panel === "decompose" && !aiFeatureSettings.task_decompose_enabled)
-      || (!aiFeatureSettings.smart_format_enabled
-        && !aiFeatureSettings.task_decompose_enabled);
-    if (!currentFeatureDisabled) return;
+    if (aiFeatureSettings.smart_format_enabled) return;
     requestIdRef.current += 1;
     closePanel();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to feature availability
-  }, [
-    aiFeatureSettings.smart_format_enabled,
-    aiFeatureSettings.task_decompose_enabled,
-    panel,
-  ]);
+  }, [aiFeatureSettings.smart_format_enabled]);
 
   useEffect(() => {
     if (!open) return;
@@ -1505,45 +1461,7 @@ function AiSmartProcessControl({
       window.removeEventListener("resize", positionPanel);
       window.removeEventListener("scroll", positionPanel, true);
     };
-  }, [open, panel, items, formatSuggestion, loading, error]);
-
-  async function requestDecompose() {
-    if (!writable || adding) return;
-    const requestId = ++requestIdRef.current;
-    setPanel("decompose");
-    setLoading(true);
-    setError("");
-    setItems([]);
-    setFormatSuggestion(null);
-
-    if (!supabase) {
-      setError("服务未配置，无法分解任务。");
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const result = await decomposeTask(supabase, {
-        workspaceId: task.workspace_id,
-        taskId: task.id,
-        nowIso: new Date().toISOString(),
-        timeZone: systemTimeZone(),
-        assignableUserIds: assignableIds,
-      });
-      if (requestId !== requestIdRef.current) return;
-      setItems(
-        result.tasks.map((item, index) => ({
-          ...item,
-          clientKey: `${Date.now()}-${index}-${item.title}`,
-        })),
-      );
-    } catch (err) {
-      if (requestId !== requestIdRef.current) return;
-      setError(err instanceof Error ? err.message : "AI 分解失败，请稍后重试。");
-    } finally {
-      if (requestId === requestIdRef.current) setLoading(false);
-    }
-  }
+  }, [open, panel, formatSuggestion, loading, error]);
 
   async function requestFormat() {
     if (!writable || applying) return;
@@ -1551,7 +1469,6 @@ function AiSmartProcessControl({
     setPanel("format");
     setLoading(true);
     setError("");
-    setItems([]);
     setFormatSuggestion(null);
 
     if (!supabase) {
@@ -1574,42 +1491,6 @@ function AiSmartProcessControl({
       setError(err instanceof Error ? err.message : "智能格式化失败，请稍后重试。");
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
-    }
-  }
-
-  async function addOne(item: AiSuggestListItem) {
-    if (!writable || adding || loading) return;
-    setAdding(true);
-    setError("");
-    try {
-      const extras = buildChildTaskExtrasFromSuggestion(item, assignableIds);
-      onEnsureChildTasksVisible?.();
-      await onCreateChildTask(item.title, extras);
-      const remaining = items.filter((row) => row.clientKey !== item.clientKey);
-      setItems(remaining);
-      if (remaining.length === 0) closePanel();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "添加子级任务失败");
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function addAll() {
-    if (!writable || adding || loading || items.length === 0) return;
-    setAdding(true);
-    setError("");
-    try {
-      onEnsureChildTasksVisible?.();
-      for (const item of items) {
-        const extras = buildChildTaskExtrasFromSuggestion(item, assignableIds);
-        await onCreateChildTask(item.title, extras);
-      }
-      closePanel();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "添加子级任务失败");
-    } finally {
-      setAdding(false);
     }
   }
 
@@ -1641,22 +1522,11 @@ function AiSmartProcessControl({
     }
   }
 
-  function suggestionMeta(item: AiSuggestedTask) {
-    const parts: string[] = [];
-    if (item.assignee_user_id) {
-      parts.push(memberDisplayName(membersById.get(item.assignee_user_id)));
-    }
-    const dueLabel = formatAiSuggestedDueAt(item.due_at);
-    if (dueLabel) parts.push(dueLabel);
-    return parts.join(" · ");
-  }
-
   const formatDueLabel = formatSuggestion
-    ? formatAiSuggestedDueAt(formatSuggestion.due_at)
+    ? formatAiDueAt(formatSuggestion.due_at)
     : null;
 
-  if (!aiFeatureSettings.smart_format_enabled
-    && !aiFeatureSettings.task_decompose_enabled) {
+  if (!aiFeatureSettings.smart_format_enabled) {
     return null;
   }
 
@@ -1670,7 +1540,7 @@ function AiSmartProcessControl({
         aria-label="智能处理"
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={!writable || adding || applying}
+        disabled={!writable || applying}
         onClick={() => {
           if (!writable) return;
           if (panel === "menu") {
@@ -1680,7 +1550,6 @@ function AiSmartProcessControl({
           if (busy && panel !== null) return;
           requestIdRef.current += 1;
           setError("");
-          setItems([]);
           setFormatSuggestion(null);
           setLoading(false);
           setPanel("menu");
@@ -1696,95 +1565,17 @@ function AiSmartProcessControl({
           aria-label="智能处理"
           style={position}
         >
-          {aiFeatureSettings.smart_format_enabled && (
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!writable}
-              onClick={() => {
-                void requestFormat();
-              }}
-            >
-              <span>格式化待办</span>
-              <span className="ai-smart-process-beta">Beta</span>
-            </button>
-          )}
-          {aiFeatureSettings.task_decompose_enabled && (
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!writable}
-              onClick={() => {
-                void requestDecompose();
-              }}
-            >
-              <span>智能分解子级任务</span>
-              <span className="ai-smart-process-beta">Beta</span>
-            </button>
-          )}
-        </div>,
-        document.body,
-      )}
-      {panel === "decompose" && createPortal(
-        <div
-          ref={panelRef}
-          className="ai-childTask-suggest-panel"
-          role="dialog"
-          aria-label="推荐子级任务"
-          style={position}
-        >
-          <div className="ai-childTask-suggest-header">
-            <strong>推荐子级任务</strong>
-            <button
-              type="button"
-              className="ai-childTask-suggest-add-all"
-              disabled={!writable || loading || adding || items.length === 0}
-              onClick={() => {
-                void addAll();
-              }}
-            >
-              全部添加
-            </button>
-          </div>
-          <div className="ai-childTask-suggest-body">
-            {loading && (
-              <p className="ai-childTask-suggest-status">正在分解…</p>
-            )}
-            {!loading && error && (
-              <p className="ai-childTask-suggest-error">{error}</p>
-            )}
-            {!loading && !error && items.length === 0 && (
-              <p className="ai-childTask-suggest-status">暂无推荐</p>
-            )}
-            {!loading && items.length > 0 && (
-              <ul className="ai-childTask-suggest-list">
-                {items.map((item) => {
-                  const meta = suggestionMeta(item);
-                  return (
-                    <li key={item.clientKey} className="ai-childTask-suggest-row">
-                      <div className="ai-childTask-suggest-main">
-                        <span className="ai-childTask-suggest-title">{item.title}</span>
-                        {meta && (
-                          <span className="ai-childTask-suggest-meta">{meta}</span>
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        className="ai-childTask-suggest-add"
-                        disabled={!writable || adding}
-                        aria-label={`添加子级任务：${item.title}`}
-                        onClick={() => {
-                          void addOne(item);
-                        }}
-                      >
-                        添加
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!writable}
+            onClick={() => {
+              void requestFormat();
+            }}
+          >
+            <span>格式化待办</span>
+            <span className="ai-smart-process-beta">Beta</span>
+          </button>
         </div>,
         document.body,
       )}
@@ -1868,6 +1659,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   currentUserId,
   online,
   editable,
+  completable = editable,
   attachmentService,
   now,
   dateTimePreferences,
@@ -1956,7 +1748,15 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const startedTerminalsRef = useRef(new Map<string, AiCliTool>());
   const preferredTerminalByTaskRef = useRef(new Map<string, ActiveCliTerminal>());
   const cliPickerRef = useRef<HTMLDivElement>(null);
+  const displayDescription = useMemo(
+    () => task.connector_platform === "yunxiao"
+      ? rewriteYunxiaoStoredDescription(task.description, task.id)
+      : task.description,
+    [task.connector_platform, task.description, task.id],
+  );
   const writable = editable && online;
+  const completionWritable = completable && online;
+  const organizable = online && canOrganizeTask(bundle, task, currentUserId);
 
   function renderMenuDependencyPicker() {
     if (dependencyPickerFor === undefined || task.kind === "note") return null;
@@ -2368,15 +2168,18 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     <button
       className="detail-complete-trigger"
       type="button"
-      disabled={!writable}
+      disabled={!completionWritable}
       aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
       style={{
         "--priority-color": getPriorityOption(task.priority).color,
       } as CSSProperties}
-      onClick={() => void onUpdate({
-        status: task.status === "completed" ? "open" : "completed",
-        completed_at: task.status === "completed" ? null : new Date().toISOString(),
-      })}
+      onClick={() => {
+        if (!completionWritable) return;
+        void onUpdate({
+          status: task.status === "completed" ? "open" : "completed",
+          completed_at: task.status === "completed" ? null : new Date().toISOString(),
+        });
+      }}
     >
       {task.status === "completed" && <Check />}
     </button>
@@ -2395,6 +2198,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       <button type="button" onClick={() => void closeDetail()} aria-label="关闭详情"><X /></button>
       {parentTrigger}
       {completeTrigger}
+      {task.connector_platform === "yunxiao" && (
+        <span className="task-source-badge" title="内容由云效同步，只读">云效</span>
+      )}
     </>
   );
 
@@ -2428,13 +2234,15 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         {presentation === "panel" && task.kind === "note" && (
           <span className="detail-note-icon" aria-label="笔记"><NotebookPen /></span>
         )}
-        <DueDateControl
-          task={task}
-          online={writable}
-          now={now}
-          preferences={dateTimePreferences}
-          onSave={onSaveSchedule}
-        />
+        {!immersive && (
+          <DueDateControl
+            task={task}
+            online={writable}
+            now={now}
+            preferences={dateTimePreferences}
+            onSave={onSaveSchedule}
+          />
+        )}
         <div className="detail-toolbar-spacer" />
         {task.kind !== "note" && (
           <TaskAssigneeControl
@@ -2555,16 +2363,9 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                 </button>
                 <AiSmartProcessControl
                   task={task}
-                  bundle={bundle}
-                  currentUserId={currentUserId}
                   aiFeatureSettings={aiFeatureSettings}
                   online={online}
                   editable={editable}
-                  onCreateChildTask={onCreateChildTask}
-                  onEnsureChildTasksVisible={() => {
-                    setShowChildTasks(true);
-                    storeDetailChildTasksVisible(true);
-                  }}
                   onUpdate={onUpdate}
                   onSaveSchedule={onSaveSchedule}
                   onFormatApplied={(title, description) => {
@@ -2589,13 +2390,13 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         ) : (
           <>
         <TaskRichTextEditor
-          key={`${task.id}:${descriptionRevision}`}
+          key={`${task.id}:${descriptionRevision}:${displayDescription}`}
           ref={editorRef}
           attachmentContext={{ workspaceId: task.workspace_id, taskId: task.id }}
           attachmentService={attachmentService}
           currentUserId={currentUserId}
           immersive={immersive}
-          initialMarkdown={descriptionSeed ?? task.description}
+          initialMarkdown={descriptionSeed ?? displayDescription}
           initialMentionUserIds={(task.description_mentions ?? []).map((item) => item.user_id)}
           members={bundle.members}
           online={writable}
@@ -2875,7 +2676,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           <TaskDependencyList
             task={task}
             tasks={bundle.tasks}
-            writable={writable}
+            writable={organizable}
             dateTimePreferences={dateTimePreferences}
             onAdd={(targets) => onAddDependencies(task.id, targets)}
             onRemove={onRemoveDependency}
@@ -2937,7 +2738,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         <TaskLabelControl
           task={task}
           bundle={bundle}
-          online={writable}
+          online={organizable}
           onToggleLabel={onToggleLabel}
         />
         <TaskParticipantsControl
@@ -2979,7 +2780,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           type="button"
           title={task.deleted_at ? "还原" : "移至回收站"}
           aria-label={task.deleted_at ? "还原" : "移至回收站"}
-          disabled={!writable}
+          disabled={!organizable}
           onClick={() => void onUpdate({
             deleted_at: task.deleted_at ? null : new Date().toISOString(),
           })}

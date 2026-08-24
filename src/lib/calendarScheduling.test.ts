@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import { createDemoBundle } from "./demo";
 import {
   buildScheduleTaskGroups,
+  calendarEventRangeFromTask,
   canRescheduleTask,
   clearSchedulePatch,
+  inclusiveDueDateKeys,
   isSchedulableTask,
+  occupiedCalendarDateKeys,
   schedulePatchForCalendarMove,
   schedulePatchFromDrop,
+  taskOccupiesCalendarDate,
 } from "./calendarScheduling";
 
 describe("calendar task scheduling", () => {
@@ -237,5 +241,132 @@ describe("calendar task scheduling", () => {
       due_is_all_day: false,
       due_timezone: null,
     });
+  });
+});
+
+describe("calendar event occupancy", () => {
+  it("maps a China all-day range to an exclusive FullCalendar end", () => {
+    const bundle = createDemoBundle();
+    const task = {
+      ...bundle.tasks[0],
+      due_start_at: "2026-08-17T16:00:00.000Z",
+      due_at: "2026-08-21T15:59:59.999Z",
+      due_is_all_day: true,
+      due_timezone: "Asia/Shanghai",
+    };
+    expect(inclusiveDueDateKeys(task)).toEqual({
+      startKey: "2026-08-18",
+      endKey: "2026-08-21",
+    });
+    expect(calendarEventRangeFromTask(task)).toEqual({
+      start: "2026-08-18",
+      end: "2026-08-22",
+      allDay: true,
+    });
+    expect(occupiedCalendarDateKeys(task)).toEqual([
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+      "2026-08-21",
+    ]);
+    expect(taskOccupiesCalendarDate(task, new Date(2026, 7, 18))).toBe(true);
+    expect(taskOccupiesCalendarDate(task, new Date(2026, 7, 21))).toBe(true);
+    expect(taskOccupiesCalendarDate(task, new Date(2026, 7, 22))).toBe(false);
+  });
+
+  it("maps a single all-day task to a one-day exclusive range", () => {
+    const bundle = createDemoBundle();
+    const task = {
+      ...bundle.tasks[0],
+      due_start_at: "2026-08-20T16:00:00.000Z",
+      due_at: "2026-08-21T15:59:59.999Z",
+      due_is_all_day: true,
+      due_timezone: "Asia/Shanghai",
+    };
+    expect(calendarEventRangeFromTask(task)).toEqual({
+      start: "2026-08-21",
+      end: "2026-08-22",
+      allDay: true,
+    });
+    expect(occupiedCalendarDateKeys(task)).toEqual(["2026-08-21"]);
+  });
+
+  it("keeps timed ranges as ISO instants and occupies their calendar days", () => {
+    const bundle = createDemoBundle();
+    const task = {
+      ...bundle.tasks[0],
+      due_start_at: "2026-08-07T01:30:00.000Z",
+      due_at: "2026-08-07T03:00:00.000Z",
+      due_is_all_day: false,
+      due_timezone: "Asia/Shanghai",
+    };
+    expect(calendarEventRangeFromTask(task)).toEqual({
+      start: "2026-08-07T01:30:00.000Z",
+      end: "2026-08-07T03:00:00.000Z",
+      allDay: false,
+    });
+    expect(occupiedCalendarDateKeys(task)).toEqual(["2026-08-07"]);
+  });
+
+  it("occupies a timed multi-day range by inclusive calendar days", () => {
+    const bundle = createDemoBundle();
+    const task = {
+      ...bundle.tasks[0],
+      due_start_at: "2026-08-18T01:00:00.000Z",
+      due_at: "2026-08-20T10:00:00.000Z",
+      due_is_all_day: false,
+      due_timezone: "Asia/Shanghai",
+    };
+    expect(calendarEventRangeFromTask(task)).toEqual({
+      start: "2026-08-18T01:00:00.000Z",
+      end: "2026-08-20T10:00:00.000Z",
+      allDay: false,
+    });
+    expect(occupiedCalendarDateKeys(task)).toEqual([
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+    ]);
+  });
+
+  it("uses the task timezone for all-day occupancy across DST", () => {
+    const bundle = createDemoBundle();
+    const task = {
+      ...bundle.tasks[0],
+      due_start_at: "2026-10-30T04:00:00.000Z",
+      due_at: "2026-11-02T04:59:59.999Z",
+      due_is_all_day: true,
+      due_timezone: "America/New_York",
+    };
+    expect(inclusiveDueDateKeys(task)).toEqual({
+      startKey: "2026-10-30",
+      endKey: "2026-11-01",
+    });
+    expect(calendarEventRangeFromTask(task)).toEqual({
+      start: "2026-10-30",
+      end: "2026-11-02",
+      allDay: true,
+    });
+    expect(occupiedCalendarDateKeys(task)).toEqual([
+      "2026-10-30",
+      "2026-10-31",
+      "2026-11-01",
+    ]);
+  });
+
+  it("maps a point deadline to a single timed event with no exclusive end", () => {
+    const bundle = createDemoBundle();
+    const task = {
+      ...bundle.tasks[0],
+      due_start_at: null,
+      due_at: "2026-08-07T01:30:00.000Z",
+      due_is_all_day: false,
+      due_timezone: "Asia/Shanghai",
+    };
+    expect(calendarEventRangeFromTask(task)).toEqual({
+      start: "2026-08-07T01:30:00.000Z",
+      allDay: false,
+    });
+    expect(occupiedCalendarDateKeys(task)).toEqual(["2026-08-07"]);
   });
 });

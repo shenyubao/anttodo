@@ -40,7 +40,7 @@ pnpm cli:run --help
 
 ```bash
 pnpm --filter @anttodos/cli pack --pack-destination /tmp
-npm install --global /tmp/anttodos-cli-0.1.0.tgz
+npm install --global /tmp/anttodos-cli-*.tgz
 ```
 
 下面的示例假设已经安装了 `anttodo` 命令；使用 `npx` 时，把 `anttodo` 替换为 `npx @anttodos/cli` 即可。

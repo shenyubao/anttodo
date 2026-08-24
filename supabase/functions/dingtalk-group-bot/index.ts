@@ -7,7 +7,7 @@ import {
   parseDingtalkGroupRobotTaskText,
   verifyDingtalkGroupRobotSignature,
   type DingtalkRobotAtUser,
-} from "../../../src/lib/dingtalkGroupRobot.ts";
+} from "../_shared/dingtalk-group-robot.ts";
 import {
   escapeDingtalkMarkdown,
   formatDingtalkDue,
@@ -98,6 +98,10 @@ async function resolveIdentity(
 
 export default {
   fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
+    // DingTalk probes the configured HTTP callback with GET before publishing
+    // the application version. Keep message handling POST-only, but return a
+    // successful health response so the callback can pass that validation.
+    if (req.method === "GET") return Response.json({ ok: true });
     if (req.method !== "POST") return jsonError("Method not allowed", 405);
 
     const body = await req.json().catch(() => null) as DingtalkRobotPayload | null;

@@ -135,10 +135,10 @@ function calendarDays(
   return days;
 }
 
-function initialPoint(task: DueDateTarget) {
+function initialPoint(task: DueDateTarget, now: Date) {
   return roundUpToHalfHour(task.due_start_at
     ? new Date(task.due_start_at)
-    : task.due_at ? new Date(task.due_at) : new Date());
+    : task.due_at ? new Date(task.due_at) : now);
 }
 
 function timeOptionLabel(value: string, preferences: DateTimePreferences) {
@@ -219,7 +219,7 @@ export function DueDateControl({
 
   function resetDraft() {
     const zone = task.due_timezone ?? systemTimeZone();
-    const point = initialPoint(task);
+    const point = initialPoint(task, now);
     const defaultRange = createDefaultRangeDraft(toDateInput(point, zone));
     const start = task.due_start_at
       ? roundUpToHalfHour(new Date(task.due_start_at))

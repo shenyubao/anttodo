@@ -446,7 +446,16 @@ function MindMapEdgeView(props: EdgeProps<MindMapFlowEdge>) {
     offset: MIND_MAP_EDGE_STEM,
     centerX: props.sourceX + MIND_MAP_EDGE_STEM,
   });
-  return <BaseEdge {...props} path={path} />;
+  return (
+    <BaseEdge
+      id={props.id}
+      path={path}
+      style={props.style}
+      markerStart={props.markerStart}
+      markerEnd={props.markerEnd}
+      interactionWidth={props.interactionWidth}
+    />
+  );
 }
 
 const nodeTypes = {
@@ -490,12 +499,13 @@ function layoutTree(
       position: { x: 0, y: 0 },
       width: size.width,
       height: size.height,
-      draggable: item.kind === "task" && nodeData.online,
+      draggable: item.kind === "task" && nodeData.online && !item.task?.connector_id,
       dragHandle: item.kind === "task" ? ".mind-map-task-drag" : undefined,
       deletable: false,
       connectable: false,
       data: {
         ...nodeData,
+        online: nodeData.online && !(item.kind === "task" && item.task?.connector_id),
         kind: item.kind,
         label: item.label,
         dateKey: item.dateKey,
@@ -1070,10 +1080,13 @@ function MindMapCanvas({
     () => storedLabelDisplayMode(workspaceId),
   );
 
-  const preference = resolveTaskListPreference(
-    bundle.taskListPreferences,
-    MIND_MAP_FILTER_LIST_KEY,
-    bundle.labels,
+  const preference = useMemo(
+    () => resolveTaskListPreference(
+      bundle.taskListPreferences,
+      MIND_MAP_FILTER_LIST_KEY,
+      bundle.labels,
+    ),
+    [bundle.labels, bundle.taskListPreferences],
   );
 
   const toggleLabelVisible = useCallback((labelId: string) => {
@@ -1521,7 +1534,7 @@ function MindMapCanvas({
       selected: candidate.id === selectedNodeId,
     })));
     const task = node.data.task;
-    if (!target || !task || !online) return;
+    if (!target || !task || !online || task.connector_id) return;
 
     const parentById = new Map<string, string>();
     graph.edges.forEach((edge) => parentById.set(edge.target, edge.source));

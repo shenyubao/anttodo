@@ -1,4 +1,4 @@
-import { format, isSameDay, addMonths, startOfMonth } from "date-fns";
+import { format, addMonths, startOfMonth } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import {
   CalendarDays,
@@ -35,6 +35,8 @@ import {
 } from "./lib/api";
 import { appRoutePath } from "./lib/appRoute";
 import { CALENDAR_UNASSIGNED_ID } from "./lib/calendarVisibility";
+import { taskOccupiesCalendarDate } from "./lib/calendarScheduling";
+import { assertCanAssociateTaskLabels } from "./lib/labelTaskLimits";
 import {
   DEFAULT_DATE_TIME_PREFERENCES,
   formatDueWithPreferences,
@@ -234,6 +236,7 @@ export function TrayApp({
   const [settingsActive, setSettingsActive] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
   const workspacesQuery = useQuery({
@@ -351,7 +354,7 @@ export function TrayApp({
     return bundle.tasks
       .filter((task) => !task.deleted_at
         && task.due_at
-        && isSameDay(new Date(task.due_at), selectedDate))
+        && taskOccupiesCalendarDate(task, selectedDate))
       .sort((a, b) => {
         const aDone = isCompletedTask(a) ? 1 : 0;
         const bDone = isCompletedTask(b) ? 1 : 0;
@@ -450,7 +453,9 @@ export function TrayApp({
     const title = payload.title.trim();
     if (!title) return;
     setBusy(true);
+    setNotice("");
     try {
+      assertCanAssociateTaskLabels(bundle?.labelTaskCounts, payload.labelIds);
       const created = await createTask(client, {
         workspaceId,
         title,
@@ -484,6 +489,8 @@ export function TrayApp({
         );
       }
       await queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "创建任务失败，请重试");
     } finally {
       setBusy(false);
     }
@@ -535,6 +542,12 @@ export function TrayApp({
 
   return (
     <div className="tray-shell">
+      {notice && (
+        <div className="toast" role="status">
+          <span>{notice}</span>
+          <button type="button" aria-label="关闭提示" onClick={() => setNotice("")}>×</button>
+        </div>
+      )}
       <div className="tray-body">
         {tab === "inbox" && (
           <section className="tray-panel tray-inbox" aria-label="收集箱">

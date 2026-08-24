@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_APP_URL, loadPublicConfig, normalizeServiceOrigin, parseServiceManifest } from "./config.js";
+import { DEFAULT_APP_URL, loadPublicConfig, normalizeServiceOrigin, parseServiceManifest, setRuntimeServiceUrl } from "./config.js";
 
 vi.mock("./storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./storage.js")>();
@@ -7,6 +7,9 @@ vi.mock("./storage.js", async (importOriginal) => {
     ...actual,
     cachePublicConfig: vi.fn(),
     readCachedPublicConfig: vi.fn().mockResolvedValue(null),
+    getSelectedServiceKey: vi.fn().mockResolvedValue(undefined),
+    getStoredService: vi.fn().mockResolvedValue(undefined),
+    listStoredServices: vi.fn().mockResolvedValue([]),
   };
 });
 
@@ -19,6 +22,7 @@ const original = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setRuntimeServiceUrl(undefined);
   for (const [name, value] of Object.entries({
     ANTTODO_SUPABASE_URL: original.url,
     ANTTODO_SUPABASE_PUBLISHABLE_KEY: original.key,

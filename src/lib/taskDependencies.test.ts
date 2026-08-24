@@ -39,6 +39,9 @@ function task(patch: Partial<Task> = {}): Task {
     reminder_persistent: false,
     dependencies: [],
     ...patch,
+    external_id: patch.external_id ?? null,
+    connector_id: patch.connector_id ?? null,
+    connector_platform: patch.connector_platform ?? null,
     parent_task_id: patch.parent_task_id ?? null,
     position: patch.position ?? 0,
   };
@@ -95,5 +98,15 @@ describe("task dependencies", () => {
     );
     expect(filtered.map((item) => item.id).sort()).toEqual(["other"]);
     expect(filtered.find((item) => item.id === "other")?.children.map((item) => item.id)).toEqual(["other-child"]);
+  });
+
+  it("excludes every source when mounting dependencies in bulk", () => {
+    const first = task({ id: "a" });
+    const second = task({ id: "b" });
+    const other = task({ id: "c" });
+    expect(filterPickerTasksForDependency(
+      [first, second, other],
+      [{ taskId: "a" }, { taskId: "b" }],
+    ).map((item) => item.id)).toEqual(["c"]);
   });
 });

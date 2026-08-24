@@ -39,6 +39,14 @@ async function invalidateTaskCache(workspaceId: string) {
 function throwError(error: { message: string; code?: string; details?: string } | null) {
   if (!error) return;
   const message = error.message.toLowerCase();
+  if (message.includes("label_task_limit_exceeded")) {
+    throw new CliError({
+      type: "api",
+      code: "label_task_limit_exceeded",
+      message: "This tag already has the maximum number of tasks. Clean up tasks in the tag before adding more.",
+      details: error.details,
+    });
+  }
   if (
     error.code === "401"
     || error.code === "PGRST301"
@@ -133,7 +141,7 @@ export async function useWorkspace(context: ApiContext, idOrSlug: string) {
   return workspace;
 }
 
-const taskSelect = "*, task_labels(label_id), task_participants(user_id), task_reminders(*), task_reminder_settings(persistent), task_dependencies(*)";
+const taskSelect = "*, task_labels(label_id), task_participants(user_id), task_reminders(*), task_reminder_settings(persistent), task_dependencies:task_dependencies!task_dependencies_task_id_fkey(*)";
 
 function normalizeTask(row: Record<string, unknown>) {
   const allReminders = (row.task_reminders ?? []) as Array<Record<string, unknown>>;

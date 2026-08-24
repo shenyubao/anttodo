@@ -28,6 +28,7 @@ import {
   filterPickerTasksForDependency,
   listItemDependencies,
 } from "./lib/taskDependencies";
+import { contextMenuActionTasks, formatBulkNotice, runBulkTaskUpdates } from "./lib/taskMultiSelect";
 import { canAddChild } from "./lib/taskTree";
 import type {
   DateTimePreferences,
@@ -74,8 +75,18 @@ function childTaskScheduleFromChildTask(childTask: Task): ReminderSchedule {
   };
 }
 
-async function copyTaskLink(workspaceId: string, task: Task) {
-  await navigator.clipboard.writeText(taskShareUrl(workspaceId, task));
+async function copyTaskLinks(workspaceId: string, tasks: readonly Task[]) {
+  await navigator.clipboard.writeText(
+    tasks.map((item) => taskShareUrl(workspaceId, item)).join("\n"),
+  );
+}
+
+export function resolveTaskContextMenuVariant(
+  task: Pick<Task, "connector_id">,
+  variant: "default" | "trash" = "default",
+): "default" | "trash" | "external" {
+  if (variant === "trash") return "trash";
+  return task.connector_id ? "external" : "default";
 }
 
 export function TaskContextMenu({
@@ -100,10 +111,12 @@ export function TaskContextMenu({
   onExpandChildTasks,
   onNotice,
   pickerTasks = [],
+  selectedTasks = [],
   onAddDependencies,
 }: {
   task: Task;
   childTask?: Task | null;
+  selectedTasks?: readonly Task[];
   workspaceId: string;
   x: number;
   y: number;
@@ -152,12 +165,18 @@ export function TaskContextMenu({
   const [dependencyPickerOpen, setDependencyPickerOpen] = useState(false);
   const writable = online && !busy;
   const isChildTask = Boolean(childTask);
+  const focusTask = childTask ?? task;
+  const actionTasks = contextMenuActionTasks(focusTask, selectedTasks) ?? [focusTask];
+  const isBulk = actionTasks.length > 1;
   const isNote = !isChildTask && task.kind === "note";
+  const menuKind = resolveTaskContextMenuVariant(task, variant);
   const currentDueAt = childTask ? childTask.due_at : task.due_at;
   const menuWidth = 220;
-  const estimatedHeight = variant === "trash"
+  const estimatedHeight = menuKind === "trash"
     ? 110
-    : isNote ? 300 : isChildTask ? 340 : 360;
+    : menuKind === "external"
+      ? 150
+      : isNote ? 300 : isChildTask ? 340 : 360;
   const menuLeft = Math.min(Math.max(12, x), window.innerWidth - menuWidth - 12);
   const menuTop = Math.min(Math.max(12, y), window.innerHeight - estimatedHeight - 12);
 
@@ -187,114 +206,196 @@ export function TaskContextMenu({
     }
   }
 
+  async function applyToTargets(
+    filter: (item: Task) => boolean,
+    action: (item: Task) => Promise<void>,
+    verb: string,
+  ) {
+    const items = actionTasks.filter(filter);
+    const skipped = actionTasks.length - items.length;
+    const result = await runBulkTaskUpdates(items, action);
+    const notice = formatBulkNotice({ ...result, skipped, action: verb });
+    if (notice) onNotice(notice);
+    return result;
+  }
+
+  function canEditContent(item: Task) {
+    return !item.connector_id && !item.deleted_at;
+  }
+
+  async function saveSchedule(
+    item: Task,
+    patch: Pick<Task, "due_at" | "due_start_at" | "due_is_all_day" | "due_timezone">,
+    schedule: ReminderSchedule,
+  ) {
+    if (item.parent_task_id) {
+      await onSaveChildTaskSchedule(item.id, patch, { ...schedule, recurrence: null });
+      return;
+    }
+    await onSaveTaskSchedule(item.id, patch, schedule);
+  }
+
   async function applyDuePreset(preset: DuePreset) {
     await run(async () => {
-      if (childTask) {
-        await onSaveChildTaskSchedule(childTask.id, duePatchFromPreset(preset, true), childTaskScheduleFromChildTask(childTask));
+      if (!isBulk) {
+        if (childTask) {
+          await onSaveChildTaskSchedule(
+            childTask.id,
+            duePatchFromPreset(preset, true),
+            childTaskScheduleFromChildTask(childTask),
+          );
+          return;
+        }
+        await onSaveTaskSchedule(task.id, duePatchFromPreset(preset), scheduleForTask(task));
         return;
       }
-      await onSaveTaskSchedule(task.id, duePatchFromPreset(preset), scheduleForTask(task));
+      await applyToTargets(
+        canEditContent,
+        (item) => saveSchedule(item, duePatchFromPreset(preset, Boolean(item.due_is_all_day)), scheduleForTask(item)),
+        "更新日期",
+      );
     });
   }
 
   async function clearDue() {
     await run(async () => {
-      if (childTask) {
-        await onSaveChildTaskSchedule(childTask.id, clearSchedulePatch(), {
-          reminders: [],
-          persistent: false,
-          recurrence: null,
-        });
+      const empty = { reminders: [] as ReminderSchedule["reminders"], persistent: false, recurrence: null };
+      if (!isBulk) {
+        if (childTask) {
+          await onSaveChildTaskSchedule(childTask.id, clearSchedulePatch(), empty);
+          return;
+        }
+        await onSaveTaskSchedule(task.id, clearSchedulePatch(), empty);
         return;
       }
-      await onSaveTaskSchedule(task.id, clearSchedulePatch(), {
-        reminders: [],
-        persistent: false,
-        recurrence: null,
-      });
+      await applyToTargets(
+        (item) => canEditContent(item) && Boolean(item.due_at),
+        (item) => saveSchedule(item, clearSchedulePatch(), empty),
+        "清除日期",
+      );
     });
   }
 
   async function setPriority(priority: TaskPriority) {
-    if (childTask) {
-      if (priority === childTask.priority) return;
-      await run(() => onUpdateChildTask(childTask.id, { priority }), { closeAfter: false });
+    if (!isBulk) {
+      if (childTask) {
+        if (priority === childTask.priority) return;
+        await run(() => onUpdateChildTask(childTask.id, { priority }), { closeAfter: false });
+        return;
+      }
+      if (priority === task.priority) return;
+      await run(async () => {
+        await onUpdateTask(task.id, { priority });
+      }, { closeAfter: false });
       return;
     }
-    if (priority === task.priority) return;
     await run(async () => {
-      await onUpdateTask(task.id, { priority });
+      await applyToTargets(
+        (item) => canEditContent(item) && item.kind !== "note" && item.priority !== priority,
+        (item) => onUpdateTask(item.id, { priority }),
+        "更新优先级",
+      );
     }, { closeAfter: false });
   }
 
   async function addChildTask() {
-    if (childTask && !canAddChild(task.children, childTask.id)) return;
+    if (!isBulk) {
+      if (childTask && !canAddChild(task.children, childTask.id)) return;
+      await run(async () => {
+        onExpandChildTasks();
+        await onCreateChildTask(task.id, "新子级任务", childTask
+          ? { parent_task_id: childTask.id }
+          : undefined);
+      });
+      return;
+    }
     await run(async () => {
       onExpandChildTasks();
-      await onCreateChildTask(task.id, "新子级任务", childTask
-        ? { parent_task_id: childTask.id }
-        : undefined);
+      await applyToTargets(
+        (item) => canEditContent(item) && item.kind !== "note",
+        (item) => onCreateChildTask(item.id, "新子级任务"),
+        "添加子级任务",
+      );
     });
+  }
+
+  async function duplicateOne(item: Task) {
+    if (item.parent_task_id) {
+      await onCreateChildTask(item.id, item.title, {
+        parent_task_id: item.parent_task_id,
+        due_at: item.due_at,
+        due_start_at: item.due_start_at,
+        due_is_all_day: item.due_is_all_day,
+        due_timezone: item.due_timezone,
+        assignee_id: item.assignee_id,
+        cli_assignee: item.cli_assignee,
+        priority: item.priority,
+      });
+      return;
+    }
+    const created = await onCreateTask({
+      title: item.title,
+      labelIds: [...item.label_ids],
+      kind: item.kind,
+      priority: item.kind === "note" ? "none" : item.priority,
+      dueAt: item.due_at,
+      dueTimezone: item.due_timezone,
+    });
+    const createdId = typeof created === "object" && created && "id" in created
+      ? String(created.id)
+      : null;
+    if (createdId && (item.due_start_at || item.due_is_all_day)) {
+      await onSaveTaskSchedule(createdId, {
+        due_at: item.due_at,
+        due_start_at: item.due_start_at,
+        due_is_all_day: item.due_is_all_day,
+        due_timezone: item.due_timezone,
+      }, scheduleForTask(item));
+    }
   }
 
   async function duplicateTarget() {
     await run(async () => {
-      if (childTask) {
-        await onCreateChildTask(task.id, childTask.title, {
-          parent_task_id: childTask.parent_task_id,
-          due_at: childTask.due_at,
-          due_start_at: childTask.due_start_at,
-          due_is_all_day: childTask.due_is_all_day,
-          due_timezone: childTask.due_timezone,
-          assignee_id: childTask.assignee_id,
-          cli_assignee: childTask.cli_assignee,
-          priority: childTask.priority,
-        });
-        onNotice("已在本任务下创建副本");
+      if (!isBulk) {
+        await duplicateOne(focusTask);
+        onNotice(childTask ? "已在本任务下创建副本" : "已创建副本");
         return;
       }
-      const created = await onCreateTask({
-        title: task.title,
-        labelIds: [...task.label_ids],
-        kind: task.kind,
-        priority: isNote ? "none" : task.priority,
-        dueAt: task.due_at,
-        dueTimezone: task.due_timezone,
-      });
-      const createdId = typeof created === "object" && created && "id" in created
-        ? String(created.id)
-        : null;
-      if (createdId && (task.due_start_at || task.due_is_all_day)) {
-        await onSaveTaskSchedule(createdId, {
-          due_at: task.due_at,
-          due_start_at: task.due_start_at,
-          due_is_all_day: task.due_is_all_day,
-          due_timezone: task.due_timezone,
-        }, scheduleForTask(task));
-      }
-      onNotice("已创建副本");
+      await applyToTargets(canEditContent, duplicateOne, "创建副本");
     });
   }
 
   async function copyLink() {
     await run(async () => {
-      await copyTaskLink(workspaceId, task);
-      onNotice("链接已复制");
+      await copyTaskLinks(workspaceId, actionTasks);
+      onNotice(isBulk ? `已复制 ${actionTasks.length} 条链接` : "链接已复制");
     }, { requireOnline: false });
   }
 
   async function convertKind() {
-    if (isChildTask) return;
+    if (!isBulk && isChildTask) return;
     await run(async () => {
-      await onUpdateTask(task.id, {
-        kind: isNote ? "todo" : "note",
-        ...(isNote ? {} : { priority: "none" as const }),
-      });
+      if (!isBulk) {
+        await onUpdateTask(task.id, {
+          kind: isNote ? "todo" : "note",
+          ...(isNote ? {} : { priority: "none" as const }),
+        });
+        return;
+      }
+      await applyToTargets(
+        (item) => canEditContent(item)
+          && !item.parent_task_id
+          && item.kind === (isNote ? "note" : "todo"),
+        (item) => onUpdateTask(item.id, isNote
+          ? { kind: "todo" }
+          : { kind: "note", priority: "none" }),
+        isNote ? "转换为待办" : "转换为笔记",
+      );
     });
   }
 
   async function deleteTarget() {
-    if (childTask) {
+    if (!isBulk && childTask) {
       if (!window.confirm(`删除子级任务“${childTask.title}”？`)) return;
       await run(async () => {
         await onDeleteChildTask(childTask.id);
@@ -302,23 +403,46 @@ export function TaskContextMenu({
       return;
     }
     await run(async () => {
-      await onUpdateTask(task.id, { deleted_at: new Date().toISOString() });
+      await applyToTargets(
+        (item) => !item.deleted_at,
+        (item) => onUpdateTask(item.id, { deleted_at: new Date().toISOString() }),
+        "删除",
+      );
     });
   }
 
   async function restoreTarget() {
     await run(async () => {
-      await onUpdateTask(task.id, { deleted_at: null });
+      if (!isBulk) {
+        await onUpdateTask(task.id, { deleted_at: null });
+        return;
+      }
+      await applyToTargets(
+        (item) => Boolean(item.deleted_at),
+        (item) => onUpdateTask(item.id, { deleted_at: null }),
+        "还原",
+      );
     });
   }
 
   async function purgeTarget() {
-    const itemName = task.kind === "note" ? "笔记" : "任务";
-    if (!window.confirm(
-      `彻底删除${itemName}“${task.title}”？此操作不可撤销。`,
-    )) return;
+    if (!isBulk) {
+      const itemName = task.kind === "note" ? "笔记" : "任务";
+      if (!window.confirm(
+        `彻底删除${itemName}“${task.title}”？此操作不可撤销。`,
+      )) return;
+      await run(async () => {
+        await onPurgeTask(task.id);
+      });
+      return;
+    }
+    if (!window.confirm(`彻底删除已选择的 ${actionTasks.length} 项？此操作不可撤销。`)) return;
     await run(async () => {
-      await onPurgeTask(task.id);
+      await applyToTargets(
+        (item) => Boolean(item.deleted_at),
+        (item) => onPurgeTask(item.id),
+        "彻底删除",
+      );
     });
   }
 
@@ -384,12 +508,21 @@ export function TaskContextMenu({
           preferences={dateTimePreferences}
           autoOpen
           showTrigger={false}
-          allowRecurrence={!childTask}
+          allowRecurrence={!isBulk && !childTask}
           anchorPoint={{ left: menuLeft, top: Math.min(y, window.innerHeight - 560) }}
           onClose={onClose}
           onSave={async (patch, schedule) => {
-            if (childTask) await onSaveChildTaskSchedule(childTask.id, patch, schedule);
-            else await onSaveTaskSchedule(task.id, patch, schedule);
+            if (!isBulk) {
+              if (childTask) await onSaveChildTaskSchedule(childTask.id, patch, schedule);
+              else await onSaveTaskSchedule(task.id, patch, schedule);
+              onClose();
+              return;
+            }
+            await applyToTargets(
+              canEditContent,
+              (item) => saveSchedule(item, patch, schedule),
+              "更新日期",
+            );
             onClose();
           }}
         />
@@ -398,20 +531,18 @@ export function TaskContextMenu({
   }
 
   if (dependencyPickerOpen && onAddDependencies) {
+    const sources = actionTasks.filter((item) => item.kind !== "note");
+    const sourceTargets = sources.map((item) => ({ taskId: item.id }));
+    const existing = isBulk ? [] : listItemDependencies(focusTask);
     return (
       <FocusTaskPicker
         open
         mode="dependency"
-        tasks={filterPickerTasksForDependency(
-          pickerTasks,
-          { taskId: childTask?.id ?? task.id },
-          listItemDependencies(childTask ?? task),
-        )}
+        tasks={filterPickerTasksForDependency(pickerTasks, sourceTargets, existing)}
         selectedTaskId={null}
         excludeKeys={[
-          dependencyTargetKey({ taskId: childTask?.id ?? task.id }),
-          ...listItemDependencies(childTask ?? task).map((row) =>
-            dependencyTargetKey({ taskId: row.depends_on_task_id })),
+          ...sourceTargets.map((item) => dependencyTargetKey(item)),
+          ...existing.map((row) => dependencyTargetKey({ taskId: row.depends_on_task_id })),
         ]}
         anchorPoint={{ left: menuLeft, top: menuTop }}
         onOpenChange={(nextOpen) => {
@@ -420,9 +551,71 @@ export function TaskContextMenu({
         }}
         onSelect={() => undefined}
         onConfirm={(targets) => {
-          void onAddDependencies(childTask?.id ?? task.id, targets);
+          void run(async () => {
+            if (!isBulk) {
+              await onAddDependencies(focusTask.id, targets);
+              return;
+            }
+            await applyToTargets(
+              (item) => item.kind !== "note",
+              (item) => onAddDependencies(item.id, targets),
+              "挂载依赖",
+            );
+          });
         }}
       />
+    );
+  }
+
+  if (menuKind === "external") {
+    return (
+      <>
+        <button
+          type="button"
+          className="label-menu-scrim"
+          aria-label="关闭任务菜单"
+          onClick={onClose}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onClose();
+          }}
+        />
+        <div
+          className="task-context-menu"
+          role="menu"
+          style={{ left: menuLeft, top: menuTop }}
+        >
+          {task.kind !== "note" && onAddDependencies && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!writable}
+              onClick={() => setDependencyPickerOpen(true)}
+            >
+              <GitFork />
+              <span>挂载依赖任务</span>
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => void copyLink()}
+          >
+            <Link2 />
+            <span>复制链接</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="danger"
+            disabled={!writable}
+            onClick={() => void deleteTarget()}
+          >
+            <Trash2 />
+            <span>删除</span>
+          </button>
+        </div>
+      </>
     );
   }
 

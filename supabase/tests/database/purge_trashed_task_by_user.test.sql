@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(6);
+select plan(12);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -27,12 +27,13 @@ values (
   '14200000-0000-0000-0000-000000000001'
 );
 
-insert into public.tasks(id, workspace_id, title, created_by, deleted_at)
+insert into public.tasks(id, workspace_id, title, description, created_by, deleted_at)
 values
   (
     '44200000-0000-0000-0000-000000000001',
     '24200000-0000-0000-0000-000000000001',
     'Trashed task',
+    '![task image](anttodo-storage://task-attachments/24200000-0000-0000-0000-000000000001/44200000-0000-0000-0000-000000000001/task.png)',
     '14200000-0000-0000-0000-000000000001',
     now() - interval '1 day'
   ),
@@ -40,9 +41,31 @@ values
     '44200000-0000-0000-0000-000000000002',
     '24200000-0000-0000-0000-000000000001',
     'Active task',
+    '',
     '14200000-0000-0000-0000-000000000001',
     null
   );
+
+insert into public.tasks(
+  id, workspace_id, parent_task_id, title, description, created_by, deleted_at
+) values (
+  '44200000-0000-0000-0000-000000000004',
+  '24200000-0000-0000-0000-000000000001',
+  '44200000-0000-0000-0000-000000000001',
+  'Child task',
+  '[child file](anttodo-storage://task-attachments/24200000-0000-0000-0000-000000000001/44200000-0000-0000-0000-000000000004/child.pdf)',
+  '14200000-0000-0000-0000-000000000001',
+  null
+);
+
+insert into public.task_comments(workspace_id, task_id, author_id, body, image_uris)
+values (
+  '24200000-0000-0000-0000-000000000001',
+  '44200000-0000-0000-0000-000000000004',
+  '14200000-0000-0000-0000-000000000001',
+  'Child comment image',
+  array['anttodo-storage://comment-images/24200000-0000-0000-0000-000000000001/44200000-0000-0000-0000-000000000004/14200000-0000-0000-0000-000000000001/comment.png']
+);
 
 set local role authenticated;
 select set_config(
@@ -62,6 +85,41 @@ select is(
   'trashed task is hard-deleted'
 );
 
+select is(
+  (select count(*)::integer from public.tasks where id = '44200000-0000-0000-0000-000000000004'),
+  0,
+  'hard-deleting a root also deletes its child task'
+);
+
+select is(
+  (select count(*)::integer from public.attachment_cleanup_queue
+   where workspace_id = '24200000-0000-0000-0000-000000000001'),
+  3,
+  'hard delete queues root attachments, child attachments, and comment images'
+);
+
+select is(
+  (select count(*)::integer from public.attachment_cleanup_queue
+   where bucket = 'task-attachments'),
+  2,
+  'task description attachments use the task attachment bucket'
+);
+
+select is(
+  (select count(*)::integer from public.attachment_cleanup_queue
+   where bucket = 'comment-images'),
+  1,
+  'comment images use the comment image bucket'
+);
+
+select ok(
+  public.check_attachment_unreferenced(
+    '24200000-0000-0000-0000-000000000001',
+    'anttodo-storage://task-attachments/24200000-0000-0000-0000-000000000001/44200000-0000-0000-0000-000000000001/task.png'
+  ),
+  'queued task attachment is unreferenced after hard delete'
+);
+
 select lives_ok(
   $$ delete from public.tasks where id = '44200000-0000-0000-0000-000000000002' $$,
   'hard-delete attempt on an active task does not error'
@@ -71,6 +129,13 @@ select is(
   (select count(*)::integer from public.tasks where id = '44200000-0000-0000-0000-000000000002'),
   1,
   'active tasks cannot be hard-deleted by users'
+);
+
+select is(
+  (select count(*)::integer from public.attachment_cleanup_queue
+   where object_path like '%/44200000-0000-0000-0000-000000000002/%'),
+  0,
+  'an active task that was not deleted does not queue Storage cleanup'
 );
 
 set local role service_role;

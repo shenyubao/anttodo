@@ -198,6 +198,19 @@ describe("dingtalk sso helpers", () => {
     expect(initialWorkspaceSsoProvider([provider, { ...provider }])).toBeNull();
   });
 
+  it("reads parsed JSON error bodies stored directly on FunctionsHttpError context", async () => {
+    await expect(
+      edgeFunctionErrorMessage(
+        {
+          message: "Edge Function returned a non-2xx status code",
+          context: { error: "云效 API：令牌无效" },
+        },
+        null,
+        "fallback",
+      ),
+    ).resolves.toBe("云效 API：令牌无效");
+  });
+
   it("reads edge function error bodies from FunctionsHttpError context", async () => {
     const response = new Response(JSON.stringify({ error: "钉钉授权码无效" }), {
       status: 502,
@@ -210,6 +223,46 @@ describe("dingtalk sso helpers", () => {
         "fallback",
       ),
     ).resolves.toBe("钉钉授权码无效");
+  });
+
+  it("reads response-like error contexts created outside the current realm", async () => {
+    const context = {
+      status: 409,
+      clone: () => ({
+        json: async () => ({ error: "登录交接码已使用" }),
+      }),
+    };
+    await expect(
+      edgeFunctionErrorMessage(
+        { message: "Edge Function returned a non-2xx status code", context },
+        null,
+        "fallback",
+      ),
+    ).resolves.toBe("登录交接码已使用");
+  });
+
+  it("turns non-JSON upstream failures into an actionable service error", async () => {
+    const response = new Response("<html>522 Connection timed out</html>", {
+      status: 522,
+      headers: { "Content-Type": "text/html" },
+    });
+    await expect(
+      edgeFunctionErrorMessage(
+        { message: "Edge Function returned a non-2xx status code", context: response },
+        null,
+        "fallback",
+      ),
+    ).resolves.toBe("服务暂时不可用（HTTP 522），请稍后重试。");
+  });
+
+  it("turns Edge Function network errors into a localized message", async () => {
+    await expect(
+      edgeFunctionErrorMessage(
+        { message: "Failed to send a request to the Edge Function" },
+        null,
+        "fallback",
+      ),
+    ).resolves.toBe("无法连接服务，请检查网络后重试。");
   });
 
   it("dedupes concurrent auth-code exchanges", async () => {

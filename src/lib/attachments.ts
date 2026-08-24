@@ -149,9 +149,17 @@ export function buildCommentImageUri(path: string) {
   return `anttodo-storage://${COMMENT_IMAGE_BUCKET}/${path}`;
 }
 
+export function normalizeEditorImageUri(uri: string) {
+  let value = uri.trim();
+  if (value.startsWith("<") && value.endsWith(">")) {
+    value = value.slice(1, -1).trim();
+  }
+  return value.replace(/&amp;/gi, "&");
+}
+
 export function parseAttachmentUri(uri: string): ParsedAttachmentUri | null {
   try {
-    const parsed = new URL(uri);
+    const parsed = new URL(normalizeEditorImageUri(uri));
     if (parsed.protocol !== "anttodo-storage:") return null;
     if (![TASK_ATTACHMENT_BUCKET, COMMENT_IMAGE_BUCKET].includes(parsed.hostname)) return null;
 
@@ -282,38 +290,42 @@ export function createSupabaseAttachmentService(
     },
 
     async resolveImage(uri) {
-      const cached = previewUrls.get(uri);
+      const normalized = normalizeEditorImageUri(uri);
+      const cached = previewUrls.get(normalized) ?? previewUrls.get(uri);
       if (cached) return cached;
-      const local = await get<{ blob: Blob }>(localPendingKey(uri));
+      const local = await get<{ blob: Blob }>(localPendingKey(normalized))
+        ?? await get<{ blob: Blob }>(localPendingKey(uri));
       if (local?.blob) {
         const previewUrl = URL.createObjectURL(local.blob);
-        previewUrls.set(uri, previewUrl);
+        previewUrls.set(normalized, previewUrl);
         return previewUrl;
       }
-      const parsed = parseAttachmentUri(uri);
-      if (!parsed) return uri;
+      const parsed = parseAttachmentUri(normalized);
+      if (!parsed) return normalized;
 
       const { data, error } = await client.storage
         .from(parsed.bucket)
         .download(parsed.path);
       if (error) throw new Error(error.message);
       const previewUrl = URL.createObjectURL(data);
-      previewUrls.set(uri, previewUrl);
+      previewUrls.set(normalized, previewUrl);
       return previewUrl;
     },
 
     async open(uri) {
-      const local = await get<{ blob: Blob }>(localPendingKey(uri));
+      const normalized = normalizeEditorImageUri(uri);
+      const local = await get<{ blob: Blob }>(localPendingKey(normalized))
+        ?? await get<{ blob: Blob }>(localPendingKey(uri));
       if (local?.blob) {
         const objectUrl = URL.createObjectURL(local.blob);
         window.open(objectUrl, "_blank", "noopener,noreferrer");
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
         return;
       }
-      const parsed = parseAttachmentUri(uri);
+      const parsed = parseAttachmentUri(normalized);
       if (!parsed) {
-        if (!isSafeEditorUrl(uri)) throw new Error("链接地址不安全");
-        window.open(uri, "_blank", "noopener,noreferrer");
+        if (!isSafeEditorUrl(normalized)) throw new Error("链接地址不安全");
+        window.open(normalized, "_blank", "noopener,noreferrer");
         return;
       }
 

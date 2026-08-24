@@ -15,6 +15,7 @@ import {
   isOptimisticChildTaskId,
   normalizeWorkspaceBundle,
   patchChildTaskInBundle,
+  patchTaskInBundle,
   removeChildTaskFromBundle,
   removeTaskFromBundle,
   removeTaskSectionFromBundle,
@@ -34,8 +35,9 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelUserAcls: [],
   labelGroupAcls: [],
   labelPermissionLevels: {},
-  userLabelOrder: [],
-  tasks: [],
+    userLabelOrder: [],
+    labelTaskCounts: {},
+    tasks: [],
   connectors: [],
   syncRuns: [],
   conflicts: [],
@@ -49,6 +51,29 @@ const emptyBundle = (): WorkspaceBundle => ({
 describe("task cache updates", () => {
   it("normalizes workspace bundles missing newer view fields", () => {
     const stale = emptyBundle();
+    const staleTask = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "旧缓存任务",
+      labelIds: [],
+    });
+    delete (staleTask as Partial<typeof staleTask>).external_id;
+    delete (staleTask as Partial<typeof staleTask>).connector_id;
+    delete (staleTask as Partial<typeof staleTask>).connector_platform;
+    stale.tasks = [staleTask];
+    stale.connectors = [{
+      id: "connector",
+      workspace_id: "workspace",
+      type: "dingtalk",
+      name: "旧缓存连接器",
+      enabled: true,
+      schedule_minutes: 5,
+      public_config: {},
+      credential_hint: null,
+      last_synced_at: null,
+      next_sync_at: "2026-08-19T00:00:00.000Z",
+      created_by: "user",
+    } as WorkspaceBundle["connectors"][number]];
     delete (stale as { customTaskViews?: WorkspaceBundle["customTaskViews"] }).customTaskViews;
     delete (stale as { taskSystemViewPreferences?: WorkspaceBundle["taskSystemViewPreferences"] })
       .taskSystemViewPreferences;
@@ -56,6 +81,12 @@ describe("task cache updates", () => {
     const normalized = normalizeWorkspaceBundle(stale as WorkspaceBundle);
     expect(normalized.customTaskViews).toEqual([]);
     expect(normalized.taskSystemViewPreferences).toEqual([]);
+    expect(normalized.tasks[0]).toMatchObject({
+      external_id: null,
+      connector_id: null,
+      connector_platform: null,
+    });
+    expect(normalized.connectors[0]?.target_label_id).toBeNull();
 
     const current = emptyBundle();
     expect(normalizeWorkspaceBundle(current)).toStrictEqual(current);
@@ -524,5 +555,62 @@ describe("task cache updates", () => {
     bundle = removeChildTaskFromBundle(bundle, failedOptimistic.id);
     expect(bundle.tasks[0].children).toHaveLength(1);
     expect(bundle.tasks[0].children[0]?.id).toBe(created.id);
+  });
+});
+
+describe("label task count cache", () => {
+  it("rebuilds counts from live tasks when persisted bundles omit them", () => {
+    const stale = emptyBundle();
+    stale.tasks = [
+      createOptimisticTask({
+        workspaceId: "workspace",
+        userId: "user",
+        title: "带标签任务",
+        labelIds: ["product"],
+      }),
+      {
+        ...createOptimisticTask({
+          workspaceId: "workspace",
+          userId: "user",
+          title: "已删除",
+          labelIds: ["product"],
+          optimisticId: "trashed",
+        }),
+        deleted_at: "2026-08-20T00:00:00.000Z",
+      },
+    ];
+    delete (stale as { labelTaskCounts?: WorkspaceBundle["labelTaskCounts"] }).labelTaskCounts;
+
+    expect(normalizeWorkspaceBundle(stale as WorkspaceBundle).labelTaskCounts).toEqual({
+      product: 1,
+    });
+  });
+
+  it("updates cached counts when tasks are created, labeled, trashed, or removed", () => {
+    const task = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "产品任务",
+      labelIds: ["product"],
+    });
+    let bundle = appendTaskToBundle(emptyBundle(), task);
+    expect(bundle.labelTaskCounts).toEqual({ product: 1 });
+
+    bundle = patchTaskInBundle(bundle, task.id, (current) => ({
+      ...current,
+      label_ids: ["product", "urgent"],
+    }));
+    expect(bundle.labelTaskCounts).toEqual({ product: 1, urgent: 1 });
+
+    bundle = patchTaskInBundle(bundle, task.id, {
+      deleted_at: "2026-08-20T00:00:00.000Z",
+    });
+    expect(bundle.labelTaskCounts).toEqual({ product: 0, urgent: 0 });
+
+    bundle = patchTaskInBundle(bundle, task.id, { deleted_at: null });
+    expect(bundle.labelTaskCounts).toEqual({ product: 1, urgent: 1 });
+
+    bundle = removeTaskFromBundle(bundle, task.id);
+    expect(bundle.labelTaskCounts).toEqual({ product: 0, urgent: 0 });
   });
 });

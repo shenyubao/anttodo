@@ -61,6 +61,8 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
   await expect(cliLink).toHaveAttribute("target", "_blank");
 
   const formatRow = settings.locator(".ai-feature-row").filter({ hasText: "智能格式化" });
+  await expect(settings.locator(".ai-feature-row")).toHaveCount(1);
+  await expect(settings.getByText("智能分解子级任务", { exact: true })).toHaveCount(0);
   await expect(formatRow.getByRole("switch", { name: "智能格式化" })).toBeChecked();
   await formatRow.getByRole("button", { name: /覆盖提示词/ }).click();
   const promptDialog = page.getByRole("dialog", { name: "覆盖智能格式化提示词" });
@@ -81,16 +83,6 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
   await settings.getByRole("button", { name: "关闭设置" }).click();
   await page.getByText(demoTaskTitle, { exact: true }).click();
   const detail = page.locator(".task-detail-panel");
-  await detail.getByRole("button", { name: "智能处理" }).click();
-  await expect(page.getByRole("menuitem", { name: /格式化待办/ })).toHaveCount(0);
-  await expect(page.getByRole("menuitem", { name: /智能分解子级任务/ })).toBeVisible();
-
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
-  const reopenedSettings = page.getByRole("dialog", { name: "设置" });
-  await reopenedSettings.getByRole("button", { name: "AI功能", exact: true }).click();
-  await reopenedSettings.getByRole("switch", { name: "智能分解子级任务" }).uncheck();
-  await reopenedSettings.getByRole("button", { name: "关闭设置" }).click();
   await expect(detail.getByRole("button", { name: "智能处理" })).toHaveCount(0);
 });
 
@@ -102,8 +94,8 @@ test("offline AI feature settings stay read-only", async ({ context, page }) => 
   await settings.getByRole("button", { name: "AI功能", exact: true }).click();
   await context.setOffline(true);
   await expect(settings.getByRole("switch", { name: "智能格式化" })).toBeDisabled();
-  await expect(settings.getByRole("switch", { name: "智能分解子级任务" })).toBeDisabled();
-  await expect(settings.getByRole("button", { name: /覆盖提示词/ })).toHaveCount(2);
+  await expect(settings.getByRole("switch")).toHaveCount(1);
+  await expect(settings.getByRole("button", { name: /覆盖提示词/ })).toHaveCount(1);
   for (const button of await settings.getByRole("button", { name: /覆盖提示词/ }).all()) {
     await expect(button).toBeDisabled();
   }

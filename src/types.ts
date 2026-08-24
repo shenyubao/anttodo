@@ -72,8 +72,6 @@ export type AiFeatureSettings = {
   user_id: string;
   smart_format_enabled: boolean;
   smart_format_prompt_override: string | null;
-  task_decompose_enabled: boolean;
-  task_decompose_prompt_override: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -284,6 +282,9 @@ export type Task = {
   version: number;
   created_at: string;
   updated_at: string;
+  external_id: string | null;
+  connector_id: string | null;
+  connector_platform: ConnectorType | null;
   label_ids: string[];
   participant_ids: string[];
   /** Derived client-side child references; never persisted or sent to the API. */
@@ -292,6 +293,19 @@ export type Task = {
   reminder_persistent: boolean;
   description_mentions: CommentMention[];
   dependencies?: TaskDependency[];
+};
+
+export type YunxiaoConnectorConfig = {
+  organizationId: string;
+  projectId: string;
+  workitemTypeId: string;
+  workitemTypeName: string;
+  categoryId: string;
+  conditions: unknown;
+  orderBy: "gmtCreate" | "gmtModified" | "name";
+  sort: "asc" | "desc";
+  completedStatusId: string;
+  completedStatusName: string;
 };
 
 export type CommentMention = {
@@ -457,10 +471,12 @@ export type Connector = {
   name: string;
   enabled: boolean;
   schedule_minutes: number;
-  public_config: Record<string, unknown>;
+  public_config: Record<string, unknown> | YunxiaoConnectorConfig;
+  target_label_id: string | null;
   credential_hint: string | null;
   last_synced_at: string | null;
   next_sync_at: string;
+  created_by: string;
 };
 
 export type SyncRun = {
@@ -501,6 +517,7 @@ export type WorkspaceBundle = {
   labelGroupAcls: LabelGroupAcl[];
   labelPermissionLevels: Record<string, LabelPermissionLevel>;
   userLabelOrder: UserLabelOrder[];
+  labelTaskCounts: Record<string, number>;
   tasks: Task[];
   connectors: Connector[];
   syncRuns: SyncRun[];

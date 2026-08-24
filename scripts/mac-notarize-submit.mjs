@@ -31,10 +31,9 @@ async function main() {
     process.env.APPLE_KEYCHAIN_PROFILE = "anttodo-notarization";
   }
 
-  const skipPush = process.argv.includes("--skip-push");
   const skipBump = process.argv.includes("--skip-bump");
-
-  if (!skipPush) {
+  // Mac 发布不推库；数据库迁移走 deploy:web / supabase:push。需要时加 --push。
+  if (process.argv.includes("--push")) {
     await run("pnpm", ["supabase:push"]);
   }
   if (!skipBump) {

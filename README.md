@@ -171,7 +171,9 @@ cp .env.example .env
 ```
 
 完整环境变量、外部网关和上线检查见
-[`deploy/ubuntu/README.md`](deploy/ubuntu/README.md)。
+[`deploy/ubuntu/README.md`](deploy/ubuntu/README.md)。开发机执行
+`pnpm deploy:web:yuce` 时，会同时把 `supabase/functions` 同步到自托管
+Supabase 并重启 Edge Functions。
 
 ## 手机验证码登录
 
@@ -238,7 +240,7 @@ pnpm cli:run man
 pnpm cli:test
 pnpm cli:pack
 pnpm cli:verify
-pnpm deploy:cli       # 校验后发布 @anttodos/cli
+pnpm deploy:cli       # 按 1.0.YYYYMMDDHHmm 升版本后发布 @anttodos/cli
 node cli/dist/index.js man --format pretty
 ```
 
@@ -252,8 +254,10 @@ pnpm cli:test:integration
 pnpm cli:test:browser
 ```
 
-`pnpm deploy:cli` 会先执行类型检查、单元测试和 tarball 检查，再运行
-`npm publish ./cli --access public`。首次发布或账号启用 2FA 时，npm 会要求浏览器认证或一次性验证码；不要把验证码写入脚本或 CI 日志。
+`pnpm deploy:cli` 会先按 macOS 相同规则把 `@anttodos/cli` 版本写成
+`1.0.YYYYMMDDHHmm`，再执行类型检查、单元测试和 tarball 检查，最后运行
+`npm publish ./cli --access public`。发布前必须已经 `npm login`，且账号是
+`@anttodos/cli` 的维护者。首次发布或账号启用 2FA 时，npm 会要求浏览器认证或一次性验证码；不要把验证码写入脚本或 CI 日志。
 
 本地 macOS 发布推荐三步：`pnpm mac:submit`（提交公证）→
 `pnpm mac:list`（查看 ID/时间/状态）→ `pnpm mac:deploy`（装订并上传

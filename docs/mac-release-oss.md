@@ -126,7 +126,7 @@ OSS_PUBLIC_BASE_URL=https://anttodo-yuce.oss-cn-hangzhou.aliyuncs.com
 `NOTARIZATION_TIMEOUT_MINUTES=180`）：
 
 ```bash
-# 1) 推库、bump 版本、签名打包，并向 Apple 提交公证（不阻塞等待）
+# 1) bump 版本、签名打包，并向 Apple 提交公证（不阻塞等待；不推库）
 pnpm mac:submit
 
 # 2) 查看 Apple 公证历史 / 本地待完成提交（ID、时间、状态）
@@ -143,7 +143,7 @@ pnpm mac:all      # 等价于 mac:submit && mac:deploy
 pnpm deploy:mac   # 同 mac:all
 ```
 
-`mac:submit` 会把各架构的 submission ID 写入
+`mac:submit` 默认不推数据库迁移（走 `pnpm deploy:web` / `pnpm supabase:push`）。需要一并推库时加 `--push`。会把各架构的 submission ID 写入
 `release/notarize-state.json`，供 `mac:deploy` 继续。若 submit 本地失败但
 Apple 已接收上传，脚本会从近期历史恢复 ID。
 

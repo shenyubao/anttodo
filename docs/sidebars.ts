@@ -33,6 +33,11 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'doc',
+          id: '企业管理/云效连接器',
+          label: '云效连接器',
+        },
+        {
+          type: 'doc',
           id: '企业管理/通知配置',
           label: '通知配置',
         },

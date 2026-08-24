@@ -448,6 +448,12 @@ entrypoint = "./functions/connector-admin/index.ts"
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/connector-admin/*.html" ]
 
+[functions.external-task-complete]
+enabled = true
+verify_jwt = false
+import_map = "./functions/external-task-complete/deno.json"
+entrypoint = "./functions/external-task-complete/index.ts"
+
 [functions.dingtalk-group-bot]
 enabled = true
 verify_jwt = false
@@ -483,6 +489,12 @@ enabled = true
 verify_jwt = true
 import_map = "./functions/workspace-admin/deno.json"
 entrypoint = "./functions/workspace-admin/index.ts"
+
+[functions.attachment-cleanup]
+enabled = true
+verify_jwt = false
+import_map = "./functions/attachment-cleanup/deno.json"
+entrypoint = "./functions/attachment-cleanup/index.ts"
 
 [functions.sso-admin]
 enabled = true
@@ -532,11 +544,11 @@ verify_jwt = false
 import_map = "./functions/cli-device-auth/deno.json"
 entrypoint = "./functions/cli-device-auth/index.ts"
 
-[functions.ai-task-decompose]
+[functions.ai-task-format]
 enabled = true
 verify_jwt = true
-import_map = "./functions/ai-task-decompose/deno.json"
-entrypoint = "./functions/ai-task-decompose/index.ts"
+import_map = "./functions/ai-task-format/deno.json"
+entrypoint = "./functions/ai-task-format/index.ts"
 
 [functions.init-app-admin]
 enabled = true

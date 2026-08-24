@@ -42,3 +42,15 @@ export function canAccessAllLabels(
 ) {
   return levels.length > 0 && intersectPermissionLevels(levels) >= required;
 }
+
+export function isExternalTask(task: Pick<Task, "connector_id">) {
+  return Boolean(task.connector_id);
+}
+
+export function canOrganizeTask(
+  bundle: WorkspaceBundle,
+  task: Task,
+  currentUserId: string,
+) {
+  return currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
+}

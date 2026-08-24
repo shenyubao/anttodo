@@ -12,6 +12,7 @@ export function WorkspaceShortcutBindings({
   settingsOpen,
   smartView,
   selectedTask,
+  selectedTasks,
   online,
   onOpenSearch,
   onOpenSettings,
@@ -19,6 +20,8 @@ export function WorkspaceShortcutBindings({
   onChangeSection,
   onCreateChildTask,
   onUpdateTask,
+  onBulkComplete,
+  onBulkDelete,
   onCloseTask,
   onNotice,
 }: {
@@ -26,6 +29,7 @@ export function WorkspaceShortcutBindings({
   settingsOpen: boolean;
   smartView: string;
   selectedTask: Task | null;
+  selectedTasks: Task[];
   online: boolean;
   onOpenSearch: () => void;
   onOpenSettings: () => void;
@@ -33,10 +37,13 @@ export function WorkspaceShortcutBindings({
   onChangeSection: (section: "tasks" | "calendar" | "mindmap" | "focus") => void;
   onCreateChildTask: (taskId: string, title: string) => Promise<void>;
   onUpdateTask: (taskId: string, patch: Partial<Task>) => Promise<void>;
+  onBulkComplete: () => Promise<void>;
+  onBulkDelete: () => Promise<void>;
   onCloseTask: () => void;
   onNotice: (message: string) => void;
 }) {
   const { setActiveScope, setSuspended } = useShortcuts();
+  const multiSelected = selectedTasks.length >= 2;
 
   useEffect(() => {
     setActiveScope(appSection);
@@ -89,6 +96,7 @@ export function WorkspaceShortcutBindings({
   });
 
   useShortcutHandler("task.addChildTask", () => {
+    if (multiSelected) return false;
     if (appSection !== "tasks" || !selectedTask || !online || selectedTask.deleted_at) {
       return false;
     }
@@ -98,9 +106,14 @@ export function WorkspaceShortcutBindings({
   });
 
   useShortcutHandler("task.complete", () => {
-    if (appSection !== "tasks" || !selectedTask || !online || selectedTask.deleted_at) {
-      return false;
+    if (appSection !== "tasks" || !online) return false;
+    if (multiSelected) {
+      void onBulkComplete().catch((error) => {
+        onNotice(error instanceof Error ? error.message : "更新任务失败，请重试");
+      });
+      return;
     }
+    if (!selectedTask || selectedTask.deleted_at) return false;
     if (selectedTask.kind === "note") return false;
     void onUpdateTask(selectedTask.id, {
       status: selectedTask.status === "completed" ? "open" : "completed",
@@ -111,9 +124,14 @@ export function WorkspaceShortcutBindings({
   });
 
   useShortcutHandler("task.delete", () => {
-    if (appSection !== "tasks" || !selectedTask || !online || selectedTask.deleted_at) {
-      return false;
+    if (appSection !== "tasks" || !online) return false;
+    if (multiSelected) {
+      void onBulkDelete().catch((error) => {
+        onNotice(error instanceof Error ? error.message : "删除失败，请重试");
+      });
+      return;
     }
+    if (!selectedTask || selectedTask.deleted_at) return false;
     void onUpdateTask(selectedTask.id, { deleted_at: new Date().toISOString() })
       .then(() => onCloseTask())
       .catch((error) => {

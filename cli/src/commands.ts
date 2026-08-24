@@ -73,6 +73,7 @@ import {
   positiveInteger,
   validateTimeZone,
 } from "./validation.js";
+import { getCliVersion } from "./version.js";
 
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
@@ -214,7 +215,7 @@ export function buildProgram() {
   const program = new Command()
     .name("anttodo")
     .description("AntTodo command-line client")
-    .version("0.1.0")
+    .version(getCliVersion())
     .option("--workspace <id-or-slug>", "override the active workspace")
     .option("--service-url <url>", "override the service address for this command")
     .option("--json", "output the JSON envelope")

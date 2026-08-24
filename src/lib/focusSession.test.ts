@@ -416,6 +416,9 @@ function pickerTask(id: string, title: string, patch: Partial<Task> = {}): Task 
     reminder_persistent: false,
     description_mentions: [],
     ...patch,
+    external_id: patch.external_id ?? null,
+    connector_id: patch.connector_id ?? null,
+    connector_platform: patch.connector_platform ?? null,
     parent_task_id: patch.parent_task_id ?? null,
     position: patch.position ?? 0,
   };
