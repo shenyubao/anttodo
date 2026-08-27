@@ -68,13 +68,33 @@ export type YunxiaoWorkitemType = {
 export type YunxiaoProject = {
   id: string;
   name: string;
+  customCode?: string;
 };
 
 export type YunxiaoStatus = {
   id: string;
   name: string;
   identifier?: string;
+  statusStageId?: string;
 };
+
+export type YunxiaoQuickCreateConfig = {
+  kind: "quick_create";
+  organizationId: string;
+};
+
+export type YunxiaoWorkitemRef =
+  | {
+    kind: "id";
+    projectId: string;
+    categoryId: string;
+    workitemId: string;
+  }
+  | {
+    kind: "serial";
+    categoryId: string;
+    serialNumber: string;
+  };
 
 export type YunxiaoPublicConfig = {
   organizationId: string;
@@ -196,6 +216,141 @@ export function yunxiaoWorkitemUrl(
   workitemId: string,
 ) {
   return `https://devops.aliyun.com/projex/project/${encodeURIComponent(projectId)}/${encodeURIComponent(categoryId.toLowerCase())}/${encodeURIComponent(workitemId)}`;
+}
+
+const YUNXIAO_PATH_CATEGORIES: Record<string, string> = {
+  req: "Req",
+  bug: "Bug",
+  task: "Task",
+  risk: "Risk",
+};
+
+function yunxiaoCategoryFromPath(value: string) {
+  return YUNXIAO_PATH_CATEGORIES[value.trim().toLowerCase()] ?? "";
+}
+
+export function parseYunxiaoWorkitemRef(input: string): YunxiaoWorkitemRef | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const match = /https?:\/\/(?:www\.)?devops\.aliyun\.com\/projex\/[^\s#]+/i.exec(trimmed);
+  if (!match) return null;
+  const urlText = match[0];
+  const remainder = trimmed.slice(match.index + urlText.length).trim();
+  if (remainder && !remainder.startsWith("#")) return null;
+  if (trimmed.slice(0, match.index).trim()) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(urlText);
+  } catch {
+    return null;
+  }
+  const path = parsed.pathname.replace(/\/+$/, "");
+  const shortMatch = /^\/projex\/(req|bug|task|risk)\/([^/]+)$/i.exec(path);
+  if (shortMatch) {
+    const categoryId = yunxiaoCategoryFromPath(shortMatch[1]);
+    const serialNumber = decodeURIComponent(shortMatch[2]).trim();
+    if (!categoryId || !serialNumber) return null;
+    return { kind: "serial", categoryId, serialNumber };
+  }
+  const fullMatch = /^\/projex\/project\/([^/]+)\/(req|bug|task|risk)\/(.+)$/i.exec(path);
+  if (!fullMatch) return null;
+  const projectId = decodeURIComponent(fullMatch[1]).trim();
+  const categoryId = yunxiaoCategoryFromPath(fullMatch[2]);
+  const workitemId = decodeURIComponent(fullMatch[3]).trim();
+  if (!projectId || !categoryId || !workitemId) return null;
+  return { kind: "id", projectId, categoryId, workitemId };
+}
+
+export function isYunxiaoQuickCreateConfig(value: unknown): value is YunxiaoQuickCreateConfig {
+  const config = record(value);
+  return Boolean(
+    config
+    && config.kind === "quick_create"
+    && typeof config.organizationId === "string"
+    && config.organizationId.trim(),
+  );
+}
+
+export function validateYunxiaoQuickCreateConfig(value: unknown): YunxiaoQuickCreateConfig {
+  const config = record(value);
+  if (!config || config.kind !== "quick_create") throw new Error("云效创建配置无效");
+  const organizationId = typeof config.organizationId === "string"
+    ? config.organizationId.trim()
+    : "";
+  if (!organizationId) throw new Error("云效创建配置缺少 organizationId");
+  return { kind: "quick_create", organizationId };
+}
+
+export function yunxiaoWorkitemStatusId(item: YunxiaoWorkitem) {
+  return typeof item.status === "string" ? item.status : String(item.status?.id ?? "").trim();
+}
+
+export function yunxiaoWorkitemStatusStageId(item: YunxiaoWorkitem) {
+  const statusRecord = record(item.status);
+  return String(
+    item.statusStageId
+    ?? item.statusStageIdentifier
+    ?? statusRecord?.statusStageId
+    ?? statusRecord?.statusStageIdentifier
+    ?? "",
+  ).trim();
+}
+
+export function isYunxiaoWorkitemCompleted(
+  item: YunxiaoWorkitem,
+  completedStatusId?: string,
+) {
+  const statusId = yunxiaoWorkitemStatusId(item);
+  if (completedStatusId && statusId === completedStatusId) return true;
+  const stage = yunxiaoWorkitemStatusStageId(item);
+  if (stage === "3" || stage === "4") return true;
+  return /完成|关闭|拒绝|done|closed|cancelled|rejected/i.test(yunxiaoStatusName(item));
+}
+
+export function yunxiaoWorkitemSerialNumber(item: YunxiaoWorkitem) {
+  return String(item.serialNumber ?? "").trim();
+}
+
+export function yunxiaoWorkitemSpaceId(item: YunxiaoWorkitem) {
+  const space = record(item.space);
+  return String(space?.id ?? item.spaceId ?? "").trim();
+}
+
+export function yunxiaoWorkitemCategoryId(item: YunxiaoWorkitem, fallback = "") {
+  return String(
+    item.categoryId
+    ?? item.workitemType?.categoryId
+    ?? fallback,
+  ).trim();
+}
+
+export function yunxiaoSourceUrl(
+  item: YunxiaoWorkitem,
+  fallback?: { projectId: string; categoryId: string; workitemId: string },
+) {
+  const categoryId = yunxiaoWorkitemCategoryId(item, fallback?.categoryId ?? "Req");
+  const serialNumber = yunxiaoWorkitemSerialNumber(item);
+  if (serialNumber && categoryId) {
+    return `https://devops.aliyun.com/projex/${encodeURIComponent(categoryId.toLowerCase())}/${encodeURIComponent(serialNumber)}`;
+  }
+  const projectId = fallback?.projectId || yunxiaoWorkitemSpaceId(item);
+  const workitemId = String(item.id ?? fallback?.workitemId ?? "").trim();
+  if (projectId && categoryId && workitemId) {
+    return yunxiaoWorkitemUrl(projectId, categoryId, workitemId);
+  }
+  return "";
+}
+
+export function pickYunxiaoCompletedStatus(statuses: YunxiaoStatus[]) {
+  return statuses.find((item) => {
+    const stage = (item.statusStageId ?? "").trim();
+    if (stage === "3" || stage === "4") return true;
+    const identifier = (item.identifier ?? "").trim().toLowerCase();
+    if (identifier === "done" || identifier === "closed" || identifier === "cancelled") {
+      return true;
+    }
+    return /完成|关闭|拒绝|done|closed/i.test(item.name);
+  }) ?? null;
 }
 
 const YUNXIAO_DUE_TIMEZONE = "Asia/Shanghai";
@@ -508,10 +663,11 @@ export async function searchProjects(
       const entry = record(item);
       if (!entry) continue;
       const id = String(entry.id ?? entry.identifier ?? "").trim();
-      const name = String(entry.name ?? entry.customCode ?? id).trim();
+      const customCode = String(entry.customCode ?? "").trim();
+      const name = String(entry.name ?? customCode ?? id).trim();
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      projects.push({ id, name: name || id });
+      projects.push({ id, name: name || id, customCode: customCode || undefined });
     }
     const totalPages = Number(response.headers.get("x-total-pages") ?? "0");
     if (totalPages > 0 && page >= totalPages) break;
@@ -595,6 +751,8 @@ export async function getWorkitemWorkflow(
       id: String(item.id ?? item.statusId ?? ""),
       name: String(item.name ?? item.displayName ?? item.identifier ?? ""),
       identifier: typeof item.identifier === "string" ? item.identifier : undefined,
+      statusStageId: String(item.statusStageId ?? item.statusStageIdentifier ?? "").trim()
+        || undefined,
     }))
     .filter((item) => item.id && item.name);
 }
@@ -656,6 +814,112 @@ export async function searchWorkitems(
     items,
     total: typeof totalValue === "number" ? totalValue : null,
   };
+}
+
+function yunxiaoSerialPrefix(serialNumber: string) {
+  const trimmed = serialNumber.trim();
+  const separator = trimmed.lastIndexOf("-");
+  return separator > 0 ? trimmed.slice(0, separator) : trimmed;
+}
+
+function projectMatchesSerialPrefix(project: YunxiaoProject, prefix: string) {
+  const needle = prefix.trim().toLowerCase();
+  if (!needle) return false;
+  return [project.customCode, project.id, project.name]
+    .some((value) => value && value.trim().toLowerCase() === needle);
+}
+
+export async function searchWorkitemsBySerialNumber(
+  organizationId: string,
+  projectId: string,
+  categoryId: string,
+  serialNumber: string,
+  token: string,
+  fetcher: typeof fetch = fetch,
+): Promise<YunxiaoWorkitem | null> {
+  const conditions = {
+    conditionGroups: [[
+      {
+        fieldIdentifier: "serialNumber",
+        operator: "EQUALS",
+        value: [serialNumber],
+        toValue: null,
+        className: "string",
+        format: "input",
+      },
+    ]],
+  };
+  const response = await yunxiaoRequest(
+    `/oapi/v1/projex/organizations/${encodeURIComponent(organizationId)}/workitems:search`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        category: categoryId,
+        conditions: JSON.stringify(conditions),
+        extraConditions: "",
+        orderBy: "gmtModified",
+        page: 1,
+        perPage: 20,
+        sort: "desc",
+        spaceId: projectId,
+        spaceType: "Project",
+      }),
+    },
+    fetcher,
+  );
+  const items = listFromResult(await readJson(response), ["items", "workitems", "list"])
+    .map((item) => record(item))
+    .filter((item): item is JsonRecord => Boolean(item))
+    .map((item) => ({
+      ...item,
+      id: String(item.id ?? ""),
+    } as YunxiaoWorkitem))
+    .filter((item) => item.id);
+  const exact = items.find((item) =>
+    yunxiaoWorkitemSerialNumber(item).toLowerCase() === serialNumber.trim().toLowerCase()
+  );
+  return exact ?? items[0] ?? null;
+}
+
+export async function resolveYunxiaoWorkitem(
+  organizationId: string,
+  token: string,
+  ref: YunxiaoWorkitemRef,
+  fetcher: typeof fetch = fetch,
+): Promise<YunxiaoWorkitem> {
+  if (ref.kind === "id") {
+    const item = await getWorkitem(organizationId, ref.workitemId, token, fetcher);
+    if (!item) throw new Error("未找到对应的云效工作项");
+    return item;
+  }
+  const projects = await searchProjects(organizationId, token, fetcher);
+  if (!projects.length) throw new Error("当前组织没有可见的云效项目");
+  const prefix = yunxiaoSerialPrefix(ref.serialNumber);
+  const ranked = [
+    ...projects.filter((project) => projectMatchesSerialPrefix(project, prefix)),
+    ...projects.filter((project) => !projectMatchesSerialPrefix(project, prefix)),
+  ];
+  let lastError: unknown = null;
+  for (const project of ranked) {
+    try {
+      const found = await searchWorkitemsBySerialNumber(
+        organizationId,
+        project.id,
+        ref.categoryId,
+        ref.serialNumber,
+        token,
+        fetcher,
+      );
+      if (!found?.id) continue;
+      const detail = await getWorkitem(organizationId, found.id, token, fetcher).catch(() => found);
+      return detail ?? found;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError instanceof Error) throw lastError;
+  throw new Error("未找到对应的云效工作项");
 }
 
 export async function updateWorkitemStatus(

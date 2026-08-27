@@ -16,7 +16,7 @@ const environment = {
   ...process.env,
   VITE_SUPABASE_URL: local.API_URL,
   VITE_SUPABASE_PUBLISHABLE_KEY: local.PUBLISHABLE_KEY,
-  VITE_PUBLIC_APP_URL: "http://127.0.0.1:4173",
+  VITE_PUBLIC_APP_URL: "http://127.0.0.1:5173",
 };
 
 execFileSync("pnpm", ["build:web"], { cwd: repositoryRoot, env: environment, stdio: "inherit" });

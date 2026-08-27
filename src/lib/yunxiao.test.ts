@@ -16,8 +16,10 @@ import {
   rewriteYunxiaoImageDestination,
   rewriteYunxiaoStoredDescription,
   parseYunxiaoSyncCursor,
+  parseYunxiaoWorkitemRef,
   searchProjects,
   searchWorkitems,
+  searchWorkitemsBySerialNumber,
   shouldStopYunxiaoFirstSync,
   startYunxiaoSyncCursor,
   updateWorkitemStatus,
@@ -540,6 +542,84 @@ describe("yunxiao connector helpers", () => {
       id: "item-1",
       startDate: "2026-05-25",
       endDate: "2026-05-26",
+    });
+  });
+});
+
+describe("yunxiao quick create refs", () => {
+  it("parses short serial URLs and ignores a trailing title", () => {
+    expect(parseYunxiaoWorkitemRef("https://devops.aliyun.com/projex/req/HQGS-354")).toEqual({
+      kind: "serial",
+      categoryId: "Req",
+      serialNumber: "HQGS-354",
+    });
+    expect(parseYunxiaoWorkitemRef(
+      "https://devops.aliyun.com/projex/req/HQGS-354# 《标题会被忽略》",
+    )).toEqual({
+      kind: "serial",
+      categoryId: "Req",
+      serialNumber: "HQGS-354",
+    });
+  });
+
+  it("parses full work item URLs and category casing", () => {
+    expect(parseYunxiaoWorkitemRef(
+      "https://devops.aliyun.com/projex/project/proj-1/BUG/work%2F99",
+    )).toEqual({
+      kind: "id",
+      projectId: "proj-1",
+      categoryId: "Bug",
+      workitemId: "work/99",
+    });
+    expect(parseYunxiaoWorkitemRef(
+      "https://www.devops.aliyun.com/projex/TASK/ABC-1",
+    )).toEqual({
+      kind: "serial",
+      categoryId: "Task",
+      serialNumber: "ABC-1",
+    });
+  });
+
+  it("rejects extra text around a Yunxiao URL", () => {
+    expect(parseYunxiaoWorkitemRef("看这个 https://devops.aliyun.com/projex/req/HQGS-354")).toBeNull();
+    expect(parseYunxiaoWorkitemRef("https://devops.aliyun.com/projex/req/HQGS-354 请跟进")).toBeNull();
+    expect(parseYunxiaoWorkitemRef("https://example.com/projex/req/HQGS-354")).toBeNull();
+  });
+
+  it("searches work items by serialNumber EQUALS", async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const fetcher: typeof fetch = async (_input, init) => {
+      calls.push({ init });
+      return Response.json({
+        success: true,
+        result: { items: [{ id: "item-1", serialNumber: "HQGS-354" }] },
+      });
+    };
+    await expect(searchWorkitemsBySerialNumber(
+      "org 1",
+      "project-1",
+      "Req",
+      "HQGS-354",
+      "token",
+      fetcher,
+    )).resolves.toMatchObject({ id: "item-1", serialNumber: "HQGS-354" });
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body).toMatchObject({
+      category: "Req",
+      spaceId: "project-1",
+      spaceType: "Project",
+      page: 1,
+      perPage: 20,
+    });
+    expect(JSON.parse(body.conditions)).toEqual({
+      conditionGroups: [[{
+        fieldIdentifier: "serialNumber",
+        operator: "EQUALS",
+        value: ["HQGS-354"],
+        toValue: null,
+        className: "string",
+        format: "input",
+      }]],
     });
   });
 });

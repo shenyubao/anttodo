@@ -1,4 +1,11 @@
-import type { Member, Task, UserGroupMember } from "../types";
+import type {
+  CustomTaskView,
+  DateTimePreferences,
+  Member,
+  Task,
+  UserGroupMember,
+} from "../types";
+import { applyTaskListFilters, customTaskViewKey } from "./taskList";
 
 export const CALENDAR_UNASSIGNED_ID = "unassigned";
 
@@ -84,6 +91,47 @@ export function taskMatchesCalendarAssignees(
 ) {
   if (task.assignee_id == null) return visibleAssigneeIds.has(CALENDAR_UNASSIGNED_ID);
   return visibleAssigneeIds.has(task.assignee_id);
+}
+
+export function taskMatchesCalendarSmartViews(
+  task: Task,
+  activeViewIds: ReadonlySet<string>,
+  customViews: Iterable<CustomTaskView>,
+  currentUserId: string,
+  now = new Date(),
+  weekStartsOn: DateTimePreferences["weekStartsOn"] = 1,
+) {
+  if (activeViewIds.size === 0) return true;
+  const customViewsByKey = new Map<string, CustomTaskView>(
+    Array.from(customViews, (view) => [customTaskViewKey(view.id), view]),
+  );
+
+  for (const viewId of activeViewIds) {
+    if (viewId === "assigned" && task.assignee_id === currentUserId) return true;
+    if (viewId === "watching" && task.participant_ids.includes(currentUserId)) return true;
+
+    const customView = customViewsByKey.get(viewId);
+    if (!customView || customView.definition.scope === "trash") continue;
+    if (customView.definition.scope === "inbox" && task.label_ids.length > 0) continue;
+    if (
+      customView.definition.scope === "label"
+      && !task.label_ids.some((labelId) => customView.definition.label_ids.includes(labelId))
+    ) continue;
+
+    const matches = applyTaskListFilters({
+      tasks: [task],
+      filterAssignee: customView.definition.filter_assignee,
+      filterAssigneeIds: customView.definition.filter_assignee_ids,
+      filterWatching: customView.definition.filter_watching,
+      filterCreator: customView.definition.filter_creator,
+      filterDue: customView.definition.filter_due,
+      currentUserId,
+      now,
+      weekStartsOn,
+    });
+    if (matches.length > 0) return true;
+  }
+  return false;
 }
 
 export function taskIsVisibleOnCalendar(

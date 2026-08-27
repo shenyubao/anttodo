@@ -3,10 +3,12 @@ import { withSupabase } from "@supabase/server";
 import { resolveUser } from "../_shared/resolveUser.ts";
 import {
   getWorkitemWorkflow,
+  isYunxiaoQuickCreateConfig,
   listProjectWorkitemTypes,
   searchProjects,
   searchWorkitems,
   validateYunxiaoPublicConfig,
+  validateYunxiaoQuickCreateConfig,
   YUNXIAO_INTERVALS,
 } from "../_shared/yunxiao.ts";
 
@@ -57,7 +59,14 @@ type AdminRequest =
     }
   | { action: "rotate-yunxiao-token"; connectorId: string; token: string }
   | { action: "set-yunxiao-enabled"; connectorId: string; enabled: boolean }
-  | { action: "delete-yunxiao"; connectorId: string };
+  | { action: "delete-yunxiao"; connectorId: string }
+  | {
+      action: "install-yunxiao-quick-create";
+      workspaceId: string;
+      organizationId: string;
+      targetLabelId: string;
+      token: string;
+    };
 
 const encoder = new TextEncoder();
 
@@ -101,6 +110,30 @@ function serializeDingtalkGroupRobot(connector: {
     type: "dingtalk-group-robot" as const,
     name: connector.name,
     enabled: connector.enabled,
+    lastEventAt: connector.last_synced_at,
+    createdAt: connector.created_at,
+  };
+}
+
+function serializeYunxiaoQuickCreate(connector: {
+  id: string;
+  name: string;
+  enabled: boolean;
+  target_label_id: string | null;
+  public_config: unknown;
+  credential_hint: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}) {
+  const config = validateYunxiaoQuickCreateConfig(connector.public_config);
+  return {
+    id: connector.id,
+    type: "yunxiao-quick-create" as const,
+    name: connector.name,
+    enabled: connector.enabled,
+    organizationId: config.organizationId,
+    targetLabelId: connector.target_label_id,
+    credentialHint: connector.credential_hint,
     lastEventAt: connector.last_synced_at,
     createdAt: connector.created_at,
   };
@@ -225,7 +258,9 @@ export default {
         if (yunxiaoError && !/does not exist|schema cache/i.test(yunxiaoError.message)) {
           return jsonError(yunxiaoError.message, 400);
         }
-        const yunxiaoList = yunxiaoError ? [] : (yunxiaoRows ?? []);
+        const yunxiaoList = yunxiaoError ? [] : (yunxiaoRows ?? []).filter((connector) =>
+          !isYunxiaoQuickCreateConfig(connector.public_config)
+        );
         const yunxiaoIds = yunxiaoList.map((row) => row.id);
         const { data: runRows, error: runsError } = yunxiaoIds.length
           ? await ctx.supabaseAdmin.from("sync_runs")
@@ -240,6 +275,16 @@ export default {
             lastRunByConnector.set(run.connector_id, run);
           }
         }
+        const { data: quickCreateRow, error: quickCreateError } = await ctx.supabaseAdmin
+          .from("connector_instances")
+          .select("id,name,enabled,target_label_id,public_config,credential_hint,last_synced_at,created_at")
+          .eq("workspace_id", body.workspaceId)
+          .eq("type", "yunxiao")
+          .contains("public_config", { kind: "quick_create" })
+          .maybeSingle();
+        if (quickCreateError && !/does not exist|schema cache/i.test(quickCreateError.message)) {
+          return jsonError(quickCreateError.message, 400);
+        }
         return Response.json({
           canManage,
           ssoEnabled: ssoConfigured,
@@ -251,6 +296,9 @@ export default {
               lastRunByConnector.get(connector.id) ?? null,
             )
           ),
+          yunxiaoQuickCreate: quickCreateRow && isYunxiaoQuickCreateConfig(quickCreateRow.public_config)
+            ? serializeYunxiaoQuickCreate(quickCreateRow)
+            : null,
         });
       }
 
@@ -485,6 +533,88 @@ export default {
       }
     }
 
+    if (body.action === "install-yunxiao-quick-create") {
+      try {
+        const workspaceId = requiredText(body.workspaceId, "团队空间 ID");
+        if (!(await requireWorkspaceAdmin(ctx.supabaseAdmin, workspaceId, userId))) {
+          return jsonError("Workspace administrator access required", 403);
+        }
+        const organizationId = requiredText(body.organizationId, "组织 ID");
+        const token = requiredText(body.token, "个人令牌", 10000);
+        const { data: canUseLabel, error: labelError } = await ctx.supabaseAdmin.rpc(
+          "can_user_manage_connector_label",
+          { p_workspace_id: workspaceId, p_label_id: body.targetLabelId, p_user_id: userId },
+        );
+        if (labelError || !canUseLabel) return jsonError("目标标签必须具有编辑权限", 403);
+        const projects = await searchProjects(organizationId, token);
+        if (!projects.length) return jsonError("当前组织没有可见的云效项目", 422);
+        const { data: existing } = await ctx.supabaseAdmin
+          .from("connector_instances")
+          .select("id,name,enabled,target_label_id,public_config,credential_hint,last_synced_at,created_at")
+          .eq("workspace_id", workspaceId)
+          .eq("type", "yunxiao")
+          .contains("public_config", { kind: "quick_create" })
+          .maybeSingle();
+        if (existing) {
+          return Response.json({
+            connector: serializeYunxiaoQuickCreate(existing),
+            created: false,
+          });
+        }
+        const { data: connector, error: createError } = await ctx.supabaseAdmin
+          .from("connector_instances")
+          .insert({
+            workspace_id: workspaceId,
+            type: "yunxiao",
+            name: "云效创建",
+            enabled: false,
+            schedule_minutes: 1440,
+            target_label_id: body.targetLabelId,
+            public_config: { kind: "quick_create", organizationId },
+            created_by: userId,
+          })
+          .select("id,name,enabled,target_label_id,public_config,credential_hint,last_synced_at,created_at")
+          .single();
+        if (createError?.code === "23505") {
+          const { data: installed } = await ctx.supabaseAdmin
+            .from("connector_instances")
+            .select("id,name,enabled,target_label_id,public_config,credential_hint,last_synced_at,created_at")
+            .eq("workspace_id", workspaceId)
+            .eq("type", "yunxiao")
+            .contains("public_config", { kind: "quick_create" })
+            .maybeSingle();
+          if (installed) {
+            return Response.json({
+              connector: serializeYunxiaoQuickCreate(installed),
+              created: false,
+            });
+          }
+        }
+        if (createError || !connector) throw new Error(createError?.message ?? "云效创建接入失败");
+        const { data: hint, error: secretError } = await ctx.supabaseAdmin.rpc(
+          "set_connector_secret",
+          { p_connector_id: connector.id, p_actor_id: userId, p_secret: token },
+        );
+        if (secretError) {
+          await ctx.supabaseAdmin.from("connector_instances").delete().eq("id", connector.id);
+          throw new Error(secretError.message);
+        }
+        const { data: enabled, error: enableError } = await ctx.supabaseAdmin
+          .from("connector_instances")
+          .update({ enabled: true })
+          .eq("id", connector.id)
+          .select("id,name,enabled,target_label_id,public_config,credential_hint,last_synced_at,created_at")
+          .single();
+        if (enableError || !enabled) throw new Error(enableError?.message ?? "云效创建启用失败");
+        return Response.json({
+          connector: serializeYunxiaoQuickCreate({ ...enabled, credential_hint: hint }),
+          created: true,
+        });
+      } catch (error) {
+        return jsonError(error instanceof Error ? error.message : "云效创建接入失败", 422);
+      }
+    }
+
     const connectorId = "connectorId" in body ? body.connectorId : undefined;
     if (typeof connectorId !== "string" || !connectorId.trim()) {
       return jsonError("不支持的连接器操作", 400);
@@ -501,22 +631,36 @@ export default {
       body.action === "set-yunxiao-enabled" ||
       body.action === "delete-yunxiao"
     ) {
-      if (connector.type !== "yunxiao" || connector.created_by !== userId) {
+      const isQuickCreate = isYunxiaoQuickCreateConfig(connector.public_config);
+      if (connector.type !== "yunxiao") {
+        return jsonError("云效连接器不存在", 404);
+      }
+      if (isQuickCreate) {
+        if (!(await requireWorkspaceAdmin(ctx.supabaseAdmin, connector.workspace_id, userId))) {
+          return jsonError("Workspace administrator access required", 403);
+        }
+      } else if (connector.created_by !== userId) {
         return jsonError("云效连接器不存在", 404);
       }
       if (body.action === "rotate-yunxiao-token") {
         try {
           const token = requiredText(body.token, "个人令牌", 10000);
-          const config = validateYunxiaoPublicConfig(connector.public_config);
-          const types = await listProjectWorkitemTypes(
-            config.organizationId, config.projectId, token,
-          );
-          if (!types.some((item) => item.id === config.workitemTypeId)) {
-            return jsonError("新令牌无法访问所选工作项类型", 422);
+          if (isQuickCreate) {
+            const config = validateYunxiaoQuickCreateConfig(connector.public_config);
+            const projects = await searchProjects(config.organizationId, token);
+            if (!projects.length) return jsonError("新令牌无法访问该组织", 422);
+          } else {
+            const config = validateYunxiaoPublicConfig(connector.public_config);
+            const types = await listProjectWorkitemTypes(
+              config.organizationId, config.projectId, token,
+            );
+            if (!types.some((item) => item.id === config.workitemTypeId)) {
+              return jsonError("新令牌无法访问所选工作项类型", 422);
+            }
+            await getWorkitemWorkflow(
+              config.organizationId, config.projectId, config.workitemTypeId, token,
+            );
           }
-          await getWorkitemWorkflow(
-            config.organizationId, config.projectId, config.workitemTypeId, token,
-          );
           const { data, error } = await ctx.supabaseAdmin.rpc("set_connector_secret", {
             p_connector_id: connector.id, p_actor_id: userId, p_secret: token,
           });

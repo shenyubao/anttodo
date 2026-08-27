@@ -14,6 +14,7 @@ import {
   findTaskIdForChildTask,
   isOptimisticChildTaskId,
   normalizeWorkspaceBundle,
+  persistableListOrderTaskIds,
   patchChildTaskInBundle,
   patchTaskInBundle,
   removeChildTaskFromBundle,
@@ -423,6 +424,18 @@ describe("task cache updates", () => {
     expect(bundle.taskPlacements).toMatchObject([
       { task_id: "server-task", list_key: "label:label", position: 0 },
       { task_id: "existing-task", list_key: "label:label", position: 1 },
+    ]);
+  });
+
+  it("omits optimistic and unpersistable ids from a list-order payload", () => {
+    expect(persistableListOrderTaskIds([
+      { id: "optimistic-task:one" },
+      { id: "native-task" },
+      { id: "external-task" },
+      { id: "view-only-task" },
+    ], (task) => task.id !== "view-only-task")).toEqual([
+      "native-task",
+      "external-task",
     ]);
   });
 

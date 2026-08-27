@@ -1,5 +1,4 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import type { Session } from "@supabase/supabase-js";
 import {
   DndContext,
   DragOverlay,
@@ -102,8 +101,14 @@ import { AiFeatureSettingsPanel } from "./AiFeatureSettingsPanel";
 import { AiWorkSettingsDialog } from "./AiWorkSettingsDialog";
 import { CalendarSidebar, CalendarWorkspace } from "./CalendarWorkspace";
 import { ConnectorSettingsPanel } from "./ConnectorSettingsPanel";
+import { CliDevicesSettings } from "./CliDevicesSettings";
 import { QuickCreateSettingsPanel } from "./QuickCreateSettingsPanel";
 import { QuickAddForm } from "./QuickAddForm";
+import {
+  canCompleteYunxiaoExternalTask,
+  importYunxiaoWorkitemFromText,
+  isYunxiaoQuickCreateInput,
+} from "./lib/yunxiaoQuickCreate";
 import {
   DesktopUpdateBanner,
   formatUpdateCheckMessage,
@@ -114,8 +119,10 @@ import { initials, MemberAvatar } from "./MemberAvatar";
 import { MindMapWorkspace } from "./MindMapWorkspace";
 import { ConnectorSyncButton } from "./ConnectorSyncButton";
 import { NotificationBell } from "./NotificationBell";
+import { EmbeddedNavigation } from "./EmbeddedNavigation";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
+import { FeatureModulesSettingsPanel } from "./FeatureModulesSettingsPanel";
 import { getPriorityOption } from "./PriorityControl";
 import { ShortcutProvider } from "./ShortcutProvider";
 import { ShortcutsSettingsPanel } from "./ShortcutsSettingsPanel";
@@ -218,6 +225,16 @@ import {
   useShowContactNames,
 } from "./lib/displayPreference";
 import {
+  loadFeatureModulePreferences,
+  saveFeatureModulePreferences,
+  type FeatureModulePreferences,
+} from "./lib/featureModulePreferences";
+import { embeddedNavigationEnabled } from "./lib/embeddedNavigation";
+import {
+  visiblePrimaryNavigationItems,
+  type PrimaryAppSection,
+} from "./lib/primaryNavigation";
+import {
   appendActualPomodoros,
   appendActualHours,
   formatHoursList,
@@ -263,6 +280,7 @@ import {
   createOptimisticTask,
   createOptimisticTaskSection,
   isOptimisticTaskId,
+  persistableListOrderTaskIds,
   normalizeWorkspaceBundle,
   patchTaskInBundle,
   patchTaskSectionInBundle,
@@ -364,7 +382,9 @@ import { DownloadClientDialog } from "./DownloadClientDialog";
 import {
   appRoutePath,
   DEFAULT_SMART_VIEW,
+  isOverlayAppRoute,
   parseAppRoute,
+  parseTaskReturnRoute,
   type AppRoute,
 } from "./lib/appRoute";
 import type {
@@ -378,10 +398,15 @@ import {
   sessionStatusMessage,
 } from "./lib/sessionBridge";
 import {
+  authorizeCliDevice,
+  clearCliConsentContext,
   cliAuthorizationUserCode,
-  decideCliAuthorization,
-  encryptCliSession,
+  cliOAuthAuthorizationId,
+  denyCliDevice,
   inspectCliAuthorization,
+  readCliConsentContext,
+  validateCliConsent,
+  type CliCredentialLifetime,
   type CliAuthorizationRequest,
 } from "./lib/cliDeviceAuth";
 import {
@@ -525,11 +550,12 @@ import type {
 } from "./types";
 
 type SmartView = import("./lib/appRoute").AppSmartView;
-type AppSection = "tasks" | "calendar" | "mindmap" | "focus";
+type AppSection = PrimaryAppSection;
 type SettingsTab =
   | "account"
   | "date"
   | "appearance"
+  | "feature-modules"
   | "smart-views"
   | "notifications"
   | "ai-features"
@@ -557,21 +583,7 @@ function currentApplicationRoute() {
 }
 
 function currentTaskReturnRoute(workspaceId: string): AppRoute | null {
-  const value = window.history.state?.taskReturnRoute as AppRoute | undefined;
-  if (!value || value.workspaceId !== workspaceId) return null;
-  if (value.kind === "view") {
-    if (
-      !["all", "today", "week", "assigned", "watching", "inbox", "trash"].includes(value.view)
-      && !value.view.startsWith("custom:")
-    ) return null;
-    if (value.mode !== "list" && value.mode !== "kanban") return null;
-    return value.view === "trash" ? { ...value, mode: "list" } : value;
-  }
-  if (value.kind === "tag" && value.tagId) {
-    if (value.mode !== "list" && value.mode !== "kanban") return null;
-    return value;
-  }
-  return null;
+  return parseTaskReturnRoute(window.history.state?.taskReturnRoute, workspaceId);
 }
 
 function taskReturnRouteForTask(
@@ -642,6 +654,7 @@ export default function App() {
     pathname,
     window.location.search,
   );
+  const cliOAuthConsentId = cliOAuthAuthorizationId(pathname, window.location.search);
   const appHost = resolveAppLocation(pathname);
   const teamSlug = appHost.kind === "team" ? appHost.slug : null;
   const loginSurface = teamSlug ? "team-sso" : "phone";
@@ -875,13 +888,11 @@ export default function App() {
       />
     );
   }
+  if (cliOAuthConsentId !== null) {
+    return <OAuthConsentScreen authorizationId={cliOAuthConsentId} />;
+  }
   if (cliAuthorizationCode !== null) {
-    return (
-      <CliAuthorizationScreen
-        userCode={cliAuthorizationCode}
-        session={session}
-      />
-    );
+    return <CliAuthorizationScreen userCode={cliAuthorizationCode} />;
   }
   return (
     <RemoteApplication
@@ -897,18 +908,23 @@ export default function App() {
 
 function CliAuthorizationScreen({
   userCode,
-  session,
 }: {
   userCode: string;
-  session: Session;
 }) {
   const [request, setRequest] = useState<CliAuthorizationRequest | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "approved" | "denied" | "error">("loading");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [lifetime, setLifetime] = useState<CliCredentialLifetime>("360");
+  const oauthResult = new URLSearchParams(window.location.search).get("oauth_result");
 
   useEffect(() => {
     let cancelled = false;
+    if (oauthResult) {
+      setState(oauthResult === "approved" ? "approved" : oauthResult === "denied" ? "denied" : "error");
+      if (oauthResult === "error") setMessage("OAuth 换票失败，请在终端重新发起登录。");
+      return;
+    }
     if (!supabase || !userCode) {
       setState("error");
       setMessage("授权链接缺少验证码，请在终端重新发起登录。");
@@ -926,23 +942,20 @@ function CliAuthorizationScreen({
         setMessage("授权请求不存在或已经过期，请在终端重新发起登录。");
       });
     return () => { cancelled = true; };
-  }, [userCode]);
+  }, [oauthResult, userCode]);
 
   async function decide(decision: "approve" | "deny") {
     if (!supabase || !request || busy) return;
     setBusy(true);
     setMessage("");
     try {
-      const encryptedSession = decision === "approve"
-        ? await encryptCliSession(request.publicKey, session, request.requestId)
-        : undefined;
-      await decideCliAuthorization(supabase, {
-        decision,
-        userCode,
-        requestId: request.requestId,
-        encryptedSession,
-      });
-      setState(decision === "approve" ? "approved" : "denied");
+      if (decision === "deny") {
+        await denyCliDevice(supabase, { userCode, requestId: request.requestId });
+        setState("denied");
+      } else {
+        const result = await authorizeCliDevice(supabase, { userCode, requestId: request.requestId, lifetime });
+        window.location.assign(result.authorizationUrl);
+      }
     } catch (cause) {
       setState("error");
       setMessage(cause instanceof Error ? cause.message : "无法完成 CLI 授权，请稍后重试。");
@@ -972,10 +985,20 @@ function CliAuthorizationScreen({
               <div><dt>验证码</dt><dd>{userCode}</dd></div>
               {request.client.hostname && <div><dt>设备</dt><dd>{request.client.hostname}</dd></div>}
               {request.client.version && <div><dt>版本</dt><dd>{request.client.version}</dd></div>}
-              <div><dt>有效期</dt><dd>{new Date(request.expiresAt).toLocaleTimeString()}</dd></div>
+              <div><dt>请求到期</dt><dd>{new Date(request.expiresAt).toLocaleTimeString()}</dd></div>
             </dl>
+            <fieldset className="cli-auth-lifetime">
+              <legend>设备授权有效期</legend>
+              {([['7', '7 天'], ['90', '90 天'], ['360', '360 天'], ['unlimited', '无限']] as const).map(([value, label]) => (
+                <label key={value}>
+                  <input type="radio" name="cli-lifetime" value={value} checked={lifetime === value} onChange={() => setLifetime(value)} />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </fieldset>
+            {lifetime === "unlimited" ? <p className="cli-auth-risk">“无限”不会自动到期；请只在受信设备上使用，并在账户设置中及时撤销遗失设备。</p> : null}
             <p className="cli-auth-warning">
-              仅当终端显示相同验证码时批准。AntTodo 不会把刷新令牌明文发送到服务端。
+              仅当终端显示相同验证码时批准。CLI 只保存设备凭据，OAuth 刷新令牌保存在服务端 Vault。
             </p>
             <div className="cli-auth-actions">
               <button className="button secondary" type="button" disabled={busy} onClick={() => void decide("deny")}>拒绝</button>
@@ -1006,6 +1029,63 @@ function CliAuthorizationScreen({
       </section>
     </main>
   );
+}
+
+function OAuthConsentScreen({ authorizationId }: { authorizationId: string }) {
+  const [details, setDetails] = useState<{ client: { id: string; name: string }; scope: string } | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!supabase || !authorizationId) { setState("error"); setMessage("OAuth 授权请求无效。"); return; }
+    void supabase.auth.oauth.getAuthorizationDetails(authorizationId).then(async ({ data, error }) => {
+      if (cancelled) return;
+      if (error || !data) throw error ?? new Error("OAuth 授权请求无效");
+      if ("redirect_url" in data) { window.location.assign(data.redirect_url); return; }
+      const context = readCliConsentContext();
+      if (context) {
+        try {
+          await validateCliConsent(supabase!, { authorizationId, clientId: data.client.id, ...context });
+          clearCliConsentContext();
+          const approved = await supabase!.auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true });
+          if (approved.error || !approved.data) throw approved.error ?? new Error("OAuth 授权失败");
+          window.location.assign(approved.data.redirect_url);
+          return;
+        } catch {
+          clearCliConsentContext();
+        }
+      }
+      setDetails({ client: data.client, scope: data.scope });
+      setState("ready");
+    }).catch((cause) => {
+      if (cancelled) return;
+      setState("error"); setMessage(cause instanceof Error ? cause.message : "无法读取 OAuth 授权请求。");
+    });
+    return () => { cancelled = true; };
+  }, [authorizationId]);
+
+  async function decide(approve: boolean) {
+    if (!supabase) return;
+    setState("loading");
+    const result = approve
+      ? await supabase.auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true })
+      : await supabase.auth.oauth.denyAuthorization(authorizationId, { skipBrowserRedirect: true });
+    if (result.error || !result.data) { setState("error"); setMessage(result.error?.message ?? "无法完成 OAuth 授权。"); return; }
+    window.location.assign(result.data.redirect_url);
+  }
+
+  return <main className="cli-auth-screen"><section className="cli-auth-card" aria-live="polite">
+    <div className="invite-brand"><BrandMark /><span>{currentBrandName()}</span></div>
+    {state === "loading" ? <div className="invite-loading">正在验证 OAuth 授权请求…</div>
+      : state === "ready" && details ? <>
+        <div className="cli-auth-icon"><ShieldCheck aria-hidden="true" /></div>
+        <h1>授权 {details.client.name}</h1>
+        <p className="cli-auth-description">该应用请求访问你的基本资料；数据权限仍由现有团队空间和标签权限控制。</p>
+        <dl className="cli-auth-details"><div><dt>权限</dt><dd>{details.scope}</dd></div></dl>
+        <div className="cli-auth-actions"><button className="button secondary" onClick={() => void decide(false)}>拒绝</button><button className="button primary" onClick={() => void decide(true)}>允许</button></div>
+      </> : <div className="cli-auth-result error" role="alert"><Info aria-hidden="true" /><h1>无法完成授权</h1><p>{message}</p></div>}
+  </section></main>;
 }
 
 function SessionBridgeScreen({ authenticated }: { authenticated: boolean }) {
@@ -2617,14 +2697,11 @@ function RemoteApplication({
         }
         return;
       }
-      const connector = previous?.connectors.find((item) => item.id === current.connector_id);
       const allowedCompletion = current.connector_platform === "yunxiao"
         && current.status !== "completed"
         && patch.status === "completed"
         && keys.every((key) => key === "status" || key === "completed_at")
-        && current.created_by === userId
-        && connector?.created_by === userId
-        && connector.enabled;
+        && canCompleteYunxiaoExternalTask(current, previous?.connectors ?? [], userId);
       if (!allowedCompletion) throw new Error("外部任务内容只读，只能由连接器所有者完成");
       const completedAt = patch.completed_at ?? new Date().toISOString();
       queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) =>
@@ -3857,6 +3934,11 @@ function RemoteApplication({
         const currentBundle = queryClient.getQueryData<WorkspaceBundle>(queryKey);
         const parentTaskId = input.parentTaskId ?? null;
         if (!parentTaskId) {
+          const imported = await importYunxiaoWorkitemFromText(workspaceId, input.title);
+          if (imported) {
+            await queryClient.invalidateQueries({ queryKey });
+            return { id: imported.taskId };
+          }
           assertCanAssociateTaskLabels(currentBundle?.labelTaskCounts, input.labelIds);
         }
         const taskInput = {
@@ -4319,6 +4401,9 @@ function DemoApplication({
         if (workspaceId === targetWorkspaceId) setWorkspaceId(remaining[0]?.id ?? "");
       }}
       onCreateTask={async (input) => {
+        if (!input.parentTaskId && isYunxiaoQuickCreateInput(input.title)) {
+          throw new Error("演示模式无法从云效链接创建待办");
+        }
         if (!input.parentTaskId) {
           assertCanAssociateTaskLabels(bundle.labelTaskCounts, input.labelIds);
         }
@@ -5355,6 +5440,11 @@ function PanelResizeHandle({
 
 function WorkspaceApplication(props: WorkspaceAppProps) {
   const workspace = props.workspaces.find((item) => item.id === props.workspaceId)!;
+  const embeddedNavigationMode = embeddedNavigationEnabled({
+    search: window.location.search,
+    desktop: Boolean(window.anttodoDesktop),
+    native: Capacitor.isNativePlatform(),
+  });
   const initialRoute = currentApplicationRoute();
   const workspaceInitialRoute = initialRoute?.workspaceId === props.workspaceId
     ? initialRoute
@@ -5362,19 +5452,26 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const initialTask = workspaceInitialRoute?.kind === "task"
     ? props.bundle.tasks.find((task) => task.id === workspaceInitialRoute.taskId) ?? null
     : null;
-  const initialListRoute = workspaceInitialRoute?.kind === "task"
+  const initialTaskReturnRoute = workspaceInitialRoute?.kind === "task"
     ? currentTaskReturnRoute(props.workspaceId)
-      ?? (initialTask ? taskReturnRouteForTask(props.workspaceId, initialTask, props.bundle) : null)
+    : null;
+  const initialListRoute = workspaceInitialRoute?.kind === "task"
+    ? (
+      isOverlayAppRoute(initialTaskReturnRoute)
+        ? null
+        : initialTaskReturnRoute
+          ?? (initialTask ? taskReturnRouteForTask(props.workspaceId, initialTask, props.bundle) : null)
+    )
     : workspaceInitialRoute;
   const [smartView, setSmartView] = useState<SmartView>(
     initialListRoute?.kind === "view" ? initialListRoute.view : DEFAULT_SMART_VIEW,
   );
   const [appSection, setAppSection] = useState<AppSection>(
-    workspaceInitialRoute?.kind === "calendar"
-      || workspaceInitialRoute?.kind === "mindmap"
-      || workspaceInitialRoute?.kind === "focus"
+    isOverlayAppRoute(workspaceInitialRoute)
       ? workspaceInitialRoute.kind
-      : "tasks",
+      : isOverlayAppRoute(initialTaskReturnRoute)
+        ? initialTaskReturnRoute.kind
+        : "tasks",
   );
   const [focusDeepLink, setFocusDeepLink] = useState<DesktopFocusDeepLinkEnvelope | null>(null);
   const deepLinkWorkspaceRequestsRef = useRef(new Set<number>());
@@ -5431,10 +5528,15 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   );
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [mobileAppSidebar, setMobileAppSidebar] = useState(false);
-  const [searchDialogOpen, setSearchDialogOpen] = useState(false);
+  const [searchDialogOpen, setSearchDialogOpen] = useState(
+    workspaceInitialRoute?.kind === "search",
+  );
   const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | null>(null);
+  const [featureModulePreferences, setFeatureModulePreferences] = useState(
+    loadFeatureModulePreferences,
+  );
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false);
   const [downloadClientDialogOpen, setDownloadClientDialogOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_MIN_WIDTH);
@@ -5456,6 +5558,22 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [visibleAssigneeIds, setVisibleAssigneeIds] = useState<Set<string>>(
     () => new Set(calendarAssigneeFilterIds(props.bundle.members)),
   );
+  const [activeCalendarSmartViewIds, setActiveCalendarSmartViewIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  useEffect(() => {
+    const availableIds = new Set([
+      "assigned",
+      "watching",
+      ...props.bundle.customTaskViews
+        .filter((view) => view.visible)
+        .map((view) => customTaskViewKey(view.id)),
+    ]);
+    setActiveCalendarSmartViewIds((current) => {
+      const next = new Set([...current].filter((viewId) => availableIds.has(viewId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [props.bundle.customTaskViews]);
   const now = useMinuteNow();
   const {
     availableUpdate,
@@ -5482,14 +5600,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       && canOrganizeTask(props.bundle, selectedTask, props.currentUserId)
     : false;
   const selectedTaskCompletable = selectedTask
-    ? selectedTaskEditable || Boolean(
-      selectedTask.connector_platform === "yunxiao"
-      && selectedTask.status !== "completed"
-      && selectedTask.created_by === props.currentUserId
-      && props.bundle.connectors.some((connector) =>
-        connector.id === selectedTask.connector_id
-        && connector.created_by === props.currentUserId
-        && connector.enabled),
+    ? selectedTaskEditable || canCompleteYunxiaoExternalTask(
+      selectedTask,
+      props.bundle.connectors,
+      props.currentUserId,
     )
     : false;
   const multiSelectTrashView = !selectedLabelId && (
@@ -5507,14 +5621,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   function workspaceCanCompleteTask(task: Task) {
-    return workspaceCanEditTask(task) || Boolean(
-      task.connector_platform === "yunxiao"
-      && task.status !== "completed"
-      && task.created_by === props.currentUserId
-      && props.bundle.connectors.some((connector) =>
-        connector.id === task.connector_id
-        && connector.created_by === props.currentUserId
-        && connector.enabled),
+    return workspaceCanEditTask(task) || canCompleteYunxiaoExternalTask(
+      task,
+      props.bundle.connectors,
+      props.currentUserId,
     );
   }
 
@@ -5535,6 +5645,19 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return { workspaceId: props.workspaceId, kind: "tag", tagId: selectedLabelId, mode: viewMode };
     }
     return { workspaceId: props.workspaceId, kind: "view", view: smartView, mode: viewMode };
+  }
+
+  function applyTaskReturnPresentation(returnRoute: AppRoute | null) {
+    if (isOverlayAppRoute(returnRoute)) {
+      setAppSection(returnRoute.kind);
+      return;
+    }
+    setAppSection("tasks");
+    setSmartView(returnRoute?.kind === "view" ? returnRoute.view : DEFAULT_SMART_VIEW);
+    setSelectedLabelId(returnRoute?.kind === "tag" ? returnRoute.tagId : null);
+    if (returnRoute?.kind === "view" || returnRoute?.kind === "tag") {
+      setViewMode(returnRoute.mode ?? "list");
+    }
   }
 
   function savedViewMode(view: SmartView, labelId: string | null) {
@@ -5617,7 +5740,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   function closeTask() {
-    writeRoute(currentTaskReturnRoute(props.workspaceId) ?? sectionRoute(), true);
+    const returnRoute = currentTaskReturnRoute(props.workspaceId) ?? sectionRoute();
+    writeRoute(returnRoute, true);
     syncTaskSelection(null);
   }
 
@@ -5659,10 +5783,18 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return;
     }
     if (selectedTaskId && !selectedTask) {
+      const route = currentApplicationRoute();
+      if (
+        route?.workspaceId === props.workspaceId
+        && route.kind === "task"
+        && route.taskId === selectedTaskId
+      ) {
+        return;
+      }
       syncTaskSelection(null);
       writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
-  }, [props.bundle.tasks, selectedTask, selectedTaskId, selectedTaskIds, selectionAnchorId]);
+  }, [props.bundle.tasks, props.workspaceId, selectedTask, selectedTaskId, selectedTaskIds, selectionAnchorId]);
 
   useEffect(() => {
     const route = currentApplicationRoute();
@@ -5704,24 +5836,30 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setMindMapCreateLabel(null);
       setMobileSidebar(false);
       setMobileAppSidebar(false);
-      if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
+      setSearchDialogOpen(false);
+      if (route.kind === "search") {
+        syncTaskSelection(null);
+        writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+        setAppSection("tasks");
+        setSmartView(DEFAULT_SMART_VIEW);
+        setSelectedLabelId(null);
+        setViewMode("list");
+        setSearchDialogOpen(true);
+        return;
+      }
+      if (isOverlayAppRoute(route)) {
         setAppSection(route.kind);
         syncTaskSelection(null);
         return;
       }
-      setAppSection("tasks");
       const task = route.kind === "task"
         ? props.bundle.tasks.find((item) => item.id === route.taskId) ?? null
         : null;
-      const listRoute = route.kind === "task"
+      const returnRoute = route.kind === "task"
         ? currentTaskReturnRoute(props.workspaceId)
           ?? (task ? taskReturnRouteForTask(props.workspaceId, task, props.bundle) : null)
         : route;
-      setSmartView(listRoute?.kind === "view" ? listRoute.view : DEFAULT_SMART_VIEW);
-      setSelectedLabelId(listRoute?.kind === "tag" ? listRoute.tagId : null);
-      if (listRoute?.kind === "view" || listRoute?.kind === "tag") {
-        setViewMode(listRoute.mode ?? "list");
-      }
+      applyTaskReturnPresentation(returnRoute);
       syncTaskSelection(route.kind === "task" ? route.taskId : null);
     };
     window.addEventListener("popstate", handlePopState);
@@ -5739,24 +5877,29 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       syncTaskSelection(null);
       return;
     }
-    if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
+    if (route.kind === "search") {
+      syncTaskSelection(null);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+      setAppSection("tasks");
+      setSmartView(DEFAULT_SMART_VIEW);
+      setSelectedLabelId(null);
+      setViewMode("list");
+      setSearchDialogOpen(true);
+      return;
+    }
+    if (isOverlayAppRoute(route)) {
       setAppSection(route.kind);
       syncTaskSelection(null);
       return;
     }
-    setAppSection("tasks");
     const task = route.kind === "task"
       ? props.bundle.tasks.find((item) => item.id === route.taskId) ?? null
       : null;
-    const listRoute = route.kind === "task"
+    const returnRoute = route.kind === "task"
       ? currentTaskReturnRoute(props.workspaceId)
         ?? (task ? taskReturnRouteForTask(props.workspaceId, task, props.bundle) : null)
       : route;
-    setSmartView(listRoute?.kind === "view" ? listRoute.view : DEFAULT_SMART_VIEW);
-    setSelectedLabelId(listRoute?.kind === "tag" ? listRoute.tagId : null);
-    if (listRoute?.kind === "view" || listRoute?.kind === "tag") {
-      setViewMode(listRoute.mode ?? "list");
-    }
+    applyTaskReturnPresentation(returnRoute);
     if (route.kind === "task") {
       if (task) {
         syncTaskSelection(task.id);
@@ -5765,20 +5908,48 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           itemKind: task.kind === "note" ? "note" : "task",
         }, true, {
           ...(window.history.state ?? {}),
-          taskReturnRoute: listRoute ?? taskReturnRouteForTask(props.workspaceId, task, props.bundle),
+          taskReturnRoute: isOverlayAppRoute(returnRoute)
+            ? returnRoute
+            : returnRoute ?? taskReturnRouteForTask(props.workspaceId, task, props.bundle),
         });
+        return;
       }
-    } else {
-      syncTaskSelection(null);
+      let cancelled = false;
+      void (async () => {
+        const loaded = await props.onEnsureTask(props.workspaceId, route.taskId);
+        if (cancelled) return;
+        if (!loaded) {
+          props.onNotice("链接指定的任务不存在或无权访问。");
+          syncTaskSelection(null);
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+          return;
+        }
+        const resolvedReturnRoute = currentTaskReturnRoute(props.workspaceId)
+          ?? taskReturnRouteForTask(props.workspaceId, loaded, props.bundle);
+        applyTaskReturnPresentation(resolvedReturnRoute);
+        syncTaskSelection(loaded.id);
+        writeRoute({
+          workspaceId: props.workspaceId,
+          kind: "task",
+          taskId: loaded.id,
+          itemKind: loaded.kind === "note" ? "note" : "task",
+        }, true, {
+          ...(window.history.state ?? {}),
+          taskReturnRoute: resolvedReturnRoute,
+        });
+      })();
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [props.workspaceId]);
-
-  useEffect(() => {
-    setSearchDialogOpen(false);
-  }, [props.workspaceId]);
+    syncTaskSelection(null);
+  }, [props.bundle, props.onEnsureTask, props.onNotice, props.workspaceId]);
 
   function toggleCalendarSidebar() {
-    if (window.matchMedia("(max-width: 640px)").matches) {
+    if (
+      window.matchMedia("(max-width: 640px)").matches
+      || (embeddedNavigationMode && window.matchMedia("(max-width: 900px)").matches)
+    ) {
       setMobileAppSidebar(true);
       return;
     }
@@ -5813,11 +5984,14 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     && (multiSelectOpen || !!selectedTask);
 
   function changeSection(section: AppSection) {
-    writeRoute({
-      workspaceId: props.workspaceId,
-      kind: section === "tasks" ? "view" : section,
-      ...(section === "tasks" ? { view: DEFAULT_SMART_VIEW } : {}),
-    } as AppRoute);
+    if (section === "search") {
+      setSearchDialogOpen(true);
+      return;
+    }
+    const route: AppRoute = section === "tasks"
+      ? { workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }
+      : { workspaceId: props.workspaceId, kind: section };
+    writeRoute(route);
     setAppSection(section);
     if (section === "tasks") {
       setSmartView(DEFAULT_SMART_VIEW);
@@ -5827,6 +6001,33 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setMobileSidebar(false);
     setMobileAppSidebar(false);
     setMindMapCreateLabel(null);
+  }
+
+  function openSearch() {
+    setSearchDialogOpen(true);
+  }
+
+  function selectSearchResult(taskId: string) {
+    const task = props.bundle.tasks.find((item) => item.id === taskId);
+    if (!task) return;
+    const returnRoute: AppRoute = {
+      workspaceId: props.workspaceId,
+      kind: "view",
+      view: "all",
+      mode: savedViewMode("all", null),
+    };
+    setAppSection("tasks");
+    setSmartView("all");
+    setViewMode(returnRoute.mode ?? "list");
+    setSelectedLabelId(null);
+    syncTaskSelection(taskId);
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: "task",
+      taskId,
+      itemKind: task.kind === "note" ? "note" : "task",
+    }, false, { taskReturnRoute: returnRoute });
+    setSearchDialogOpen(false);
   }
 
   useEffect(() => {
@@ -5925,7 +6126,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }, [focusDeepLink, props.desktopDeepLinks, props.bundle, props.onEnsureTask, props.onNotice, props.onConsumeDesktopDeepLink, props.onWorkspaceChange, props.workspaceId, props.workspaces]);
 
   function openMobileNavigation() {
-    if (window.matchMedia("(max-width: 640px)").matches) {
+    if (
+      window.matchMedia("(max-width: 640px)").matches
+      || (embeddedNavigationMode && window.matchMedia("(max-width: 900px)").matches)
+    ) {
       setMobileAppSidebar(true);
       return;
     }
@@ -5935,6 +6139,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   function openSettings(tab: SettingsTab = "account") {
     setSettingsInitialTab(tab);
     setSettingsDialogOpen(true);
+  }
+
+  function updateFeatureModulePreferences(next: FeatureModulePreferences) {
+    saveFeatureModulePreferences(next);
+    setFeatureModulePreferences(next);
   }
 
   useEffect(() => {
@@ -6178,6 +6387,39 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     : appSection === "focus"
     ? "focus" as const
     : "tasks" as const;
+  const currentAvatarUrl = props.bundle.members.find(
+    (member) => member.user_id === props.currentUserId,
+  )?.profile?.avatar_url ?? null;
+  const embeddedNavigation = embeddedNavigationMode ? (
+    <EmbeddedNavigation
+      activeSection={appSection}
+      featureModulePreferences={featureModulePreferences}
+      online={props.online}
+      userName={props.currentUserName}
+      avatarUrl={currentAvatarUrl}
+      workspaces={props.workspaces}
+      workspaceId={props.workspaceId}
+      connectors={props.bundle.connectors}
+      notifications={props.notifications}
+      notificationsLoading={props.notificationsLoading}
+      searchOpen={searchDialogOpen}
+      onWorkspaceChange={changeWorkspace}
+      onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
+      onSectionChange={changeSection}
+      onSettings={() => openSettings()}
+      onMarkNotificationRead={props.onMarkNotificationRead}
+      onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
+      onOpenNotificationTask={(taskId) => {
+        setAppSection("tasks");
+        setSmartView("all");
+        setSelectedLabelId(null);
+        selectTask(taskId);
+      }}
+      onDownloadClient={() => setDownloadClientDialogOpen(true)}
+      onNotice={props.onNotice}
+      onSignOut={props.onSignOut}
+    />
+  ) : null;
 
   return (
     <ShortcutProvider initialScope={shortcutScope}>
@@ -6189,7 +6431,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       selectedTask={selectedTask}
       selectedTasks={selectedTasks}
       online={props.online}
-      onOpenSearch={() => setSearchDialogOpen(true)}
+      onOpenSearch={openSearch}
       onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
       onOpenSettings={() => openSettings("account")}
       onOpenShortcutsSettings={() => openSettings("shortcuts")}
@@ -6211,6 +6453,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         appSection === "calendar" && "calendar-section",
         appSection === "mindmap" && "mind-map-section",
         appSection === "focus" && "focus-section",
+        embeddedNavigationMode && "embedded-navigation-mode",
         calendarSection && calendarSidebarCollapsed && "calendar-sidebar-collapsed",
         appSection === "tasks" && (multiSelectOpen || selectedTask) && viewMode !== "timeline" && "detail-open",
       )}
@@ -6219,14 +6462,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         "--detail-width": `${detailWidth}px`,
       } as React.CSSProperties}
     >
-      <NavigationRail
+      {!embeddedNavigationMode && <NavigationRail
         activeSection={appSection}
+        featureModulePreferences={featureModulePreferences}
         online={props.online}
         userName={props.currentUserName}
-        avatarUrl={
-          props.bundle.members.find((member) => member.user_id === props.currentUserId)
-            ?.profile?.avatar_url ?? null
-        }
+        avatarUrl={currentAvatarUrl}
         workspaces={props.workspaces}
         workspaceId={props.workspaceId}
         connectors={props.bundle.connectors}
@@ -6234,7 +6475,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         notificationsLoading={props.notificationsLoading}
         onWorkspaceChange={changeWorkspace}
         onCreateWorkspace={() => setCreateWorkspaceDialogOpen(true)}
-        onSearch={() => setSearchDialogOpen(true)}
+        onSearch={openSearch}
         onSectionChange={changeSection}
         onSettings={() => openSettings()}
         onMarkNotificationRead={props.onMarkNotificationRead}
@@ -6248,17 +6489,15 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onDownloadClient={() => setDownloadClientDialogOpen(true)}
         onNotice={props.onNotice}
         onSignOut={props.onSignOut}
-      />
+      />}
       <MobileAppSidebar
         open={mobileAppSidebar}
         activeSection={appSection}
+        featureModulePreferences={featureModulePreferences}
         online={props.online}
         userName={props.currentUserName}
         currentUserId={props.currentUserId}
-        avatarUrl={
-          props.bundle.members.find((member) => member.user_id === props.currentUserId)
-            ?.profile?.avatar_url ?? null
-        }
+        avatarUrl={currentAvatarUrl}
         workspaces={props.workspaces}
         workspaceId={props.workspaceId}
         bundle={props.bundle}
@@ -6266,6 +6505,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         selectedLabelId={selectedLabelId}
         visibleCalendarIds={visibleCalendarIds}
         visibleAssigneeIds={visibleAssigneeIds}
+        activeCalendarSmartViewIds={activeCalendarSmartViewIds}
         notifications={props.notifications}
         notificationsLoading={props.notificationsLoading}
         onOpen={() => setMobileAppSidebar(true)}
@@ -6309,9 +6549,15 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             props.bundle.userGroups.map((group) => group.id),
             props.bundle.userGroupMembers,
           ))}
+        onToggleCalendarSmartView={(viewId) => setActiveCalendarSmartViewIds((current) => {
+          const next = new Set(current);
+          if (next.has(viewId)) next.delete(viewId);
+          else next.add(viewId);
+          return next;
+        })}
         onSearch={() => {
           setMobileAppSidebar(false);
-          setSearchDialogOpen(true);
+          openSearch();
         }}
         onSettings={() => {
           setMobileAppSidebar(false);
@@ -6337,6 +6583,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
         onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
       />
+      {embeddedNavigation}
       {appSection === "tasks" ? <Sidebar
         openMobile={mobileSidebar}
         bundle={props.bundle}
@@ -6371,6 +6618,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         bundle={props.bundle}
         visibleCalendarIds={visibleCalendarIds}
         visibleAssigneeIds={visibleAssigneeIds}
+        activeSmartViewIds={activeCalendarSmartViewIds}
+        currentUserId={props.currentUserId}
+        now={now}
         onCloseMobile={() => setMobileSidebar(false)}
         onToggleCalendar={(id) => setVisibleCalendarIds((current) => {
           const next = new Set(current);
@@ -6400,6 +6650,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             props.bundle.userGroups.map((group) => group.id),
             props.bundle.userGroupMembers,
           ))}
+        onToggleSmartView={(viewId) => setActiveCalendarSmartViewIds((current) => {
+          const next = new Set(current);
+          if (next.has(viewId)) next.delete(viewId);
+          else next.add(viewId);
+          return next;
+        })}
         visibleDate={calendarVisibleDate}
         dateTimePreferences={props.dateTimePreferences}
         onSelectDate={(date) => setCalendarNavigationDate(new Date(date))}
@@ -6428,7 +6684,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           dateTimePreferences={props.dateTimePreferences}
           aiWorkSettings={props.aiWorkSettings}
           onMenu={openMobileNavigation}
-          onSearch={() => setSearchDialogOpen(true)}
+          onSearch={openSearch}
           onSelectTask={selectTask}
           onSelectChildTask={selectChildTask}
           onSelectTasks={selectTaskGroup}
@@ -6473,6 +6729,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           online={props.online}
           visibleCalendarIds={visibleCalendarIds}
           visibleAssigneeIds={visibleAssigneeIds}
+          activeSmartViewIds={activeCalendarSmartViewIds}
+          now={now}
           dateTimePreferences={props.dateTimePreferences}
           onSelectTask={selectTask}
           onCreateTask={async (draft) => {
@@ -6490,6 +6748,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               ? String(created.id)
               : null;
             if (!createdId) throw new Error("创建任务失败，请重试");
+            if (isYunxiaoQuickCreateInput(draft.title)) {
+              selectTask(createdId);
+              return;
+            }
             try {
               await props.onSaveTaskSchedule(
                 createdId,
@@ -6713,13 +6975,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         open={searchDialogOpen}
         onOpenChange={setSearchDialogOpen}
         bundle={props.bundle}
-        onSelectTask={(taskId) => {
-          setAppSection("tasks");
-          setSmartView("all");
-          setSelectedLabelId(null);
-          selectTask(taskId);
-          setSearchDialogOpen(false);
-        }}
+        onSelectTask={selectSearchResult}
       />
       <WorkspaceSwitcherDialog
         open={workspaceSwitcherOpen}
@@ -6767,9 +7023,11 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         dateTimePreferences={props.dateTimePreferences}
         notificationPreferences={props.notificationPreferences}
         aiFeatureSettings={props.aiFeatureSettings}
+        featureModulePreferences={featureModulePreferences}
         onUpdateDateTimePreferences={props.onUpdateDateTimePreferences}
         onUpdateNotificationPreference={props.onUpdateNotificationPreference}
         onSaveAiFeatureSettings={props.onSaveAiFeatureSettings}
+        onUpdateFeatureModulePreferences={updateFeatureModulePreferences}
         onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
         onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
         onReorderSystemSmartViews={props.onReorderSystemSmartViews}
@@ -6830,6 +7088,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 
 function NavigationRail({
   activeSection,
+  featureModulePreferences,
   online,
   userName,
   avatarUrl,
@@ -6851,6 +7110,7 @@ function NavigationRail({
   onSignOut,
 }: {
   activeSection: AppSection;
+  featureModulePreferences: FeatureModulePreferences;
   online: boolean;
   userName: string;
   avatarUrl: string | null;
@@ -6995,41 +7255,22 @@ function NavigationRail({
           </div>
         )}
       </div>
-      <button
-        className={clsx("rail-button", activeSection === "tasks" && "active")}
-        aria-label="任务"
-        aria-pressed={activeSection === "tasks"}
-        onClick={() => onSectionChange("tasks")}
-      >
-        <CheckCircle2 />
-      </button>
-      <button
-        className={clsx("rail-button", activeSection === "calendar" && "active")}
-        aria-label="日历"
-        aria-pressed={activeSection === "calendar"}
-        onClick={() => onSectionChange("calendar")}
-      >
-        <CalendarDays />
-      </button>
-      <button
-        className={clsx("rail-button", activeSection === "focus" && "active")}
-        aria-label="番茄专注"
-        aria-pressed={activeSection === "focus"}
-        onClick={() => onSectionChange("focus")}
-      >
-        <Target />
-      </button>
-      <button
-        className={clsx("rail-button", activeSection === "mindmap" && "active")}
-        aria-label="思维导图"
-        aria-pressed={activeSection === "mindmap"}
-        onClick={() => onSectionChange("mindmap")}
-      >
-        <Workflow />
-      </button>
-      <button className="rail-button" aria-label="搜索" onClick={onSearch}>
-        <Search />
-      </button>
+      {visiblePrimaryNavigationItems(featureModulePreferences).map((item) => {
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.section}
+            className={clsx("rail-button", activeSection === item.section && "active")}
+            aria-label={item.railLabel ?? item.label}
+            aria-pressed={activeSection === item.section}
+            onClick={() => item.section === "search"
+              ? onSearch()
+              : onSectionChange(item.section)}
+          >
+            <Icon />
+          </button>
+        );
+      })}
       <div className="rail-spacer" />
       <ConnectorSyncButton
         workspaceId={workspaceId}
@@ -7062,6 +7303,7 @@ function NavigationRail({
 function MobileAppSidebar({
   open,
   activeSection,
+  featureModulePreferences,
   online,
   userName,
   currentUserId,
@@ -7073,6 +7315,7 @@ function MobileAppSidebar({
   selectedLabelId,
   visibleCalendarIds,
   visibleAssigneeIds,
+  activeCalendarSmartViewIds,
   notifications,
   notificationsLoading,
   onOpen,
@@ -7088,6 +7331,7 @@ function MobileAppSidebar({
   onShowAllAssignees,
   onToggleUserGroup,
   onShowAllUserGroups,
+  onToggleCalendarSmartView,
   onSearch,
   onSettings,
   onMarkNotificationRead,
@@ -7103,6 +7347,7 @@ function MobileAppSidebar({
 }: {
   open: boolean;
   activeSection: AppSection;
+  featureModulePreferences: FeatureModulePreferences;
   online: boolean;
   userName: string;
   currentUserId: string;
@@ -7114,6 +7359,7 @@ function MobileAppSidebar({
   selectedLabelId: string | null;
   visibleCalendarIds: Set<string>;
   visibleAssigneeIds: Set<string>;
+  activeCalendarSmartViewIds: Set<string>;
   notifications: AppNotification[];
   notificationsLoading: boolean;
   onOpen: () => void;
@@ -7129,6 +7375,7 @@ function MobileAppSidebar({
   onShowAllAssignees: () => void;
   onToggleUserGroup: (groupId: string) => void;
   onShowAllUserGroups: () => void;
+  onToggleCalendarSmartView: (viewId: string) => void;
   onSearch: () => void;
   onSettings: () => void;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
@@ -7177,6 +7424,12 @@ function MobileAppSidebar({
     () => [...bundle.members].sort((left, right) =>
       memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN")),
     [bundle.members],
+  );
+  const visibleCalendarCustomViews = useMemo(
+    () => [...bundle.customTaskViews]
+      .filter((view) => view.visible)
+      .sort((left, right) => left.position - right.position),
+    [bundle.customTaskViews],
   );
   const dragging = dragOffset !== null;
   const scrimProgress = dragging
@@ -7441,38 +7694,22 @@ function MobileAppSidebar({
         )}
 
         <nav className="mobile-section-nav" aria-label="应用视图">
-          <button
-            type="button"
-            className={clsx(activeSection === "tasks" && "active")}
-            aria-pressed={activeSection === "tasks"}
-            onClick={() => onSectionChange("tasks")}
-          >
-            <CheckCircle2 /><span>待办</span>
-          </button>
-          <button
-            type="button"
-            className={clsx(activeSection === "calendar" && "active")}
-            aria-pressed={activeSection === "calendar"}
-            onClick={() => onSectionChange("calendar")}
-          >
-            <CalendarDays /><span>日历</span>
-          </button>
-          <button
-            type="button"
-            className={clsx(activeSection === "focus" && "active")}
-            aria-pressed={activeSection === "focus"}
-            onClick={() => onSectionChange("focus")}
-          >
-            <Target /><span>番茄专注</span>
-          </button>
-          <button
-            type="button"
-            className={clsx(activeSection === "mindmap" && "active")}
-            aria-pressed={activeSection === "mindmap"}
-            onClick={() => onSectionChange("mindmap")}
-          >
-            <Workflow /><span>思维导图</span>
-          </button>
+          {visiblePrimaryNavigationItems(featureModulePreferences).map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.section}
+                type="button"
+                className={clsx(activeSection === item.section && "active")}
+                aria-pressed={activeSection === item.section}
+                onClick={() => item.section === "search"
+                  ? onSearch()
+                  : onSectionChange(item.section)}
+              >
+                <Icon /><span>{item.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
         <div className="mobile-sidebar-context">
@@ -7519,6 +7756,43 @@ function MobileAppSidebar({
 
           {activeSection === "calendar" && (
             <>
+              <div className="mobile-sidebar-section-title">智能清单</div>
+              <div className="mobile-calendar-list">
+                <button
+                  type="button"
+                  className={clsx(activeCalendarSmartViewIds.has("assigned") && "active")}
+                  onClick={() => onToggleCalendarSmartView("assigned")}
+                  aria-pressed={activeCalendarSmartViewIds.has("assigned")}
+                >
+                  <UserRound /><span>指派给我</span>
+                  {activeCalendarSmartViewIds.has("assigned") && <Check />}
+                </button>
+                <button
+                  type="button"
+                  className={clsx(activeCalendarSmartViewIds.has("watching") && "active")}
+                  onClick={() => onToggleCalendarSmartView("watching")}
+                  aria-pressed={activeCalendarSmartViewIds.has("watching")}
+                >
+                  <Eye /><span>我关注的</span>
+                  {activeCalendarSmartViewIds.has("watching") && <Check />}
+                </button>
+                {visibleCalendarCustomViews.map((view) => {
+                  const viewId = customTaskViewKey(view.id);
+                  const active = activeCalendarSmartViewIds.has(viewId);
+                  return (
+                    <button
+                      type="button"
+                      key={view.id}
+                      className={clsx(active && "active")}
+                      onClick={() => onToggleCalendarSmartView(viewId)}
+                      aria-pressed={active}
+                    >
+                      <ListFilter /><span>{view.name}</span>
+                      {active && <Check />}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="mobile-sidebar-section-title">用户组</div>
               <div className="mobile-calendar-list">
                 <button
@@ -7641,6 +7915,104 @@ function MobileAppSidebar({
   );
 }
 
+function TaskSearchSurface({
+  bundle,
+  onSelectTask,
+  closeButton,
+}: {
+  bundle: WorkspaceBundle;
+  onSelectTask: (taskId: string) => void;
+  closeButton?: ReactNode;
+}) {
+  const [query, setQuery] = useState("");
+  const results = useMemo(
+    () => searchTasks(bundle.tasks, query),
+    [bundle.tasks, query],
+  );
+  const hasQuery = Boolean(query.trim());
+
+  return (
+    <div className="task-search-surface">
+      <div className="task-search-header">
+        <Search aria-hidden="true" />
+        <input
+          aria-label="搜索任务"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="搜索"
+          autoFocus
+        />
+        {closeButton}
+      </div>
+      <div className="task-search-body">
+        {!hasQuery ? (
+          <div className="task-search-empty">
+            <SearchBinoculars />
+            <p>输入关键词即可搜索</p>
+          </div>
+        ) : results.length === 0 ? (
+          <div className="task-search-empty task-search-no-results">
+            <Search aria-hidden="true" />
+            <strong>未找到相关任务</strong>
+            <p>换个关键词试试</p>
+          </div>
+        ) : (
+          <section className="task-search-results" aria-label="任务搜索结果">
+            <header>
+              <span>任务</span>
+              <em>{results.length}</em>
+            </header>
+            <div className="task-search-result-list">
+              {results.map((task) => {
+                const labels = bundle.labels.filter((label) =>
+                  task.label_ids.includes(label.id),
+                );
+                return (
+                  <button
+                    key={task.id}
+                    className="task-search-result"
+                    aria-label={`打开${task.kind === "note" ? "笔记" : "任务"}：${task.title}`}
+                    onClick={() => onSelectTask(task.id)}
+                  >
+                    <span
+                      className={clsx(
+                        "task-search-status",
+                        task.kind === "note" ? "note" : task.status,
+                      )}
+                      aria-hidden="true"
+                    >
+                      {task.kind === "note" ? (
+                        <NotebookPen />
+                      ) : task.status === "completed" ? (
+                        <Check />
+                      ) : task.status === "cancelled" ? (
+                        <Archive />
+                      ) : (
+                        <Circle />
+                      )}
+                    </span>
+                    <span className="task-search-result-title">{task.title}</span>
+                    {labels.length > 0 && (
+                      <span className="task-search-result-labels">
+                        {labels.slice(0, 2).map((label) => (
+                          <span key={label.id}>
+                            <i style={{ backgroundColor: label.color }} aria-hidden="true" />
+                            {label.name}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TaskSearchDialog({
   open,
   onOpenChange,
@@ -7652,17 +8024,6 @@ function TaskSearchDialog({
   bundle: WorkspaceBundle;
   onSelectTask: (taskId: string) => void;
 }) {
-  const [query, setQuery] = useState("");
-  const results = useMemo(
-    () => searchTasks(bundle.tasks, query),
-    [bundle.tasks, query],
-  );
-  const hasQuery = Boolean(query.trim());
-
-  useEffect(() => {
-    if (!open) setQuery("");
-  }, [open]);
-
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -7672,87 +8033,15 @@ function TaskSearchDialog({
           <Dialog.Description className="sr-only">
             搜索当前团队空间中的任务标题和描述
           </Dialog.Description>
-          <div className="task-search-header">
-            <Search aria-hidden="true" />
-            <input
-              aria-label="搜索任务"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索"
-              autoFocus
-            />
-            <Dialog.Close className="task-search-close" aria-label="关闭搜索">
-              <X />
-            </Dialog.Close>
-          </div>
-          <div className="task-search-body">
-            {!hasQuery ? (
-              <div className="task-search-empty">
-                <SearchBinoculars />
-                <p>输入关键词即可搜索</p>
-              </div>
-            ) : results.length === 0 ? (
-              <div className="task-search-empty task-search-no-results">
-                <Search aria-hidden="true" />
-                <strong>未找到相关任务</strong>
-                <p>换个关键词试试</p>
-              </div>
-            ) : (
-              <section className="task-search-results" aria-label="任务搜索结果">
-                <header>
-                  <span>任务</span>
-                  <em>{results.length}</em>
-                </header>
-                <div className="task-search-result-list">
-                  {results.map((task) => {
-                    const labels = bundle.labels.filter((label) =>
-                      task.label_ids.includes(label.id),
-                    );
-                    return (
-                      <button
-                        key={task.id}
-                        className="task-search-result"
-                        aria-label={`打开${task.kind === "note" ? "笔记" : "任务"}：${task.title}`}
-                        onClick={() => onSelectTask(task.id)}
-                      >
-                        <span
-                          className={clsx(
-                            "task-search-status",
-                            task.kind === "note" ? "note" : task.status,
-                          )}
-                          aria-hidden="true"
-                        >
-                          {task.kind === "note" ? (
-                            <NotebookPen />
-                          ) : task.status === "completed" ? (
-                            <Check />
-                          ) : task.status === "cancelled" ? (
-                            <Archive />
-                          ) : (
-                            <Circle />
-                          )}
-                        </span>
-                        <span className="task-search-result-title">{task.title}</span>
-                        {labels.length > 0 && (
-                          <span className="task-search-result-labels">
-                            {labels.slice(0, 2).map((label) => (
-                              <span key={label.id}>
-                                <i
-                                  style={{ backgroundColor: label.color }}
-                                  aria-hidden="true"
-                                />
-                                {label.name}
-                              </span>
-                            ))}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
+          <TaskSearchSurface
+            bundle={bundle}
+            onSelectTask={onSelectTask}
+            closeButton={(
+              <Dialog.Close className="task-search-close" aria-label="关闭搜索">
+                <X />
+              </Dialog.Close>
             )}
-          </div>
+          />
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -9772,14 +10061,24 @@ function TaskWorkspace({
     || currentLabelPermissionLevel(bundle, selectedLabel.id) >= 2;
   const canEditTask = (task: Task) =>
     !task.connector_id && canOrganizeTask(bundle, task, currentUserId);
-  const canCompleteTask = (task: Task) => canEditTask(task) || Boolean(
-    task.connector_platform === "yunxiao"
-    && task.status !== "completed"
-    && task.created_by === currentUserId
-    && bundle.connectors.some((connector) =>
-      connector.id === task.connector_id
-      && connector.created_by === currentUserId
-      && connector.enabled),
+  const listOrderTaskIds = (items: Task[]) => persistableListOrderTaskIds(
+    items,
+    (task) => canOrganizeTask(bundle, task, currentUserId),
+  );
+  const listOrderIds = (taskIds: string[], pool: Task[]) => {
+    const byId = new Map(pool.map((task) => [task.id, task]));
+    return persistableListOrderTaskIds(
+      taskIds.flatMap((taskId) => {
+        const task = byId.get(taskId);
+        return task ? [task] : [];
+      }),
+      (task) => canOrganizeTask(bundle, task, currentUserId),
+    );
+  };
+  const canCompleteTask = (task: Task) => canEditTask(task) || canCompleteYunxiaoExternalTask(
+    task,
+    bundle.connectors,
+    currentUserId,
   );
   const isTrashView = !selectedLabelId && (smartView === "trash" || customView?.definition.scope === "trash");
   const title = selectedLabel?.name ?? customView?.name ?? ({
@@ -10208,6 +10507,20 @@ function TaskWorkspace({
       ...(selectedLabelId ? [selectedLabelId] : []),
       ...payload.labelIds,
     ]);
+    if (isYunxiaoQuickCreateInput(taskTitle)) {
+      const created = await onCreateTask({
+        title: taskTitle,
+        labelIds: [...labelIds],
+        kind: "todo",
+        priority: quickPriority,
+        assigneeId: payload.assigneeId,
+      });
+      const importedId = typeof created === "object" && created && "id" in created
+        ? String(created.id)
+        : null;
+      if (importedId) onSelectTask(importedId);
+      return;
+    }
     const kind: TaskKind = "todo";
     let priority = quickPriority;
     let assigneeId: string | null = payload.assigneeId;
@@ -10233,7 +10546,7 @@ function TaskWorkspace({
       ? {
           listKey,
           sectionId: column.target.sectionId,
-          taskIds: column.tasks.map((task) => task.id),
+          taskIds: listOrderTaskIds(column.tasks),
         }
       : undefined;
     const created = await onCreateTask({
@@ -10307,12 +10620,12 @@ function TaskWorkspace({
         onSetTaskListOrder(
           listKey,
           action.sourceSectionId,
-          nextOrders.sourceTaskIds,
+          listOrderIds(nextOrders.sourceTaskIds, [...source.tasks, ...target.tasks, task]),
         ),
         onSetTaskListOrder(
           listKey,
           action.targetSectionId,
-          nextOrders.targetTaskIds,
+          listOrderIds(nextOrders.targetTaskIds, [...source.tasks, ...target.tasks, task]),
         ),
       ]);
       return;
@@ -10411,6 +10724,19 @@ function TaskWorkspace({
     if (!title || !online || busy) return;
     setBusy(true);
     try {
+      if (isYunxiaoQuickCreateInput(title)) {
+        const created = await onCreateTask({
+          title,
+          labelIds: payload.labelIds,
+          kind: "todo",
+          priority: "low",
+        });
+        const createdId = typeof created === "object" && created && "id" in created
+          ? String(created.id)
+          : null;
+        if (createdId) onSelectTask(createdId);
+        return;
+      }
       const assigneeId = payload.assigneeId;
       const created = await onCreateTask({
         title,
@@ -10425,7 +10751,7 @@ function TaskWorkspace({
           ? {
               listKey,
               sectionId: null,
-              taskIds: ungroupedListTasks.map((task) => task.id),
+              taskIds: listOrderTaskIds(ungroupedListTasks),
             }
           : undefined,
       });
@@ -10449,11 +10775,18 @@ function TaskWorkspace({
         );
       }
       if (createdId && manualTaskOrderEnabled) {
-        await onSetTaskListOrder(
-          listKey,
-          null,
-          [createdId, ...ungroupedListTasks.map((task) => task.id)],
-        );
+        try {
+          await onSetTaskListOrder(
+            listKey,
+            null,
+            [
+              createdId,
+              ...listOrderTaskIds(ungroupedListTasks),
+            ],
+          );
+        } catch (error) {
+          onNotice(error instanceof Error ? error.message : "保存排序失败，请重试");
+        }
       }
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "创建任务失败，请重试");
@@ -10513,7 +10846,7 @@ function TaskWorkspace({
         await onSetTaskListOrder(
           listKey,
           target.sectionId ?? null,
-          arrayMove(source.tasks, from, to).map((task) => task.id),
+          listOrderTaskIds(arrayMove(source.tasks, from, to)),
         );
         return;
       }
@@ -10530,9 +10863,13 @@ function TaskWorkspace({
         onSetTaskListOrder(
           listKey,
           source.sectionId ?? null,
-          nextOrders.sourceTaskIds,
+          listOrderIds(nextOrders.sourceTaskIds, [...source.tasks, ...target.tasks]),
         ),
-        onSetTaskListOrder(listKey, target.sectionId ?? null, nextOrders.targetTaskIds),
+        onSetTaskListOrder(
+          listKey,
+          target.sectionId ?? null,
+          listOrderIds(nextOrders.targetTaskIds, [...source.tasks, ...target.tasks]),
+        ),
       ]);
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "移动失败，请重试");
@@ -10676,7 +11013,7 @@ function TaskWorkspace({
             onSetColumnOrder={(column, taskIds) => onSetTaskListOrder(
               listKey,
               column.target.kind === "section" ? column.target.sectionId : null,
-              taskIds,
+              listOrderIds(taskIds, column.tasks),
             )}
             onStartAddSection={(index) => void beginAddSection(index).catch((error) =>
               onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
@@ -11221,7 +11558,9 @@ function TaskGroupQuickAdd({
     if (tokens.token) return;
     const payload = tokens.toSubmitPayload();
     if (!payload.title || !canCreate) return;
-    const hoursParsed = parseEstimateHoursText(payload.title);
+    const hoursParsed = isYunxiaoQuickCreateInput(payload.title)
+      ? null
+      : parseEstimateHoursText(payload.title);
     const nextPayload: KanbanCreatePayload = hoursParsed
       ? {
           ...payload,
@@ -13579,9 +13918,11 @@ function SettingsDialog({
   dateTimePreferences,
   notificationPreferences,
   aiFeatureSettings,
+  featureModulePreferences,
   onUpdateDateTimePreferences,
   onUpdateNotificationPreference,
   onSaveAiFeatureSettings,
+  onUpdateFeatureModulePreferences,
   onToggleSystemViewVisibility,
   onToggleCustomViewVisibility,
   onReorderSystemSmartViews,
@@ -13621,9 +13962,11 @@ function SettingsDialog({
   dateTimePreferences: DateTimePreferences;
   notificationPreferences: NotificationPreferences;
   aiFeatureSettings: AiFeatureSettings;
+  featureModulePreferences: FeatureModulePreferences;
   onUpdateDateTimePreferences: WorkspaceAppProps["onUpdateDateTimePreferences"];
   onUpdateNotificationPreference: WorkspaceAppProps["onUpdateNotificationPreference"];
   onSaveAiFeatureSettings: WorkspaceAppProps["onSaveAiFeatureSettings"];
+  onUpdateFeatureModulePreferences: (preferences: FeatureModulePreferences) => void;
   onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
   onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
   onReorderSystemSmartViews: WorkspaceAppProps["onReorderSystemSmartViews"];
@@ -13664,6 +14007,7 @@ function SettingsDialog({
         { id: "account", label: "账户与安全", icon: UserRound },
         { id: "date", label: "日期与时间", icon: CalendarClock },
         { id: "appearance", label: "外观", icon: Palette },
+        { id: "feature-modules", label: "功能模块", icon: Columns3 },
         { id: "smart-views", label: "智能视图", icon: ListFilter },
         { id: "notifications", label: "通知配置", icon: Bell },
         { id: "ai-features", label: "AI功能", icon: Sparkles },
@@ -13799,6 +14143,8 @@ function SettingsDialog({
               <QuickCreateSettingsPanel
                 workspace={workspace}
                 connectors={bundle.connectors}
+                labels={bundle.labels}
+                labelPermissionLevels={bundle.labelPermissionLevels}
                 online={online}
                 onNavigateToSso={() => setActiveTab("sso")}
                 onNotice={onNotice}
@@ -13877,28 +14223,13 @@ function SettingsDialog({
                       <span>手机号</span>
                       <strong>{phone ? `+86 ${maskPhone(phone)}` : "未绑定"}</strong>
                     </div>
-                    <div className="account-setting-row">
-                      <span>双重验证</span>
-                      <em className="account-coming-soon">稍后提供</em>
-                    </div>
                   </div>
 
                   <div className="account-settings-group">
-                    <div className="account-setting-row">
-                      <span>微信</span>
-                      <em className="account-coming-soon">稍后提供</em>
-                    </div>
+                    <CliDevicesSettings userId={userId} online={online} />
                   </div>
 
                   <div className="account-settings-group">
-                    <div className="account-setting-row">
-                      <span>API 口令</span>
-                      <em className="account-coming-soon">稍后提供</em>
-                    </div>
-                    <div className="account-setting-row">
-                      <span>备份与还原</span>
-                      <em className="account-coming-soon">稍后提供</em>
-                    </div>
                     <div className="account-setting-row">
                       <span>删除账户</span>
                       <button
@@ -13927,6 +14258,11 @@ function SettingsDialog({
               />
             ) : activeTab === "appearance" ? (
               <AppearanceSettingsPanel />
+            ) : activeTab === "feature-modules" ? (
+              <FeatureModulesSettingsPanel
+                preferences={featureModulePreferences}
+                onChange={onUpdateFeatureModulePreferences}
+              />
             ) : activeTab === "smart-views" ? (
               <SmartViewsSettingsPanel
                 customViews={bundle.customTaskViews}

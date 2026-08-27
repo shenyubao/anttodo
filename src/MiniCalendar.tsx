@@ -19,7 +19,10 @@ import {
   weekdayLabels,
 } from "./lib/dateTimePreferences";
 import { occupiedCalendarDateKeys } from "./lib/calendarScheduling";
-import { taskIsVisibleOnCalendar } from "./lib/calendarVisibility";
+import {
+  taskIsVisibleOnCalendar,
+  taskMatchesCalendarSmartViews,
+} from "./lib/calendarVisibility";
 import type { DateTimePreferences, WorkspaceBundle } from "./types";
 
 function HolidayBadge({
@@ -50,6 +53,9 @@ export function MiniCalendar({
   bundle,
   visibleCalendarIds,
   visibleAssigneeIds,
+  activeSmartViewIds,
+  currentUserId,
+  now = new Date(),
   visibleDate,
   dateTimePreferences,
   onSelectDate,
@@ -59,6 +65,9 @@ export function MiniCalendar({
   bundle: WorkspaceBundle;
   visibleCalendarIds: Set<string>;
   visibleAssigneeIds: Set<string>;
+  activeSmartViewIds?: Set<string>;
+  currentUserId?: string;
+  now?: Date;
   visibleDate: Date;
   dateTimePreferences: DateTimePreferences;
   onSelectDate: (date: Date) => void;
@@ -84,10 +93,31 @@ export function MiniCalendar({
     for (const task of bundle.tasks) {
       if (!task.due_at || task.deleted_at) continue;
       if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds)) continue;
+      if (
+        activeSmartViewIds
+        && currentUserId
+        && !taskMatchesCalendarSmartViews(
+          task,
+          activeSmartViewIds,
+          bundle.customTaskViews,
+          currentUserId,
+          now,
+          dateTimePreferences.weekStartsOn,
+        )
+      ) continue;
       for (const key of occupiedCalendarDateKeys(task)) dates.add(key);
     }
     return dates;
-  }, [bundle.tasks, visibleAssigneeIds, visibleCalendarIds]);
+  }, [
+    activeSmartViewIds,
+    bundle.customTaskViews,
+    bundle.tasks,
+    currentUserId,
+    dateTimePreferences.weekStartsOn,
+    now,
+    visibleAssigneeIds,
+    visibleCalendarIds,
+  ]);
 
   return (
     <section className="mini-calendar" aria-label="日期导航">

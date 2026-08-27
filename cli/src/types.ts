@@ -45,6 +45,7 @@ export type PublicConfig = {
   publishableKey: string;
   appUrl: string;
   deviceAuthorizationEndpoint: string;
+  cliAuthProtocol: 2;
 };
 
 export type ServiceConfig = PublicConfig & {
@@ -59,7 +60,6 @@ export type ServiceConfig = PublicConfig & {
 export type PendingAuthorization = {
   requestId: string;
   deviceCode: string;
-  privateKey: JsonWebKey;
   verificationUrl: string;
   expiresAt: string;
   interval: number;
@@ -67,15 +67,12 @@ export type PendingAuthorization = {
   config: ServiceConfig;
 };
 
-export type DeviceCiphertext = {
-  ephemeralPublicKey: JsonWebKey;
-  salt: string;
-  iv: string;
-  ciphertext: string;
-};
-
-export type CliSessionPayload = {
-  accessToken: string;
-  refreshToken: string;
-  userId: string;
+export type CliCredential = {
+  schemaVersion: 2;
+  deviceId: string;
+  secret: string;
+  user: { id: string; email: string | null; phone: string | null };
+  credentialExpiresAt: string | null;
+  accessToken?: string;
+  accessTokenExpiresAt?: string;
 };

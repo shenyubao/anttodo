@@ -6,7 +6,7 @@ import {
   plainNotificationText,
 } from "../../supabase/functions/_shared/dingtalk-notification-cards";
 
-const openUrl = "https://app.anttodo.com/?workspace=workspace-1&task=task-1";
+const openUrl = "https://app.anttodo.com/workspaces/workspace-1/tasks/task-1";
 
 describe("DingTalk notification cards", () => {
   it("formats a point-in-time deadline in the task time zone", () => {

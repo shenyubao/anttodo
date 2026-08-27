@@ -310,6 +310,11 @@ export type YunxiaoConnectorConfig = {
   completedStatusName: string;
 };
 
+export type YunxiaoQuickCreateConfig = {
+  kind: "quick_create";
+  organizationId: string;
+};
+
 export type CommentMention = {
   user_id: string;
   display_name_snapshot: string;
@@ -473,7 +478,7 @@ export type Connector = {
   name: string;
   enabled: boolean;
   schedule_minutes: number;
-  public_config: Record<string, unknown> | YunxiaoConnectorConfig;
+  public_config: Record<string, unknown> | YunxiaoConnectorConfig | YunxiaoQuickCreateConfig;
   target_label_id: string | null;
   credential_hint: string | null;
   last_synced_at: string | null;

@@ -46,6 +46,15 @@ export function isOptimisticTaskId(taskId: string) {
   return taskId.startsWith(OPTIMISTIC_TASK_ID_PREFIX);
 }
 
+export function persistableListOrderTaskIds<T extends { id: string }>(
+  tasks: T[],
+  canPersist: (task: T) => boolean = () => true,
+) {
+  return tasks
+    .filter((task) => !isOptimisticTaskId(task.id) && canPersist(task))
+    .map((task) => task.id);
+}
+
 /** Fill fields added after older persisted query caches were written. */
 export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBundle {
   const flattened: Task[] = [];

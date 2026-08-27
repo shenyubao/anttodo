@@ -17,9 +17,10 @@ override the saved workspace for one command.
 No environment variables are required for normal use. The CLI uses
 `https://app.anttodo.com` by default and discovers its public configuration
 automatically. Environment overrides are only intended for local development or
-self-hosted instances. Only the publishable key and the user's
-browser-authorized Supabase session are used; this package never accepts or
-stores a service-role key.
+self-hosted instances. Only the publishable key, a per-device credential, and a
+cached access JWT are stored by this package; OAuth refresh tokens stay in the
+service's Supabase Vault. The CLI never accepts or stores a service-role key.
+Access JWTs are limited to 15 minutes and continue to use the service's RLS.
 
 Custom services can be selected from the CLI. The address must serve the same
 instance manifest used by the desktop client at
@@ -38,7 +39,7 @@ anttodo service reset
 anttodo --service-url https://todo.example.com task list
 ```
 
-Service addresses, sessions, workspace settings, pending device authorizations,
+Service addresses, device credentials, workspace settings, pending device authorizations,
 and read caches are isolated from one another. Custom services must use HTTPS;
 localhost HTTP is available only when `ANTTODO_ALLOW_LOCAL_HTTP=1` is set for
 local development.

@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(41);
+select plan(47);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -96,7 +96,7 @@ select is(
 select is(
   has_function_privilege(
     'authenticated',
-    'public.upsert_yunxiao_external_task(uuid,uuid,text,text,text,public.task_status,timestamptz,text,timestamptz,timestamptz,boolean,text)',
+    'public.upsert_yunxiao_external_task(uuid,uuid,text,text,text,public.task_status,timestamptz,text,timestamptz,timestamptz,boolean,text,uuid)',
     'execute'
   ),false,'authenticated clients cannot execute the external upsert transaction'
 );
@@ -249,6 +249,62 @@ select is(
 select is(
   anttodo_private.can_organize_task('59000000-0000-0000-0000-000000000001'),
   true,'the connector owner can organize an external task'
+);
+select lives_ok(
+  $$insert into public.tasks(id,workspace_id,title,created_by)
+    values(
+      '59000000-0000-0000-0000-000000000011',
+      '29000000-0000-0000-0000-000000000001','本地新建',
+      '19000000-0000-0000-0000-000000000001'
+    )$$,
+  'the owner can create a local task beside an external task'
+);
+select lives_ok(
+  $$insert into public.task_labels(task_id,label_id)
+    values(
+      '59000000-0000-0000-0000-000000000011',
+      '39000000-0000-0000-0000-000000000001'
+    )$$,
+  'the local task can share the connector target label'
+);
+select lives_ok(
+  $$select public.set_task_list_order(
+      '29000000-0000-0000-0000-000000000001',
+      'label:39000000-0000-0000-0000-000000000001',
+      null,
+      array[
+        '59000000-0000-0000-0000-000000000011'::uuid,
+        '59000000-0000-0000-0000-000000000001'::uuid,
+        '00000000-0000-0000-0000-000000000000'::uuid
+      ]
+    )$$,
+  'creating a local task can reorder a list that already has an external task'
+);
+select is(
+  (
+    select position from public.task_list_placements
+    where task_id = '59000000-0000-0000-0000-000000000011'
+      and list_key = 'label:39000000-0000-0000-0000-000000000001'
+  ),
+  0,
+  'the new local task is placed first'
+);
+select is(
+  (
+    select position from public.task_list_placements
+    where task_id = '59000000-0000-0000-0000-000000000001'
+      and list_key = 'label:39000000-0000-0000-0000-000000000001'
+  ),
+  1,
+  'the external task still receives a list placement'
+);
+select is(
+  (
+    select count(*)::integer from public.task_list_placements
+    where task_id = '00000000-0000-0000-0000-000000000000'
+  ),
+  0,
+  'unknown task ids in the order payload are ignored'
 );
 select lives_ok(
   $$insert into public.task_labels(task_id,label_id)

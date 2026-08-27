@@ -19,6 +19,7 @@ const publicConfigSchema = z.object({
   publishableKey: z.string().min(10),
   appUrl: z.url(),
   deviceAuthorizationEndpoint: z.url(),
+  cliAuthProtocol: z.literal(2),
 });
 
 export const DEFAULT_APP_URL = "https://app.anttodo.com";
@@ -70,6 +71,7 @@ export function parseServiceManifest(value: unknown, expectedOrigin: string): Om
   if (!value || typeof value !== "object") throw new Error("Service configuration must be a JSON object");
   const data = value as Record<string, unknown>;
   if (data.schemaVersion !== 1) throw new Error("Unsupported service configuration version");
+  if (data.cliAuthProtocol !== 2) throw new Error("Service does not support CLI authentication protocol v2");
   if (typeof data.instanceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(data.instanceId)) {
     throw new Error("Service instance ID is invalid");
   }
@@ -95,6 +97,7 @@ export function parseServiceManifest(value: unknown, expectedOrigin: string): Om
     supabaseUrl: supabaseUrl.origin,
     publishableKey: data.publishableKey.trim(),
     deviceAuthorizationEndpoint: deviceAuthorizationEndpoint.toString(),
+    cliAuthProtocol: 2,
   };
 }
 
@@ -129,6 +132,7 @@ function environmentConfig(): ServiceConfig | null {
       appUrl,
       deviceAuthorizationEndpoint: process.env.ANTTODO_DEVICE_AUTH_URL
         ?? `${supabaseUrl!.replace(/\/$/, "")}/functions/v1/cli-device-auth`,
+      cliAuthProtocol: 2,
     });
     const normalizedAppUrl = parsed.appUrl.replace(/\/$/, "");
     return withServiceMetadata({
@@ -139,6 +143,7 @@ function environmentConfig(): ServiceConfig | null {
       supabaseUrl: parsed.supabaseUrl.replace(/\/$/, ""),
       publishableKey: parsed.publishableKey,
       deviceAuthorizationEndpoint: parsed.deviceAuthorizationEndpoint,
+      cliAuthProtocol: 2,
     }, "environment");
   } catch (error) {
     throw new CliError({
@@ -251,6 +256,7 @@ export async function loadPublicConfig(options: { serviceUrl?: string } = {}): P
         supabaseUrl: cached.config.supabaseUrl,
         publishableKey: cached.config.publishableKey,
         deviceAuthorizationEndpoint: cached.config.deviceAuthorizationEndpoint,
+        cliAuthProtocol: 2,
       }, "cache");
     }
     throw new CliError({

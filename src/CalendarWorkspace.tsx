@@ -27,7 +27,9 @@ import {
   FolderClosed,
   FolderOpen,
   GripVertical,
+  Eye,
   Inbox,
+  ListFilter,
   LockKeyhole,
   PanelLeft,
   Plus,
@@ -63,7 +65,9 @@ import {
   calendarAssigneeFilterIds,
   isUserGroupFullyVisible,
   taskIsVisibleOnCalendar,
+  taskMatchesCalendarSmartViews,
 } from "./lib/calendarVisibility";
+import { customTaskViewKey } from "./lib/taskList";
 import {
   compareSiblingLabels,
   hasExplicitLabelColor,
@@ -109,6 +113,7 @@ const VIEW_STORAGE_KEY = "anttodo:calendar-view";
 const MULTI_DAY_STORAGE_KEY = "anttodo:calendar-multi-day-count";
 const MULTI_WEEK_STORAGE_KEY = "anttodo:calendar-multi-week-count";
 const SCHEDULE_PANEL_OPEN_KEY = "anttodo:calendar-schedule-panel-open";
+const SMART_VIEWS_COLLAPSED_KEY = "anttodo:calendar-smart-views-collapsed";
 const USER_GROUPS_COLLAPSED_KEY = "anttodo:calendar-user-groups-collapsed";
 const USERS_COLLAPSED_KEY = "anttodo:calendar-users-collapsed";
 const LABELS_COLLAPSED_KEY = "anttodo:calendar-labels-collapsed";
@@ -295,6 +300,9 @@ export function CalendarSidebar({
   bundle,
   visibleCalendarIds,
   visibleAssigneeIds,
+  activeSmartViewIds,
+  currentUserId,
+  now,
   onCloseMobile,
   onToggleCalendar,
   onShowAll,
@@ -302,6 +310,7 @@ export function CalendarSidebar({
   onShowAllAssignees,
   onToggleUserGroup,
   onShowAllUserGroups,
+  onToggleSmartView,
   visibleDate,
   dateTimePreferences,
   onSelectDate,
@@ -310,6 +319,9 @@ export function CalendarSidebar({
   bundle: WorkspaceBundle;
   visibleCalendarIds: Set<string>;
   visibleAssigneeIds: Set<string>;
+  activeSmartViewIds: Set<string>;
+  currentUserId: string;
+  now: Date;
   onCloseMobile: () => void;
   onToggleCalendar: (id: string) => void;
   onShowAll: () => void;
@@ -317,11 +329,15 @@ export function CalendarSidebar({
   onShowAllAssignees: () => void;
   onToggleUserGroup: (groupId: string) => void;
   onShowAllUserGroups: () => void;
+  onToggleSmartView: (viewId: string) => void;
   visibleDate: Date;
   dateTimePreferences: DateTimePreferences;
   onSelectDate: (date: Date) => void;
 }) {
   const [collapsedLabels, setCollapsedLabels] = useState<Record<string, boolean>>({});
+  const [smartViewsCollapsed, setSmartViewsCollapsed] = useState(
+    () => window.localStorage.getItem(SMART_VIEWS_COLLAPSED_KEY) === "1",
+  );
   const [userGroupsCollapsed, setUserGroupsCollapsed] = useState(
     () => readStoredCollapsed(USER_GROUPS_COLLAPSED_KEY),
   );
@@ -352,6 +368,20 @@ export function CalendarSidebar({
       memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN")),
     [bundle.members],
   );
+  const visibleCustomViews = useMemo(
+    () => [...bundle.customTaskViews]
+      .filter((view) => view.visible)
+      .sort((left, right) => left.position - right.position),
+    [bundle.customTaskViews],
+  );
+
+  function toggleSmartViewsCollapsed() {
+    setSmartViewsCollapsed((collapsed) => {
+      const next = !collapsed;
+      window.localStorage.setItem(SMART_VIEWS_COLLAPSED_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
 
   function toggleUserGroupsCollapsed() {
     setUserGroupsCollapsed((collapsed) => {
@@ -387,11 +417,69 @@ export function CalendarSidebar({
           bundle={bundle}
           visibleCalendarIds={visibleCalendarIds}
           visibleAssigneeIds={visibleAssigneeIds}
+          activeSmartViewIds={activeSmartViewIds}
+          currentUserId={currentUserId}
+          now={now}
           visibleDate={visibleDate}
           dateTimePreferences={dateTimePreferences}
           onSelectDate={onSelectDate}
         />
         <div className="calendar-sidebar-filters">
+          <div className="calendar-smart-view-section">
+            <div className="sidebar-section-header calendar-smart-view-section-header">
+              <button
+                type="button"
+                className="calendar-section-collapse"
+                aria-expanded={!smartViewsCollapsed}
+                aria-controls="calendar-smart-view-list"
+                onClick={toggleSmartViewsCollapsed}
+              >
+                {smartViewsCollapsed ? <ChevronRight /> : <ChevronDown />}
+                <span>智能清单</span>
+              </button>
+            </div>
+            {!smartViewsCollapsed && (
+              <div id="calendar-smart-view-list" className="calendar-list" aria-label="智能清单">
+                <button
+                  type="button"
+                  className="label-row calendar-label-row"
+                  aria-pressed={activeSmartViewIds.has("assigned")}
+                  onClick={() => onToggleSmartView("assigned")}
+                >
+                  <span className="label-type-icon"><UserRound /></span>
+                  <span className="label-name">指派给我</span>
+                  <CalendarVisibilityCheck checked={activeSmartViewIds.has("assigned")} color="#4772fa" />
+                </button>
+                <button
+                  type="button"
+                  className="label-row calendar-label-row"
+                  aria-pressed={activeSmartViewIds.has("watching")}
+                  onClick={() => onToggleSmartView("watching")}
+                >
+                  <span className="label-type-icon"><Eye /></span>
+                  <span className="label-name">我关注的</span>
+                  <CalendarVisibilityCheck checked={activeSmartViewIds.has("watching")} color="#4772fa" />
+                </button>
+                {visibleCustomViews.map((view) => {
+                  const viewId = customTaskViewKey(view.id);
+                  const active = activeSmartViewIds.has(viewId);
+                  return (
+                    <button
+                      key={view.id}
+                      type="button"
+                      className="label-row calendar-label-row"
+                      aria-pressed={active}
+                      onClick={() => onToggleSmartView(viewId)}
+                    >
+                      <span className="label-type-icon"><ListFilter /></span>
+                      <span className="label-name">{view.name}</span>
+                      <CalendarVisibilityCheck checked={active} color="#4772fa" />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <div className="calendar-user-group-section">
             <div className="sidebar-section-header calendar-user-group-section-header">
               <button
@@ -593,6 +681,9 @@ function ScheduleTaskPanel({
   optimisticallyUnscheduledTaskIds,
   visibleCalendarIds,
   visibleAssigneeIds,
+  activeSmartViewIds,
+  weekStartsOn,
+  now,
   calendarTaskDragging,
   panelRef,
   onClose,
@@ -605,20 +696,37 @@ function ScheduleTaskPanel({
   optimisticallyUnscheduledTaskIds: ReadonlySet<string>;
   visibleCalendarIds: Set<string>;
   visibleAssigneeIds: Set<string>;
+  activeSmartViewIds: Set<string>;
+  weekStartsOn: DateTimePreferences["weekStartsOn"];
+  now: Date;
   calendarTaskDragging: boolean;
   panelRef: React.RefObject<HTMLDivElement | null>;
   onClose: () => void;
   onSelectTask: (taskId: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const panelBundle = useMemo(() => optimisticallyUnscheduledTaskIds.size === 0
-    ? bundle
-    : {
-      ...bundle,
-      tasks: bundle.tasks.map((task) => optimisticallyUnscheduledTaskIds.has(task.id)
+  const panelBundle = useMemo(() => ({
+    ...bundle,
+    tasks: bundle.tasks
+      .filter((task) => taskMatchesCalendarSmartViews(
+        task,
+        activeSmartViewIds,
+        bundle.customTaskViews,
+        currentUserId,
+        now,
+        weekStartsOn,
+      ))
+      .map((task) => optimisticallyUnscheduledTaskIds.has(task.id)
         ? { ...task, ...clearSchedulePatch() }
         : task),
-    }, [bundle, optimisticallyUnscheduledTaskIds]);
+  }), [
+    activeSmartViewIds,
+    bundle,
+    currentUserId,
+    now,
+    optimisticallyUnscheduledTaskIds,
+    weekStartsOn,
+  ]);
   const groups = useMemo(
     () => buildScheduleTaskGroups(
       panelBundle,
@@ -706,6 +814,8 @@ export function CalendarWorkspace({
   online,
   visibleCalendarIds,
   visibleAssigneeIds,
+  activeSmartViewIds,
+  now,
   dateTimePreferences,
   onSelectTask,
   onCreateTask,
@@ -721,6 +831,8 @@ export function CalendarWorkspace({
   online: boolean;
   visibleCalendarIds: Set<string>;
   visibleAssigneeIds: Set<string>;
+  activeSmartViewIds: Set<string>;
+  now: Date;
   dateTimePreferences: DateTimePreferences;
   onSelectTask: (taskId: string) => void;
   onCreateTask: (draft: CalendarTaskDraft) => Promise<void>;
@@ -765,6 +877,14 @@ export function CalendarWorkspace({
     ...bundle.tasks.flatMap((task) => {
       if (optimisticallyUnscheduledTaskIds.has(task.id)) return [];
       if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds)) return [];
+      if (!taskMatchesCalendarSmartViews(
+        task,
+        activeSmartViewIds,
+        bundle.customTaskViews,
+        currentUserId,
+        now,
+        dateTimePreferences.weekStartsOn,
+      )) return [];
       const event = taskEvent(
         task,
         bundle.labels,
@@ -778,8 +898,10 @@ export function CalendarWorkspace({
     ...Object.values(optimisticEvents),
   ], [
     bundle,
+    activeSmartViewIds,
     calendarMutationTaskIds,
     currentUserId,
+    now,
     online,
     optimisticEvents,
     optimisticallyUnscheduledTaskIds,
@@ -1202,6 +1324,9 @@ export function CalendarWorkspace({
             optimisticallyUnscheduledTaskIds={optimisticallyUnscheduledTaskIds}
             visibleCalendarIds={visibleCalendarIds}
             visibleAssigneeIds={visibleAssigneeIds}
+            activeSmartViewIds={activeSmartViewIds}
+            weekStartsOn={dateTimePreferences.weekStartsOn}
+            now={now}
             calendarTaskDragging={draggingCalendarTaskId !== null}
             panelRef={schedulePanelRef}
             onClose={() => setSchedulePanelVisibility(false)}

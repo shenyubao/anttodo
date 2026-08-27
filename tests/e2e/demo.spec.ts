@@ -2,6 +2,16 @@ import { expect, test, type Page } from "@playwright/test";
 
 const demoTaskTitle = "完成 AntTodo 项目框架验收";
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("anttodo:feature-modules", JSON.stringify({
+      calendarEnabled: true,
+      focusEnabled: true,
+      mindMapEnabled: true,
+    }));
+  });
+});
+
 async function openDemoTask(page: Page) {
   await page.goto("/?demo=1");
   await page.getByText(demoTaskTitle, { exact: true }).click();
@@ -383,6 +393,31 @@ test("calendar opens the reusable task dialog and manages labels", async ({ page
   await dialog.getByRole("button", { name: "管理任务标签" }).click();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+});
+
+test("completing a calendar task stays on the calendar page", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "日历", exact: true }).click();
+  await expect(page.locator(".calendar-workspace")).toBeVisible();
+
+  const eventTitle = "优化任务详情抽屉交互";
+  await page.getByText(eventTitle, { exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `任务详情：${eventTitle}` });
+  await expect(dialog).toBeVisible();
+
+  await dialog.getByRole("button", { name: "完成任务" }).click();
+  await expect(dialog.getByRole("button", { name: "标记未完成" })).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(page.locator(".calendar-workspace")).toBeVisible();
+  await expect(page.locator(".task-detail-panel")).toHaveCount(0);
+  await expect(page.getByPlaceholder('添加任务至“指派给我”')).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page.locator(".calendar-workspace")).toBeVisible();
+  await expect(page.locator(".calendar-toolbar")).toBeVisible();
+  await expect(page.getByPlaceholder('添加任务至“指派给我”')).toHaveCount(0);
 });
 
 test("calendar quick-create matches the reference and commits drafts on close", async ({ page }) => {
@@ -1068,6 +1103,11 @@ test("quick create settings shows the installed DingTalk robot", async ({ page }
   await expect(dialog.getByRole("tab", { name: "连接器市场" })).toHaveCount(0);
   await expect(dialog.getByRole("tab", { name: "已接入" })).toHaveCount(0);
   await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("云效创建", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "接入", exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "接入", exact: true }).click();
+  await expect(page.locator(".toast")).toContainText("演示模式仅预览云效创建接入效果");
+  await expect(dialog.getByRole("heading", { name: "接入云效创建" })).toHaveCount(0);
 
   await dialog.getByRole("button", { name: "查看详情" }).click();
   const setupGuide = dialog.getByRole("region", { name: "钉钉机器人配置步骤" });
@@ -1080,6 +1120,15 @@ test("quick create settings shows the installed DingTalk robot", async ({ page }
     "flex-direction",
     "column",
   );
+});
+
+test("quick add does not create a local todo from a Yunxiao URL in demo", async ({ page }) => {
+  await page.goto("/?demo=1");
+  const quickInput = page.getByPlaceholder('添加任务至“指派给我”');
+  await quickInput.fill("https://devops.aliyun.com/projex/req/HQGS-354");
+  await quickInput.press("Enter");
+  await expect(page.locator(".toast")).toContainText("演示模式无法从云效链接创建待办");
+  await expect(page.locator(".task-row").filter({ hasText: "HQGS-354" })).toHaveCount(0);
 });
 
 test("connector settings exposes the Yunxiao marketplace", async ({ page }) => {
@@ -1121,7 +1170,12 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await expect(dialog.getByText("沈宇宝", { exact: true }).first()).toBeVisible();
   await expect(dialog.getByText("未设置", { exact: true })).toBeVisible();
   await expect(dialog.getByText("+86 138****8000", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("稍后提供", { exact: true })).toHaveCount(4);
+  await expect(dialog.getByText("稍后提供")).toHaveCount(0);
+  await expect(dialog.getByText("双重验证")).toHaveCount(0);
+  await expect(dialog.getByText("微信", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByText("API 口令")).toHaveCount(0);
+  await expect(dialog.getByText("备份与还原")).toHaveCount(0);
+  await expect(dialog.getByText("删除账户")).toBeVisible();
   await expect(dialog.locator(".account-profile > span:last-child")).toContainText(
     "AntTodo 产品团队",
   );
@@ -1221,6 +1275,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await dialog.getByRole("button", { name: "快速创建", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "快速创建" })).toBeVisible();
   await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("云效创建", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "查看详情" }).click();
   await expect(dialog.getByRole("region", { name: "钉钉机器人配置步骤" })).toBeVisible();
   await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();

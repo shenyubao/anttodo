@@ -12,6 +12,8 @@ export function NotificationBell({
   onRead,
   onReadAll,
   onOpenTask,
+  variant = "rail",
+  active = true,
 }: {
   notifications: AppNotification[];
   loading: boolean;
@@ -19,11 +21,17 @@ export function NotificationBell({
   onRead: (id: string) => Promise<void>;
   onReadAll: () => Promise<void>;
   onOpenTask: (taskId: string) => void;
+  variant?: "rail" | "menu";
+  active?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const unread = notifications.filter((item) => !item.read_at).length;
+
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
 
   useEffect(() => {
     if (!open) return;
@@ -43,9 +51,15 @@ export function NotificationBell({
 
   return (
     <div className="notification-anchor" ref={rootRef}>
-      <button className="rail-button" aria-label={unread ? `通知，${unread} 条未读` : "通知"}
+      <button className={variant === "menu" ? "embedded-more-action" : "rail-button"}
+        aria-label={unread ? `通知，${unread} 条未读` : "通知"}
         aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         <Bell />
+        {variant === "menu" && (
+          <span>
+            <strong>通知</strong>
+          </span>
+        )}
         {unread > 0 && <span className="notification-badge">{unread > 99 ? "99+" : unread}</span>}
       </button>
       {open && (

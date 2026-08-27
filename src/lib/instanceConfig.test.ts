@@ -22,6 +22,7 @@ const manifest = {
   supabaseUrl: "https://supabase.yuce-tech.cn",
   publishableKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
   deviceAuthorizationEndpoint: "https://supabase.yuce-tech.cn/functions/v1/cli-device-auth",
+  cliAuthProtocol: 2 as const,
 };
 
 describe("instance configuration", () => {
@@ -88,6 +89,7 @@ describe("instance configuration", () => {
     expect(() => parseInstanceManifest({ ...manifest, deployMode: "cloud" }, manifest.appUrl, false)).toThrow(/部署模式/);
     expect(() => parseInstanceManifest(manifest, "https://other.example.com", false)).toThrow(/appUrl/);
     expect(() => parseInstanceManifest({ ...manifest, schemaVersion: 2 }, manifest.appUrl, false)).toThrow(/版本/);
+    expect(() => parseInstanceManifest({ ...manifest, cliAuthProtocol: undefined }, manifest.appUrl, false)).toThrow(/协议 v2/);
     expect(() => parseInstanceManifest({
       ...manifest,
       deviceAuthorizationEndpoint: "https://evil.example.com/functions/v1/cli-device-auth",

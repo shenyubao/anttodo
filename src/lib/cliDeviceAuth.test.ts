@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cliAuthorizationAad, cliAuthorizationUserCode } from "./cliDeviceAuth";
+import { cliAuthorizationUserCode, cliOAuthAuthorizationId } from "./cliDeviceAuth";
 
 describe("CLI device authorization helpers", () => {
   it("recognizes only the dedicated route and normalizes the code", () => {
@@ -8,9 +8,8 @@ describe("CLI device authorization helpers", () => {
     expect(cliAuthorizationUserCode("/workspaces/1/tasks", "?user_code=x")).toBeNull();
   });
 
-  it("binds ciphertext to request and user", () => {
-    expect(cliAuthorizationAad("request", "user")).toBe(
-      "anttodo-cli-device-auth-v1:request:user",
-    );
+  it("recognizes only the OAuth consent route", () => {
+    expect(cliOAuthAuthorizationId("/oauth/consent", "?authorization_id=request")).toBe("request");
+    expect(cliOAuthAuthorizationId("/auth/cli", "?authorization_id=request")).toBeNull();
   });
 });

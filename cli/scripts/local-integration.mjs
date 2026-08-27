@@ -1,14 +1,7 @@
 #!/usr/bin/env node
-import {
-  createCipheriv,
-  createPublicKey,
-  diffieHellman,
-  generateKeyPairSync,
-  hkdfSync,
-  randomUUID,
-} from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +18,7 @@ const local = Object.fromEntries(statusOutput.trim().split("\n").flatMap((line) 
   const match = line.match(/^([A-Z0-9_]+)="(.*)"$/);
   return match ? [[match[1], match[2]]] : [];
 }));
-const endpoint = `${local.FUNCTIONS_URL}/cli-device-auth`;
+const endpoint = `${local.FUNCTIONS_URL ?? `${local.API_URL}/functions/v1`}/cli-device-auth`;
 const cliEnvironment = {
   ...process.env,
   ANTTODO_STATE_DIR: stateDirectory,
@@ -54,38 +47,6 @@ function runCli(...arguments_) {
   return envelope.data;
 }
 
-function base64Url(value) {
-  return Buffer.from(value).toString("base64url");
-}
-
-function encryptSession(publicJwk, session, requestId) {
-  const ephemeral = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  const shared = diffieHellman({
-    privateKey: ephemeral.privateKey,
-    publicKey: createPublicKey({ key: publicJwk, format: "jwk" }),
-  });
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = Buffer.from(hkdfSync("sha256", shared, salt, Buffer.from("anttodo-cli-device-auth-v1"), 32));
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  cipher.setAAD(Buffer.from(`anttodo-cli-device-auth-v1:${requestId}:${session.user.id}`));
-  const ciphertext = Buffer.concat([
-    cipher.update(JSON.stringify({
-      accessToken: session.access_token,
-      refreshToken: session.refresh_token,
-      userId: session.user.id,
-    })),
-    cipher.final(),
-    cipher.getAuthTag(),
-  ]);
-  return {
-    ephemeralPublicKey: ephemeral.publicKey.export({ format: "jwk" }),
-    salt: base64Url(salt),
-    iv: base64Url(iv),
-    ciphertext: base64Url(ciphertext),
-  };
-}
-
 async function deviceRequest(body, accessToken) {
   const response = await fetch(endpoint, {
     method: "POST",
@@ -112,16 +73,54 @@ const email = `cli-integration-${suffix}@example.test`;
 const password = `Cli-${suffix}-Password!`;
 let userId;
 let workspaceId;
+let oauthClientId;
+let functionProcess;
+let stage = "setup";
+
+function removeIntegrationEdgeRuntime() {
+  try {
+    execFileSync("docker", ["rm", "-f", "supabase_edge_runtime_anttodo"], { stdio: "ignore" });
+  } catch {
+    // The integration runtime is intentionally ephemeral and may not exist yet.
+  }
+}
 
 try {
-  const health = await deviceRequest({ action: "unknown" }).catch((error) => {
-    if (String(error).includes("(404)")) {
-      throw new Error("Run `supabase functions serve cli-device-auth --no-verify-jwt --workdir .` first");
-    }
-    return null;
+  stage = "create OAuth client";
+  const { data: oauthClient, error: oauthClientError } = await admin.auth.admin.oauth.createClient({
+    client_name: "AntTodo CLI Integration",
+    client_uri: "http://127.0.0.1:5173",
+    redirect_uris: [endpoint],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    scope: "email profile phone",
+    token_endpoint_auth_method: "client_secret_basic",
   });
-  void health;
+  if (oauthClientError || !oauthClient?.client_secret) throw oauthClientError ?? new Error("Unable to create OAuth client");
+  oauthClientId = oauthClient.client_id;
+  const edgeEnvironmentFile = join(stateDirectory, "edge.env");
+  await writeFile(edgeEnvironmentFile, [
+    `CLI_OAUTH_CLIENT_ID=${JSON.stringify(oauthClient.client_id)}`,
+    `CLI_OAUTH_CLIENT_SECRET=${JSON.stringify(oauthClient.client_secret)}`,
+    `CLI_OAUTH_PUBLIC_URL=${JSON.stringify(local.API_URL)}`,
+    'PUBLIC_APP_URL="http://127.0.0.1:5173"',
+    "",
+  ].join("\n"), { mode: 0o600 });
+  removeIntegrationEdgeRuntime();
+  functionProcess = spawn("supabase", ["functions", "serve", "cli-device-auth", "--no-verify-jwt", "--env-file", edgeEnvironmentFile, "--workdir", repositoryRoot], {
+    cwd: repositoryRoot,
+    env: process.env,
+    stdio: "inherit",
+  });
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const ready = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: '{"action":"init"}' })
+      .then((response) => response.status === 426).catch(() => false);
+    if (ready) break;
+    if (attempt === 59) throw new Error("cli-device-auth did not start");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 
+  stage = "create user";
   const { data: created, error: createUserError } = await admin.auth.admin.createUser({
     email,
     password,
@@ -134,25 +133,45 @@ try {
   const { data: signedIn, error: signInError } = await publicClient.auth.signInWithPassword({ email, password });
   if (signInError || !signedIn.session) throw signInError ?? new Error("Unable to sign in integration user");
 
+  stage = "initialize device request";
   const login = runCli("auth", "login", "--no-wait", "--no-open");
   const deviceCode = login.device_code;
   const userCode = new URL(login.verification_url).searchParams.get("user_code");
-  const pending = JSON.parse(await readFile(join(stateDirectory, "pending-authorizations.json"), "utf8"))[deviceCode];
   const inspected = await deviceRequest({ action: "inspect", userCode });
-  const encryptedSession = encryptSession(inspected.publicKey, signedIn.session, inspected.requestId);
-  await deviceRequest({
-    action: "approve",
-    requestId: inspected.requestId,
-    userCode,
-    encryptedSession,
-  }, signedIn.session.access_token);
+  stage = "authorize device request";
+  const authorization = await deviceRequest({ action: "authorize", requestId: inspected.requestId, userCode, lifetime: "360" }, signedIn.session.access_token);
+  stage = "open OAuth authorization endpoint";
+  const authorizeResponse = await fetch(authorization.authorizationUrl, { redirect: "manual" });
+  const consentLocation = authorizeResponse.headers.get("location");
+  if (!consentLocation) throw new Error(`OAuth authorize returned HTTP ${authorizeResponse.status}: ${await authorizeResponse.text()}`);
+  const consentUrl = new URL(consentLocation);
+  const authorizationId = consentUrl.searchParams.get("authorization_id");
+  if (!authorizationId) throw new Error("OAuth authorization did not reach the consent endpoint");
+  stage = "get OAuth authorization details";
+  const { data: details, error: detailsError } = await publicClient.auth.oauth.getAuthorizationDetails(authorizationId);
+  if (detailsError || !details) throw detailsError ?? new Error("Unable to inspect OAuth authorization");
+  let callback;
+  if ("redirect_url" in details) {
+    callback = details.redirect_url;
+  } else {
+    if (details.client.id !== oauthClient.client_id || details.scope !== "email profile phone") throw new Error("OAuth client or scopes changed");
+    stage = "validate OAuth consent";
+    await deviceRequest({ action: "validate_consent", authorizationId, clientId: details.client.id,
+      requestId: inspected.requestId, nonce: authorization.consentNonce }, signedIn.session.access_token);
+    stage = "approve OAuth consent";
+    const { data: approved, error: approvalError } = await publicClient.auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true });
+    if (approvalError || !approved) throw approvalError ?? new Error("Unable to approve OAuth authorization");
+    callback = approved.redirect_url;
+  }
+  stage = "complete OAuth callback";
+  const callbackResponse = await fetch(callback, { redirect: "manual" });
+  if (callbackResponse.status !== 302 || !callbackResponse.headers.get("location")?.includes("oauth_result=approved")) {
+    throw new Error("OAuth callback did not complete device authorization");
+  }
+  stage = "consume CLI credential";
   runCli("auth", "login", "--device-code", deviceCode);
-  runCli("auth", "status", "--verify");
-  const { createClientContext } = await import("../dist/client.js");
-  const cliClientContext = await createClientContext();
-  const { data: refreshed, error: refreshError } = await cliClientContext.client.auth.refreshSession();
-  if (refreshError || !refreshed.session) throw refreshError ?? new Error("CLI token refresh failed");
-  if (pending.requestId !== inspected.requestId) throw new Error("Device request identity changed");
+  const verifiedStatus = runCli("auth", "status", "--verify");
+  if (!verifiedStatus.verified || verifiedStatus.device_id !== inspected.requestId) throw new Error("CLI credential verification failed");
 
   const { data: workspace, error: workspaceError } = await admin.from("workspaces").insert({
     name: "CLI Integration",
@@ -203,13 +222,6 @@ try {
     throw new Error("CLI stopwatch session did not match the requested recording");
   }
 
-  const childTask = runCli("childTask", "create", "--task", task.id, "--title", "CLI childTask");
-  runCli("childTask", "list", "--task", task.id);
-  runCli("childTask", "get", childTask.id);
-  runCli("childTask", "set-duetime", childTask.id, "2026-08-05T11:00:00+08:00");
-  runCli("childTask", "set-duetime", childTask.id, "--clear");
-  runCli("childTask", "delete", childTask.id, "--yes");
-
   const note = runCli("note", "create", "--title", "CLI note", "--description", "integration", "--tag", tag.id);
   runCli("note", "list");
   runCli("note", "get", note.id);
@@ -222,12 +234,17 @@ try {
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    commands: 34,
+    commands: 28,
     deviceAuthorization: "approved-and-consumed",
-    tokenRefresh: "verified",
+    oauthTokenExchange: "verified",
   })}\n`);
+} catch (cause) {
+  throw new Error(`CLI integration failed during: ${stage}`, { cause });
 } finally {
   if (workspaceId) await admin.from("workspaces").delete().eq("id", workspaceId);
   if (userId) await admin.auth.admin.deleteUser(userId);
+  if (oauthClientId) await admin.auth.admin.oauth.deleteClient(oauthClientId);
+  functionProcess?.kill("SIGTERM");
+  removeIntegrationEdgeRuntime();
   await rm(stateDirectory, { recursive: true, force: true });
 }

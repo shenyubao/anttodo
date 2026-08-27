@@ -12,9 +12,13 @@ export type AppRoute =
   | { workspaceId: string; kind: "task"; taskId: string; itemKind: "task" | "note" }
   | { workspaceId: string; kind: "calendar" }
   | { workspaceId: string; kind: "mindmap" }
-  | { workspaceId: string; kind: "focus" };
+  | { workspaceId: string; kind: "focus" }
+  | { workspaceId: string; kind: "search" };
+
+export type OverlayAppRoute = Extract<AppRoute, { kind: "calendar" | "mindmap" | "focus" }>;
 
 const SMART_VIEWS = new Set<SystemSmartView>(["all", "today", "week", "assigned", "watching", "inbox", "trash"]);
+const TASK_RETURN_LIST_MODES = new Set<TaskViewMode>(["list", "kanban"]);
 const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function decodeSegment(value: string | undefined) {
@@ -90,6 +94,9 @@ export function parseAppRoute(pathname: string): AppRoute | null {
   if (segments.length === 3 && segments[2] === "focus") {
     return { workspaceId, kind: "focus" };
   }
+  if (segments.length === 3 && segments[2] === "search") {
+    return { workspaceId, kind: "search" };
+  }
   return null;
 }
 
@@ -112,6 +119,43 @@ export function appRoutePath(route: AppRoute) {
     return `${base}/${route.itemKind === "note" ? "notes" : "tasks"}/${encodeURIComponent(route.taskId)}`;
   }
   return `${base}/${route.kind}`;
+}
+
+export function isOverlayAppRoute(route: AppRoute | null | undefined): route is OverlayAppRoute {
+  return route?.kind === "calendar" || route?.kind === "mindmap" || route?.kind === "focus";
+}
+
+export function parseTaskReturnRoute(value: unknown, workspaceId: string): AppRoute | null {
+  if (!value || typeof value !== "object") return null;
+  const route = value as {
+    workspaceId?: unknown;
+    kind?: unknown;
+    view?: unknown;
+    tagId?: unknown;
+    mode?: unknown;
+  };
+  if (route.workspaceId !== workspaceId || typeof route.kind !== "string") return null;
+  if (route.kind === "calendar" || route.kind === "mindmap" || route.kind === "focus") {
+    return { workspaceId, kind: route.kind };
+  }
+  if (route.kind === "view") {
+    if (typeof route.view !== "string") return null;
+    if (!SMART_VIEWS.has(route.view as SystemSmartView) && !route.view.startsWith("custom:")) {
+      return null;
+    }
+    if (!TASK_RETURN_LIST_MODES.has(route.mode as TaskViewMode)) return null;
+    const view = route.view as AppSmartView;
+    const mode = route.mode as "list" | "kanban";
+    return view === "trash"
+      ? { workspaceId, kind: "view", view, mode: "list" }
+      : { workspaceId, kind: "view", view, mode };
+  }
+  if (route.kind === "tag") {
+    if (typeof route.tagId !== "string" || !route.tagId) return null;
+    if (!TASK_RETURN_LIST_MODES.has(route.mode as TaskViewMode)) return null;
+    return { workspaceId, kind: "tag", tagId: route.tagId, mode: route.mode as "list" | "kanban" };
+  }
+  return null;
 }
 
 /** Absolute URL for sharing a task/note; uses public app origin in the Electron file:// shell. */

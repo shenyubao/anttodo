@@ -8,9 +8,11 @@ import {
   taskIsVisibleOnCalendar,
   taskMatchesCalendarAssignees,
   taskMatchesCalendarLabels,
+  taskMatchesCalendarSmartViews,
   toggleAllUserGroupsInAssigneeFilter,
   toggleUserGroupInAssigneeFilter,
 } from "./calendarVisibility";
+import type { CustomTaskView, Task } from "../types";
 
 const memberships = [
   { group_id: "g1", user_id: "u1" },
@@ -122,5 +124,72 @@ describe("taskIsVisibleOnCalendar", () => {
       new Set(["l1"]),
       new Set([CALENDAR_UNASSIGNED_ID]),
     )).toBe(false);
+  });
+});
+
+describe("taskMatchesCalendarSmartViews", () => {
+  const task = {
+    assignee_id: "me",
+    participant_ids: ["watcher"],
+    created_by: "creator",
+    label_ids: ["l1"],
+    due_at: "2026-08-25T09:00:00.000Z",
+    due_start_at: null,
+    due_is_all_day: false,
+    status: "open",
+    kind: "todo",
+  } as Task;
+  const customView = {
+    id: "custom-1",
+    workspace_id: "w1",
+    user_id: "me",
+    name: "我的标签",
+    definition: {
+      scope: "label",
+      label_ids: ["l1"],
+      filter_assignee: "all",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: ["all"],
+    },
+    visible: true,
+    position: 0,
+    created_at: "2026-08-25T00:00:00.000Z",
+    updated_at: "2026-08-25T00:00:00.000Z",
+  } satisfies CustomTaskView;
+
+  it("does not narrow the calendar until a smart list is selected", () => {
+    expect(taskMatchesCalendarSmartViews(task, new Set(), [customView], "someone-else"))
+      .toBe(true);
+  });
+
+  it("matches assigned-to-me and watching system lists", () => {
+    expect(taskMatchesCalendarSmartViews(task, new Set(["assigned"]), [], "me")).toBe(true);
+    expect(taskMatchesCalendarSmartViews(task, new Set(["assigned"]), [], "someone-else"))
+      .toBe(false);
+    expect(taskMatchesCalendarSmartViews(task, new Set(["watching"]), [], "watcher"))
+      .toBe(true);
+  });
+
+  it("matches custom list scope and filters, with selected lists combined by union", () => {
+    expect(taskMatchesCalendarSmartViews(
+      task,
+      new Set(["custom:custom-1"]),
+      [customView],
+      "me",
+    )).toBe(true);
+    expect(taskMatchesCalendarSmartViews(
+      { ...task, label_ids: ["other"] },
+      new Set(["custom:custom-1"]),
+      [customView],
+      "me",
+    )).toBe(false);
+    expect(taskMatchesCalendarSmartViews(
+      task,
+      new Set(["assigned", "custom:missing"]),
+      [customView],
+      "me",
+    )).toBe(true);
   });
 });

@@ -303,6 +303,7 @@ test("desktop validates, remembers, and restores a custom service", async ({ pag
       headers: { "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({
         schemaVersion: 1,
+        cliAuthProtocol: 2,
         instanceId: "8e78719f-8d1f-4d0d-90fc-b18c7f99fd84",
         displayName: "宇策科技 AntTodo",
         deployMode: "onPremises",

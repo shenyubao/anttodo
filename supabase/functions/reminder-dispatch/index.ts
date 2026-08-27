@@ -4,6 +4,7 @@ import webpush from "web-push";
 import { parsePublicConfig } from "../_shared/dingtalk-sso.ts";
 import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
 import { buildDueReminderCard } from "../_shared/dingtalk-notification-cards.ts";
+import { buildTaskOpenUrl } from "../_shared/app-url.ts";
 
 const encoder = new TextEncoder();
 
@@ -48,7 +49,6 @@ export default {
     const vapidPublicKey = Deno.env.get("VAPID_PUBLIC_KEY") ?? "";
     const vapidPrivateKey = Deno.env.get("VAPID_PRIVATE_KEY") ?? "";
     const vapidSubject = Deno.env.get("VAPID_SUBJECT") ?? "mailto:notifications@anttodo.com";
-    const appUrl = (Deno.env.get("PUBLIC_APP_URL") ?? "https://app.anttodo.com").replace(/\/$/, "");
     const functionUrl = `${(Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "")}/functions/v1/reminder-ack`;
     const acknowledgementSecret = Deno.env.get("REMINDER_ACK_SECRET") ?? dispatchSecret;
     if (!vapidPublicKey || !vapidPrivateKey) {
@@ -130,11 +130,17 @@ export default {
           .select("id, endpoint, p256dh, auth")
           .eq("user_id", delivery.recipient_id)
           .is("disabled_at", null);
+        const taskOpenUrl = buildTaskOpenUrl(
+          task.workspace_id,
+          task.id,
+          task.kind,
+          Deno.env.get("PUBLIC_APP_URL"),
+        );
         const payload = JSON.stringify({
           title: reminderTitle || "AntTodo 提醒",
           body: reminderDescription?.replace(/<[^>]*>/g, "").slice(0, 160) || "任务时间到了",
           tag: `task-reminder:${delivery.id}`,
-          url: `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`,
+          url: taskOpenUrl,
           acknowledgeUrl: functionUrl,
           acknowledgementToken: token,
         });
@@ -156,7 +162,12 @@ export default {
       }
 
       if (dingtalkOn) {
-        const openUrl = `${appUrl}/?workspace=${task.workspace_id}&task=${task.id}`;
+        const openUrl = buildTaskOpenUrl(
+          task.workspace_id,
+          task.id,
+          task.kind,
+          Deno.env.get("PUBLIC_APP_URL"),
+        );
         const card = buildDueReminderCard({
           taskTitle: reminderTitle,
           description: reminderDescription,

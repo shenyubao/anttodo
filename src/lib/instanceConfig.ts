@@ -28,6 +28,7 @@ export type AntTodoInstanceManifest = {
   supabaseUrl: string;
   publishableKey: string;
   deviceAuthorizationEndpoint: string;
+  cliAuthProtocol: 2;
 };
 
 export type AntTodoInstanceConfig = AntTodoInstanceManifest & {
@@ -109,6 +110,7 @@ export function parseInstanceManifest(
   if (!value || typeof value !== "object") throw new Error("服务配置不是有效的 JSON 对象。");
   const data = value as Record<string, unknown>;
   if (data.schemaVersion !== 1) throw new Error("当前客户端不支持此服务配置版本。");
+  if (data.cliAuthProtocol !== 2) throw new Error("当前服务尚未启用 CLI 独立认证协议 v2。");
   if (typeof data.instanceId !== "string" || !UUID_PATTERN.test(data.instanceId)) {
     throw new Error("服务实例标识无效。");
   }
@@ -165,6 +167,7 @@ export function parseInstanceManifest(
     supabaseUrl,
     publishableKey: data.publishableKey.trim(),
     deviceAuthorizationEndpoint: deviceAuthorizationUrl.toString(),
+    cliAuthProtocol: 2,
   };
 }
 
@@ -206,6 +209,7 @@ function builtInOfficialConfig(): AntTodoInstanceConfig | null {
     supabaseUrl: supabaseUrl.replace(/\/$/, ""),
     publishableKey,
     deviceAuthorizationEndpoint: `${supabaseUrl.replace(/\/$/, "")}/functions/v1/cli-device-auth`,
+    cliAuthProtocol: 2,
     namespace: "official",
     official: true,
     source: "builtin",
@@ -279,6 +283,7 @@ export async function selectCustomService(value: string) {
     supabaseUrl: config.supabaseUrl,
     publishableKey: config.publishableKey,
     deviceAuthorizationEndpoint: config.deviceAuthorizationEndpoint,
+    cliAuthProtocol: 2,
   } satisfies AntTodoInstanceManifest));
   storage()?.removeItem(authStorageKey(config));
   storage()?.setItem(SELECTED_SERVICE_KEY, config.appUrl);

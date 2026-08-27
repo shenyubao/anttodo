@@ -55,6 +55,7 @@ describe("connector admin helpers", () => {
       },
     ]);
     expect(response.yunxiaoConnectors).toEqual([]);
+    expect(response.yunxiaoQuickCreate).toBeNull();
   });
 
   it("returns an empty list fallback without assuming SSO is enabled", () => {
@@ -62,6 +63,7 @@ describe("connector admin helpers", () => {
       ssoEnabled: false,
       connectors: [],
       yunxiaoConnectors: [],
+      yunxiaoQuickCreate: null,
     });
   });
 
@@ -78,6 +80,16 @@ describe("connector admin helpers", () => {
       last_synced_at: null,
     };
     expect(manualSyncConnectors([dingtalkConnector, yunxiao])).toEqual([yunxiao]);
+    expect(manualSyncConnectors([
+      dingtalkConnector,
+      yunxiao,
+      {
+        ...yunxiao,
+        id: "connector-yunxiao-quick-create",
+        name: "云效创建",
+        public_config: { kind: "quick_create", organizationId: "org" },
+      },
+    ])).toEqual([yunxiao]);
     expect(manualSyncConnectors([dingtalkConnector])).toEqual([]);
   });
 

@@ -7,6 +7,7 @@ import {
 } from "../_shared/dingtalk-sso.ts";
 import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
 import { buildEventNotificationCard } from "../_shared/dingtalk-notification-cards.ts";
+import { buildTaskOpenUrl } from "../_shared/app-url.ts";
 
 const SCENARIO_BY_TYPE: Record<string, string> = {
   comment_mention: "todo_mentioned",
@@ -157,9 +158,12 @@ export default {
       taskKind: task?.kind,
       payload: (notification.payload ?? {}) as Record<string, unknown>,
     });
-    const appUrl = (Deno.env.get("PUBLIC_APP_URL") ?? "https://app.anttodo.com").replace(/\/$/, "");
-    const openUrl =
-      `${appUrl}/?workspace=${notification.workspace_id}&task=${notification.task_id}`;
+    const openUrl = buildTaskOpenUrl(
+      notification.workspace_id,
+      notification.task_id,
+      task?.kind,
+      Deno.env.get("PUBLIC_APP_URL"),
+    );
     const dingtalkCard = buildEventNotificationCard({
       notificationType: notification.notification_type,
       actorName: actor?.display_name ?? "团队成员",

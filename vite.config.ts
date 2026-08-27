@@ -61,6 +61,7 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
           publishableKey,
           appUrl,
           deviceAuthorizationEndpoint,
+          cliAuthProtocol: 2,
         })}\n`,
       });
       this.emitFile({
@@ -76,6 +77,7 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
           supabaseUrl,
           publishableKey,
           deviceAuthorizationEndpoint,
+          cliAuthProtocol: 2,
         })}\n`,
       });
     },

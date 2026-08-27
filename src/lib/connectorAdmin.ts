@@ -33,12 +33,25 @@ export type YunxiaoConnectorListItem = {
   } | null;
 };
 
+export type YunxiaoQuickCreateListItem = {
+  id: string;
+  type: "yunxiao-quick-create";
+  name: string;
+  enabled: boolean;
+  organizationId: string;
+  targetLabelId: string | null;
+  credentialHint: string | null;
+  lastEventAt: string | null;
+  createdAt: string;
+};
+
 export type ConnectorListResponse = {
   canManage: boolean;
   ssoEnabled: boolean;
   callbackUrl: string;
   connectors: ConnectorListItem[];
   yunxiaoConnectors: YunxiaoConnectorListItem[];
+  yunxiaoQuickCreate: YunxiaoQuickCreateListItem | null;
 };
 
 export function connectorSettingsQueryKey(workspaceId: string) {
@@ -56,6 +69,7 @@ export function emptyConnectorListResponse(workspace: Workspace): ConnectorListR
     callbackUrl: "",
     connectors: [],
     yunxiaoConnectors: [],
+    yunxiaoQuickCreate: null,
   };
 }
 
@@ -80,6 +94,7 @@ export function demoConnectorListResponse(
           }]
         : []),
     yunxiaoConnectors: [],
+    yunxiaoQuickCreate: null,
   };
 }
 
@@ -104,7 +119,10 @@ export async function invokeConnectorSync(connectorId: string) {
 }
 
 export function manualSyncConnectors(connectors: Connector[]) {
-  return connectors.filter((connector) => connector.type === "yunxiao");
+  return connectors.filter((connector) =>
+    connector.type === "yunxiao"
+    && !("kind" in connector.public_config && connector.public_config.kind === "quick_create")
+  );
 }
 
 export function connectorSyncSubtitle(connector: Connector, options?: {

@@ -14,6 +14,7 @@ function manifest(appUrl: string, suffix: string) {
     supabaseUrl: appUrl,
     publishableKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
     deviceAuthorizationEndpoint: `${appUrl}/functions/v1/cli-device-auth`,
+    cliAuthProtocol: 2,
   };
 }
 

@@ -1,118 +1,77 @@
-import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
+export type CliCredentialLifetime = "7" | "90" | "360" | "unlimited";
 export type CliAuthorizationRequest = {
   requestId: string;
-  publicKey: JsonWebKey;
-  client: {
-    name?: string;
-    version?: string;
-    hostname?: string | null;
-  };
+  client: { name?: string; version?: string; hostname?: string | null };
   status: string;
   expiresAt: string;
 };
+export type CliAuthorizedDevice = {
+  id: string;
+  client: { name?: string; version?: string; hostname?: string | null };
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+};
 
-const DEVICE_AUTH_INFO = "anttodo-cli-device-auth-v1";
-
-function base64Url(value: Uint8Array) {
-  let binary = "";
-  value.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
+const CONSENT_CONTEXT_KEY = "anttodo:cli-oauth-consent-v2";
 
 export function cliAuthorizationUserCode(pathname: string, search: string) {
   if (pathname !== "/auth/cli") return null;
   return new URLSearchParams(search).get("user_code")?.toUpperCase() ?? "";
 }
 
-export function cliAuthorizationAad(requestId: string, userId: string) {
-  return `${DEVICE_AUTH_INFO}:${requestId}:${userId}`;
+export function cliOAuthAuthorizationId(pathname: string, search: string) {
+  if (pathname !== "/oauth/consent") return null;
+  return new URLSearchParams(search).get("authorization_id") ?? "";
 }
 
-export async function encryptCliSession(
-  publicKey: JsonWebKey,
-  session: Session,
-  requestId: string,
-) {
-  const recipientKey = await crypto.subtle.importKey(
-    "jwk",
-    publicKey,
-    { name: "ECDH", namedCurve: "P-256" },
-    false,
-    [],
-  );
-  const ephemeral = await crypto.subtle.generateKey(
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveBits"],
-  );
-  const shared = await crypto.subtle.deriveBits(
-    { name: "ECDH", public: recipientKey },
-    ephemeral.privateKey,
-    256,
-  );
-  const hkdfKey = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encryptionKey = await crypto.subtle.deriveKey(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt,
-      info: new TextEncoder().encode(DEVICE_AUTH_INFO),
-    },
-    hkdfKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt"],
-  );
-  const plaintext = new TextEncoder().encode(JSON.stringify({
-    accessToken: session.access_token,
-    refreshToken: session.refresh_token,
-    userId: session.user.id,
-  }));
-  const ciphertext = await crypto.subtle.encrypt(
-    {
-      name: "AES-GCM",
-      iv,
-      additionalData: new TextEncoder().encode(cliAuthorizationAad(requestId, session.user.id)),
-    },
-    encryptionKey,
-    plaintext,
-  );
-  return {
-    ephemeralPublicKey: await crypto.subtle.exportKey("jwk", ephemeral.publicKey),
-    salt: base64Url(salt),
-    iv: base64Url(iv),
-    ciphertext: base64Url(new Uint8Array(ciphertext)),
-  };
+async function invoke<T>(client: SupabaseClient, body: Record<string, unknown>) {
+  const { data, error } = await client.functions.invoke("cli-device-auth", { body });
+  if (error) throw error;
+  return data as T;
 }
 
 export async function inspectCliAuthorization(client: SupabaseClient, userCode: string) {
-  const { data, error } = await client.functions.invoke("cli-device-auth", {
-    body: { action: "inspect", userCode },
-  });
-  if (error) throw error;
-  return data as CliAuthorizationRequest;
+  return invoke<CliAuthorizationRequest>(client, { action: "inspect", userCode });
 }
 
-export async function decideCliAuthorization(
-  client: SupabaseClient,
-  input: {
-    decision: "approve" | "deny";
-    userCode: string;
-    requestId: string;
-    encryptedSession?: Awaited<ReturnType<typeof encryptCliSession>>;
-  },
-) {
-  const { data, error } = await client.functions.invoke("cli-device-auth", {
-    body: {
-      action: input.decision,
-      requestId: input.requestId,
-      userCode: input.userCode,
-      ...(input.encryptedSession ? { encryptedSession: input.encryptedSession } : {}),
-    },
-  });
-  if (error) throw error;
-  return data as { status: "approved" | "denied" };
+export async function authorizeCliDevice(client: SupabaseClient, input: {
+  userCode: string; requestId: string; lifetime: CliCredentialLifetime;
+}) {
+  const result = await invoke<{ authorizationUrl: string; consentNonce: string }>(client, { action: "authorize", ...input });
+  sessionStorage.setItem(CONSENT_CONTEXT_KEY, JSON.stringify({ requestId: input.requestId, nonce: result.consentNonce }));
+  return result;
+}
+
+export async function denyCliDevice(client: SupabaseClient, input: { userCode: string; requestId: string }) {
+  return invoke<{ status: "denied" }>(client, { action: "deny", ...input });
+}
+
+export function readCliConsentContext() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(CONSENT_CONTEXT_KEY) ?? "null") as { requestId?: unknown; nonce?: unknown } | null;
+    return parsed && typeof parsed.requestId === "string" && typeof parsed.nonce === "string"
+      ? { requestId: parsed.requestId, nonce: parsed.nonce } : null;
+  } catch { return null; }
+}
+
+export function clearCliConsentContext() {
+  sessionStorage.removeItem(CONSENT_CONTEXT_KEY);
+}
+
+export async function validateCliConsent(client: SupabaseClient, input: {
+  authorizationId: string; clientId: string; requestId: string; nonce: string;
+}) {
+  return invoke<{ valid: true; clientId: string }>(client, { action: "validate_consent", ...input });
+}
+
+export async function listCliDevices(client: SupabaseClient) {
+  const result = await invoke<{ devices: CliAuthorizedDevice[] }>(client, { action: "list" });
+  return result.devices;
+}
+
+export async function revokeCliDevice(client: SupabaseClient, credentialId: string) {
+  return invoke<{ revoked: true }>(client, { action: "revoke", credentialId });
 }

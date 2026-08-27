@@ -76,10 +76,10 @@ jq -n \
   --arg deviceAuthorizationEndpoint "$device_endpoint" \
   --arg deployMode "$deploy_mode" \
   --arg workspaceSlug "$workspace_slug" \
-  '{schemaVersion:1,$instanceId,$displayName,deployMode:$deployMode,$appUrl,$supabaseUrl,$publishableKey,$deviceAuthorizationEndpoint} + (if $workspaceSlug == "" then {} else {workspaceSlug:$workspaceSlug} end)' \
+  '{schemaVersion:1,$instanceId,$displayName,deployMode:$deployMode,$appUrl,$supabaseUrl,$publishableKey,$deviceAuthorizationEndpoint,cliAuthProtocol:2} + (if $workspaceSlug == "" then {} else {workspaceSlug:$workspaceSlug} end)' \
   > /tmp/anttodo-config/anttodo.json
 
-jq '{supabaseUrl,publishableKey,appUrl,deviceAuthorizationEndpoint}' \
+jq '{supabaseUrl,publishableKey,appUrl,deviceAuthorizationEndpoint,cliAuthProtocol}' \
   /tmp/anttodo-config/anttodo.json > /tmp/anttodo-config/anttodo-cli.json
 
 chmod 0444 /tmp/anttodo-config/anttodo.json /tmp/anttodo-config/anttodo-cli.json

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   appRoutePath,
   DEFAULT_SMART_VIEW,
+  isOverlayAppRoute,
   parseAppRoute,
+  parseTaskReturnRoute,
   type AppRoute,
 } from "./appRoute";
 
@@ -33,6 +35,7 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "calendar" },
     { workspaceId: "workspace-1", kind: "mindmap" },
     { workspaceId: "workspace-1", kind: "focus" },
+    { workspaceId: "workspace-1", kind: "search" },
   ];
 
   it.each(routes)("round-trips $kind routes", (route) => {
@@ -100,5 +103,98 @@ describe("application routes", () => {
       view: "all",
       mode: "timeline",
     })).toBe("/workspaces/workspace-1/tasks/timeline");
+  });
+});
+
+describe("task return routes", () => {
+  const workspaceId = "workspace-1";
+
+  it.each([
+    { kind: "calendar" },
+    { kind: "mindmap" },
+    { kind: "focus" },
+  ] as const)("accepts $kind overlay return routes", ({ kind }) => {
+    const route = parseTaskReturnRoute({ workspaceId, kind }, workspaceId);
+    expect(route).toEqual({ workspaceId, kind });
+    expect(isOverlayAppRoute(route)).toBe(true);
+  });
+
+  it("accepts list and kanban view/tag return routes and normalizes trash", () => {
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
+      view: "assigned",
+      mode: "list",
+    }, workspaceId)).toEqual({
+      workspaceId,
+      kind: "view",
+      view: "assigned",
+      mode: "list",
+    });
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
+      view: "custom:00000000-0000-4000-8000-000000000001",
+      mode: "kanban",
+    }, workspaceId)).toEqual({
+      workspaceId,
+      kind: "view",
+      view: "custom:00000000-0000-4000-8000-000000000001",
+      mode: "kanban",
+    });
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
+      view: "trash",
+      mode: "kanban",
+    }, workspaceId)).toEqual({
+      workspaceId,
+      kind: "view",
+      view: "trash",
+      mode: "list",
+    });
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "tag",
+      tagId: "tag-1",
+      mode: "kanban",
+    }, workspaceId)).toEqual({
+      workspaceId,
+      kind: "tag",
+      tagId: "tag-1",
+      mode: "kanban",
+    });
+  });
+
+  it("rejects invalid or non-return history state", () => {
+    expect(parseTaskReturnRoute(null, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({ workspaceId: "other", kind: "calendar" }, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({ workspaceId, kind: "search" }, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "task",
+      taskId: "task-1",
+      itemKind: "task",
+    }, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
+      view: "today",
+      mode: "timeline",
+    }, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
+      view: "unknown",
+      mode: "list",
+    }, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "tag",
+      tagId: "",
+      mode: "list",
+    }, workspaceId)).toBeNull();
+    expect(isOverlayAppRoute({ workspaceId, kind: "view", view: "all", mode: "list" })).toBe(false);
+    expect(isOverlayAppRoute(null)).toBe(false);
   });
 });

@@ -19,6 +19,7 @@ import {
   type ParsedTaskDue,
 } from "./lib/parseTaskDateText";
 import { parseEstimateHoursText } from "./lib/taskHours";
+import { isYunxiaoQuickCreateInput } from "./lib/yunxiaoQuickCreate";
 import { mergeLabelIds } from "./lib/taskTitleTokens";
 import { TaskTitleTokenChips, TaskTitleTokenMenu } from "./TaskTitleTokenMenu";
 import { useTaskTitleTokens } from "./useTaskTitleTokens";
@@ -151,7 +152,7 @@ export function QuickAddForm({
   }
 
   useEffect(() => {
-    if (kind !== "todo") {
+    if (kind !== "todo" || isYunxiaoQuickCreateInput(title)) {
       setDateMatch(null);
       setDue(null);
       setDueManual(false);
@@ -204,6 +205,35 @@ export function QuickAddForm({
     const payload = tokens.toSubmitPayload();
     const raw = payload.title;
     if (!raw || !online || busy || !canManage) return;
+
+    if (isYunxiaoQuickCreateInput(raw)) {
+      const previous = {
+        title: tokens.title,
+        assigneeId: tokens.assigneeId,
+        labelIds: tokens.labelIds,
+      };
+      tokens.reset();
+      setDue(null);
+      setDateMatch(null);
+      setDismissedKey(null);
+      setDueManual(false);
+      setDueOpen(false);
+      try {
+        await onSubmit({
+          title: raw.trim(),
+          due: null,
+          estimateHours: null,
+          assigneeId: previous.assigneeId,
+          labelIds: mergeLabelIds(defaultLabelIds, previous.labelIds),
+        });
+      } catch {
+        tokens.setTitle((current) => current || previous.title);
+        tokens.setAssigneeId((current) =>
+          current === (defaultAssigneeId ?? null) ? previous.assigneeId : current);
+        tokens.setLabelIds((current) => (current.length > 0 ? current : previous.labelIds));
+      }
+      return;
+    }
 
     let submitTitle = raw;
     let submitDue = due;

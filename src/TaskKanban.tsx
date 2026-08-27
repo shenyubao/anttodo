@@ -41,6 +41,7 @@ import { getPriorityOption } from "./PriorityControl";
 import { getDueStatus } from "./lib/dueTime";
 import { formatContactDisplayName, useShowContactNames } from "./lib/displayPreference";
 import { formatHoursList, parseEstimateHoursText } from "./lib/taskHours";
+import { isYunxiaoQuickCreateInput } from "./lib/yunxiaoQuickCreate";
 import { aiCliLabel } from "./lib/aiWork";
 import type { KanbanColumn } from "./lib/taskKanban";
 import { customGroupKey } from "./lib/taskList";
@@ -539,7 +540,9 @@ function KanbanColumnView({
     if (tokens.token) return;
     const payload = tokens.toSubmitPayload();
     if (!payload.title || !canCreate) return;
-    const hoursParsed = parseEstimateHoursText(payload.title);
+    const hoursParsed = isYunxiaoQuickCreateInput(payload.title)
+      ? null
+      : parseEstimateHoursText(payload.title);
     const nextPayload = hoursParsed
       ? {
           ...payload,

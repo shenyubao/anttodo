@@ -53,12 +53,14 @@ describe("public configuration", () => {
       supabaseUrl: "https://supabase.example.com",
       publishableKey: "sb_publishable_abcdefghijklmnopqrstuvwxyz",
       deviceAuthorizationEndpoint: "https://supabase.example.com/functions/v1/cli-device-auth",
+      cliAuthProtocol: 2,
     };
     expect(parseServiceManifest(manifest, manifest.appUrl)).toMatchObject({
       appUrl: manifest.appUrl,
       displayName: "Example AntTodo",
     });
     expect(() => parseServiceManifest({ ...manifest, appUrl: "https://other.example.com" }, manifest.appUrl)).toThrow();
+    expect(() => parseServiceManifest({ ...manifest, cliAuthProtocol: undefined }, manifest.appUrl)).toThrow(/protocol v2/);
     expect(() => parseServiceManifest({ ...manifest, deviceAuthorizationEndpoint: "https://evil.example.com/functions/v1/cli-device-auth" }, manifest.appUrl)).toThrow();
   });
 
@@ -75,6 +77,7 @@ describe("public configuration", () => {
       supabaseUrl: "https://supabase.example.com",
       publishableKey: "sb_publishable_production_key",
       deviceAuthorizationEndpoint: "https://supabase.example.com/functions/v1/cli-device-auth",
+      cliAuthProtocol: 2,
     }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -95,6 +98,7 @@ describe("public configuration", () => {
     await expect(loadPublicConfig()).resolves.toMatchObject({
       supabaseUrl: "http://127.0.0.1:54321",
       deviceAuthorizationEndpoint: "http://127.0.0.1:54321/functions/v1/cli-device-auth",
+      cliAuthProtocol: 2,
     });
   });
 

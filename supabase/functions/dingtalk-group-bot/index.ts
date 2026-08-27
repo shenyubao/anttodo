@@ -12,6 +12,7 @@ import {
   escapeDingtalkMarkdown,
   formatDingtalkDue,
 } from "../_shared/dingtalk-notification-cards.ts";
+import { buildTaskOpenUrl, publicAppUrl } from "../_shared/app-url.ts";
 
 type DingtalkRobotPayload = {
   msgId?: unknown;
@@ -40,11 +41,6 @@ function jsonError(message: string, status = 400) {
 
 function text(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function publicAppUrl() {
-  return (Deno.env.get("PUBLIC_APP_URL") ?? "https://app.anttodo.com")
-    .replace(/\/+$/, "");
 }
 
 function safeMarkdown(value: unknown, fallback: string) {
@@ -199,8 +195,8 @@ export default {
       .eq("id", provider.workspace_id)
       .maybeSingle();
     const teamLoginUrl = workspace?.slug
-      ? `${publicAppUrl()}/team/${encodeURIComponent(workspace.slug)}`
-      : publicAppUrl();
+      ? `${publicAppUrl(Deno.env.get("PUBLIC_APP_URL"))}/team/${encodeURIComponent(workspace.slug)}`
+      : publicAppUrl(Deno.env.get("PUBLIC_APP_URL"));
     if (!senderIdentity) {
       await sendMarkdownReply(sessionWebhook, "请先关联 AntTodo 账号", [
         "### 请先关联 AntTodo 账号",
@@ -298,15 +294,19 @@ export default {
           timeZone: parsed.due.due_timezone,
         })
       : "无";
-    const taskUrl = `${publicAppUrl()}/workspaces/${encodeURIComponent(provider.workspace_id)}` +
-      `/tasks/${encodeURIComponent(creation.task_id)}`;
-    await sendMarkdownReply(sessionWebhook, "AntTodo 任务已创建", [
+    const taskUrl = buildTaskOpenUrl(
+      provider.workspace_id,
+      creation.task_id,
+      null,
+      Deno.env.get("PUBLIC_APP_URL"),
+    );
+    await sendMarkdownReply(sessionWebhook, "蚂蚁清单 任务已创建", [
       `### ${creation.duplicate ? "任务已存在" : "任务已创建"}`,
       `**${safeMarkdown(parsed.title, "未命名任务")}**`,
       `负责人：${safeMarkdown(assigneeName, "未指派")}`,
       `标签：${safeMarkdown(labelText, "无")}`,
       `截止时间：${escapeDingtalkMarkdown(dueText)}`,
-      `[打开 AntTodo 查看任务](${taskUrl})`,
+      `[打开蚂蚁清单查看任务](${taskUrl})`,
     ]);
     return Response.json({
       ok: true,

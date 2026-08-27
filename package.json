@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608241939",
+  "version": "1.0.202608261354",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -59,6 +59,7 @@
     "cli:test:browser": "pnpm --filter @anttodos/cli test:browser",
     "cli:pack": "pnpm --filter @anttodos/cli pack:check",
     "cli:verify": "pnpm --filter @anttodos/cli typecheck && pnpm --filter @anttodos/cli test && pnpm --filter @anttodos/cli pack:check",
+    "cli:oauth:configure": "node scripts/configure-cli-oauth.mjs",
     "bump:cli-version": "node scripts/bump-app-version.mjs cli/package.json",
     "deploy:cli": "pnpm bump:cli-version && pnpm cli:verify && node scripts/publish-cli.mjs"
   },

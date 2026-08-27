@@ -2,8 +2,14 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
 import { resolveUser } from "../_shared/resolveUser.ts";
 import {
+  getWorkitem,
+  getWorkitemWorkflow,
+  isYunxiaoQuickCreateConfig,
+  pickYunxiaoCompletedStatus,
   updateWorkitemStatus,
   validateYunxiaoPublicConfig,
+  validateYunxiaoQuickCreateConfig,
+  yunxiaoWorkitemSpaceId,
 } from "../_shared/yunxiao.ts";
 
 function jsonError(message: string, status: number) {
@@ -31,16 +37,19 @@ export default {
       .select("id,created_by,enabled,type,public_config")
       .eq("id", task.connector_id)
       .maybeSingle();
-    if (
-      connectorError || !connector || connector.type !== "yunxiao" ||
-      task.created_by !== user.id || connector.created_by !== user.id
-    ) {
+    if (connectorError || !connector || connector.type !== "yunxiao") {
+      return jsonError("External task not found", 404);
+    }
+    const isQuickCreate = isYunxiaoQuickCreateConfig(connector.public_config);
+    const canComplete = isQuickCreate
+      ? task.created_by === user.id || connector.created_by === user.id
+      : task.created_by === user.id && connector.created_by === user.id;
+    if (!canComplete) {
       return jsonError("Only the connector owner may complete this task", 403);
     }
     if (!connector.enabled) return jsonError("Connector is disabled", 409);
     if (task.status === "completed") return Response.json({ task, completed: true });
 
-    const config = validateYunxiaoPublicConfig(connector.public_config);
     const { data: token, error: tokenError } = await ctx.supabaseAdmin.rpc(
       "get_connector_secret",
       { p_connector_id: connector.id },
@@ -48,11 +57,40 @@ export default {
     if (tokenError || typeof token !== "string" || !token) {
       return jsonError("Yunxiao token is not configured", 422);
     }
+
+    let organizationId: string;
+    let completedStatusId: string;
     try {
+      if (isQuickCreate) {
+        const config = validateYunxiaoQuickCreateConfig(connector.public_config);
+        organizationId = config.organizationId;
+        const workitem = await getWorkitem(organizationId, task.external_id, token);
+        if (!workitem) throw new Error("未找到对应的云效工作项");
+        const projectId = yunxiaoWorkitemSpaceId(workitem);
+        const workitemTypeId = String(workitem.workitemType?.id ?? "").trim();
+        if (!projectId || !workitemTypeId) {
+          throw new Error("云效工作项缺少项目或类型，无法回写完成状态");
+        }
+        const statuses = await getWorkitemWorkflow(
+          organizationId,
+          projectId,
+          workitemTypeId,
+          token,
+        );
+        const completedStatus = pickYunxiaoCompletedStatus(statuses);
+        if (!completedStatus) {
+          throw new Error("未找到可用于完成的云效状态");
+        }
+        completedStatusId = completedStatus.id;
+      } else {
+        const config = validateYunxiaoPublicConfig(connector.public_config);
+        organizationId = config.organizationId;
+        completedStatusId = config.completedStatusId;
+      }
       await updateWorkitemStatus(
-        config.organizationId,
+        organizationId,
         task.external_id,
-        config.completedStatusId,
+        completedStatusId,
         token,
       );
     } catch (error) {

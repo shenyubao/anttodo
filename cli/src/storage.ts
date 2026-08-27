@@ -1,10 +1,10 @@
 import { constants } from "node:fs";
-import { access, chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { SupportedStorage } from "@supabase/supabase-js";
-import type { PendingAuthorization, PublicConfig, ServiceConfig } from "./types.js";
+import type { CliCredential, PendingAuthorization, PublicConfig, ServiceConfig } from "./types.js";
 
 function stateDirectory() {
   if (process.env.ANTTODO_STATE_DIR) return process.env.ANTTODO_STATE_DIR;
@@ -138,6 +138,32 @@ export class FileAuthStorage implements SupportedStorage {
   }
 }
 
+export async function readCliCredential(serviceKey = activeServiceKey) {
+  const value = await readJson<unknown>(storageFile("auth.json", serviceKey), null);
+  if (!value || typeof value !== "object") return { credential: null, legacy: false };
+  const candidate = value as Partial<CliCredential>;
+  if (candidate.schemaVersion !== 2) return { credential: null, legacy: true };
+  if (typeof candidate.deviceId !== "string" || typeof candidate.secret !== "string"
+    || !candidate.user || typeof candidate.user.id !== "string") {
+    return { credential: null, legacy: false };
+  }
+  return { credential: candidate as CliCredential, legacy: false };
+}
+
+export async function saveCliCredential(credential: CliCredential, serviceKey = activeServiceKey) {
+  await atomicWrite(storageFile("auth.json", serviceKey), credential);
+}
+
+export async function updateCliAccessToken(
+  accessToken: string,
+  accessTokenExpiresAt: string,
+  serviceKey = activeServiceKey,
+) {
+  const { credential } = await readCliCredential(serviceKey);
+  if (!credential) return;
+  await saveCliCredential({ ...credential, accessToken, accessTokenExpiresAt }, serviceKey);
+}
+
 export async function clearAuthStorage(serviceKey = activeServiceKey) {
   await unlink(storageFile("auth.json", serviceKey)).catch(() => undefined);
 }
@@ -174,9 +200,12 @@ export async function savePendingAuthorization(pending: PendingAuthorization) {
 }
 
 export async function loadPendingAuthorization(deviceCode: string, serviceKey?: string) {
+  const discoveredServiceKeys = serviceKey ? [] : await readdir(join(STATE_DIR, "services"), { withFileTypes: true })
+    .then((entries) => entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name))
+    .catch(() => [] as string[]);
   const keys = serviceKey
     ? [serviceKey]
-    : ["official", ...(await listStoredServices()).map((service) => service.serviceKey)];
+    : ["official", ...(await listStoredServices()).map((service) => service.serviceKey), ...discoveredServiceKeys];
   for (const key of [...new Set(keys)]) {
     const all = await readJson<Record<string, PendingAuthorization>>(storageFile("pending-authorizations.json", key), {});
     if (all[deviceCode]) return all[deviceCode];

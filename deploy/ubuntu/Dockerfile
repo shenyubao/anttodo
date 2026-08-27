@@ -9,6 +9,9 @@ COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.jso
 COPY public ./public
 COPY src ./src
 COPY supabase/functions/_shared/ai-feature-prompts.ts ./supabase/functions/_shared/ai-feature-prompts.ts
+COPY supabase/functions/_shared/task-date-parser.ts ./supabase/functions/_shared/task-date-parser.ts
+COPY supabase/functions/_shared/time-zone-core.ts ./supabase/functions/_shared/time-zone-core.ts
+COPY supabase/functions/_shared/yunxiao.ts ./supabase/functions/_shared/yunxiao.ts
 RUN pnpm build:web
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine

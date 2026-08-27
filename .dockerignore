@@ -29,6 +29,9 @@ supabase/functions/*
 !supabase/functions/_shared/
 supabase/functions/_shared/*
 !supabase/functions/_shared/ai-feature-prompts.ts
+!supabase/functions/_shared/task-date-parser.ts
+!supabase/functions/_shared/time-zone-core.ts
+!supabase/functions/_shared/yunxiao.ts
 tests
 ios/App/App/public
 release

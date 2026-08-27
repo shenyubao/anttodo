@@ -15,17 +15,32 @@ export function ConnectorSyncButton({
   connectors,
   online,
   onNotice,
+  variant = "rail",
+  active = true,
+  onStatusChange,
 }: {
   workspaceId: string;
   connectors: Connector[];
   online: boolean;
   onNotice: (message: string) => void;
+  variant?: "rail" | "menu";
+  active?: boolean;
+  onStatusChange?: (status: { busy: boolean; error: boolean }) => void;
 }) {
   const queryClient = useQueryClient();
   const syncable = useMemo(() => manualSyncConnectors(connectors), [connectors]);
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [hasError, setHasError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
+
+  useEffect(() => {
+    onStatusChange?.({ busy: Boolean(busyId), error: hasError });
+  }, [busyId, hasError, onStatusChange]);
 
   useEffect(() => {
     if (!open) return;
@@ -50,6 +65,7 @@ export function ConnectorSyncButton({
       return;
     }
     setBusyId(connector.id);
+    setHasError(false);
     try {
       await invokeConnectorSync(connector.id);
       await Promise.all([
@@ -59,18 +75,36 @@ export function ConnectorSyncButton({
       setOpen(false);
       onNotice("云效同步完成");
     } catch (cause) {
+      setHasError(true);
       onNotice(cause instanceof Error ? cause.message : "同步失败");
     } finally {
       setBusyId(null);
     }
   }, [busyId, onNotice, online, queryClient, workspaceId]);
 
-  if (syncable.length === 0) return null;
+  if (syncable.length === 0) {
+    if (variant === "rail") return null;
+    return (
+      <div className="connector-sync-anchor">
+        <button
+          className="embedded-more-action"
+          type="button"
+          aria-label="同步连接器"
+          disabled
+        >
+          <RefreshCw />
+          <span>
+            <strong>连接器同步</strong>
+          </span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="connector-sync-anchor" ref={rootRef}>
       <button
-        className="rail-button"
+        className={variant === "menu" ? "embedded-more-action" : "rail-button"}
         type="button"
         aria-label="同步连接器"
         aria-haspopup="menu"
@@ -78,6 +112,11 @@ export function ConnectorSyncButton({
         onClick={() => setOpen((value) => !value)}
       >
         <RefreshCw className={busyId ? "spin" : undefined} />
+        {variant === "menu" && (
+          <span>
+            <strong>连接器同步</strong>
+          </span>
+        )}
       </button>
       {open && (
         <div className="connector-sync-menu" role="menu" aria-label="连接器列表">

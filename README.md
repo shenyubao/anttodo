@@ -254,6 +254,10 @@ pnpm cli:test:integration
 pnpm cli:test:browser
 ```
 
+CLI 使用独立的长期设备凭据，OAuth refresh token 只保存在 Vault，客户端仅缓存
+最长 15 分钟的 access JWT。OAuth client、官方服务和自托管部署步骤见
+[CLI 独立设备认证部署](docs/cli-oauth-deployment.md)。
+
 `pnpm deploy:cli` 会先按 macOS 相同规则把 `@anttodos/cli` 版本写成
 `1.0.YYYYMMDDHHmm`，再执行类型检查、单元测试和 tarball 检查，最后运行
 `npm publish ./cli --access public`。发布前必须已经 `npm login`，且账号是

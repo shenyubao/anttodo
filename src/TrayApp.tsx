@@ -38,6 +38,9 @@ import { CALENDAR_UNASSIGNED_ID } from "./lib/calendarVisibility";
 import { taskOccupiesCalendarDate } from "./lib/calendarScheduling";
 import { assertCanAssociateTaskLabels } from "./lib/labelTaskLimits";
 import {
+  importYunxiaoWorkitemFromText,
+} from "./lib/yunxiaoQuickCreate";
+import {
   DEFAULT_DATE_TIME_PREFERENCES,
   formatDueWithPreferences,
 } from "./lib/dateTimePreferences";
@@ -455,6 +458,11 @@ export function TrayApp({
     setBusy(true);
     setNotice("");
     try {
+      const imported = await importYunxiaoWorkitemFromText(workspaceId, title);
+      if (imported) {
+        await queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+        return;
+      }
       assertCanAssociateTaskLabels(bundle?.labelTaskCounts, payload.labelIds);
       const created = await createTask(client, {
         workspaceId,

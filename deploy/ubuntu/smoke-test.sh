@@ -56,15 +56,20 @@ printf '%s' "$manifest" | jq -e '
   .appUrl == "https://todo.yuce-tech.cn" and
   .supabaseUrl == "https://supabase.example.com" and
   .deviceAuthorizationEndpoint == "https://supabase.example.com/functions/v1/cli-device-auth" and
+  .cliAuthProtocol == 2 and
   (has("serviceRoleKey") | not) and
   (has("databasePassword") | not)
 ' >/dev/null
 curl -fsS "$base_url/.well-known/anttodo-cli.json" | jq -e \
-  '.appUrl == "https://todo.yuce-tech.cn"' >/dev/null
+  '.appUrl == "https://todo.yuce-tech.cn" and .cliAuthProtocol == 2' >/dev/null
 
 html_headers=$(curl -fsSI "$base_url/workspaces/deep-link" | tr -d '\r')
 printf '%s\n' "$html_headers" | grep -Eiq '^Cache-Control: no-cache$'
-printf '%s\n' "$html_headers" | grep -Eiq '^X-Frame-Options: SAMEORIGIN$'
+printf '%s\n' "$html_headers" | grep -Eiq '^Content-Security-Policy: frame-ancestors \*$'
+if printf '%s\n' "$html_headers" | grep -Eiq '^X-Frame-Options:'; then
+  echo "HTML response must not send X-Frame-Options when cross-origin embedding is enabled" >&2
+  exit 1
+fi
 manifest_headers=$(curl -fsSI "$base_url/.well-known/anttodo.json" | tr -d '\r')
 printf '%s\n' "$manifest_headers" | grep -Eiq '^Access-Control-Allow-Origin: \*$'
 printf '%s\n' "$manifest_headers" | grep -Eiq '^Cache-Control: no-store$'

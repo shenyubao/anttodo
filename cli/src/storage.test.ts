@@ -16,8 +16,8 @@ describe("credential storage", () => {
     const directory = await mkdtemp(join(tmpdir(), "anttodo-cli-storage-"));
     temporaryDirectories.push(directory);
     process.env.ANTTODO_STATE_DIR = directory;
-    const { FileAuthStorage, setDefaultWorkspace } = await import("./storage.js");
-    await new FileAuthStorage().setItem("session", "secret");
+    const { saveCliCredential, setDefaultWorkspace } = await import("./storage.js");
+    await saveCliCredential({ schemaVersion: 2, deviceId: "device", secret: "secret", user: { id: "user", email: null, phone: null }, credentialExpiresAt: null });
     await setDefaultWorkspace("user", "workspace");
 
     if (process.platform !== "win32") {
@@ -25,7 +25,7 @@ describe("credential storage", () => {
       expect((await stat(join(directory, "auth.json"))).mode & 0o777).toBe(0o600);
       expect((await stat(join(directory, "settings.json"))).mode & 0o777).toBe(0o600);
     }
-    expect(JSON.parse(await readFile(join(directory, "auth.json"), "utf8"))).toEqual({ session: "secret" });
+    expect(JSON.parse(await readFile(join(directory, "auth.json"), "utf8"))).toMatchObject({ schemaVersion: 2, deviceId: "device", secret: "secret" });
     await expect((await import("node:fs/promises")).readdir(directory).then((files) => files.some((file) => file.endsWith(".tmp"))))
       .resolves.toBe(false);
   });
@@ -34,14 +34,23 @@ describe("credential storage", () => {
     const directory = await mkdtemp(join(tmpdir(), "anttodo-cli-service-storage-"));
     temporaryDirectories.push(directory);
     process.env.ANTTODO_STATE_DIR = directory;
-    const { FileAuthStorage, setActiveServiceKey } = await import("./storage.js");
+    const { readCliCredential, saveCliCredential, setActiveServiceKey } = await import("./storage.js");
 
     setActiveServiceKey("service-a");
-    await new FileAuthStorage("service-a").setItem("session", "a");
+    await saveCliCredential({ schemaVersion: 2, deviceId: "a", secret: "a", user: { id: "user-a", email: null, phone: null }, credentialExpiresAt: null }, "service-a");
     setActiveServiceKey("service-b");
-    await new FileAuthStorage("service-b").setItem("session", "b");
+    await saveCliCredential({ schemaVersion: 2, deviceId: "b", secret: "b", user: { id: "user-b", email: null, phone: null }, credentialExpiresAt: null }, "service-b");
 
-    await expect(new FileAuthStorage("service-a").getItem("session")).resolves.toBe("a");
-    await expect(new FileAuthStorage("service-b").getItem("session")).resolves.toBe("b");
+    await expect(readCliCredential("service-a")).resolves.toMatchObject({ credential: { deviceId: "a" }, legacy: false });
+    await expect(readCliCredential("service-b")).resolves.toMatchObject({ credential: { deviceId: "b" }, legacy: false });
+  });
+
+  it("detects the retired Supabase session format", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "anttodo-cli-legacy-storage-"));
+    temporaryDirectories.push(directory);
+    process.env.ANTTODO_STATE_DIR = directory;
+    const { FileAuthStorage, readCliCredential } = await import("./storage.js");
+    await new FileAuthStorage().setItem("supabase-session", "legacy-token");
+    await expect(readCliCredential()).resolves.toEqual({ credential: null, legacy: true });
   });
 });
