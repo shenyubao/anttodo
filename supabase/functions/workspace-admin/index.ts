@@ -90,7 +90,7 @@ export default {
 
     const { data: membership, error: membershipError } = await ctx.supabaseAdmin
       .from("workspace_members")
-      .select("role, workspaces!inner(name)")
+      .select("role, workspaces!workspace_members_workspace_id_fkey!inner(name)")
       .eq("workspace_id", body.workspaceId)
       .eq("user_id", userId)
       .maybeSingle();

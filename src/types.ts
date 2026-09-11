@@ -1,5 +1,12 @@
 export type NoticeTone = "success" | "error";
-export type NoticeHandler = (message: string, tone?: NoticeTone) => void;
+export type NoticeOptions = {
+  id?: string;
+  /** Only replace this notice if it is still visible after an async action. */
+  replaceId?: string;
+  durationMs?: number;
+  action?: { label: string; run: () => Promise<void> };
+};
+export type NoticeHandler = (message: string, tone?: NoticeTone, options?: NoticeOptions) => void;
 export type WorkspaceRole = "owner" | "admin" | "member";
 export type WorkspaceInviteRole = Exclude<WorkspaceRole, "owner">;
 export type LabelKind = "private" | "team";
@@ -51,6 +58,33 @@ export type TaskListFilterDue =
 export type TaskListFilterDueSelection = TaskListFilterDue[];
 export type SortDirection = "asc" | "desc";
 
+export type MatrixQuadrantKey =
+  | "important_urgent"
+  | "important_not_urgent"
+  | "not_important_urgent"
+  | "not_important_not_urgent";
+export type MatrixDueBucket = "overdue" | "today" | "tomorrow" | "later" | "none";
+export type MatrixGrouping = "due" | "label" | "priority" | "none";
+export type MatrixSort = "due" | "title" | "priority" | "created";
+export type MatrixRuleDefinition = {
+  labels: "all" | string[];
+  due: "all" | MatrixDueBucket[];
+  priorities: "all" | TaskPriority[];
+  kinds: "all" | TaskKind[];
+  assignee: "all" | string;
+};
+export type MatrixQuadrantPreference = {
+  user_id: string;
+  workspace_id: string;
+  quadrant_key: MatrixQuadrantKey;
+  name: string;
+  definition: MatrixRuleDefinition;
+  grouping: MatrixGrouping;
+  sort: MatrixSort;
+  direction: SortDirection;
+  updated_at?: string;
+};
+
 export type DateTimePreferences = {
   timeFormat: TimeFormat;
   dateFormat: DateFormat;
@@ -80,6 +114,215 @@ export type AiFeatureSettings = {
 
 export type FocusSessionMode = "pomodoro" | "stopwatch";
 export type FocusSessionKind = "focus" | "short_break" | "long_break";
+
+export type OkrCycleStatus = "draft" | "active" | "closed";
+export type OkrVisibility = "inherit" | "workspace" | "restricted";
+export type OkrProgressStatus = "none" | "normal" | "risk" | "delayed";
+export type OkrProgressMode = "manual" | "key_results";
+export type OkrStatusMode = "manual" | "automatic";
+export type OkrMetricUnit = "percent" | "cny" | "usd" | "none" | "custom";
+
+export type WeeklyReportStatus = "draft" | "published";
+export type WeeklyReportVisibility = "workspace" | "users" | "groups";
+export type WeeklyReportNotificationDeliveryStatus = "pending" | "sending" | "sent" | "failed" | "superseded";
+
+export type WeeklyReportNotificationGroup = {
+  id: string;
+  workspace_id: string;
+  type: "dingtalk";
+  name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WeeklyReportNotificationSummary = {
+  revision: number;
+  total: number;
+  sent: number;
+  failed: number;
+  pending: number;
+  failed_group_names: string[];
+};
+
+export type WeeklyReport = {
+  id: string;
+  workspace_id: string;
+  author_id: string;
+  week_start: string;
+  completed_text: string;
+  next_plan_text: string;
+  reflection_text: string;
+  status: WeeklyReportStatus;
+  visibility: WeeklyReportVisibility;
+  user_acl_ids: string[];
+  group_acl_ids: string[];
+  notification_group_ids: string[];
+  notification_revision: number;
+  notification_summary: WeeklyReportNotificationSummary | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OkrCycle = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  starts_on: string;
+  ends_on: string;
+  status: OkrCycleStatus;
+  position: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OkrBreakdown = {
+  id: string;
+  key_result_id: string;
+  workspace_id: string;
+  user_id: string;
+  allocated_value: number;
+  position: number;
+};
+
+export type OkrKeyResult = {
+  id: string;
+  objective_id: string;
+  workspace_id: string;
+  title: string;
+  position: number;
+  visibility: OkrVisibility;
+  status_mode: OkrStatusMode;
+  progress_status: OkrProgressStatus;
+  start_value: number;
+  target_value: number;
+  current_value: number | null;
+  metric_unit: OkrMetricUnit;
+  custom_unit: string | null;
+  weight: number;
+  score: number | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  responsible_ids: string[];
+  user_acl_ids: string[];
+  group_acl_ids: string[];
+  breakdowns: OkrBreakdown[];
+};
+
+export type OkrObjective = {
+  id: string;
+  set_id: string;
+  workspace_id: string;
+  title: string;
+  note: string;
+  position: number;
+  visibility: OkrVisibility;
+  progress_mode: OkrProgressMode;
+  status_mode: OkrStatusMode;
+  progress_status: OkrProgressStatus;
+  start_value: number;
+  target_value: number;
+  current_value: number | null;
+  metric_unit: OkrMetricUnit;
+  custom_unit: string | null;
+  score: number | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  responsible_ids: string[];
+  user_acl_ids: string[];
+  group_acl_ids: string[];
+  alignment_target_id: string | null;
+  key_results: OkrKeyResult[];
+};
+
+export type OkrSet = {
+  id: string;
+  workspace_id: string;
+  cycle_id: string;
+  owner_id: string;
+  visibility: Exclude<OkrVisibility, "inherit">;
+  published_version: number;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  objectives: OkrObjective[];
+  user_acl_ids: string[];
+  group_acl_ids: string[];
+};
+
+export type OkrProgressRecord = {
+  id: string;
+  objective_id: string | null;
+  key_result_id: string | null;
+  workspace_id: string;
+  actor_id: string;
+  previous_value: number | null;
+  current_value: number | null;
+  previous_status: OkrProgressStatus | null;
+  current_status: OkrProgressStatus;
+  detail: string;
+  created_at: string;
+};
+
+export type OkrVersion = {
+  id: string;
+  set_id: string;
+  workspace_id: string;
+  version: number;
+  snapshot: Record<string, unknown>;
+  published_by: string;
+  published_at: string;
+};
+
+export type OkrDisplayPreferences = {
+  id?: string;
+  user_id: string;
+  workspace_id: string;
+  cycle_id: string | null;
+  show_progress: boolean;
+  show_score: boolean;
+  show_weight: boolean;
+  apply_all_cycles: boolean;
+  updated_at?: string;
+};
+
+export type TaskOkrLink = {
+  task_id: string;
+  key_result_id: string;
+  workspace_id: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  owner_id: string;
+  cycle_id: string;
+  cycle_name: string;
+  objective_id: string;
+  objective_title: string;
+  key_result_title: string;
+};
+
+export type OkrLinkedTaskSummary = {
+  task_id: string;
+  workspace_id: string;
+  parent_task_id: string | null;
+  title: string;
+  kind: TaskKind;
+  status: TaskStatus;
+  due_at: string | null;
+  assignee_id: string | null;
+  updated_at: string;
+  key_result_id: string;
+  key_result_title: string;
+  key_result_position: number;
+};
+
+export type MyActiveOkrTree = {
+  cycle: OkrCycle;
+  set: OkrSet | null;
+};
 
 export type FocusSession = {
   id: string;
@@ -185,6 +428,8 @@ export type Label = {
   inherit_permissions: boolean;
   position: number;
   created_by: string;
+  is_system?: boolean;
+  owner_user_id?: string | null;
 };
 
 export type LabelUserAcl = {
@@ -515,6 +760,13 @@ export type UserLabelOrder = {
   position: number;
 };
 
+export type UserSidebarMember = {
+  user_id: string;
+  workspace_id: string;
+  member_user_id: string;
+  created_at: string;
+};
+
 export type WorkspaceBundle = {
   members: Member[];
   userGroups: UserGroup[];
@@ -524,6 +776,7 @@ export type WorkspaceBundle = {
   labelGroupAcls: LabelGroupAcl[];
   labelPermissionLevels: Record<string, LabelPermissionLevel>;
   userLabelOrder: UserLabelOrder[];
+  userSidebarMembers: UserSidebarMember[];
   labelTaskCounts: Record<string, number>;
   tasks: Task[];
   connectors: Connector[];
@@ -532,6 +785,7 @@ export type WorkspaceBundle = {
   taskListPreferences: TaskListPreference[];
   customTaskViews: CustomTaskView[];
   taskSystemViewPreferences: TaskSystemViewPreference[];
+  matrixQuadrantPreferences: MatrixQuadrantPreference[];
   taskSections: TaskSection[];
   taskPlacements: TaskPlacement[];
 };

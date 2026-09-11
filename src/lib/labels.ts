@@ -9,6 +9,59 @@ import type {
 
 export const DEFAULT_LABEL_COLOR = "#b8bdc8";
 
+export function isSystemLabel(label: Pick<Label, "is_system"> | null | undefined) {
+  return Boolean(label?.is_system);
+}
+
+export function userLabels<T extends Pick<Label, "is_system">>(labels: readonly T[]): T[] {
+  return labels.filter((label) => !isSystemLabel(label));
+}
+
+export function systemLabelIdSet(
+  labels: Iterable<Pick<Label, "id" | "is_system">>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const label of labels) {
+    if (isSystemLabel(label)) ids.add(label.id);
+  }
+  return ids;
+}
+
+export function userSpaceLabelFor(
+  labels: Iterable<Pick<Label, "id" | "is_system" | "owner_user_id">>,
+  userId: string,
+) {
+  for (const label of labels) {
+    if (isSystemLabel(label) && label.owner_user_id === userId) return label;
+  }
+  return null;
+}
+
+export function taskUserLabelIds(
+  labelIds: readonly string[],
+  labels: Iterable<Pick<Label, "id" | "is_system">>,
+) {
+  const systemIds = systemLabelIdSet(labels);
+  return labelIds.filter((labelId) => !systemIds.has(labelId));
+}
+
+export function taskHasUserLabels(
+  task: Pick<{ label_ids: readonly string[] }, "label_ids">,
+  labels: Iterable<Pick<Label, "id" | "is_system">>,
+) {
+  return taskUserLabelIds(task.label_ids, labels).length > 0;
+}
+
+export function defaultViewLabelIds(input: {
+  selectedLabelId: string | null;
+  userViewId?: string | null;
+  labels: Iterable<Pick<Label, "id" | "is_system" | "owner_user_id">>;
+}) {
+  if (input.selectedLabelId) return [input.selectedLabelId];
+  const space = input.userViewId ? userSpaceLabelFor(input.labels, input.userViewId) : null;
+  return space ? [space.id] : [];
+}
+
 export const LABEL_COLORS = [
   "#ff6161",
   "#ffac38",

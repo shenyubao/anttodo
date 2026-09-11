@@ -51,7 +51,8 @@ options) to build and execute the local CLI.
 The CLI also exposes task/note editing and bulk status operations, completed
 pomodoro and stopwatch session recording, reminder and
 recurrence schedules, task-tree editing/assignment/reordering, tag access and
-ordering management, workspace administration and invite links, full-text task
+ordering management, workspace administration and invite links, weekly report
+list/get/create/update/publish, full-text task
 search, comments, activity history, and attachment upload/download/signed URLs.
 Use `anttodo man` as the machine-readable API contract.
 

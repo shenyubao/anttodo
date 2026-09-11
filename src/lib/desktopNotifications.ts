@@ -83,7 +83,7 @@ export function buildDesktopReminderEntries(
         recipientId: childTask.assignee_id ?? task.assignee_id ?? task.created_by,
         reminders: childTask.reminders ?? [],
         persistent: childTask.reminder_persistent,
-        skip: (childTask.status === "completed"),
+        skip: childTask.status !== "open",
       })),
     ];
     for (const source of reminderSources) {

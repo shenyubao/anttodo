@@ -73,20 +73,26 @@ function columns(grouping: "custom" | "due" | "label" | "priority" | "assignee" 
 }
 
 describe("task kanban", () => {
-  it("keeps empty due columns and groups notes with todos", () => {
+  it("keeps empty due columns and closed tasks in their due groups", () => {
     const result = columns("due", [
       task("today", { due_at: "2026-08-03T04:00:00.000Z" }),
       task("note", { kind: "note" }),
-      task("done", { status: "completed", completed_at: now.toISOString() }),
+      task("done", {
+        status: "completed",
+        completed_at: now.toISOString(),
+        due_at: "2026-08-03T04:00:00.000Z",
+      }),
+      task("cancelled", { status: "cancelled" }),
     ]);
     expect(result.map((column) => column.title)).toEqual([
-      "已过期", "今天", "明天", "本周", "以后", "无日期", "已完成",
+      "已过期", "今天", "明天", "本周", "以后", "无日期",
     ]);
     expect(result.find((column) => column.title === "今天")?.tasks.map((item) => item.id))
-      .toEqual(["today"]);
+      .toEqual(["done", "today"]);
     expect(result.find((column) => column.title === "无日期")?.tasks.map((item) => item.id))
-      .toEqual(["note"]);
+      .toEqual(["cancelled", "note"]);
     expect(result.some((column) => column.id === "notes")).toBe(false);
+    expect(result.some((column) => column.id === "completed")).toBe(false);
   });
 
   it("duplicates multi-label tasks and omits unreachable no-label column in a label view", () => {

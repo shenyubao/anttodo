@@ -1,3 +1,8 @@
+import { SortableTaskTree } from "./SortableTaskTree";
+import { TaskStatusMenuItems, useTaskStatusActions } from "./TaskStatusActions";
+import { TaskStatusIcon } from "./TaskStatusIcon";
+import { TaskOkrPicker } from "./TaskOkrPicker";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import clsx from "clsx";
 import {
@@ -9,6 +14,7 @@ import {
   Ellipsis,
   Flag,
   GitFork,
+  GripVertical,
   History,
   Inbox,
   Link2,
@@ -19,6 +25,7 @@ import {
   Search,
   Sparkles,
   SquareTerminal,
+  Target,
   Trash2,
   Type,
   UserRound,
@@ -64,11 +71,14 @@ import {
 } from "./lib/aiTaskFormat";
 import { formatTaskWithAi } from "./lib/api";
 import { taskShareUrl } from "./lib/appRoute";
+import { createDemoOkrData } from "./lib/demoOkr";
+import { loadTaskOkrLink, setTaskOkrLink, taskOkrLinkKey } from "./lib/okrApi";
 import { formatDueWithPreferences, systemTimeZone, toDateInput } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { canOrganizeTask } from "./lib/permissions";
-import { orderedLabels as orderedLabelsTree } from "./lib/taskList";
+import { userLabels } from "./lib/labels";
+import { LabelTreeMenuItems } from "./LabelTreeMenuItems";
 import {
   dependencyTargetKey,
   filterPickerTasksForDependency,
@@ -130,6 +140,8 @@ import type {
   TaskActivityPage,
   TaskComment,
   TaskDependencyTarget,
+  OkrLinkedTaskSummary,
+  TaskOkrLink,
   WorkspaceBundle,
 } from "./types";
 
@@ -167,6 +179,7 @@ export type TaskDetailProps = {
   settingsLabelName?: string | null;
   onClose: () => void;
   onOpenTask?: (taskId: string) => void;
+  onOpenOkr?: (link: TaskOkrLink) => void;
   onUpdate: (
     patch: Partial<Task>,
     options?: { mentionedUserIds?: string[] },
@@ -647,9 +660,7 @@ function TaskLabelControl({
     };
   }, [open]);
 
-  const selectedLabels = bundle.labels.filter((label) => draftLabelIds.has(label.id));
-  const orderedLabels = orderedLabelsTree(bundle.labels, bundle.userLabelOrder);
-
+  const selectedLabels = userLabels(bundle.labels).filter((label) => draftLabelIds.has(label.id));
   async function toggle(labelId: string) {
     if (!online || savingLabelId) return;
     const previous = new Set(draftLabelIds);
@@ -695,24 +706,15 @@ function TaskLabelControl({
       </button>
       {open && (
         <div className="task-label-menu" role="menu" aria-label="选择任务标签">
-          {orderedLabels.map((label) => {
-            const selected = draftLabelIds.has(label.id);
-            return (
-              <button
-                key={label.id}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={selected}
-                disabled={Boolean(savingLabelId) || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
-                onClick={() => void toggle(label.id)}
-              >
-                <i style={{ background: label.color }} />
-                <span>{label.name}</span>
-                {selected && <Check />}
-              </button>
-            );
-          })}
-          {orderedLabels.length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
+          <LabelTreeMenuItems
+            labels={bundle.labels}
+            userLabelOrder={bundle.userLabelOrder}
+            selectionFor={(label) => draftLabelIds.has(label.id)}
+            disabledFor={(label) => Boolean(savingLabelId)
+              || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
+            onToggle={(label) => void toggle(label.id)}
+          />
+          {userLabels(bundle.labels).length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
           {error && <p className="task-label-menu-error" role="alert">{error}</p>}
         </div>
       )}
@@ -913,18 +915,24 @@ function TaskHoursDialog({
 
 function TaskMoreMenu({
   task,
+  currentUserId,
   online,
+  okrOnline,
+  canAssociateOkr,
   pomodoroMinutes,
   onUpdate,
   onShowActivity,
   onNotice,
   onMountDependencies,
-}: Pick<TaskDetailProps, "task" | "online" | "pomodoroMinutes" | "onUpdate" | "onNotice"> & {
+}: Pick<TaskDetailProps, "task" | "currentUserId" | "online" | "pomodoroMinutes" | "onUpdate" | "onNotice"> & {
+  canAssociateOkr: boolean;
+  okrOnline: boolean;
   onShowActivity: () => void;
   onMountDependencies?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
+  const [okrOpen, setOkrOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [position, setPosition] = useState<CSSProperties>({});
@@ -940,6 +948,7 @@ function TaskMoreMenu({
   useEffect(() => {
     setOpen(false);
     setHoursOpen(false);
+    setOkrOpen(false);
     setError("");
   }, [task.id]);
 
@@ -1087,7 +1096,7 @@ function TaskMoreMenu({
             <button
               type="button"
               role="menuitem"
-              disabled={!online || saving}
+              disabled={!okrOnline || saving}
               onClick={() => {
                 setOpen(false);
                 onMountDependencies();
@@ -1095,6 +1104,20 @@ function TaskMoreMenu({
             >
               <GitFork />
               <span>挂载依赖任务</span>
+            </button>
+          )}
+          {task.kind !== "note" && !task.deleted_at && canAssociateOkr && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!online || saving}
+              onClick={() => {
+                setOpen(false);
+                setOkrOpen(true);
+              }}
+            >
+              <Target />
+              <span>关联 OKR</span>
             </button>
           )}
           <button
@@ -1106,6 +1129,7 @@ function TaskMoreMenu({
             {task.kind === "note" ? <ListTodo /> : <NotebookPen />}
             <span>{task.kind === "note" ? "切换为待办" : "切换为笔记"}</span>
           </button>
+          <TaskStatusMenuItems tasks={[task]} onClose={() => setOpen(false)} />
           {error && <p role="alert">{error}</p>}
         </div>,
         document.body,
@@ -1118,9 +1142,21 @@ function TaskMoreMenu({
         actualPomodoros={task.actual_pomodoros}
         pomodoroMinutes={pomodoroMinutes}
         resetKey={task.id}
-        online={online}
+        online={okrOnline}
         onOpenChange={setHoursOpen}
         onUpdate={onUpdate}
+      />
+      <TaskOkrPicker
+        open={okrOpen}
+        tasks={[task]}
+        workspaceId={task.workspace_id}
+        currentUserId={currentUserId}
+        online={online}
+        anchorPoint={triggerRef.current
+          ? { left: triggerRef.current.getBoundingClientRect().right - 360, top: triggerRef.current.getBoundingClientRect().bottom + 8 }
+          : undefined}
+        onOpenChange={setOkrOpen}
+        onNotice={(message) => onNotice?.(message)}
       />
     </div>
   );
@@ -1128,22 +1164,29 @@ function TaskMoreMenu({
 
 function ChildTaskMoreMenu({
   childTask,
+  currentUserId,
   online,
+  canAssociateOkr,
   pomodoroMinutes,
   compact = false,
   onUpdate,
   onMountDependencies,
+  onNotice,
 }: {
   childTask: Task;
+  currentUserId: string;
   online: boolean;
+  canAssociateOkr: boolean;
   pomodoroMinutes: number;
   compact?: boolean;
   onUpdate: (patch: Partial<Pick<Task, "estimate_hours" | "actual_hours" | "estimate_pomodoros" | "actual_pomodoros" | "priority">>) => Promise<void>;
   onMountDependencies?: () => void;
+  onNotice?: NoticeHandler;
 }) {
   const [open, setOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
+  const [okrOpen, setOkrOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -1153,6 +1196,7 @@ function ChildTaskMoreMenu({
   useEffect(() => {
     setOpen(false);
     setHoursOpen(false);
+    setOkrOpen(false);
     setPriorityOpen(false);
   }, [childTask.id]);
 
@@ -1256,6 +1300,7 @@ function ChildTaskMoreMenu({
             </button>
           )) : (
             <>
+              <TaskStatusMenuItems tasks={[childTask]} onClose={() => setOpen(false)} />
               <button
                 type="button"
                 className="has-submenu"
@@ -1293,6 +1338,20 @@ function ChildTaskMoreMenu({
                   <span>挂载依赖任务</span>
                 </button>
               )}
+              {canAssociateOkr && !childTask.deleted_at && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!online}
+                  onClick={() => {
+                    setOpen(false);
+                    setOkrOpen(true);
+                  }}
+                >
+                  <Target />
+                  <span>关联 OKR</span>
+                </button>
+              )}
             </>
           )}
         </div>,
@@ -1311,6 +1370,18 @@ function ChildTaskMoreMenu({
         onUpdate={async (patch) => {
           await onUpdate(patch);
         }}
+      />
+      <TaskOkrPicker
+        open={okrOpen}
+        tasks={[childTask]}
+        workspaceId={childTask.workspace_id}
+        currentUserId={currentUserId}
+        online={online}
+        anchorPoint={triggerRef.current
+          ? { left: triggerRef.current.getBoundingClientRect().right - 360, top: triggerRef.current.getBoundingClientRect().bottom + 8 }
+          : undefined}
+        onOpenChange={setOkrOpen}
+        onNotice={(message) => onNotice?.(message)}
       />
     </div>
   );
@@ -1670,6 +1741,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   settingsLabelName = null,
   onClose,
   onOpenTask,
+  onOpenOkr,
   onUpdate,
   onSaveSchedule,
   onSaveChildTaskSchedule,
@@ -1694,6 +1766,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onDeleteComment,
   onNotice,
 }, forwardedRef) {
+  const statusActions = useTaskStatusActions();
   const [draftTitle, setDraftTitle] = useState(task.title);
   const [descriptionRevision, setDescriptionRevision] = useState(0);
   const [descriptionSeed, setDescriptionSeed] = useState<string | null>(null);
@@ -1757,7 +1830,63 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   );
   const writable = editable && online;
   const completionWritable = completable && online;
-  const organizable = online && canOrganizeTask(bundle, task, currentUserId);
+  const canOrganize = canOrganizeTask(bundle, task, currentUserId);
+  const organizable = online && canOrganize;
+  const queryClient = useQueryClient();
+  const demoMode = new URLSearchParams(window.location.search).get("demo") === "1";
+  const backendAvailable = Boolean(supabase) && !demoMode;
+  const okrLinkQuery = useQuery({
+    queryKey: taskOkrLinkKey(task.id),
+    queryFn: () => loadTaskOkrLink(supabase!, task.id),
+    enabled: backendAvailable && task.kind !== "note",
+  });
+  const demoOkrLink = useMemo<TaskOkrLink | null>(() => {
+    if (!demoMode || task.id !== "task-1") return null;
+    const data = createDemoOkrData(task.workspace_id);
+    const cycle = data.cycles.find((item) => item.status === "active");
+    const set = data.sets.find((item) => item.cycle_id === cycle?.id && item.owner_id === currentUserId);
+    const objective = set?.objectives[0];
+    const keyResult = objective?.key_results[0];
+    if (!cycle || !set || !objective || !keyResult) return null;
+    return {
+      task_id: task.id,
+      key_result_id: keyResult.id,
+      workspace_id: task.workspace_id,
+      created_by: currentUserId,
+      created_at: keyResult.created_at,
+      updated_at: keyResult.updated_at,
+      owner_id: set.owner_id,
+      cycle_id: cycle.id,
+      cycle_name: cycle.name,
+      objective_id: objective.id,
+      objective_title: objective.title,
+      key_result_title: keyResult.title,
+    };
+  }, [currentUserId, demoMode, task.id, task.workspace_id]);
+  const okrLink = backendAvailable ? okrLinkQuery.data ?? null : demoOkrLink;
+
+  async function unlinkOkr() {
+    if (!backendAvailable || !online || !canOrganize || !okrLink) return;
+    const key = taskOkrLinkKey(task.id);
+    const previous = queryClient.getQueryData<TaskOkrLink | null>(key);
+    const listSnapshots = queryClient.getQueriesData<OkrLinkedTaskSummary[]>({
+      queryKey: ["okr-linked-tasks", task.workspace_id],
+    });
+    queryClient.setQueryData(key, null);
+    for (const [listKey, current] of listSnapshots) {
+      if (current) queryClient.setQueryData(listKey, current.filter((item) => item.task_id !== task.id));
+    }
+    try {
+      await setTaskOkrLink(supabase!, task.id, null);
+      await queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", task.workspace_id] });
+    } catch (cause) {
+      queryClient.setQueryData(key, previous);
+      for (const [listKey, snapshot] of listSnapshots) queryClient.setQueryData(listKey, snapshot);
+      onNotice?.(cause instanceof Error ? cause.message : "取消 OKR 关联失败，请重试", "error");
+    } finally {
+      await queryClient.invalidateQueries({ queryKey: key });
+    }
+  }
 
   function renderMenuDependencyPicker() {
     if (dependencyPickerFor === undefined || task.kind === "note") return null;
@@ -2167,15 +2296,16 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
 
   const completeTrigger = task.kind !== "note" ? (
     <button
-      className="detail-complete-trigger"
+      className={clsx("detail-complete-trigger", task.status === "cancelled" && "cancelled")}
       type="button"
-      disabled={!completionWritable}
-      aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
+      disabled={!completionWritable || (task.status === "cancelled" && !statusActions.canChange(task, "open"))}
+      aria-label={task.status === "cancelled" ? "重新开始" : task.status === "completed" ? "标记未完成" : "完成任务"}
       style={{
         "--priority-color": getPriorityOption(task.priority).color,
       } as CSSProperties}
       onClick={() => {
         if (!completionWritable) return;
+        if (task.status === "cancelled") { void statusActions.change([task.id], "open"); return; }
         void onUpdate({
           status: task.status === "completed" ? "open" : "completed",
           completed_at: task.status === "completed" ? null : new Date().toISOString(),
@@ -2184,7 +2314,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         });
       }}
     >
-      {task.status === "completed" && <Check />}
+      <TaskStatusIcon status={task.status} empty="none" />
     </button>
   ) : null;
 
@@ -2318,7 +2448,10 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         )}
         <TaskMoreMenu
           task={task}
+          currentUserId={currentUserId}
           online={writable}
+          okrOnline={online}
+          canAssociateOkr={canOrganize}
           pomodoroMinutes={pomodoroMinutes}
           onUpdate={onUpdate}
           onNotice={onNotice}
@@ -2442,7 +2575,17 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               </em>
             </div>
             <div className="childTask-list">
-              {visibleFlattenedTasks(bundle.tasks, task.id, collapsedChildTaskIds).map(({ task: childTask, depth }) => {
+              <SortableTaskTree
+                tasks={bundle.tasks}
+                parentId={task.id}
+                collapsedIds={collapsedChildTaskIds}
+                disabled={!writable}
+                onReorder={(taskId, parentTaskId, position) => {
+                  void onUpdateChildTask(taskId, { parent_task_id: parentTaskId, position }).catch((error) => {
+                    onNotice?.(error instanceof Error ? error.message : "移动失败，请重试", "error");
+                  });
+                }}
+                renderRow={({ task: childTask, depth, dragHandle }) => {
                 const childCount = childrenOf(bundle.tasks, childTask.id).length;
                 const collapsed = collapsedChildTaskIds.has(childTask.id);
                 const childTaskHoursLabel = showChildTaskDetails
@@ -2471,6 +2614,18 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                   key={childTask.id}
                   style={{ paddingLeft: 8 + (depth - 1) * 16 }}
                 >
+                  {dragHandle && (
+                    <button
+                      type="button"
+                      className="task-drag-handle childTask-drag-handle"
+                      aria-label={`拖动子级任务“${childTask.title}”`}
+                      style={{ left: (depth - 1) * 16 }}
+                      {...dragHandle.attributes}
+                      {...dragHandle.listeners}
+                    >
+                      <GripVertical />
+                    </button>
+                  )}
                   {childCount > 0 ? (
                     <button
                       type="button"
@@ -2484,6 +2639,13 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                   ) : (
                     <span className="childTask-tree-expander-slot" aria-hidden="true" />
                   )}
+                  {childTask.status === "cancelled" ? (
+                    <button type="button" className="childTask-cancelled-trigger" aria-label={`重新开始子级任务：${childTask.title}`}
+                      disabled={!writable || !statusActions.canChange(childTask, "open")}
+                      onClick={() => void statusActions.change([childTask.id], "open")}>
+                      <TaskStatusIcon status="cancelled" />
+                    </button>
+                  ) : (
                   <input
                     type="checkbox"
                     aria-label={`完成子级任务：${childTask.title}`}
@@ -2492,7 +2654,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     onChange={(event) => void onToggleChildTask(childTask.id, event.target.checked).catch((error) => {
                       onNotice?.(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
                     })}
-                  />
+                  />                  )}
+
                   <div className="childTask-main">
                     <div className="childTask-headline">
                     {editingChildTaskId === childTask.id ? (
@@ -2522,7 +2685,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     ) : (
                       <button
                         type="button"
-                        className={clsx("childTask-title", (childTask.status === "completed") && "completed")}
+                        className={clsx("childTask-title", childTask.status === "completed" && "completed", childTask.status === "cancelled" && "cancelled")}
                         disabled={!writable}
                         onClick={() => beginEditChildTask(childTask)}
                         onKeyDown={(event) => {
@@ -2577,11 +2740,14 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     </button>
                     <ChildTaskMoreMenu
                       childTask={childTask}
+                      currentUserId={currentUserId}
                       online={writable}
+                      canAssociateOkr={canOrganizeTask(bundle, childTask, currentUserId)}
                       compact
                       pomodoroMinutes={pomodoroMinutes}
                       onUpdate={(patch) => onUpdateChildTask(childTask.id, patch)}
                       onMountDependencies={() => setDependencyPickerFor(childTask.id)}
+                      onNotice={onNotice}
                     />
                   </div>
                     </div>
@@ -2594,7 +2760,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                   </div>
                 </div>
                 );
-              })}
+                }}
+              />
               <form
                 className={clsx(
                   "childTask-add",
@@ -2633,6 +2800,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                       kind={childTaskTokens.token.kind}
                       assigneeCandidates={childTaskTokens.assigneeCandidates}
                       labelCandidates={childTaskTokens.labelCandidates}
+                      labelTreeLabels={bundle.labels}
                       activeIndex={childTaskTokens.activeIndex}
                       onSelectAssignee={(member) => {
                         setDraftChildTaskCli(null);
@@ -2742,10 +2910,24 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
         ref={setToolbarHost}
         className={clsx("detail-editor-toolbar-dock", !activeTerminal && toolbarOpen && "open")}
       />
-      {!activeTerminal && !immersive && !activityOpen && (hoursLabel || childTaskHoursSummary) && (
+      {!activeTerminal && !immersive && !activityOpen && (hoursLabel || childTaskHoursSummary || okrLink) && (
         <div className="detail-hours">
           {hoursLabel && <p>{hoursLabel}</p>}
           {childTaskHoursSummary && <p>子级任务汇总：{childTaskHoursSummary}</p>}
+          {okrLink && (
+            <div className="detail-okr-link">
+              <span>关联 KR</span>
+              <button type="button" onClick={() => onOpenOkr?.(okrLink)}>
+                <Target />
+                <strong>{okrLink.key_result_title}</strong>
+              </button>
+              {canOrganize && online && backendAvailable && (
+                <button type="button" className="detail-okr-unlink" aria-label="取消关联 KR" onClick={() => void unlinkOkr()}>
+                  <X />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
       <footer className="detail-footer">
@@ -3020,14 +3202,19 @@ export function TaskDetailPanel(props: TaskDetailProps) {
   );
 }
 
-export function TaskDetailDialog(props: TaskDetailProps & { open: boolean }) {
+export function TaskDetailDialog(props: TaskDetailProps & {
+  open: boolean;
+  contentClassName?: string;
+  contentStyle?: CSSProperties;
+}) {
   const contentRef = useRef<TaskDetailContentHandle>(null);
   return (
     <Dialog.Root open={props.open}>
       <Dialog.Portal>
         <Dialog.Overlay className="task-detail-dialog-overlay" />
         <Dialog.Content
-          className="task-detail-dialog"
+          className={clsx("task-detail-dialog", props.contentClassName)}
+          style={props.contentStyle}
           aria-describedby={undefined}
           onEscapeKeyDown={(event) => {
             event.preventDefault();

@@ -227,6 +227,22 @@ try {
   runCli("note", "get", note.id);
   runCli("note", "delete", note.id);
   runCli("user", "list");
+
+  const weekDate = new Date();
+  const weekStartDate = new Date(weekDate.getFullYear(), weekDate.getMonth(), weekDate.getDate());
+  const weekday = weekStartDate.getDay();
+  weekStartDate.setDate(weekStartDate.getDate() - (weekday === 0 ? 6 : weekday - 1));
+  const weekStart = `${weekStartDate.getFullYear()}-${String(weekStartDate.getMonth() + 1).padStart(2, "0")}-${String(weekStartDate.getDate()).padStart(2, "0")}`;
+  const weeklyReport = runCli(
+    "weekly-report", "create",
+    "--week", weekStart,
+    "--completed", "CLI weekly report",
+  );
+  runCli("weekly-report", "list", "--week", weekStart);
+  runCli("weekly-report", "get", weeklyReport.id);
+  runCli("weekly-report", "update", weeklyReport.id, "--next-plan", "Next week");
+  runCli("weekly-report", "publish", weeklyReport.id);
+
   runCli("task", "delete", task.id);
   runCli("task", "list", "--trash");
   runCli("tag", "delete", tag.id, "--yes");
@@ -234,7 +250,7 @@ try {
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    commands: 28,
+    commands: 33,
     deviceAuthorization: "approved-and-consumed",
     oauthTokenExchange: "verified",
   })}\n`);

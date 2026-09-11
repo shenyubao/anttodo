@@ -21,7 +21,14 @@ import type {
   UserLabelOrder,
 } from "../types";
 import { aiCliLabel } from "./aiWork";
-import { compareSiblingLabels, userLabelOrderMap } from "./labels";
+import {
+  compareSiblingLabels,
+  systemLabelIdSet,
+  taskHasUserLabels,
+  userLabels,
+  userSpaceLabelFor,
+  userLabelOrderMap,
+} from "./labels";
 import { isRootTask } from "./taskTree";
 
 export type TaskListGroup = {
@@ -41,7 +48,7 @@ export const DEFAULT_TASK_LIST_PREFERENCE = {
   filter_creator: "all",
   filter_due: ["all"] as TaskListFilterDueSelection,
   show_labels: false,
-  show_completed: false,
+  show_completed: true,
   show_hours: false,
   view_mode: "list",
 } as const;
@@ -256,6 +263,14 @@ export function assigneeFilterLabel(
   return `${names[0]}等${names.length}人`;
 }
 
+const MINE_TASK_LIST_FILTERS: TaskListFilterFields = {
+  filter_due: ["all"],
+  filter_assignee: "all",
+  filter_assignee_ids: [],
+  filter_watching: "all",
+  filter_creator: "created_by_me",
+};
+
 /** Smart views that are just fixed filter presets over the full task list. */
 export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
   today: {
@@ -286,13 +301,13 @@ export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
     filter_watching: "watching",
     filter_creator: "all",
   },
-  inbox: {
-    filter_due: ["all"],
-    filter_assignee: "all",
-    filter_assignee_ids: [],
-    filter_watching: "all",
-    filter_creator: "created_by_me",
-  },
+};
+
+/** Default filters for lists that stay editable, including inbox and trash. */
+export const SMART_VIEW_FILTER_DEFAULTS: Record<string, TaskListFilterFields> = {
+  ...SMART_VIEW_FILTER_PRESETS,
+  inbox: { ...MINE_TASK_LIST_FILTERS, filter_assignee_ids: [], filter_due: ["all"] },
+  trash: { ...MINE_TASK_LIST_FILTERS, filter_assignee_ids: [], filter_due: ["all"] },
 };
 
 export function customTaskViewKey(viewId: string): `custom:${string}` {
@@ -307,12 +322,31 @@ export function isCustomTaskView(smartView: string) {
   return customTaskViewId(smartView) !== null;
 }
 
+export function userTaskViewKey(userId: string): `user:${string}` {
+  return `user:${userId}`;
+}
+
+export function userTaskViewId(smartView: string) {
+  return smartView.startsWith("user:") ? smartView.slice("user:".length) || null : null;
+}
+
+export function userTaskViewFilters(smartView: string): TaskListFilterFields | null {
+  return userTaskViewId(smartView)
+    ? {
+        filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
+        filter_assignee_ids: [],
+        filter_watching: "all",
+        filter_creator: "all",
+        filter_due: ["all"],
+      }
+    : null;
+}
+
 /** System smart views that users may hide from the sidebar. */
 export type HideableSystemSmartView =
   | "all"
   | "today"
   | "week"
-  | "assigned"
   | "watching"
   | "inbox"
   | "trash";
@@ -323,7 +357,6 @@ export const DEFAULT_SYSTEM_SMART_VIEW_ORDER: readonly SystemSmartViewKey[] = [
   "all",
   "today",
   "week",
-  "assigned",
   "watching",
   "inbox",
   "trash",
@@ -462,7 +495,9 @@ export function buildCustomViewSnapshotFromSmartView(
     : smartViewKey === "trash"
       ? "trash"
       : "all";
-  const filters = SMART_VIEW_FILTER_PRESETS[smartViewKey] ?? {
+  const filters = SMART_VIEW_FILTER_DEFAULTS[smartViewKey]
+    ?? userTaskViewFilters(smartViewKey)
+    ?? {
     filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
     filter_assignee_ids: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee_ids,
     filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
@@ -507,8 +542,8 @@ export function resolveTaskListFilters(
   preference: TaskListFilterFields,
   customView?: CustomTaskView | null,
 ): TaskListFilterFields {
-  // Smart system views keep fixed presets. Custom views (and free lists) use the
-  // live preference so filters can be edited and auto-saved for reuse.
+  // Smart system views keep fixed presets. Custom views, user spaces, and free
+  // lists use the live preference so filters can be edited and auto-saved.
   if (SMART_VIEW_FILTER_PRESETS[listKey]) {
     return SMART_VIEW_FILTER_PRESETS[listKey];
   }
@@ -536,29 +571,64 @@ export function taskListKey(smartView: string, selectedLabelId: string | null) {
   return selectedLabelId ? `label:${selectedLabelId}` : smartView;
 }
 
-export function orderedLabels(
+export type OrderedLabelTreeRow = {
+  label: Label;
+  depth: number;
+  hasChildren: boolean;
+};
+
+export function orderedLabelTreeRows(
   labels: Label[],
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>,
-) {
+): OrderedLabelTreeRow[] {
+  const visibleLabels = userLabels(labels);
   const byParent = new Map<string | null, Label[]>();
   const orderMap = userLabelOrderMap(userLabelOrder);
-  for (const label of labels) {
-    const siblings = byParent.get(label.parent_id) ?? [];
+  const labelIds = new Set(visibleLabels.map((label) => label.id));
+  for (const label of visibleLabels) {
+    const parentId = label.parent_id !== label.id && labelIds.has(label.parent_id ?? "")
+      ? label.parent_id
+      : null;
+    const siblings = byParent.get(parentId) ?? [];
     siblings.push(label);
-    byParent.set(label.parent_id, siblings);
+    byParent.set(parentId, siblings);
   }
   for (const [parentId, siblings] of byParent.entries()) {
     siblings.sort((a, b) => compareSiblingLabels(a, b, parentId, orderMap));
   }
-  const result: Label[] = [];
-  const visit = (parentId: string | null) => {
+  const result: OrderedLabelTreeRow[] = [];
+  const visited = new Set<string>();
+  const visit = (parentId: string | null, depth: number) => {
     for (const label of byParent.get(parentId) ?? []) {
-      result.push(label);
-      visit(label.id);
+      if (visited.has(label.id)) continue;
+      visited.add(label.id);
+      result.push({
+        label,
+        depth,
+        hasChildren: (byParent.get(label.id)?.length ?? 0) > 0,
+      });
+      visit(label.id, depth + 1);
     }
   };
-  visit(null);
+  visit(null, 0);
+  for (const label of visibleLabels) {
+    if (visited.has(label.id)) continue;
+    visited.add(label.id);
+    result.push({
+      label,
+      depth: 0,
+      hasChildren: (byParent.get(label.id)?.length ?? 0) > 0,
+    });
+    visit(label.id, 1);
+  }
   return result;
+}
+
+export function orderedLabels(
+  labels: Label[],
+  userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>,
+) {
+  return orderedLabelTreeRows(labels, userLabelOrder).map(({ label }) => label);
 }
 
 export function descendantLabelIds(labels: Label[], rootId: string) {
@@ -621,7 +691,7 @@ export function filterTasksForView(input: {
   }
   let result = tasks.filter((task) => !task.deleted_at && isRootTask(task));
   if (customView?.definition.scope === "inbox") {
-    return result.filter((task) => task.label_ids.length === 0);
+    return result.filter((task) => !taskHasUserLabels(task, labels));
   }
   if (customView?.definition.scope === "label") {
     const scope = new Set(customView.definition.label_ids);
@@ -631,9 +701,15 @@ export function filterTasksForView(input: {
     const scope = labelSubtreeIds(labels, selectedLabelId);
     return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
   }
-  // today / assigned / watching / inbox creator filter are applied via resolveTaskListFilters.
+  const userViewId = userTaskViewId(smartView);
+  if (userViewId) {
+    const space = userSpaceLabelFor(labels, userViewId);
+    if (!space) return [];
+    return result.filter((task) => task.label_ids.includes(space.id));
+  }
+  // today / assigned / watching stay on locked presets; inbox / trash default to mine.
   if (smartView === "inbox") {
-    return result.filter((task) => task.label_ids.length === 0);
+    return result.filter((task) => !taskHasUserLabels(task, labels));
   }
   return result;
 }
@@ -728,7 +804,9 @@ export function resolveTaskListPreference(
   viewMode?: TaskViewMode,
 ) {
   const found = preferences.find((item) => item.list_key === listKey);
-  const filterDefaults = SMART_VIEW_FILTER_PRESETS[listKey] ?? {
+  const filterDefaults = SMART_VIEW_FILTER_DEFAULTS[listKey]
+    ?? userTaskViewFilters(listKey)
+    ?? {
     filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
     filter_assignee_ids: [...DEFAULT_TASK_LIST_PREFERENCE.filter_assignee_ids],
     filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
@@ -763,7 +841,7 @@ export function resolveTaskListPreference(
     ...found,
     ...filters,
     show_labels: found.show_labels ?? false,
-    show_completed: found.show_completed ?? false,
+    show_completed: found.show_completed ?? DEFAULT_TASK_LIST_PREFERENCE.show_completed,
     show_hours: found.show_hours ?? false,
     view_mode: found.view_mode ?? "list",
   };
@@ -974,6 +1052,7 @@ export function sortTasks(
 
 export function groupTasks(input: {
   tasks: Task[];
+  includeClosed?: boolean;
   grouping: TaskListGrouping;
   sort: TaskListSort;
   direction: SortDirection;
@@ -991,7 +1070,7 @@ export function groupTasks(input: {
     userLabelOrder,
   } = input;
   const selectedLabelId = input.selectedLabelId ?? null;
-  const tasks = input.tasks.filter(isActiveTask);
+  const tasks = input.includeClosed ? input.tasks : input.tasks.filter(isActiveTask);
   const sortGroup = (items: Task[]) =>
     sortTasks(items, input.sort, input.direction, labels, members, placements, userLabelOrder);
   const groups: TaskListGroup[] = [];
@@ -1069,6 +1148,7 @@ export function groupTasks(input: {
     const scopeIds = selectedLabelId ? labelSubtreeIds(labels, selectedLabelId) : undefined;
     const leafLabels = leafLabelsInScope(labels, scopeIds, userLabelOrder);
     const leafIds = new Set(leafLabels.map((label) => label.id));
+    const systemIds = systemLabelIdSet(labels);
     for (const label of leafLabels) {
       add(
         `label:${label.id}`,
@@ -1077,9 +1157,10 @@ export function groupTasks(input: {
       );
     }
     const intermediateTasks = tasks.filter((task) => {
-      const scopedIds = scopeIds
+      const scopedIds = (scopeIds
         ? task.label_ids.filter((id) => scopeIds.has(id))
-        : task.label_ids;
+        : task.label_ids
+      ).filter((id) => !systemIds.has(id));
       if (scopedIds.length === 0) return false;
       return scopedIds.every((id) => !leafIds.has(id));
     });
@@ -1088,7 +1169,7 @@ export function groupTasks(input: {
       : "其他标签";
     add("label:intermediate", intermediateTitle, intermediateTasks);
     if (!selectedLabelId) {
-      add("label:none", "无标签", tasks.filter((task) => task.label_ids.length === 0));
+      add("label:none", "无标签", tasks.filter((task) => !taskHasUserLabels(task, labels)));
     }
   } else if (grouping === "priority") {
     add("priority:high", "高优先级", tasks.filter((task) => effectiveTaskPriority(task) === "high"));

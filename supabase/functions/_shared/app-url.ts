@@ -13,3 +13,11 @@ export function buildTaskOpenUrl(
   const segment = taskKind === "note" ? "notes" : "tasks";
   return `${publicAppUrl(configuredAppUrl)}/workspaces/${encodeURIComponent(workspaceId)}/${segment}/${encodeURIComponent(taskId)}`;
 }
+
+export function buildWeeklyReportOpenUrl(
+  workspaceId: string,
+  reportId: string,
+  configuredAppUrl?: string | null,
+) {
+  return `${publicAppUrl(configuredAppUrl)}/workspaces/${encodeURIComponent(workspaceId)}/weekly-reports/${encodeURIComponent(reportId)}`;
+}

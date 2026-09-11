@@ -251,7 +251,7 @@ export async function loadPublicConfig(options: { serviceUrl?: string } = {}): P
       return withServiceMetadata({
         schemaVersion: 1,
         instanceId: serviceKeyFor(DEFAULT_APP_URL),
-        displayName: "AntTodo 官方服务",
+        displayName: "AntTodo.com",
         appUrl: DEFAULT_APP_URL,
         supabaseUrl: cached.config.supabaseUrl,
         publishableKey: cached.config.publishableKey,

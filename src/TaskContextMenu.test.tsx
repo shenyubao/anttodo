@@ -131,6 +131,39 @@ describe("task context menu", () => {
     expect(container.querySelector('[aria-label="设置优先级"]')).toBeNull();
   });
 
+  it("shows OKR association for a manageable todo, including connector todos", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const external = task({ connector_id: "connector-1", connector_platform: "yunxiao" });
+    await act(async () => root?.render(
+      <TaskContextMenu
+        task={external}
+        workspaceId="workspace-1"
+        currentUserId="user-1"
+        canAssociateOkr={() => true}
+        x={80}
+        y={80}
+        online
+        now={new Date("2026-08-20T04:00:00.000Z")}
+        dateTimePreferences={DEFAULT_DATE_TIME_PREFERENCES}
+        onClose={vi.fn()}
+        onUpdateTask={noopAsync}
+        onSaveTaskSchedule={noopAsync}
+        onSaveChildTaskSchedule={noopAsync}
+        onCreateTask={noopAsync}
+        onCreateChildTask={noopAsync}
+        onUpdateChildTask={noopAsync}
+        onDeleteChildTask={noopAsync}
+        onPurgeTask={noopAsync}
+        onExpandChildTasks={vi.fn()}
+        onNotice={vi.fn()}
+        onAddDependencies={noopAsync}
+      />,
+    ));
+    expect(menuItem(container, "关联 OKR")).toBeTruthy();
+  });
+
   function renderMenu(props: {
     first: Task;
     second?: Task;
@@ -185,6 +218,21 @@ describe("task context menu", () => {
       ),
     };
   }
+
+  it.each([false, true])("places abandon immediately above delete (bulk: %s)", async (bulk) => {
+    const { container, render } = renderMenu({
+      first: task(),
+      ...(bulk ? { second: task({ id: "task-2" }) } : {}),
+    });
+
+    await act(async () => {
+      render();
+    });
+
+    const labels = [...container.querySelectorAll('[role="menuitem"]')]
+      .map((item) => item.textContent?.trim());
+    expect(labels.slice(-2)).toEqual(["放弃", "删除"]);
+  });
 
   it("copies every selected task link", async () => {
     const first = task({ id: "task-1", title: "第一项" });

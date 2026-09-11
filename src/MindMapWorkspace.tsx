@@ -1,3 +1,5 @@
+import { TaskStatusIcon } from "./TaskStatusIcon";
+import { useTaskStatusActions } from "./TaskStatusActions";
 import dagre from "@dagrejs/dagre";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
@@ -52,7 +54,7 @@ import {
   type CSSProperties,
   type FormEvent,
 } from "react";
-import { compareSiblingLabels, hasExplicitLabelColor, userLabelOrderMap } from "./lib/labels";
+import { compareSiblingLabels, hasExplicitLabelColor, userLabelOrderMap, userLabels } from "./lib/labels";
 import {
   buildMindMapTree,
   classifyTaskSchedule,
@@ -312,6 +314,7 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
         "mind-map-node",
         `mind-map-node-${data.kind}`,
         data.task?.kind !== "note" && data.task?.status === "completed" && "completed",
+        data.task?.kind !== "note" && data.task?.status === "cancelled" && "cancelled",
         data.task?.kind === "note" && "note",
         data.draft && "draft",
         selected && "selected",
@@ -369,6 +372,7 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
                     kind={tokens.token.kind}
                     assigneeCandidates={tokens.assigneeCandidates}
                     labelCandidates={tokens.labelCandidates}
+                    labelTreeLabels={data.labels}
                     activeIndex={tokens.activeIndex}
                     onSelectAssignee={tokens.selectAssignee}
                     onSelectLabel={tokens.selectLabel}
@@ -391,14 +395,14 @@ function MindMapNodeView({ id, data, selected }: NodeProps<MindMapFlowNode>) {
             ) : (
               <button
                 className="mind-map-task-toggle nodrag nopan"
-                aria-label={data.task?.status === "completed" ? "标记未完成" : "完成任务"}
+                aria-label={data.task?.status === "cancelled" ? "重新开始" : data.task?.status === "completed" ? "标记未完成" : "完成任务"}
                 disabled={!data.online}
                 onClick={(event) => {
                   event.stopPropagation();
                   if (data.task) data.onToggleTask?.(data.task);
                 }}
               >
-                {data.task?.status === "completed" ? <Check /> : <Circle />}
+                <TaskStatusIcon status={data.task?.status ?? "open"} />
               </button>
             )}
             <span title={data.label}>{data.label}</span>
@@ -1109,7 +1113,7 @@ function MindMapCanvas({
 
   const hideAllLabels = useCallback(() => {
     setHiddenLabelIds(() => {
-      const next = new Set(bundle.labels.map((label) => label.id));
+      const next = new Set(userLabels(bundle.labels).map((label) => label.id));
       storeHiddenLabelIds(workspaceId, next);
       return next;
     });
@@ -1148,7 +1152,7 @@ function MindMapCanvas({
   }
 
   const visibleLabels = useMemo(
-    () => bundle.labels.filter((label) => !hiddenLabelIds.has(label.id)),
+    () => userLabels(bundle.labels).filter((label) => !hiddenLabelIds.has(label.id)),
     [bundle.labels, hiddenLabelIds],
   );
 
@@ -1226,8 +1230,10 @@ function MindMapCanvas({
     });
   }, [collapseOpenKey, workspaceId]);
 
+  const statusActions = useTaskStatusActions();
   const toggleTask = useCallback(async (task: Task) => {
     if (!online || task.kind === "note") return;
+    if (task.status === "cancelled") { await statusActions.change([task.id], "open"); return; }
     setError("");
     try {
       await onUpdateTask(task.id, {
@@ -1237,7 +1243,7 @@ function MindMapCanvas({
     } catch (error) {
       setError(error instanceof Error ? error.message : "任务状态更新失败，请重试");
     }
-  }, [onUpdateTask, online]);
+  }, [onUpdateTask, online, statusActions]);
 
   const submitDraft = useCallback(async (payload: TaskTitleTokenSubmit) => {
     const title = payload.title.trim();
@@ -1553,7 +1559,12 @@ function MindMapCanvas({
     const currentSchedule = classifyTaskSchedule(task, dateTimePreferences);
     const dateChanged = assignment.applySchedule
       && scheduleTargetKey(assignment.schedule) !== scheduleTargetKey(currentSchedule);
-    const labelsToRemove = assignment.clearLabels ? [...task.label_ids] : [];
+    const labelsToRemove = assignment.clearLabels
+      ? task.label_ids.filter((labelId) => {
+          const label = bundle.labels.find((item) => item.id === labelId);
+          return label ? !label.is_system : true;
+        })
+      : [];
     const labelToAdd = !assignment.clearLabels
       && assignment.labelId
       && !task.label_ids.includes(assignment.labelId)
@@ -1657,7 +1668,7 @@ function MindMapCanvas({
       </header>
       {displaySettingsOpen && (
         <MindMapDisplaySettingsDialog
-          labels={bundle.labels}
+          labels={userLabels(bundle.labels)}
           userLabelOrder={bundle.userLabelOrder}
           hiddenLabelIds={hiddenLabelIds}
           labelDisplayMode={labelDisplayMode}

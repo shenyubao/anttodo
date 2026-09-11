@@ -83,7 +83,7 @@ async function bootstrap() {
         client={queryClient}
         persistOptions={{
           persister: queryPersister,
-          buster: "workspace-bundle-unified-task-tree-v1",
+          buster: "workspace-members-no-embed-v1",
           maxAge: 24 * 60 * 60 * 1000,
           dehydrateOptions: {
             shouldDehydrateQuery: (query) => query.state.status === "success",

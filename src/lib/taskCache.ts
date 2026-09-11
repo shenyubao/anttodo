@@ -14,7 +14,7 @@ import {
   adjustLabelTaskCounts,
   countLiveTasksByLabel,
 } from "./labelTaskLimits";
-import { descendantIds, isLiveTask } from "./taskTree";
+import { applyTaskTreeMove, descendantIds, isLiveTask } from "./taskTree";
 import {
   orderedTaskSections,
   positionsFromGroupKeys,
@@ -97,6 +97,13 @@ export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBund
     })),
     customTaskViews: bundle.customTaskViews ?? [],
     taskSystemViewPreferences: bundle.taskSystemViewPreferences ?? [],
+    matrixQuadrantPreferences: bundle.matrixQuadrantPreferences ?? [],
+    userSidebarMembers: bundle.userSidebarMembers ?? [],
+    labels: (bundle.labels ?? []).map((label) => ({
+      ...label,
+      is_system: Boolean(label.is_system),
+      owner_user_id: label.owner_user_id ?? null,
+    })),
     labelTaskCounts: bundle.labelTaskCounts ?? countLiveTasksByLabel(tasks),
   };
 }
@@ -435,7 +442,7 @@ export function sectionIdFromRealtimeChange(payload: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-/** custom_task_views.id or task_system_view_preferences.view_key */
+/** custom_task_views.id, task_system_view_preferences.view_key, or task_matrix_quadrants.quadrant_key */
 export function smartViewIdFromRealtimeChange(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const change = payload as {
@@ -448,6 +455,10 @@ export function smartViewIdFromRealtimeChange(payload: unknown): string | null {
   if (change.table === "task_system_view_preferences") {
     const viewKey = record.view_key;
     return typeof viewKey === "string" ? viewKey : null;
+  }
+  if (change.table === "task_matrix_quadrants") {
+    const quadrantKey = record.quadrant_key;
+    return typeof quadrantKey === "string" ? quadrantKey : null;
   }
   const id = record.id;
   return typeof id === "string" ? id : null;
@@ -464,6 +475,22 @@ export function taskIdFromRealtimeChange(payload: unknown): string | null {
   if (!record) return null;
   const value = change.table === "tasks" ? record.id : record.task_id;
   return typeof value === "string" ? value : null;
+}
+
+export function applyTaskTreeMoveToBundle(
+  bundle: WorkspaceBundle,
+  taskId: string,
+  parentTaskId: string | null,
+  position: number,
+): { bundle: WorkspaceBundle; changedIds: string[] } {
+  const moved = applyTaskTreeMove(bundle.tasks, taskId, parentTaskId, position);
+  return {
+    bundle: normalizeWorkspaceBundle({
+      ...bundle,
+      tasks: moved.tasks,
+    }),
+    changedIds: moved.changedIds,
+  };
 }
 
 export function patchTaskInBundle(
@@ -484,6 +511,74 @@ export function patchTaskInBundle(
       ? applyLiveLabelCountDelta(bundle.labelTaskCounts, previous, next)
       : bundle.labelTaskCounts,
   });
+}
+
+function rootTaskId(tasks: readonly Task[], taskId: string) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  let cursor = byId.get(taskId);
+  const seen = new Set<string>();
+  while (cursor?.parent_task_id && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    const parent = byId.get(cursor.parent_task_id);
+    if (!parent) break;
+    cursor = parent;
+  }
+  return cursor?.id ?? taskId;
+}
+
+/** Copy root labels onto descendants, matching `normalizeTaskRows` on load. */
+function applyInheritedTaskLabels(bundle: WorkspaceBundle): WorkspaceBundle {
+  const byId = new Map(bundle.tasks.map((task) => [task.id, task]));
+  const tasks = bundle.tasks.map((task) => {
+    if (!task.parent_task_id) return task;
+    const root = byId.get(rootTaskId(bundle.tasks, task.id));
+    if (!root || root.id === task.id) return task;
+    if (
+      task.label_ids.length === root.label_ids.length
+      && task.label_ids.every((labelId, index) => labelId === root.label_ids[index])
+    ) {
+      return task;
+    }
+    return { ...task, label_ids: [...root.label_ids] };
+  });
+  return normalizeWorkspaceBundle({ ...bundle, tasks });
+}
+
+/** Update a root task's labels and copy them to the rest of the tree. */
+export function applyTaskLabelIdsToBundle(
+  bundle: WorkspaceBundle,
+  taskId: string,
+  labelIds: string[],
+): WorkspaceBundle {
+  const rootId = rootTaskId(bundle.tasks, taskId);
+  if (!bundle.tasks.some((task) => task.id === rootId)) return bundle;
+  return applyInheritedTaskLabels(patchTaskInBundle(bundle, rootId, {
+    label_ids: [...labelIds],
+  }));
+}
+
+/** Merge a targeted task refetch into the cached bundle without reloading the workspace. */
+export function reconcileFetchedTasksInBundle(
+  bundle: WorkspaceBundle,
+  requestedIds: Iterable<string>,
+  fetched: Iterable<Task>,
+): WorkspaceBundle {
+  const fetchedById = new Map([...fetched].map((task) => [task.id, task]));
+  let next = bundle;
+  for (const taskId of new Set(requestedIds)) {
+    if (isOptimisticTaskId(taskId)) continue;
+    const task = fetchedById.get(taskId);
+    if (!task) {
+      if (next.tasks.some((item) => item.id === taskId)) {
+        next = removeTaskFromBundle(next, taskId);
+      }
+      continue;
+    }
+    next = next.tasks.some((item) => item.id === task.id)
+      ? patchTaskInBundle(next, task.id, task)
+      : appendTaskToBundle(next, task);
+  }
+  return applyInheritedTaskLabels(next);
 }
 
 export function applyTaskScheduleToBundle(

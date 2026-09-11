@@ -16,9 +16,17 @@ import {
 import type { FocusSession, Task } from "./types";
 
 type PickerTab = "recent" | "tasks";
+export type TaskPickerFilter = {
+  id: string;
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+};
 
 const EMPTY_TARGETS: TaskDependencyTarget[] = [];
 const EMPTY_KEYS: string[] = [];
+const EMPTY_FILTERS: TaskPickerFilter[] = [];
 
 export function FocusTaskPicker({
   open,
@@ -31,6 +39,10 @@ export function FocusTaskPicker({
   excludeKeys = EMPTY_KEYS,
   selectedTargets = EMPTY_TARGETS,
   onConfirm,
+  selectedTaskIds = EMPTY_KEYS,
+  onConfirmTaskIds,
+  title,
+  filters = EMPTY_FILTERS,
   anchorPoint,
 }: {
   open: boolean;
@@ -39,29 +51,38 @@ export function FocusTaskPicker({
   selectedTaskId: string | null;
   onOpenChange: (open: boolean) => void;
   onSelect: (taskId: string | null) => void;
-  mode?: "focus" | "dependency";
+  mode?: "focus" | "dependency" | "multi";
   excludeKeys?: string[];
   selectedTargets?: TaskDependencyTarget[];
   onConfirm?: (targets: TaskDependencyTarget[]) => void;
+  selectedTaskIds?: string[];
+  onConfirmTaskIds?: (taskIds: string[]) => void;
+  title?: string;
+  filters?: TaskPickerFilter[];
   anchorPoint?: { left: number; top: number };
 }) {
   const isDependency = mode === "dependency";
+  const isMulti = mode === "dependency" || mode === "multi";
   const [tab, setTab] = useState<PickerTab>("tasks");
   const [query, setQuery] = useState("");
   const [draftKeys, setDraftKeys] = useState<Set<string>>(() => new Set());
   const rootRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CSSProperties>({});
   const selectedTargetsRef = useRef(selectedTargets);
+  const selectedTaskIdsRef = useRef(selectedTaskIds);
   const onOpenChangeRef = useRef(onOpenChange);
   selectedTargetsRef.current = selectedTargets;
+  selectedTaskIdsRef.current = selectedTaskIds;
   onOpenChangeRef.current = onOpenChange;
 
   useEffect(() => {
     if (!open) return;
     setQuery("");
     setTab("tasks");
-    setDraftKeys(new Set(selectedTargetsRef.current.map((item) => dependencyTargetKey(item))));
-  }, [open]);
+    setDraftKeys(new Set(mode === "multi"
+      ? selectedTaskIdsRef.current
+      : selectedTargetsRef.current.map((item) => dependencyTargetKey(item))));
+  }, [mode, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -85,7 +106,7 @@ export function FocusTaskPicker({
   }, [open]);
 
   useEffect(() => {
-    if (!open || !isDependency || !anchorPoint) return;
+    if (!open || !isMulti || !anchorPoint) return;
     const width = Math.min(360, window.innerWidth - 24);
     const height = Math.min(480, window.innerHeight - 24);
     const left = Math.min(
@@ -97,14 +118,14 @@ export function FocusTaskPicker({
       Math.max(12, window.innerHeight - height - 12),
     );
     setPosition({ width, left, top, maxHeight: height });
-  }, [anchorPoint, isDependency, open]);
+  }, [anchorPoint, isMulti, open]);
 
   const trees = useMemo(() => {
-    if (!isDependency && tab === "recent") {
+    if (!isMulti && tab === "recent") {
       return buildRecentFocusPickerTrees(tasks, sessions, query);
     }
     return buildFocusPickerTrees(tasks, query);
-  }, [isDependency, query, sessions, tab, tasks]);
+  }, [isMulti, query, sessions, tab, tasks]);
 
   const grouped = useMemo(() => partitionFocusPickerTrees(trees), [trees]);
   const excluded = useMemo(() => new Set(excludeKeys), [excludeKeys]);
@@ -112,7 +133,7 @@ export function FocusTaskPicker({
   if (!open) return null;
 
   const select = (taskId: string | null) => {
-    if (isDependency) {
+    if (isMulti) {
       if (!taskId) return;
       const key = dependencyTargetKey({ taskId });
       if (excluded.has(key)) return;
@@ -129,6 +150,11 @@ export function FocusTaskPicker({
   };
 
   const confirm = () => {
+    if (mode === "multi") {
+      onConfirmTaskIds?.([...draftKeys].filter((key) => !excluded.has(key)));
+      onOpenChange(false);
+      return;
+    }
     const targets: TaskDependencyTarget[] = [];
     for (const key of draftKeys) {
       if (excluded.has(key)) continue;
@@ -140,15 +166,15 @@ export function FocusTaskPicker({
 
   const body = (
     <div
-      className={clsx("focus-task-picker", isDependency && "is-dependency")}
+      className={clsx("focus-task-picker", isMulti && "is-dependency", mode === "multi" && "is-multi")}
       ref={rootRef}
       role="dialog"
-      aria-label={isDependency ? "选择依赖任务" : "选择专注任务"}
-      style={isDependency && anchorPoint ? position : undefined}
+      aria-label={isMulti ? title ?? (isDependency ? "选择依赖任务" : "选择待办") : "选择专注任务"}
+      style={isMulti && anchorPoint ? position : undefined}
       onPointerDown={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
     >
-      {!isDependency && (
+      {!isMulti && (
         <div className="focus-task-picker-tabs">
           <button
             type="button"
@@ -166,8 +192,26 @@ export function FocusTaskPicker({
           </button>
         </div>
       )}
-      {isDependency && (
-        <div className="focus-task-picker-heading">选择依赖任务</div>
+      {isMulti && (
+        <div className="focus-task-picker-heading">{title ?? (isDependency ? "选择依赖任务" : "选择待办")}</div>
+      )}
+      {isMulti && filters.length > 0 && (
+        <div className="focus-task-picker-filters">
+          {filters.map((filter) => (
+            <label key={filter.id}>
+              <span>{filter.label}</span>
+              <select
+                aria-label={`${filter.label}筛选`}
+                value={filter.value}
+                onChange={(event) => filter.onChange(event.target.value)}
+              >
+                {filter.options.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
       )}
       <label className="focus-task-picker-search">
         <Search />
@@ -179,7 +223,7 @@ export function FocusTaskPicker({
         />
       </label>
       <div className="focus-task-picker-list">
-        {!isDependency && (
+        {!isMulti && (
           <button
             type="button"
             className={clsx("focus-task-picker-item", !selectedTaskId && "selected")}
@@ -191,7 +235,7 @@ export function FocusTaskPicker({
             <span className="focus-task-picker-title">不关联任务</span>
           </button>
         )}
-        {tab === "tasks" || isDependency ? (
+        {tab === "tasks" || isMulti ? (
           <>
             {grouped.today.length > 0 && (
               <TaskGroup
@@ -201,7 +245,7 @@ export function FocusTaskPicker({
                 selectedTaskId={selectedTaskId}
                 draftKeys={draftKeys}
                 excludedKeys={excluded}
-                multi={isDependency}
+                multi={isMulti}
                 onSelect={select}
               />
             )}
@@ -212,7 +256,7 @@ export function FocusTaskPicker({
                 selectedTaskId={selectedTaskId}
                 draftKeys={draftKeys}
                 excludedKeys={excluded}
-                multi={isDependency}
+                multi={isMulti}
                 overdue
                 onSelect={select}
               />
@@ -224,7 +268,7 @@ export function FocusTaskPicker({
                 selectedTaskId={selectedTaskId}
                 draftKeys={draftKeys}
                 excludedKeys={excluded}
-                multi={isDependency}
+                multi={isMulti}
                 onSelect={select}
               />
             )}
@@ -243,7 +287,7 @@ export function FocusTaskPicker({
           <p className="focus-task-picker-empty">没有可关联的任务</p>
         )}
       </div>
-      {isDependency ? (
+      {isMulti ? (
         <div className="focus-task-picker-footer">
           <button type="button" onClick={() => onOpenChange(false)}>取消</button>
           <button type="button" className="primary" onClick={confirm}>确定</button>
@@ -261,7 +305,7 @@ export function FocusTaskPicker({
     </div>
   );
 
-  if (isDependency) {
+  if (isMulti) {
     return createPortal(body, document.body);
   }
   return body;

@@ -20,6 +20,35 @@ export type FocusSession = {
   ended_at: string;
   created_at: string;
 };
+export type WeeklyReportStatus = "draft" | "published";
+export type WeeklyReportVisibility = "workspace" | "users" | "groups";
+export type WeeklyReportNotificationSummary = {
+  revision: number;
+  total: number;
+  sent: number;
+  failed: number;
+  pending: number;
+  failed_group_names: string[];
+};
+export type WeeklyReport = {
+  id: string;
+  workspace_id: string;
+  author_id: string;
+  week_start: string;
+  completed_text: string;
+  next_plan_text: string;
+  reflection_text: string;
+  status: WeeklyReportStatus;
+  visibility: WeeklyReportVisibility;
+  user_acl_ids: string[];
+  group_acl_ids: string[];
+  notification_group_ids: string[];
+  notification_revision: number;
+  notification_summary: WeeklyReportNotificationSummary | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
 export type ReminderAnchor = "start" | "end";
 export type ReminderUnit = "minute" | "hour" | "day" | "week";
 export type ReminderRule = {

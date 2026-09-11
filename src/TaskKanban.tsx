@@ -1,3 +1,6 @@
+import { TaskStatusIcon } from "./TaskStatusIcon";
+import { useTaskStatusActions } from "./TaskStatusActions";
+import { closedTaskGroupTitle, isClosedTask } from "./lib/taskStatus";
 import {
   DndContext,
   DragOverlay,
@@ -21,7 +24,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, Circle, Ellipsis, GripVertical, NotebookPen, Plus } from "lucide-react";
+import { Check, Circle, ChevronDown, ChevronRight, Ellipsis, GripVertical, NotebookPen, Plus } from "lucide-react";
 import {
   Fragment,
   memo,
@@ -112,6 +115,7 @@ export function TaskKanban({
   sectionDraftName,
   sectionDraftBusy,
   canEditTask,
+  canOrganizeTask,
   canCreateInColumn,
   canReceiveInColumn,
   onCreateInColumn,
@@ -158,6 +162,7 @@ export function TaskKanban({
   sectionDraftName: string;
   sectionDraftBusy: boolean;
   canEditTask: (task: Task) => boolean;
+  canOrganizeTask: (task: Task) => boolean;
   canCreateInColumn: (column: KanbanColumn) => boolean;
   canReceiveInColumn: (column: KanbanColumn) => boolean;
   onCreateInColumn: (column: KanbanColumn, payload: KanbanCreatePayload) => Promise<void>;
@@ -414,6 +419,8 @@ export function TaskKanban({
         <TaskContextMenu
           task={taskMenu.task}
           workspaceId={workspaceId}
+          currentUserId={currentUserId}
+          canAssociateOkr={canOrganizeTask}
           x={taskMenu.x}
           y={taskMenu.y}
           online={online && (canEditTask(taskMenu.task) || Boolean(taskMenu.task.connector_id))}
@@ -582,7 +589,12 @@ function KanbanColumnView({
     }
   }
 
-  const sortableIds = column.tasks.map((task) => `kanban-card:${column.id}:${task.id}`);
+  const [closedCollapsed, setClosedCollapsed] = useState(false);
+  const closedTasks = column.tasks.filter(isClosedTask);
+  const splitClosed = customGrouping && closedTasks.length > 0;
+  const activeTasks = column.tasks.filter((task) => !isClosedTask(task));
+  const visibleTasks = splitClosed ? [...activeTasks, ...(closedCollapsed ? [] : closedTasks)] : column.tasks;
+  const sortableIds = visibleTasks.map((task) => `kanban-card:${column.id}:${task.id}`);
 
   return (
     <section
@@ -639,7 +651,7 @@ function KanbanColumnView({
         ) : (
           <div className="kanban-column-title">
             <h2 id={`kanban-column-title-${column.id}`}>{column.title}</h2>
-            <span>{column.tasks.length}</span>
+            <span>{customGrouping ? activeTasks.length : column.tasks.length}</span>
           </div>
         )}
         <div className="kanban-column-actions">
@@ -744,6 +756,7 @@ function KanbanColumnView({
                 kind={tokens.token.kind}
                 assigneeCandidates={tokens.assigneeCandidates}
                 labelCandidates={tokens.labelCandidates}
+                labelTreeLabels={labels}
                 activeIndex={tokens.activeIndex}
                 onSelectAssignee={tokens.selectAssignee}
                 onSelectLabel={tokens.selectLabel}
@@ -760,7 +773,13 @@ function KanbanColumnView({
       )}
       <div className="kanban-column-body">
         <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-          {column.tasks.map((task) => (
+          {visibleTasks.map((task, index) => (
+            <Fragment key={`${column.id}:${task.id}`}>
+            {splitClosed && !closedCollapsed && index === activeTasks.length && (
+              <button type="button" className="kanban-closed-toggle" aria-expanded="true" onClick={() => setClosedCollapsed(true)}>
+                <ChevronDown /><span>{closedTaskGroupTitle(closedTasks)}</span><em>{closedTasks.length}</em>
+              </button>
+            )}
             <KanbanCard
               key={`${column.id}:${task.id}`}
               columnId={column.id}
@@ -782,7 +801,13 @@ function KanbanColumnView({
               onError={onError}
               onContextMenu={onContextMenu}
             />
+            </Fragment>
           ))}
+          {splitClosed && closedCollapsed && (
+            <button type="button" className="kanban-closed-toggle" aria-expanded="false" onClick={() => setClosedCollapsed(false)}>
+              <ChevronRight /><span>{closedTaskGroupTitle(closedTasks)}</span><em>{closedTasks.length}</em>
+            </button>
+          )}
         </SortableContext>
       </div>
     </section>
@@ -793,7 +818,7 @@ function resolveTaskLabels(task: Task, labelById: Map<string, Label>) {
   const result: Label[] = [];
   for (const labelId of task.label_ids) {
     const label = labelById.get(labelId);
-    if (label) result.push(label);
+    if (label && !label.is_system) result.push(label);
   }
   return result;
 }
@@ -848,6 +873,7 @@ const KanbanCard = memo(function KanbanCard({
   onError: NoticeHandler;
   onContextMenu: (task: Task, x: number, y: number) => void;
 }) {
+  const statusActions = useTaskStatusActions();
   const sortableId = `kanban-card:${columnId}:${task.id}`;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sortableId,
@@ -856,7 +882,7 @@ const KanbanCard = memo(function KanbanCard({
   });
   const taskLabels = showLabels ? resolveTaskLabels(task, labelById) : [];
   const assignee = task.assignee_id ? memberById.get(task.assignee_id) : undefined;
-  const dueStatus = getDueStatus(task.due_at, now);
+  const dueStatus = task.status === "open" ? getDueStatus(task.due_at, now) : null;
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
     : null;
@@ -867,6 +893,7 @@ const KanbanCard = memo(function KanbanCard({
         "kanban-card",
         selected && "selected",
         task.status === "completed" && task.kind !== "note" && "completed",
+        task.status === "cancelled" && task.kind !== "note" && "cancelled",
         draggable && "is-draggable",
         isDragging && "dragging",
       )}
@@ -898,10 +925,11 @@ const KanbanCard = memo(function KanbanCard({
           <button
             type="button"
             className="kanban-checkbox"
-            aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
-            disabled={!online}
+            aria-label={task.status === "cancelled" ? "重新开始" : task.status === "completed" ? "标记未完成" : "完成任务"}
+            disabled={!online || (task.status === "cancelled" && !statusActions.canChange(task, "open"))}
             onClick={(event) => {
               event.stopPropagation();
+              if (task.status === "cancelled") { void statusActions.change([task.id], "open"); return; }
               void onUpdateTask(task.id, {
                 status: task.status === "completed" ? "open" : "completed",
                 completed_at: task.status === "completed" ? null : new Date().toISOString(),
@@ -910,7 +938,7 @@ const KanbanCard = memo(function KanbanCard({
               });
             }}
           >
-            {task.status === "completed" ? <Check /> : <Circle />}
+            <TaskStatusIcon status={task.status} />
           </button>
         )}
         <span className="kanban-card-content">
@@ -962,7 +990,7 @@ function KanbanCardOverlay({
 }) {
   const taskLabels = showLabels ? resolveTaskLabels(task, labelById) : [];
   const assignee = task.assignee_id ? memberById.get(task.assignee_id) : undefined;
-  const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
+  const dueStatus = task.status !== "open" ? null : getDueStatus(task.due_at, now);
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
     : null;
@@ -972,6 +1000,7 @@ function KanbanCardOverlay({
         "kanban-card",
         "kanban-card-overlay",
         task.status === "completed" && task.kind !== "note" && "completed",
+        task.status === "cancelled" && task.kind !== "note" && "cancelled",
       )}
       style={{
         "--priority-color": getPriorityOption(task.priority).color,
@@ -983,7 +1012,7 @@ function KanbanCardOverlay({
           <span className="kanban-note-icon"><NotebookPen /></span>
         ) : (
           <span className="kanban-checkbox">
-            {task.status === "completed" ? <Check /> : <Circle />}
+            <TaskStatusIcon status={task.status} />
           </span>
         )}
         <span className="kanban-card-content">

@@ -27,7 +27,16 @@ import type {
   TaskPriority,
   TaskSchedule,
   TaskStatus,
+  WeeklyReport,
+  WeeklyReportNotificationSummary,
+  WeeklyReportStatus,
+  WeeklyReportVisibility,
 } from "./types.js";
+import {
+  assertWeeklyReportCanPublish,
+  assertWeeklyReportSubjects,
+  canCreateWeeklyReportForWeek,
+} from "./validation.js";
 
 type Workspace = { id: string; name: string; slug: string; role: string };
 type ApiContext = { client: SupabaseClient; user: User };
@@ -76,14 +85,22 @@ function requireRow<T>(data: T | null, resource: string): T {
 }
 
 async function listWorkspacesFromApi({ client, user }: ApiContext): Promise<Workspace[]> {
-  const { data, error } = await client
+  const { data: memberships, error } = await client
     .from("workspace_members")
-    .select("role, workspaces(id, name, slug)")
+    .select("role, workspace_id")
     .eq("user_id", user.id)
     .order("joined_at", { ascending: true });
   throwError(error);
-  return (data ?? []).flatMap((row) => {
-    const workspace = row.workspaces as unknown as Omit<Workspace, "role"> | null;
+  const workspaceIds = [...new Set((memberships ?? []).map((row) => row.workspace_id))];
+  const { data: workspaceRows, error: workspacesError } = workspaceIds.length
+    ? await client.from("workspaces").select("id, name, slug").in("id", workspaceIds)
+    : { data: [], error: null };
+  throwError(workspacesError);
+  const workspacesById = new Map(
+    (workspaceRows ?? []).map((workspace) => [workspace.id, workspace]),
+  );
+  return (memberships ?? []).flatMap((row) => {
+    const workspace = workspacesById.get(row.workspace_id);
     return workspace ? [{ ...workspace, role: row.role }] : [];
   });
 }
@@ -434,7 +451,7 @@ export async function softDeleteTask(client: SupabaseClient, workspaceId: string
 export async function listTags(client: SupabaseClient, workspaceId: string) {
   const { data, error } = await client.from("labels").select("*").eq("workspace_id", workspaceId).order("position");
   throwError(error);
-  return data ?? [];
+  return (data ?? []).filter((tag) => !tag.is_system);
 }
 
 export async function getTag(client: SupabaseClient, workspaceId: string, id: string) {
@@ -729,6 +746,267 @@ export async function listUserGroups(client: SupabaseClient, workspaceId: string
   const { data: members, error: membersError } = await client.from("user_group_members").select("group_id, user_id, added_at").eq("workspace_id", workspaceId).in("group_id", groups.map((group) => group.id));
   throwError(membersError);
   return groups.map((group) => ({ ...group, members: (members ?? []).filter((member) => member.group_id === group.id) }));
+}
+
+type WeeklyReportRow = Omit<WeeklyReport,
+  "user_acl_ids" | "group_acl_ids" | "notification_group_ids" | "notification_summary">;
+
+function weeklyReportNotificationSummary(
+  revision: number,
+  deliveries: Array<{ notification_group_id: unknown; status: unknown }>,
+  groupNames: Map<string, string>,
+): WeeklyReportNotificationSummary | null {
+  if (!deliveries.length) return null;
+  const failed = deliveries.filter((item) => item.status === "failed");
+  return {
+    revision: Number(revision),
+    total: deliveries.length,
+    sent: deliveries.filter((item) => item.status === "sent").length,
+    failed: failed.length,
+    pending: deliveries.filter((item) => item.status === "pending" || item.status === "sending").length,
+    failed_group_names: failed.map((item) =>
+      groupNames.get(String(item.notification_group_id)) ?? "deleted notification group"),
+  };
+}
+
+async function attachWeeklyReportAcl(client: SupabaseClient, rows: WeeklyReportRow[]) {
+  if (!rows.length) return [] as WeeklyReport[];
+  const reportIds = rows.map((row) => row.id);
+  const [usersResult, groupsResult, targetsResult, deliveriesResult] = await Promise.all([
+    client.from("weekly_report_user_acl").select("report_id,user_id").in("report_id", reportIds),
+    client.from("weekly_report_group_acl").select("report_id,group_id").in("report_id", reportIds),
+    client.from("weekly_report_notification_targets")
+      .select("report_id,notification_group_id").in("report_id", reportIds),
+    client.from("weekly_report_notification_deliveries")
+      .select("report_id,revision,notification_group_id,status").in("report_id", reportIds),
+  ]);
+  throwError(usersResult.error);
+  throwError(groupsResult.error);
+  throwError(targetsResult.error);
+  throwError(deliveriesResult.error);
+  const failedGroupIds = [...new Set((deliveriesResult.data ?? [])
+    .filter((item) => item.status === "failed")
+    .map((item) => String(item.notification_group_id)))];
+  const notificationGroupsResult = failedGroupIds.length
+    ? await client.from("weekly_report_notification_groups").select("id,name").in("id", failedGroupIds)
+    : { data: [], error: null };
+  throwError(notificationGroupsResult.error);
+  const notificationGroupNames = new Map(
+    (notificationGroupsResult.data ?? []).map((item) => [String(item.id), String(item.name)]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    week_start: String(row.week_start).slice(0, 10),
+    user_acl_ids: (usersResult.data ?? [])
+      .filter((item) => item.report_id === row.id)
+      .map((item) => String(item.user_id)),
+    group_acl_ids: (groupsResult.data ?? [])
+      .filter((item) => item.report_id === row.id)
+      .map((item) => String(item.group_id)),
+    notification_group_ids: (targetsResult.data ?? [])
+      .filter((item) => item.report_id === row.id)
+      .map((item) => String(item.notification_group_id)),
+    notification_summary: weeklyReportNotificationSummary(
+      row.notification_revision,
+      (deliveriesResult.data ?? []).filter((item) =>
+        item.report_id === row.id && Number(item.revision) === Number(row.notification_revision)),
+      notificationGroupNames,
+    ),
+  })) as WeeklyReport[];
+}
+
+export type WeeklyReportListOptions = {
+  weekStart: string;
+  author?: string;
+  status?: WeeklyReportStatus | "all";
+  limit: number;
+  offset: number;
+};
+
+export async function listWeeklyReports(
+  client: SupabaseClient,
+  workspaceId: string,
+  options: WeeklyReportListOptions,
+) {
+  let query = client
+    .from("weekly_reports")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("week_start", options.weekStart);
+  if (options.author) query = query.eq("author_id", options.author);
+  if (options.status && options.status !== "all") query = query.eq("status", options.status);
+  const { data, error } = await query
+    .order("updated_at", { ascending: false })
+    .range(options.offset, options.offset + options.limit - 1);
+  throwError(error);
+  return attachWeeklyReportAcl(client, (data ?? []) as WeeklyReportRow[]);
+}
+
+export async function getWeeklyReport(client: SupabaseClient, workspaceId: string, reportId: string) {
+  const { data, error } = await client.from("weekly_reports")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .eq("id", reportId)
+    .maybeSingle();
+  throwError(error);
+  const report = data
+    ? (await attachWeeklyReportAcl(client, [data as WeeklyReportRow]))[0]
+    : null;
+  return requireRow(report ?? null, "Weekly report");
+}
+
+export type SaveWeeklyReportInput = {
+  id?: string | null;
+  workspaceId: string;
+  weekStart: string;
+  completedText: string;
+  nextPlanText: string;
+  reflectionText: string;
+  visibility: WeeklyReportVisibility;
+  userIds: string[];
+  groupIds: string[];
+  notificationGroupIds: string[];
+  publish: boolean;
+};
+
+function prepareWeeklyReportSave(input: SaveWeeklyReportInput) {
+  assertWeeklyReportSubjects(input.visibility, input.userIds, input.groupIds);
+  if (input.publish) {
+    assertWeeklyReportCanPublish({
+      completedText: input.completedText,
+      nextPlanText: input.nextPlanText,
+      reflectionText: input.reflectionText,
+      visibility: input.visibility,
+      userIds: input.userIds,
+      groupIds: input.groupIds,
+    });
+  }
+  return {
+    p_workspace_id: input.workspaceId,
+    p_week_start: input.weekStart,
+    p_completed_text: input.completedText,
+    p_next_plan_text: input.nextPlanText,
+    p_reflection_text: input.reflectionText,
+    p_visibility: input.visibility,
+    p_user_ids: input.visibility === "users" ? input.userIds : [],
+    p_group_ids: input.visibility === "groups" ? input.groupIds : [],
+    p_report_id: input.id ?? null,
+    p_publish: input.publish,
+    p_notification_group_ids: input.notificationGroupIds,
+  };
+}
+
+export async function saveWeeklyReport(client: SupabaseClient, input: SaveWeeklyReportInput) {
+  const { data, error } = await client.rpc("save_weekly_report", prepareWeeklyReportSave(input));
+  throwError(error);
+  const savedRow = Array.isArray(data) ? data[0] : data;
+  if (!savedRow) {
+    throw new CliError({ type: "api", code: "weekly_report_missing", message: "Weekly report was saved but the server did not return a record" });
+  }
+  return {
+    ...(savedRow as WeeklyReportRow),
+    week_start: String((savedRow as WeeklyReportRow).week_start).slice(0, 10),
+    user_acl_ids: input.visibility === "users" ? input.userIds : [],
+    group_acl_ids: input.visibility === "groups" ? input.groupIds : [],
+    notification_group_ids: input.notificationGroupIds,
+    notification_summary: null,
+  } satisfies WeeklyReport;
+}
+
+export async function findOwnWeeklyReportForWeek(
+  client: SupabaseClient,
+  workspaceId: string,
+  userId: string,
+  weekStart: string,
+) {
+  const { data, error } = await client.from("weekly_reports")
+    .select("id")
+    .eq("workspace_id", workspaceId)
+    .eq("author_id", userId)
+    .eq("week_start", weekStart)
+    .maybeSingle();
+  throwError(error);
+  return data as { id: string } | null;
+}
+
+export async function createWeeklyReport(
+  client: SupabaseClient,
+  userId: string,
+  input: SaveWeeklyReportInput,
+) {
+  if (!canCreateWeeklyReportForWeek(input.weekStart)) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_weekly_report_week",
+      message: "Weekly reports can only be created for this week or last week",
+    });
+  }
+  const existing = await findOwnWeeklyReportForWeek(client, input.workspaceId, userId, input.weekStart);
+  if (existing) {
+    throw new CliError({
+      type: "validation",
+      code: "already_exists",
+      message: "A weekly report already exists for this week",
+      hint: `Run \`anttodo weekly-report update ${existing.id}\``,
+      details: { id: existing.id, week_start: input.weekStart },
+    });
+  }
+  return saveWeeklyReport(client, { ...input, id: null });
+}
+
+export type UpdateWeeklyReportInput = {
+  completedText?: string;
+  nextPlanText?: string;
+  reflectionText?: string;
+  visibility?: WeeklyReportVisibility;
+  userIds?: string[];
+  clearUsers?: boolean;
+  groupIds?: string[];
+  clearGroups?: boolean;
+  notificationGroupIds?: string[];
+  clearNotificationGroups?: boolean;
+  publish?: boolean;
+};
+
+function mergeWeeklyReportUpdate(current: WeeklyReport, patch: UpdateWeeklyReportInput): SaveWeeklyReportInput {
+  const visibility = patch.visibility ?? current.visibility;
+  const userIds = visibility === "users"
+    ? (patch.clearUsers ? [] : patch.userIds ?? current.user_acl_ids)
+    : [];
+  const groupIds = visibility === "groups"
+    ? (patch.clearGroups ? [] : patch.groupIds ?? current.group_acl_ids)
+    : [];
+  const notificationGroupIds = patch.clearNotificationGroups
+    ? []
+    : patch.notificationGroupIds ?? current.notification_group_ids;
+  const publish = Boolean(patch.publish || current.status === "published");
+  return {
+    id: current.id,
+    workspaceId: current.workspace_id,
+    weekStart: String(current.week_start).slice(0, 10),
+    completedText: patch.completedText ?? current.completed_text,
+    nextPlanText: patch.nextPlanText ?? current.next_plan_text,
+    reflectionText: patch.reflectionText ?? current.reflection_text,
+    visibility,
+    userIds,
+    groupIds,
+    notificationGroupIds,
+    publish,
+  };
+}
+
+export async function updateWeeklyReport(
+  client: SupabaseClient,
+  workspaceId: string,
+  reportId: string,
+  patch: UpdateWeeklyReportInput,
+) {
+  const current = await getWeeklyReport(client, workspaceId, reportId);
+  return saveWeeklyReport(client, mergeWeeklyReportUpdate(current, patch));
+}
+
+export async function publishWeeklyReport(client: SupabaseClient, workspaceId: string, reportId: string) {
+  return updateWeeklyReport(client, workspaceId, reportId, { publish: true });
 }
 
 export async function createWorkspace(client: SupabaseClient, userId: string, name: string, slug?: string) {

@@ -6,7 +6,8 @@ import {
 export const OFFICIAL_APP_URL = "https://app.anttodo.com";
 export const INSTANCE_MANIFEST_PATH = "/.well-known/anttodo.json";
 export const DEFAULT_BRAND_NAME = "蚂蚁清单";
-export const PRODUCT_NAME = "蚂蚁待办";
+export const OFFICIAL_SERVICE_NAME = "AntTodo.com";
+export const PRODUCT_NAME = DEFAULT_BRAND_NAME;
 export const ANTTODO_DEPLOY_MODES = ["saas", "onPremises"] as const;
 
 export type AntTodoDeployMode = (typeof ANTTODO_DEPLOY_MODES)[number];
@@ -196,7 +197,7 @@ function builtInOfficialConfig(): AntTodoInstanceConfig | null {
   const appUrl = import.meta.env.VITE_PUBLIC_APP_URL?.trim() || OFFICIAL_APP_URL;
   if (!supabaseUrl || !publishableKey) return null;
   const workspaceSlug = envEnterpriseSlug();
-  const displayName = import.meta.env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim() || "AntTodo 官方服务";
+  const displayName = import.meta.env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim() || OFFICIAL_SERVICE_NAME;
   return {
     schemaVersion: 1,
     instanceId: "00000000-0000-4000-8000-000000000001",
@@ -341,6 +342,7 @@ export function currentInstanceConfig() {
 }
 
 export function currentBrandName(config = activeInstance) {
+  if (config?.official) return DEFAULT_BRAND_NAME;
   return config?.displayName?.trim()
     || import.meta.env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim()
     || DEFAULT_BRAND_NAME;

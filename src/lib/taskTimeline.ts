@@ -1,3 +1,4 @@
+import { isClosedTask } from "./taskStatus";
 import {
   addDays,
   differenceInCalendarDays,
@@ -573,7 +574,7 @@ export function collectTimelineBars(
   const bars: TimelineBarSource[] = [];
   for (const task of tasks) {
     if (task.deleted_at || !isRootTask(task)) continue;
-    if (task.due_at && (showCompleted || task.status !== "completed")) {
+    if (task.due_at && (showCompleted || !isClosedTask(task))) {
       bars.push({
         id: task.id,
         kind: "task",
@@ -585,7 +586,7 @@ export function collectTimelineBars(
     }
     for (const childTask of task.children) {
       if (childTask.deleted_at || !childTask.due_at) continue;
-      if (!showCompleted && (childTask.status === "completed")) continue;
+      if (!showCompleted && isClosedTask(childTask)) continue;
       bars.push({
         id: childTask.id,
         kind: "childTask",

@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { nonEmpty, parseDueTime, parseFocusSessionInterval, parseRecurrence, parseReminder, positiveInteger } from "./validation.js";
+import {
+  assertWeeklyReportCanPublish,
+  canCreateWeeklyReportForWeek,
+  nonEmpty,
+  parseDueTime,
+  parseFocusSessionInterval,
+  parseRecurrence,
+  parseReminder,
+  parseWeekStart,
+  parseWeeklyReportStatus,
+  parseWeeklyReportVisibility,
+  positiveInteger,
+  shiftWeeklyReportWeek,
+  weeklyReportWeekStart,
+} from "./validation.js";
 
 describe("CLI validation", () => {
   it("requires an explicit RFC3339 timezone", () => {
@@ -43,5 +57,53 @@ describe("CLI validation", () => {
       "2026-08-04T09:01:00+08:00",
       "2026-08-04T09:00:00+08:00",
     )).toThrow(/ended_at must be later/);
+  });
+
+  it("parses ISO Monday week starts and limits creation to this or last week", () => {
+    expect(weeklyReportWeekStart(new Date(2026, 0, 1, 12))).toBe("2025-12-29");
+    expect(shiftWeeklyReportWeek("2025-12-29", 1)).toBe("2026-01-05");
+    const now = new Date(2026, 8, 4, 12);
+    expect(parseWeekStart(undefined, now)).toBe("2026-08-31");
+    expect(parseWeekStart("current", now)).toBe("2026-08-31");
+    expect(parseWeekStart("last", now)).toBe("2026-08-24");
+    expect(parseWeekStart("2026-08-31", now)).toBe("2026-08-31");
+    expect(() => parseWeekStart("2026-09-01", now)).toThrow(/Monday/);
+    expect(() => parseWeekStart("2026-02-30", now)).toThrow(/yyyy-MM-dd/);
+    expect(canCreateWeeklyReportForWeek("2026-08-31", now)).toBe(true);
+    expect(canCreateWeeklyReportForWeek("2026-08-24", now)).toBe(true);
+    expect(canCreateWeeklyReportForWeek("2026-08-17", now)).toBe(false);
+    expect(canCreateWeeklyReportForWeek("2026-09-07", now)).toBe(false);
+  });
+
+  it("validates weekly report visibility, status, and publish requirements", () => {
+    expect(parseWeeklyReportVisibility("users")).toBe("users");
+    expect(() => parseWeeklyReportVisibility("all")).toThrow(/workspace, users, or groups/);
+    expect(parseWeeklyReportStatus("draft")).toBe("draft");
+    expect(parseWeeklyReportStatus("all")).toBe("all");
+    expect(() => parseWeeklyReportStatus("open")).toThrow(/draft, published, or all/);
+    expect(() => assertWeeklyReportCanPublish({
+      completedText: " ",
+      nextPlanText: "",
+      reflectionText: "",
+      visibility: "workspace",
+      userIds: [],
+      groupIds: [],
+    })).toThrow(/at least one weekly report section/);
+    expect(() => assertWeeklyReportCanPublish({
+      completedText: "done",
+      nextPlanText: "",
+      reflectionText: "",
+      visibility: "users",
+      userIds: [],
+      groupIds: [],
+    })).toThrow(/--user/);
+    expect(() => assertWeeklyReportCanPublish({
+      completedText: "done",
+      nextPlanText: "",
+      reflectionText: "",
+      visibility: "groups",
+      userIds: [],
+      groupIds: [],
+    })).toThrow(/--group/);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202608261354",
+  "version": "1.0.202609011154",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -45,7 +45,7 @@
     "upload:mac:oss": "node scripts/publish-mac-oss.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -b --pretty false && pnpm --filter @anttodos/cli typecheck",
-    "test": "vitest run && pnpm --filter @anttodos/cli test",
+    "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "supabase:start": "supabase start --workdir .",

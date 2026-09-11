@@ -1,3 +1,4 @@
+import { TaskStatusMenuItems } from "./TaskStatusActions";
 import {
   CalendarDays,
   CalendarPlus,
@@ -12,12 +13,14 @@ import {
   RotateCcw,
   Sun,
   Sunrise,
+  Target,
   Trash2,
 } from "lucide-react";
 import { useEffect, useState, type CSSProperties } from "react";
 import clsx from "clsx";
 import { DueDateControl, dueTargetFromChildTask } from "./DueDateControl";
 import { FocusTaskPicker } from "./FocusTaskPicker";
+import { TaskOkrPicker } from "./TaskOkrPicker";
 import { PRIORITY_OPTIONS } from "./PriorityControl";
 import { taskShareUrl } from "./lib/appRoute";
 import { clearSchedulePatch, schedulePatchFromDrop } from "./lib/calendarScheduling";
@@ -113,6 +116,8 @@ export function TaskContextMenu({
   pickerTasks = [],
   selectedTasks = [],
   onAddDependencies,
+  currentUserId,
+  canAssociateOkr,
 }: {
   task: Task;
   childTask?: Task | null;
@@ -159,15 +164,22 @@ export function TaskContextMenu({
   onNotice: (message: string) => void;
   pickerTasks?: Task[];
   onAddDependencies?: (taskId: string, targets: TaskDependencyTarget[]) => Promise<void>;
+  currentUserId?: string;
+  canAssociateOkr?: (task: Task) => boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [duePickerOpen, setDuePickerOpen] = useState(false);
   const [dependencyPickerOpen, setDependencyPickerOpen] = useState(false);
+  const [okrPickerOpen, setOkrPickerOpen] = useState(false);
   const writable = online && !busy;
   const isChildTask = Boolean(childTask);
   const focusTask = childTask ?? task;
   const actionTasks = contextMenuActionTasks(focusTask, selectedTasks) ?? [focusTask];
   const isBulk = actionTasks.length > 1;
+  const okrTasks = currentUserId && canAssociateOkr
+    ? actionTasks.filter((item) => item.kind === "todo" && !item.deleted_at && canAssociateOkr(item))
+    : [];
+  const okrSkipped = actionTasks.length - okrTasks.length;
   const isNote = !isChildTask && task.kind === "note";
   const menuKind = resolveTaskContextMenuVariant(task, variant);
   const currentDueAt = childTask ? childTask.due_at : task.due_at;
@@ -175,18 +187,18 @@ export function TaskContextMenu({
   const estimatedHeight = menuKind === "trash"
     ? 110
     : menuKind === "external"
-      ? 150
-      : isNote ? 300 : isChildTask ? 340 : 360;
+      ? 184
+      : isNote ? 300 : isChildTask ? 374 : 394;
   const menuLeft = Math.min(Math.max(12, x), window.innerWidth - menuWidth - 12);
   const menuTop = Math.min(Math.max(12, y), window.innerHeight - estimatedHeight - 12);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !duePickerOpen && !dependencyPickerOpen) onClose();
+    if (event.key === "Escape" && !duePickerOpen && !dependencyPickerOpen && !okrPickerOpen) onClose();
     };
     window.addEventListener("keydown", closeOnEscape, true);
     return () => window.removeEventListener("keydown", closeOnEscape, true);
-  }, [dependencyPickerOpen, duePickerOpen, onClose]);
+  }, [dependencyPickerOpen, duePickerOpen, okrPickerOpen, onClose]);
 
   async function run(
     action: () => Promise<void>,
@@ -567,6 +579,25 @@ export function TaskContextMenu({
     );
   }
 
+  if (okrPickerOpen && currentUserId) {
+    return (
+      <TaskOkrPicker
+        open
+        tasks={okrTasks}
+        skipped={okrSkipped}
+        workspaceId={workspaceId}
+        currentUserId={currentUserId}
+        online={online}
+        anchorPoint={{ left: menuLeft, top: menuTop }}
+        onOpenChange={(open) => {
+          setOkrPickerOpen(open);
+          if (!open) onClose();
+        }}
+        onNotice={onNotice}
+      />
+    );
+  }
+
   if (menuKind === "external") {
     return (
       <>
@@ -585,6 +616,17 @@ export function TaskContextMenu({
           role="menu"
           style={{ left: menuLeft, top: menuTop }}
         >
+          {okrTasks.length > 0 && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!writable}
+              onClick={() => setOkrPickerOpen(true)}
+            >
+              <Target />
+              <span>关联 OKR</span>
+            </button>
+          )}
           {task.kind !== "note" && onAddDependencies && (
             <button
               type="button"
@@ -725,6 +767,18 @@ export function TaskContextMenu({
             <span>添加子级任务</span>
           </button>
         )}
+
+        {okrTasks.length > 0 && (
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!writable}
+            onClick={() => setOkrPickerOpen(true)}
+          >
+            <Target />
+            <span>关联 OKR</span>
+          </button>
+        )}
         {!isNote && onAddDependencies && (
           <button
             type="button"
@@ -762,6 +816,7 @@ export function TaskContextMenu({
           {isNote ? <ListTodo /> : <NotebookPen />}
           <span>{isNote ? "转换为待办" : "转换为笔记"}</span>
         </button>
+        <TaskStatusMenuItems tasks={actionTasks} onClose={onClose} />
         <button
           type="button"
           role="menuitem"

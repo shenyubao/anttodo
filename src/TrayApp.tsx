@@ -51,7 +51,6 @@ import {
   groupTasks,
   isCompletedTask,
   resolveTaskListPreference,
-  sortTasks,
   taskListKey,
 } from "./lib/taskList";
 import {
@@ -325,6 +324,7 @@ export function TrayApp({
     );
     return groupTasks({
       tasks: inboxTasks,
+      includeClosed: true,
       grouping: preference.grouping,
       sort: preference.sort,
       direction: preference.direction,
@@ -338,19 +338,6 @@ export function TrayApp({
       userLabelOrder: bundle.userLabelOrder,
     });
   }, [bundle, dateTimePreferences, inboxTasks, listKey, now, preference]);
-
-  const completedInboxTasks = useMemo(() => {
-    if (!bundle) return [];
-    return sortTasks(
-      inboxTasks.filter(isCompletedTask),
-      preference.sort,
-      preference.direction,
-      bundle.labels,
-      bundle.members,
-      bundle.taskPlacements.filter((placement) => placement.list_key === listKey),
-      bundle.userLabelOrder,
-    );
-  }, [bundle, inboxTasks, listKey, preference.direction, preference.sort]);
 
   const dayTasks = useMemo(() => {
     if (!bundle) return [];
@@ -614,23 +601,7 @@ export function TrayApp({
                   ))}
                 </div>
               ))}
-              {completedInboxTasks.length > 0 && (
-                <div className="tray-task-group">
-                  <div className="tray-group-title">已完成</div>
-                  {completedInboxTasks.map((task) => (
-                    <TrayTaskRow
-                      key={task.id}
-                      task={task}
-                      dateTimePreferences={dateTimePreferences}
-                      online={online}
-                      onToggle={() => void toggleTask(task)}
-                      onOpen={() => openTask(task.id)}
-                    />
-                  ))}
-                </div>
-              )}
-              {inboxGroups.every((group) => group.tasks.length === 0)
-                && completedInboxTasks.length === 0 && (
+              {inboxGroups.every((group) => group.tasks.length === 0) && (
                 <div className="tray-empty">
                   <p>收集箱是空的</p>
                   <span>用上方输入框快速添加待办</span>

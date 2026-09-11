@@ -27,14 +27,56 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "custom:00000000-0000-4000-8000-000000000001", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "custom:00000000-0000-4000-8000-000000000001", mode: "kanban" },
+    { workspaceId: "workspace-1", kind: "view", view: "user:00000000-0000-4000-8000-000000000002", mode: "list" },
+    { workspaceId: "workspace-1", kind: "view", view: "user:00000000-0000-4000-8000-000000000002", mode: "kanban" },
+    { workspaceId: "workspace-team", kind: "view", view: "user:demo-member", mode: "timeline" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "list" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "timeline" },
     { workspaceId: "workspace-1", kind: "task", taskId: "task-1", itemKind: "task" },
     { workspaceId: "workspace-1", kind: "task", taskId: "note-1", itemKind: "note" },
     { workspaceId: "workspace-1", kind: "calendar" },
+    { workspaceId: "workspace-1", kind: "matrix" },
     { workspaceId: "workspace-1", kind: "mindmap" },
     { workspaceId: "workspace-1", kind: "focus" },
+    { workspaceId: "workspace-1", kind: "weekly_reports" },
+    { workspaceId: "workspace-1", kind: "weekly_reports", page: "new", weekStart: "2026-08-31" },
+    {
+      workspaceId: "workspace-1",
+      kind: "weekly_reports",
+      page: "view",
+      reportId: "00000000-0000-4000-8000-000000000004",
+    },
+    {
+      workspaceId: "workspace-1",
+      kind: "weekly_reports",
+      page: "edit",
+      reportId: "00000000-0000-4000-8000-000000000004",
+    },
+    { workspaceId: "workspace-1", kind: "okr" },
+    {
+      workspaceId: "workspace-team",
+      kind: "okr",
+      ownerId: "demo-member",
+      cycleId: "demo-okr-workspace-team-2026-q3",
+    },
+    {
+      workspaceId: "workspace-1",
+      kind: "okr",
+      ownerId: "00000000-0000-4000-8000-000000000001",
+      cycleId: "00000000-0000-4000-8000-000000000002",
+    },
+    {
+      workspaceId: "workspace-1",
+      kind: "okr",
+      ownerId: "00000000-0000-4000-8000-000000000001",
+      cycleId: "00000000-0000-4000-8000-000000000002",
+      target: {
+        kind: "key_result",
+        id: "00000000-0000-4000-8000-000000000003",
+        initialTab: "tasks",
+      },
+    },
     { workspaceId: "workspace-1", kind: "search" },
   ];
 
@@ -47,8 +89,16 @@ describe("application routes", () => {
     expect(parseAppRoute("/workspaces/workspace-1/tags")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/views/unknown")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/views/custom/not-a-uuid")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/users/not-a-uuid")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/views/today/unknown-mode")).toBeNull();
     expect(parseAppRoute("/workspaces/workspace-1/tags/tag-1/unknown-mode")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-team/okr/not-a-user")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-team/okr/demo-user/cycles/not-a-cycle")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-team/okr/demo-user/cycles/demo-okr-workspace-personal-2026-q3")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-team/okr/demo-user/cycles/demo-okr-workspace-team-2026-q5")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/weekly-reports/new/not-a-date")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/weekly-reports/new/2026-99-99")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/weekly-reports/not-a-report")).toBeNull();
   });
 
   it("keeps legacy task-list URLs in list mode and normalizes trash", () => {
@@ -111,8 +161,11 @@ describe("task return routes", () => {
 
   it.each([
     { kind: "calendar" },
+    { kind: "matrix" },
     { kind: "mindmap" },
     { kind: "focus" },
+    { kind: "weekly_reports" },
+    { kind: "okr" },
   ] as const)("accepts $kind overlay return routes", ({ kind }) => {
     const route = parseTaskReturnRoute({ workspaceId, kind }, workspaceId);
     expect(route).toEqual({ workspaceId, kind });
@@ -145,6 +198,17 @@ describe("task return routes", () => {
     expect(parseTaskReturnRoute({
       workspaceId,
       kind: "view",
+      view: "user:00000000-0000-4000-8000-000000000002",
+      mode: "list",
+    }, workspaceId)).toEqual({
+      workspaceId,
+      kind: "view",
+      view: "user:00000000-0000-4000-8000-000000000002",
+      mode: "list",
+    });
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
       view: "trash",
       mode: "kanban",
     }, workspaceId)).toEqual({
@@ -164,6 +228,21 @@ describe("task return routes", () => {
       tagId: "tag-1",
       mode: "kanban",
     });
+  });
+
+  it("preserves the full OKR target while a linked task is open", () => {
+    const target = {
+      workspaceId,
+      kind: "okr",
+      ownerId: "00000000-0000-4000-8000-000000000001",
+      cycleId: "00000000-0000-4000-8000-000000000002",
+      target: {
+        kind: "key_result",
+        id: "00000000-0000-4000-8000-000000000003",
+        initialTab: "tasks",
+      },
+    } as const;
+    expect(parseTaskReturnRoute(target, workspaceId)).toEqual(target);
   });
 
   it("rejects invalid or non-return history state", () => {
@@ -186,6 +265,12 @@ describe("task return routes", () => {
       workspaceId,
       kind: "view",
       view: "unknown",
+      mode: "list",
+    }, workspaceId)).toBeNull();
+    expect(parseTaskReturnRoute({
+      workspaceId,
+      kind: "view",
+      view: "user:",
       mode: "list",
     }, workspaceId)).toBeNull();
     expect(parseTaskReturnRoute({

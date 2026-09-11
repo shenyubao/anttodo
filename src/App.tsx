@@ -1,3 +1,9 @@
+import { SortableTaskTree } from "./SortableTaskTree";
+import { NoticeToast, useNotice } from "./NoticeToast";
+import { TaskStatusActionsProvider, useTaskStatusActions } from "./TaskStatusActions";
+import { TaskStatusIcon } from "./TaskStatusIcon";
+import { canChangeTaskStatus, rollbackTaskStatus, TaskStatusConflict, type TaskStatusWriter } from "./lib/taskStatus";
+import { writeTaskStatus } from "./lib/taskStatusApi";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   DndContext,
@@ -105,6 +111,10 @@ import { CliDevicesSettings } from "./CliDevicesSettings";
 import { QuickCreateSettingsPanel } from "./QuickCreateSettingsPanel";
 import { QuickAddForm } from "./QuickAddForm";
 import {
+  patchWorkspaceConnector,
+  setConnectorEnabledInCache,
+} from "./lib/connectorAdmin";
+import {
   canCompleteYunxiaoExternalTask,
   importYunxiaoWorkitemFromText,
   isYunxiaoQuickCreateInput,
@@ -117,8 +127,11 @@ import {
 } from "./DesktopUpdateBanner";
 import { initials, MemberAvatar } from "./MemberAvatar";
 import { MindMapWorkspace } from "./MindMapWorkspace";
+import { MatrixWorkspace } from "./MatrixWorkspace";
 import { ConnectorSyncButton } from "./ConnectorSyncButton";
 import { NotificationBell } from "./NotificationBell";
+import { OkrWorkspace } from "./OkrWorkspace";
+import { WeeklyReportsWorkspace } from "./WeeklyReportsWorkspace";
 import { EmbeddedNavigation } from "./EmbeddedNavigation";
 import { NotificationSettingsPanel } from "./NotificationSettingsPanel";
 import { AppearanceSettingsPanel } from "./AppearanceSettingsPanel";
@@ -146,6 +159,7 @@ import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
 import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
 import { WorkspaceSwitcherDialog } from "./WorkspaceSwitcherDialog";
 import {
+  addUserSidebarMember as addUserSidebarMemberApi,
   assignTask as assignTaskApi,
   createTaskComment as createTaskCommentApi,
   createLabelWithAccess as createLabelWithAccessApi,
@@ -160,6 +174,7 @@ import {
   deleteTaskComment as deleteTaskCommentApi,
   deleteCustomTaskView,
   purgeTrashedTask as purgeTrashedTaskApi,
+  removeUserSidebarMember as removeUserSidebarMemberApi,
   loadDateTimePreferences,
   loadAiFeatureSettings,
   loadAiWorkSettings,
@@ -175,6 +190,7 @@ import {
   loadTaskComments,
   loadWorkspaceTasksPage,
   loadWorkspaceTask,
+  loadWorkspaceTasksByIds,
   insertTaskDependency as insertTaskDependencyApi,
   deleteTaskDependency as deleteTaskDependencyApi,
   loadUserQuota,
@@ -186,6 +202,7 @@ import {
   saveAiFeatureSettings,
   saveAiWorkSettings,
   saveFocusSettings,
+  saveMatrixQuadrantPreference,
   saveNotificationPreference,
   saveTaskSchedule as saveTaskScheduleApi,
   saveTaskListPreference,
@@ -271,10 +288,12 @@ import {
   type MobileSidebarDragKind,
 } from "./lib/mobileSidebarGesture";
 import {
+  applyTaskLabelIdsToBundle,
   applyTaskListOrderToBundle,
   applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
+  applyTaskTreeMoveToBundle,
   appendTaskDependenciesInBundle,
   appendTaskToBundle,
   createOptimisticTask,
@@ -284,6 +303,7 @@ import {
   normalizeWorkspaceBundle,
   patchTaskInBundle,
   patchTaskSectionInBundle,
+  reconcileFetchedTasksInBundle,
   removeTaskDependencyFromBundle,
   removeTaskFromBundle,
   removeTaskSectionFromBundle,
@@ -311,10 +331,9 @@ import {
   descendantIds,
   isRootTask,
   nextSiblingPosition,
-  visibleFlattenedTasks,
+  siblingReorderPatch,
 } from "./lib/taskTree";
 import {
-  DEFAULT_TASK_LIST_PREFERENCE,
   applyCustomTaskViewOrder,
   applySystemSmartViewOrder,
   applyTaskListFilters,
@@ -329,7 +348,6 @@ import {
   filterTasksForView,
   groupTasks,
   isActiveTask,
-  isCompletedTask,
   isCustomTaskView,
   isHideableSystemSmartView,
   labelSubtreeIds,
@@ -341,12 +359,14 @@ import {
   resolveTaskListPreference,
   resolveTaskListFilters,
   SMART_VIEW_FILTER_PRESETS,
-  sortTasks,
   taskOrdersAfterCrossSectionMove,
   taskSectionOrderAfterInsert,
   taskSectionOrderAfterMove,
   taskListKey,
+  userTaskViewId,
+  userTaskViewKey,
   UNGROUPED_GROUP_ID,
+  type SystemSmartViewKey,
 } from "./lib/taskList";
 import { TaskFilterMenu } from "./TaskFilterMenu";
 import { TaskRecommendationButton } from "./TaskRecommendationButton";
@@ -427,9 +447,13 @@ import {
   DEFAULT_LABEL_COLOR,
   applyLabelAccessToBundle,
   appendCreatedLabelToBundle,
+  defaultViewLabelIds,
   hasExplicitLabelColor,
   LABEL_COLORS,
+  taskHasUserLabels,
   taskLabelBarColor,
+  taskUserLabelIds,
+  userLabels,
   labelDropPlacementFromY,
   labelIdFromRealtimeChange,
   moveIdInOrder,
@@ -457,6 +481,7 @@ import {
   instanceStorageKey,
   isOnPremisesInstance,
   loginWelcomeTitle,
+  OFFICIAL_SERVICE_NAME,
   rememberedInstanceConfigs,
   restoreOfficialService,
   setActiveInstanceConfig,
@@ -511,6 +536,7 @@ import type {
   AiWorkSettings,
   AssigneeTarget,
   AppNotification,
+  Connector,
   CustomTaskView,
   CustomTaskViewDefinition,
   DateTimePreferences,
@@ -519,9 +545,11 @@ import type {
   Label,
   LabelAccessDraft,
   LabelAccessScope,
+  MatrixQuadrantPreference,
   Member,
   NoticeHandler,
   NoticeTone,
+  NoticeOptions,
   NotificationChannelPreferences,
   NotificationPreferences,
   NotificationScenario,
@@ -534,6 +562,7 @@ import type {
   TaskDependency,
   TaskDependencyTarget,
   TaskKind,
+  TaskOkrLink,
   TaskListPreference,
   TaskSystemViewPreference,
   TaskSection,
@@ -550,6 +579,16 @@ import type {
 } from "./types";
 
 type SmartView = import("./lib/appRoute").AppSmartView;
+
+function normalizeLegacyAssignedView(view: SmartView, currentUserId: string): SmartView {
+  return view === "assigned" ? userTaskViewKey(currentUserId) : view;
+}
+
+function smartViewForListRoute(route: AppRoute | null, currentUserId: string): SmartView {
+  if (route?.kind === "view") return normalizeLegacyAssignedView(route.view, currentUserId);
+  if (route?.kind === "tag") return "all";
+  return normalizeLegacyAssignedView(DEFAULT_SMART_VIEW, currentUserId);
+}
 type AppSection = PrimaryAppSection;
 type SettingsTab =
   | "account"
@@ -1307,7 +1346,7 @@ function MissingConfig() {
           <CloudOff size={30} />
           <h2>{instanceManifestUnavailable ? "无法连接所选服务" : "缺少 Supabase 配置"}</h2>
           <p>{instanceManifestUnavailable
-            ? "服务配置不可用，请检查网络后重试。桌面端也可以恢复 AntTodo 官方服务。"
+            ? "服务配置不可用，请检查网络后重试。桌面端也可以恢复 AntTodo.com 服务。"
             : "复制 .env.example 为 .env.local，并填写项目 URL 与 publishable key。"}</p>
         </div>
         {instanceManifestUnavailable && (
@@ -1995,7 +2034,7 @@ function AuthScreen({
           disabled={serviceSwitchDisabled}
           aria-label="当前服务"
         >
-          <option value="official">官方平台</option>
+          <option value="official">{OFFICIAL_SERVICE_NAME}</option>
           {rememberedServices.map((service) => (
             <option key={service.appUrl} value={service.appUrl}>
               {service.displayName}
@@ -2233,12 +2272,7 @@ function RemoteApplication({
   );
   const requestedWorkspaceId = currentApplicationRoute()?.workspaceId ?? null;
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [notice, setNoticeMessage] = useState("");
-  const [noticeTone, setNoticeTone] = useState<NoticeTone>("success");
-  function setNotice(message: string, tone: NoticeTone = "success") {
-    setNoticeMessage(message);
-    setNoticeTone(tone);
-  }
+  const { notice, noticeTone, noticeOptions, setNotice } = useNotice();
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [activityRevision, setActivityRevision] = useState(0);
   const pendingTaskCreatesRef = useRef(0);
@@ -2474,6 +2508,27 @@ function RemoteApplication({
       recentLocalRealtimeChangesRef.current.delete(recentChangeKey(table, entityId));
       return true;
     };
+    const pendingTaskIds = new Set<string>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushTargetedTaskRefresh = () => {
+      flushTimer = null;
+      const ids = [...pendingTaskIds];
+      pendingTaskIds.clear();
+      if (ids.length === 0) return;
+      void (async () => {
+        try {
+          const tasks = await loadWorkspaceTasksByIds(client, ids);
+          queryClient.setQueryData<WorkspaceBundle>(
+            ["workspace-bundle", workspaceId],
+            (current) => current
+              ? reconcileFetchedTasksInBundle(current, ids, tasks)
+              : current,
+          );
+        } catch {
+          void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+        }
+      })();
+    };
     const scheduleTaskRefresh = (
       table: string,
       taskId: string,
@@ -2488,7 +2543,17 @@ function RemoteApplication({
           scheduleTaskRefresh(table, taskId, attempt + 1);
           return;
         }
-        void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+        if (table === "task_list_placements") {
+          void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
+          return;
+        }
+        pendingTaskIds.add(taskId);
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          if (flushTimer) realtimeRefreshTimersRef.current.delete(flushTimer);
+          flushTargetedTaskRefresh();
+        }, 50);
+        realtimeRefreshTimersRef.current.add(flushTimer);
       }, 50);
       realtimeRefreshTimersRef.current.add(timer);
     };
@@ -2522,6 +2587,53 @@ function RemoteApplication({
             setActivityRevision((value) => value + 1);
             return;
           }
+          if (table === "connector_instances") {
+            const change = payload as {
+              eventType?: string;
+              new?: Record<string, unknown>;
+            };
+            const connectorId = typeof change.new?.id === "string"
+              ? change.new.id
+              : null;
+            if (change.eventType === "UPDATE" && connectorId) {
+              queryClient.setQueryData<WorkspaceBundle>(
+                ["workspace-bundle", workspaceId],
+                (current) => current
+                  ? patchWorkspaceConnector(
+                      current,
+                      connectorId,
+                      change.new as Partial<Connector>,
+                    )
+                  : current,
+              );
+              if (typeof change.new?.enabled === "boolean") {
+                setConnectorEnabledInCache(
+                  queryClient,
+                  workspaceId,
+                  connectorId,
+                  change.new.enabled,
+                );
+              }
+              return;
+            }
+          }
+          if (table === "task_okr_links") {
+            const change = payload as {
+              new?: { task_id?: unknown };
+              old?: { task_id?: unknown };
+            };
+            const taskId = typeof change.new?.task_id === "string"
+              ? change.new.task_id
+              : typeof change.old?.task_id === "string"
+                ? change.old.task_id
+                : null;
+            if (taskId) {
+              void queryClient.invalidateQueries({ queryKey: ["task-okr-link", taskId] });
+              void queryClient.invalidateQueries({ queryKey: ["task-okr-link-ids"] });
+            }
+            void queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", workspaceId] });
+            return;
+          }
           if (
             table === "tasks"
             || table === "task_labels"
@@ -2553,6 +2665,7 @@ function RemoteApplication({
           if (
             table === "custom_task_views"
             || table === "task_system_view_preferences"
+            || table === "task_matrix_quadrants"
           ) {
             if (pendingSmartViewMutationsRef.current > 0) return;
             const entityId = smartViewIdFromRealtimeChange(payload);
@@ -2565,6 +2678,8 @@ function RemoteApplication({
     return () => {
       for (const timer of realtimeRefreshTimersRef.current) clearTimeout(timer);
       realtimeRefreshTimersRef.current.clear();
+      pendingTaskIds.clear();
+      flushTimer = null;
       recentLocalRealtimeChangesRef.current.clear();
       void client.removeChannel(channel);
     };
@@ -2662,6 +2777,37 @@ function RemoteApplication({
     }
   }
 
+  const changeTaskStatus: TaskStatusWriter = async (expected, status) => {
+    if (!online || !navigator.onLine) throw new Error("离线时无法修改任务");
+    const queryKey = ["workspace-bundle", activeWorkspaceId];
+    await queryClient.cancelQueries({ queryKey });
+    if (!navigator.onLine) throw new Error("离线时无法修改任务");
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const current = previous?.tasks.find((task) => task.id === expected.id);
+    if (!current || current.version !== expected.version || current.status !== expected.status
+      || !canChangeTaskStatus(current, status) || !canOrganizeTask(previous!, current, userId)) {
+      throw new TaskStatusConflict();
+    }
+    const optimistic = { id: current.id, status, completed_at: null, version: current.version + 1, updated_at: new Date().toISOString() };
+    rememberLocalRealtimeChanges("tasks", [current.id]);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (value) => value ? patchTaskInBundle(value, current.id, optimistic) : value);
+    try {
+      const saved = await writeTaskStatus(client, activeWorkspaceId, expected, status);
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (value) => {
+        const live = value?.tasks.find((task) => task.id === current.id);
+        return value && live?.version === optimistic.version && live.status === optimistic.status
+          ? patchTaskInBundle(value, current.id, saved) : value;
+      });
+      setActivityRevision((value) => value + 1);
+      return saved;
+    } catch (error) {
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (value) => value ? rollbackTaskStatus(value, optimistic, current) : value);
+      recentLocalRealtimeChangesRef.current.delete(`tasks:${current.id}`);
+      void queryClient.invalidateQueries({ queryKey });
+      throw error;
+    }
+  };
+
   async function updateTask(
     taskId: string,
     patch: Partial<Task>,
@@ -2730,8 +2876,11 @@ function RemoteApplication({
     const normalizedPatch: Partial<Task> = patch.kind === "note"
       ? { ...patch, assignee_id: null, cli_assignee: null }
       : patch;
-    const moving = normalizedPatch.parent_task_id !== undefined;
-    const nextParentTaskId = normalizedPatch.parent_task_id ?? null;
+    const moving = normalizedPatch.parent_task_id !== undefined
+      || normalizedPatch.position !== undefined;
+    const nextParentTaskId = normalizedPatch.parent_task_id !== undefined
+      ? normalizedPatch.parent_task_id ?? null
+      : (current?.parent_task_id ?? null);
     const nextPosition = normalizedPatch.position ?? current?.position ?? 0;
     const payload: Record<string, unknown> = { ...normalizedPatch };
     delete payload.label_ids;
@@ -2774,10 +2923,19 @@ function RemoteApplication({
             display_name_snapshot: member.profile?.display_name?.trim() || "团队成员",
           }))
       : null;
-    const nextBundle: WorkspaceBundle | null = previous
+    const moved = moving && previous
+      ? applyTaskTreeMoveToBundle(previous, taskId, nextParentTaskId, nextPosition)
+      : null;
+    const fieldPatch: Partial<Task> = { ...normalizedPatch };
+    if (moving) {
+      delete fieldPatch.parent_task_id;
+      delete fieldPatch.position;
+    }
+    const sourceBundle = moved?.bundle ?? previous;
+    const nextBundle: WorkspaceBundle | null = sourceBundle
       ? normalizeWorkspaceBundle({
-          ...previous,
-          tasks: previous.tasks.map((task) => {
+          ...sourceBundle,
+          tasks: sourceBundle.tasks.map((task) => {
             if (task.id !== taskId) return task;
             return rolled
               ? {
@@ -2791,9 +2949,9 @@ function RemoteApplication({
                 }
               : {
                   ...task,
-                  ...normalizedPatch,
+                  ...fieldPatch,
                   ...(nextDescriptionMentions ? { description_mentions: nextDescriptionMentions } : {}),
-                  ...(normalizedPatch.kind === "note" ? {
+                  ...(fieldPatch.kind === "note" ? {
                     children: task.children.map((childTask) => ({
                       ...childTask,
                       assignee_id: null,
@@ -2806,7 +2964,7 @@ function RemoteApplication({
           }),
         })
       : null;
-    rememberLocalRealtimeChanges("tasks", [taskId]);
+    rememberLocalRealtimeChanges("tasks", moved?.changedIds ?? [taskId]);
     queryClient.setQueryData(queryKey, nextBundle);
     try {
       if (moving) {
@@ -2907,29 +3065,33 @@ function RemoteApplication({
     selected: boolean,
   ) {
     const queryKey = ["workspace-bundle", workspaceId];
+    await queryClient.cancelQueries({ queryKey });
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const currentTask = previous?.tasks.find((task) => task.id === taskId);
     if (selected && currentTask && !currentTask.label_ids.includes(labelId)) {
       assertCanAssociateTaskLabels(previous?.labelTaskCounts, [labelId]);
     }
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
-      current
-        ? patchTaskInBundle(current, taskId, (task) => {
-            const labelIds = new Set(task.label_ids);
-            if (selected) labelIds.add(labelId);
-            else labelIds.delete(labelId);
-            return { ...task, label_ids: [...labelIds] };
-          })
-        : current,
-    );
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => {
+      if (!current) return current;
+      const task = current.tasks.find((item) => item.id === taskId);
+      if (!task) return current;
+      const labelIds = new Set(task.label_ids);
+      if (selected) labelIds.add(labelId);
+      else labelIds.delete(labelId);
+      return applyTaskLabelIdsToBundle(current, taskId, [...labelIds]);
+    });
+    rememberLocalRealtimeChanges("task_labels", [taskId]);
+    rememberLocalRealtimeChanges("tasks", [taskId]);
 
     try {
       await toggleTaskLabelApi(client, taskId, labelId, selected);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
+      recentLocalRealtimeChangesRef.current.delete(`task_labels:${taskId}`);
+      recentLocalRealtimeChangesRef.current.delete(`tasks:${taskId}`);
+      void queryClient.invalidateQueries({ queryKey });
       throw error;
     }
-    await queryClient.invalidateQueries({ queryKey });
   }
 
   async function toggleTaskParticipant(
@@ -3450,6 +3612,55 @@ function RemoteApplication({
     return created;
   }
 
+  async function toggleUserSidebarMember(memberUserId: string, selected: boolean) {
+    if (!workspaceId || memberUserId === userId) return;
+    const queryKey = ["workspace-bundle", workspaceId];
+    await queryClient.cancelQueries({ queryKey });
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const optimistic = {
+      user_id: userId,
+      workspace_id: workspaceId,
+      member_user_id: memberUserId,
+      created_at: new Date().toISOString(),
+    };
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
+      ? {
+          ...current,
+          userSidebarMembers: selected
+            ? [
+                ...(current.userSidebarMembers ?? []).filter(
+                  (item) => item.member_user_id !== memberUserId,
+                ),
+                optimistic,
+              ]
+            : (current.userSidebarMembers ?? []).filter(
+                (item) => item.member_user_id !== memberUserId,
+              ),
+        }
+      : current);
+    try {
+      if (selected) {
+        const saved = await addUserSidebarMemberApi(client, optimistic);
+        queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
+          ? {
+              ...current,
+              userSidebarMembers: [
+                ...(current.userSidebarMembers ?? []).filter(
+                  (item) => item.member_user_id !== memberUserId,
+                ),
+                saved,
+              ],
+            }
+          : current);
+      } else {
+        await removeUserSidebarMemberApi(client, workspaceId, memberUserId);
+      }
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    }
+  }
+
   async function updateTaskListPreference(next: TaskListPreference) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
@@ -3561,7 +3772,7 @@ function RemoteApplication({
   }
 
   async function toggleSystemViewVisibility(
-    viewKey: TaskSystemViewPreference["view_key"],
+    viewKey: SystemSmartViewKey,
     visible: boolean,
   ) {
     const queryKey = ["workspace-bundle", workspaceId];
@@ -3587,6 +3798,54 @@ function RemoteApplication({
     pendingSmartViewMutationsRef.current += 1;
     try {
       await saveTaskSystemViewPreference(client, next);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      throw error;
+    } finally {
+      pendingSmartViewMutationsRef.current = Math.max(
+        0,
+        pendingSmartViewMutationsRef.current - 1,
+      );
+    }
+  }
+
+  async function updateMatrixQuadrantPreference(
+    preference: MatrixQuadrantPreference,
+  ) {
+    const queryKey = ["workspace-bundle", workspaceId];
+    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
+    const next = {
+      ...preference,
+      user_id: userId,
+      workspace_id: workspaceId!,
+      updated_at: new Date().toISOString(),
+    } satisfies MatrixQuadrantPreference;
+    rememberLocalRealtimeChanges("task_matrix_quadrants", [next.quadrant_key]);
+    queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+      ? {
+          ...bundle,
+          matrixQuadrantPreferences: [
+            ...bundle.matrixQuadrantPreferences.filter(
+              (item) => item.user_id !== userId || item.quadrant_key !== next.quadrant_key,
+            ),
+            next,
+          ],
+        }
+      : bundle);
+    pendingSmartViewMutationsRef.current += 1;
+    try {
+      const saved = await saveMatrixQuadrantPreference(client, next);
+      queryClient.setQueryData<WorkspaceBundle>(queryKey, (bundle) => bundle
+        ? {
+            ...bundle,
+            matrixQuadrantPreferences: [
+              ...bundle.matrixQuadrantPreferences.filter(
+                (item) => item.user_id !== userId || item.quadrant_key !== saved.quadrant_key,
+              ),
+              saved,
+            ],
+          }
+        : bundle);
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
       throw error;
@@ -3627,7 +3886,7 @@ function RemoteApplication({
     }
   }
 
-  async function reorderSystemSmartViews(orderedKeys: TaskSystemViewPreference["view_key"][]) {
+  async function reorderSystemSmartViews(orderedKeys: SystemSmartViewKey[]) {
     const queryKey = ["workspace-bundle", workspaceId];
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const next = applySystemSmartViewOrder(
@@ -3857,6 +4116,7 @@ function RemoteApplication({
 
   return (
     <WorkspaceApplication
+      demoMode={false}
       workspaces={workspacesQuery.data}
       workspaceId={workspaceId}
       bundle={bundleQuery.data}
@@ -3894,6 +4154,8 @@ function RemoteApplication({
       notificationsLoading={notificationsQuery.isLoading}
       notice={notice}
       noticeTone={noticeTone}
+      noticeOptions={noticeOptions}
+      onWriteTaskStatus={changeTaskStatus}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onLoadMoreTasks={loadMoreTasks}
@@ -3939,7 +4201,10 @@ function RemoteApplication({
             await queryClient.invalidateQueries({ queryKey });
             return { id: imported.taskId };
           }
-          assertCanAssociateTaskLabels(currentBundle?.labelTaskCounts, input.labelIds);
+          assertCanAssociateTaskLabels(
+            currentBundle?.labelTaskCounts,
+            taskUserLabelIds(input.labelIds, currentBundle?.labels ?? []),
+          );
         }
         const taskInput = {
           ...input,
@@ -4023,6 +4288,7 @@ function RemoteApplication({
       onUpdateLabel={updateLabel}
       onReorderChildLabels={reorderChildLabels}
       onSetUserTopLevelLabelOrder={setUserTopLevelLabelOrder}
+      onToggleUserSidebarMember={toggleUserSidebarMember}
       onDeleteLabel={deleteLabel}
       onMoveLabelToInbox={moveLabelToInbox}
       onUpdateMemberRole={updateMemberRole}
@@ -4048,6 +4314,7 @@ function RemoteApplication({
       onCreateCustomTaskView={createCustomTaskViewForWorkspace}
       onDeleteCustomTaskView={removeCustomTaskView}
       onToggleSystemViewVisibility={toggleSystemViewVisibility}
+      onSaveMatrixQuadrantPreference={updateMatrixQuadrantPreference}
       onToggleCustomViewVisibility={toggleCustomViewVisibility}
       onReorderSystemSmartViews={reorderSystemSmartViews}
       onReorderCustomTaskViews={reorderCustomTaskViews}
@@ -4096,12 +4363,9 @@ function DemoApplication({
     setFocusSettings((current) => ({ ...current, workspace_id: workspaceId }));
   }, [workspaceId]);
   const [bundle, setBundle] = useState(createDemoBundle);
-  const [notice, setNoticeMessage] = useState("你正在浏览演示空间，所有改动只保存在当前页面");
-  const [noticeTone, setNoticeTone] = useState<NoticeTone>("success");
-  function setNotice(message: string, tone: NoticeTone = "success") {
-    setNoticeMessage(message);
-    setNoticeTone(tone);
-  }
+  const { notice, noticeTone, noticeOptions, setNotice } = useNotice("你正在浏览演示空间，所有改动只保存在当前页面");
+  const demoStatusBundleRef = useRef(bundle);
+  demoStatusBundleRef.current = bundle;
   const [inviteLink, setInviteLink] = useState<WorkspaceInviteLink | null>(null);
   const [dateTimePreferences, setDateTimePreferences] = useState(
     DEFAULT_DATE_TIME_PREFERENCES,
@@ -4170,6 +4434,21 @@ function DemoApplication({
     setActivityRevision((value) => value + 1);
   }
 
+  const changeTaskStatus: TaskStatusWriter = async (expected, status) => {
+    if (!online || !navigator.onLine) throw new Error("离线时无法修改任务");
+    const currentBundle = demoStatusBundleRef.current;
+    const current = currentBundle.tasks.find((task) => task.id === expected.id);
+    if (!current || current.version !== expected.version || current.status !== expected.status
+      || !canChangeTaskStatus(current, status) || !canOrganizeTask(currentBundle, current, "demo-user")) {
+      throw new TaskStatusConflict();
+    }
+    const saved = { id: current.id, status, completed_at: null, version: current.version + 1, updated_at: new Date().toISOString() };
+    demoStatusBundleRef.current = patchTaskInBundle(currentBundle, current.id, saved);
+    setBundle((value) => patchTaskInBundle(value, current.id, saved));
+    appendDemoActivity(current.id, "task.updated", { changes: { status: { before: current.status, after: status } } });
+    return saved;
+  };
+
   function patchTask(
     taskId: string,
     patch: Partial<Task>,
@@ -4235,29 +4514,45 @@ function DemoApplication({
     const newlyMentioned = (nextDescriptionMentions ?? []).filter(
       (item) => !previousMentionIds.has(item.user_id),
     );
-    setBundle((current) => normalizeWorkspaceBundle({
-      ...current,
-      tasks: current.tasks.map((item) =>
-        item.id === taskId
-          ? {
-              ...item,
-              ...nextPatch,
-              ...(nextDescriptionMentions
-                ? { description_mentions: nextDescriptionMentions }
-                : {}),
-              ...(nextPatch.kind === "note" ? {
-                children: item.children.map((childTask) => ({
-                  ...childTask,
-                  assignee_id: null,
-                  cli_assignee: null,
-                })),
-              } : {}),
-              updated_at: new Date().toISOString(),
-              version: item.version + 1,
-            }
-          : item,
-      ),
-    }));
+    setBundle((current) => {
+      const moving = nextPatch.parent_task_id !== undefined || nextPatch.position !== undefined;
+      const moved = moving
+        ? applyTaskTreeMoveToBundle(
+          current,
+          taskId,
+          nextPatch.parent_task_id !== undefined ? nextPatch.parent_task_id ?? null : (task?.parent_task_id ?? null),
+          nextPatch.position ?? task?.position ?? 0,
+        ).bundle
+        : current;
+      const fieldPatch: Partial<Task> = { ...nextPatch };
+      if (moving) {
+        delete fieldPatch.parent_task_id;
+        delete fieldPatch.position;
+      }
+      return normalizeWorkspaceBundle({
+        ...moved,
+        tasks: moved.tasks.map((item) =>
+          item.id === taskId
+            ? {
+                ...item,
+                ...fieldPatch,
+                ...(nextDescriptionMentions
+                  ? { description_mentions: nextDescriptionMentions }
+                  : {}),
+                ...(fieldPatch.kind === "note" ? {
+                  children: item.children.map((childTask) => ({
+                    ...childTask,
+                    assignee_id: null,
+                    cli_assignee: null,
+                  })),
+                } : {}),
+                updated_at: new Date().toISOString(),
+                version: item.version + 1,
+              }
+            : item,
+        ),
+      });
+    });
     if (Object.keys(changes).length) appendDemoActivity(taskId, "task.updated", { changes });
     if (newlyMentioned.length > 0 && task) {
       const mentionType = task.kind === "note" ? "note_mentioned" : "todo_mentioned";
@@ -4311,6 +4606,7 @@ function DemoApplication({
 
   return (
     <WorkspaceApplication
+      demoMode
       workspaces={workspaces}
       workspaceId={workspaceId}
       bundle={bundle}
@@ -4338,6 +4634,8 @@ function DemoApplication({
       notificationsLoading={false}
       notice={notice}
       noticeTone={noticeTone}
+      noticeOptions={noticeOptions}
+      onWriteTaskStatus={changeTaskStatus}
       onDismissNotice={() => setNotice("")}
       onNotice={setNotice}
       onLoadMoreTasks={async () => undefined}
@@ -4405,7 +4703,10 @@ function DemoApplication({
           throw new Error("演示模式无法从云效链接创建待办");
         }
         if (!input.parentTaskId) {
-          assertCanAssociateTaskLabels(bundle.labelTaskCounts, input.labelIds);
+          assertCanAssociateTaskLabels(
+            bundle.labelTaskCounts,
+            taskUserLabelIds(input.labelIds, bundle.labels),
+          );
         }
         const createdAt = new Date().toISOString();
         const createdId = crypto.randomUUID();
@@ -4500,12 +4801,10 @@ function DemoApplication({
           if (selected && currentTask && !currentTask.label_ids.includes(labelId)) {
             assertCanAssociateTaskLabels(current.labelTaskCounts, [labelId]);
           }
-          return patchTaskInBundle(current, taskId, (task) => {
-            const labelIds = new Set(task.label_ids);
-            if (selected) labelIds.add(labelId);
-            else labelIds.delete(labelId);
-            return { ...task, label_ids: [...labelIds] };
-          });
+          const labelIds = new Set(currentTask?.label_ids ?? []);
+          if (selected) labelIds.add(labelId);
+          else labelIds.delete(labelId);
+          return applyTaskLabelIdsToBundle(current, taskId, [...labelIds]);
         });
         const label = bundle.labels.find((item) => item.id === labelId);
         appendDemoActivity(taskId, selected ? "task.label_added" : "task.label_removed", {
@@ -4611,8 +4910,29 @@ function DemoApplication({
       }}
       onUpdateChildTask={async (targetTaskId, patch) => {
         const ownerTask = bundle.tasks.find((task) => task.children.some((childTask) => childTask.id === targetTaskId));
-        const childTask = ownerTask?.children.find((item) => item.id === targetTaskId);
-        setBundle((current) => normalizeWorkspaceBundle(patchTaskInBundle(current, targetTaskId, patch)));
+        const childTask = ownerTask?.children.find((item) => item.id === targetTaskId)
+          ?? bundle.tasks.find((item) => item.id === targetTaskId);
+        setBundle((current) => {
+          const moving = patch.parent_task_id !== undefined || patch.position !== undefined;
+          const currentTask = current.tasks.find((item) => item.id === targetTaskId);
+          const moved = moving
+            ? applyTaskTreeMoveToBundle(
+              current,
+              targetTaskId,
+              patch.parent_task_id !== undefined
+                ? patch.parent_task_id ?? null
+                : (currentTask?.parent_task_id ?? null),
+              patch.position ?? currentTask?.position ?? 0,
+            ).bundle
+            : current;
+          const fieldPatch = { ...patch };
+          if (moving) {
+            delete fieldPatch.parent_task_id;
+            delete fieldPatch.position;
+          }
+          if (Object.keys(fieldPatch).length === 0) return moved;
+          return normalizeWorkspaceBundle(patchTaskInBundle(moved, targetTaskId, fieldPatch));
+        });
         if (ownerTask && childTask) {
           const changes = Object.fromEntries(Object.entries(patch).flatMap(([field, after]) => {
             const key = field as keyof typeof patch;
@@ -4860,6 +5180,27 @@ function DemoApplication({
           userLabelOrder: userLabelOrderRows("demo-user", workspaceId, orderedIds),
         }));
       }}
+      onToggleUserSidebarMember={async (memberUserId, selected) => {
+        if (memberUserId === "demo-user") return;
+        setBundle((current) => ({
+          ...current,
+          userSidebarMembers: selected
+            ? [
+                ...(current.userSidebarMembers ?? []).filter(
+                  (item) => item.member_user_id !== memberUserId,
+                ),
+                {
+                  user_id: "demo-user",
+                  workspace_id: workspaceId,
+                  member_user_id: memberUserId,
+                  created_at: new Date().toISOString(),
+                },
+              ]
+            : (current.userSidebarMembers ?? []).filter(
+                (item) => item.member_user_id !== memberUserId,
+              ),
+        }));
+      }}
       onDeleteLabel={async (labelId) => {
         setBundle((current) => removeLabelSubtreeFromBundle(current, labelId));
       }}
@@ -5104,6 +5445,23 @@ function DemoApplication({
           };
         });
       }}
+      onSaveMatrixQuadrantPreference={async (preference) => {
+        setBundle((current) => ({
+          ...current,
+          matrixQuadrantPreferences: [
+            ...current.matrixQuadrantPreferences.filter(
+              (item) => item.user_id !== "demo-user"
+                || item.quadrant_key !== preference.quadrant_key,
+            ),
+            {
+              ...preference,
+              user_id: "demo-user",
+              workspace_id: workspaceId,
+              updated_at: new Date().toISOString(),
+            },
+          ],
+        }));
+      }}
       onToggleCustomViewVisibility={async (viewId, visible) => {
         setBundle((current) => ({
           ...current,
@@ -5190,6 +5548,7 @@ function DemoApplication({
 }
 
 type WorkspaceAppProps = {
+  demoMode: boolean;
   workspaces: Workspace[];
   workspaceId: string;
   quota: UserQuota;
@@ -5214,6 +5573,8 @@ type WorkspaceAppProps = {
   notificationsLoading: boolean;
   notice: string;
   noticeTone: NoticeTone;
+  noticeOptions: NoticeOptions;
+  onWriteTaskStatus: TaskStatusWriter;
   onDismissNotice: () => void;
   onNotice: NoticeHandler;
   onLoadMoreTasks: () => Promise<void>;
@@ -5310,6 +5671,7 @@ type WorkspaceAppProps = {
   onUpdateLabel: (labelId: string, patch: Partial<Label>) => Promise<void>;
   onReorderChildLabels: (parentId: string, orderedIds: string[]) => Promise<void>;
   onSetUserTopLevelLabelOrder: (orderedIds: string[]) => Promise<void>;
+  onToggleUserSidebarMember: (memberUserId: string, selected: boolean) => Promise<void>;
   onDeleteLabel: (labelId: string) => Promise<void>;
   onMoveLabelToInbox: (sourceLabelId: string) => Promise<void>;
   onUpdateMemberRole: (memberId: string, role: WorkspaceRole) => Promise<void>;
@@ -5347,9 +5709,10 @@ type WorkspaceAppProps = {
     presentation: Pick<TaskListPreference, "grouping" | "sort" | "direction" | "filter_assignee" | "filter_assignee_ids" | "filter_watching" | "filter_creator" | "filter_due" | "show_labels" | "show_completed" | "show_hours" | "view_mode">;
   }) => Promise<CustomTaskView>;
   onDeleteCustomTaskView: (viewId: string) => Promise<void>;
-  onToggleSystemViewVisibility: (viewKey: TaskSystemViewPreference["view_key"], visible: boolean) => Promise<void>;
+  onToggleSystemViewVisibility: (viewKey: SystemSmartViewKey, visible: boolean) => Promise<void>;
+  onSaveMatrixQuadrantPreference: (preference: MatrixQuadrantPreference) => Promise<void>;
   onToggleCustomViewVisibility: (viewId: string, visible: boolean) => Promise<void>;
-  onReorderSystemSmartViews: (orderedKeys: TaskSystemViewPreference["view_key"][]) => Promise<void>;
+  onReorderSystemSmartViews: (orderedKeys: SystemSmartViewKey[]) => Promise<void>;
   onReorderCustomTaskViews: (orderedIds: string[]) => Promise<void>;
   onCreateTaskSection: (listKey: string, name: string, index?: number) => Promise<void>;
   onReorderTaskSections: (listKey: string, sectionIds: string[]) => Promise<void>;
@@ -5440,6 +5803,8 @@ function PanelResizeHandle({
 
 function WorkspaceApplication(props: WorkspaceAppProps) {
   const workspace = props.workspaces.find((item) => item.id === props.workspaceId)!;
+  const ownUserView = userTaskViewKey(props.currentUserId);
+  const renderedRoute = currentApplicationRoute();
   const embeddedNavigationMode = embeddedNavigationEnabled({
     search: window.location.search,
     desktop: Boolean(window.anttodoDesktop),
@@ -5464,7 +5829,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     )
     : workspaceInitialRoute;
   const [smartView, setSmartView] = useState<SmartView>(
-    initialListRoute?.kind === "view" ? initialListRoute.view : DEFAULT_SMART_VIEW,
+    smartViewForListRoute(initialListRoute, props.currentUserId),
   );
   const [appSection, setAppSection] = useState<AppSection>(
     isOverlayAppRoute(workspaceInitialRoute)
@@ -5473,6 +5838,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         ? initialTaskReturnRoute.kind
         : "tasks",
   );
+  const [, setRouteRevision] = useState(0);
   const [focusDeepLink, setFocusDeepLink] = useState<DesktopFocusDeepLinkEnvelope | null>(null);
   const deepLinkWorkspaceRequestsRef = useRef(new Set<number>());
   const deepLinkProcessingRef = useRef<number | null>(null);
@@ -5552,6 +5918,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     parentId: string | null;
   } | null>(null);
   const [detailWidth, setDetailWidth] = useState(DETAIL_MAX_WIDTH);
+  const [matrixDetailAnchor, setMatrixDetailAnchor] = useState<DOMRect | null>(null);
   const [visibleCalendarIds, setVisibleCalendarIds] = useState<Set<string>>(
     () => new Set(["inbox", ...props.bundle.labels.map((label) => label.id)]),
   );
@@ -5612,6 +5979,14 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       ?.definition.scope === "trash"
   );
 
+  const noticeWorkspaceRef = useRef(props.workspaceId);
+  useEffect(() => {
+    if (noticeWorkspaceRef.current !== props.workspaceId) {
+      props.onDismissNotice();
+      noticeWorkspaceRef.current = props.workspaceId;
+    }
+  }, [props.workspaceId, props.onDismissNotice]);
+
   function workspaceCanEditTask(task: Task) {
     return !task.connector_id && canOrganizeTask(props.bundle, task, props.currentUserId);
   }
@@ -5635,10 +6010,20 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       : `/${window.location.search}#${path}`;
     if (`${window.location.pathname}${window.location.search}${window.location.hash}` === target) return;
     window.history[replace ? "replaceState" : "pushState"](state, "", target);
+    setRouteRevision((value) => value + 1);
   }
 
   function sectionRoute(): AppRoute {
+    if (appSection === "okr") {
+      const route = currentApplicationRoute();
+      if (route?.kind === "okr" && route.workspaceId === props.workspaceId) return route;
+      const returnRoute = currentTaskReturnRoute(props.workspaceId);
+      if (returnRoute?.kind === "okr") return returnRoute;
+      return { workspaceId: props.workspaceId, kind: "okr" };
+    }
     if (appSection === "calendar") return { workspaceId: props.workspaceId, kind: "calendar" };
+    if (appSection === "weekly_reports") return { workspaceId: props.workspaceId, kind: "weekly_reports" };
+    if (appSection === "matrix") return { workspaceId: props.workspaceId, kind: "matrix" };
     if (appSection === "mindmap") return { workspaceId: props.workspaceId, kind: "mindmap" };
     if (appSection === "focus") return { workspaceId: props.workspaceId, kind: "focus" };
     if (selectedLabelId) {
@@ -5653,7 +6038,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return;
     }
     setAppSection("tasks");
-    setSmartView(returnRoute?.kind === "view" ? returnRoute.view : DEFAULT_SMART_VIEW);
+    setSmartView(smartViewForListRoute(returnRoute, props.currentUserId));
     setSelectedLabelId(returnRoute?.kind === "tag" ? returnRoute.tagId : null);
     if (returnRoute?.kind === "view" || returnRoute?.kind === "tag") {
       setViewMode(returnRoute.mode ?? "list");
@@ -5670,6 +6055,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   function syncTaskSelection(taskId: string | null) {
+    if (!taskId) setMatrixDetailAnchor(null);
     setSelectedTaskId(taskId);
     setSelectedTaskIds(taskId ? [taskId] : []);
     setSelectionAnchorId(taskId);
@@ -5739,6 +6125,34 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     selectTask(taskId, modifiers, orderedIds);
   }
 
+  async function openOkrLinkedTask(taskId: string) {
+    const task = props.bundle.tasks.find((item) => item.id === taskId)
+      ?? await props.onEnsureTask(props.workspaceId, taskId);
+    if (!task) {
+      props.onNotice("关联的待办不存在或无权访问。", "error");
+      return;
+    }
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: "task",
+      taskId: task.id,
+      itemKind: task.kind === "note" ? "note" : "task",
+    }, false, { taskReturnRoute: sectionRoute() });
+    syncTaskSelection(task.id);
+  }
+
+  function openLinkedOkr(link: TaskOkrLink) {
+    syncTaskSelection(null);
+    setAppSection("okr");
+    writeRoute({
+      workspaceId: props.workspaceId,
+      kind: "okr",
+      ownerId: link.owner_id,
+      cycleId: link.cycle_id,
+      target: { kind: "key_result", id: link.key_result_id, initialTab: "tasks" },
+    });
+  }
+
   function closeTask() {
     const returnRoute = currentTaskReturnRoute(props.workspaceId) ?? sectionRoute();
     writeRoute(returnRoute, true);
@@ -5754,9 +6168,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   function selectSmartView(view: SmartView) {
-    const mode = savedViewMode(view, null);
-    writeRoute({ workspaceId: props.workspaceId, kind: "view", view, mode });
-    setSmartView(view);
+    const normalizedView = normalizeLegacyAssignedView(view, props.currentUserId);
+    const mode = savedViewMode(normalizedView, null);
+    writeRoute({ workspaceId: props.workspaceId, kind: "view", view: normalizedView, mode });
+    setSmartView(normalizedView);
     setViewMode(mode);
     setSelectedLabelId(null);
     syncTaskSelection(null);
@@ -5765,13 +6180,14 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   function selectLabel(labelId: string) {
     const mode = savedViewMode("all", labelId);
     writeRoute({ workspaceId: props.workspaceId, kind: "tag", tagId: labelId, mode });
+    if (userTaskViewId(smartView)) setSmartView("all");
     setSelectedLabelId(labelId);
     setViewMode(mode);
     syncTaskSelection(null);
   }
 
   function changeWorkspace(workspaceId: string) {
-    writeRoute({ workspaceId, kind: "view", view: DEFAULT_SMART_VIEW });
+    writeRoute({ workspaceId, kind: "view", view: ownUserView });
     props.onWorkspaceChange(workspaceId);
   }
 
@@ -5792,7 +6208,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         return;
       }
       syncTaskSelection(null);
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
     }
   }, [props.bundle.tasks, props.workspaceId, selectedTask, selectedTaskId, selectedTaskIds, selectionAnchorId]);
 
@@ -5810,23 +6226,24 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     if (selectedLabelId && !props.bundle.labels.some((label) => label.id === selectedLabelId)) {
       setSelectedLabelId(null);
-      setSmartView(DEFAULT_SMART_VIEW);
+      setSmartView(ownUserView);
       setViewMode("list");
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
     }
   }, [props.bundle.labels, props.workspaceId, selectedLabelId]);
 
   useEffect(() => {
     const handlePopState = () => {
+      setRouteRevision((value) => value + 1);
       const route = currentApplicationRoute();
       if (!route) return;
       if (route.workspaceId !== props.workspaceId) {
         if (props.workspaces.some((workspace) => workspace.id === route.workspaceId)) {
           props.onWorkspaceChange(route.workspaceId);
         } else {
-          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
           setAppSection("tasks");
-          setSmartView(DEFAULT_SMART_VIEW);
+          setSmartView(ownUserView);
           setViewMode("list");
           setSelectedLabelId(null);
           syncTaskSelection(null);
@@ -5839,9 +6256,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSearchDialogOpen(false);
       if (route.kind === "search") {
         syncTaskSelection(null);
-        writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+        writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
         setAppSection("tasks");
-        setSmartView(DEFAULT_SMART_VIEW);
+        setSmartView(ownUserView);
         setSelectedLabelId(null);
         setViewMode("list");
         setSearchDialogOpen(true);
@@ -5869,9 +6286,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     const route = currentApplicationRoute();
     if (route?.workspaceId !== props.workspaceId) {
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
       setAppSection("tasks");
-      setSmartView(DEFAULT_SMART_VIEW);
+      setSmartView(ownUserView);
       setViewMode("list");
       setSelectedLabelId(null);
       syncTaskSelection(null);
@@ -5879,9 +6296,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     }
     if (route.kind === "search") {
       syncTaskSelection(null);
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
       setAppSection("tasks");
-      setSmartView(DEFAULT_SMART_VIEW);
+      setSmartView(ownUserView);
       setSelectedLabelId(null);
       setViewMode("list");
       setSearchDialogOpen(true);
@@ -5891,6 +6308,14 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setAppSection(route.kind);
       syncTaskSelection(null);
       return;
+    }
+    if (route.kind === "view" && route.view === "assigned") {
+      writeRoute({
+        workspaceId: props.workspaceId,
+        kind: "view",
+        view: ownUserView,
+        mode: route.mode,
+      }, true);
     }
     const task = route.kind === "task"
       ? props.bundle.tasks.find((item) => item.id === route.taskId) ?? null
@@ -5921,7 +6346,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         if (!loaded) {
           props.onNotice("链接指定的任务不存在或无权访问。");
           syncTaskSelection(null);
-          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
           return;
         }
         const resolvedReturnRoute = currentTaskReturnRoute(props.workspaceId)
@@ -5944,6 +6369,18 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     }
     syncTaskSelection(null);
   }, [props.bundle, props.onEnsureTask, props.onNotice, props.workspaceId]);
+
+  useEffect(() => {
+    const viewedUserId = userTaskViewId(smartView);
+    if (!viewedUserId || props.bundle.members.some((member) => member.user_id === viewedUserId)) {
+      return;
+    }
+    setSmartView(ownUserView);
+    setViewMode(savedViewMode(ownUserView, null));
+    setSelectedLabelId(null);
+    syncTaskSelection(null);
+    writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+  }, [props.bundle.members, ownUserView, props.workspaceId, smartView]);
 
   function toggleCalendarSidebar() {
     if (
@@ -5974,7 +6411,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 
   const calendarSection = appSection === "calendar";
   const dialogSection = appSection === "calendar"
+    || appSection === "matrix"
     || appSection === "mindmap"
+    || appSection === "okr"
     || (appSection === "tasks" && viewMode === "timeline");
   const multiSelectOpen = appSection === "tasks"
     && viewMode === "list"
@@ -5982,6 +6421,21 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const detailPanelOpen = appSection === "tasks"
     && viewMode !== "timeline"
     && (multiSelectOpen || !!selectedTask);
+  const matrixDetailStyle = appSection === "matrix" && matrixDetailAnchor
+    ? (() => {
+        const width = Math.min(400, window.innerWidth - 24);
+        const height = Math.min(520, window.innerHeight - 24);
+        const rightSide = matrixDetailAnchor.right + 8 + width <= window.innerWidth - 12;
+        const left = rightSide
+          ? matrixDetailAnchor.right + 8
+          : Math.max(12, matrixDetailAnchor.left - width - 8);
+        const top = Math.min(
+          Math.max(12, matrixDetailAnchor.top),
+          Math.max(12, window.innerHeight - height - 12),
+        );
+        return { left, top, width, height } satisfies CSSProperties;
+      })()
+    : undefined;
 
   function changeSection(section: AppSection) {
     if (section === "search") {
@@ -5989,12 +6443,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return;
     }
     const route: AppRoute = section === "tasks"
-      ? { workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }
-      : { workspaceId: props.workspaceId, kind: section };
+      ? { workspaceId: props.workspaceId, kind: "view", view: ownUserView }
+      : { workspaceId: props.workspaceId, kind: section } as AppRoute;
     writeRoute(route);
     setAppSection(section);
     if (section === "tasks") {
-      setSmartView(DEFAULT_SMART_VIEW);
+      setSmartView(ownUserView);
       setSelectedLabelId(null);
     }
     syncTaskSelection(null);
@@ -6090,7 +6544,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             }
             const returnRoute = appSection === "tasks"
               ? sectionRoute()
-              : { workspaceId: targetWorkspaceId, kind: "view" as const, view: DEFAULT_SMART_VIEW, mode: "list" as const };
+              : { workspaceId: targetWorkspaceId, kind: "view" as const, view: ownUserView, mode: "list" as const };
             setAppSection("tasks");
             syncTaskSelection(task.id);
             writeRoute({
@@ -6386,7 +6840,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     ? "mindmap" as const
     : appSection === "focus"
     ? "focus" as const
-    : "tasks" as const;
+    : appSection === "tasks"
+    ? "tasks" as const
+    : "global" as const;
   const currentAvatarUrl = props.bundle.members.find(
     (member) => member.user_id === props.currentUserId,
   )?.profile?.avatar_url ?? null;
@@ -6422,6 +6878,8 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   ) : null;
 
   return (
+    <TaskStatusActionsProvider key={props.workspaceId} tasks={props.bundle.tasks} online={props.online}
+      canEdit={workspaceCanEditTask} write={props.onWriteTaskStatus} onNotice={props.onNotice}>
     <ShortcutProvider initialScope={shortcutScope}>
     <WorkspaceShortcutBindings
       appSection={shortcutScope}
@@ -6451,6 +6909,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         "app-shell",
         "task-section",
         appSection === "calendar" && "calendar-section",
+        appSection === "matrix" && "matrix-section",
+        appSection === "weekly_reports" && "weekly-reports-section",
+        appSection === "okr" && "okr-section",
         appSection === "mindmap" && "mind-map-section",
         appSection === "focus" && "focus-section",
         embeddedNavigationMode && "embedded-navigation-mode",
@@ -6515,6 +6976,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onSectionChange={changeSection}
         onSmartView={(view) => {
           selectSmartView(view);
+          setMobileAppSidebar(false);
+        }}
+        onUser={(userId) => {
+          selectSmartView(userTaskViewKey(userId));
           setMobileAppSidebar(false);
         }}
         onLabel={(labelId) => {
@@ -6582,6 +7047,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onDeleteCustomTaskView={props.onDeleteCustomTaskView}
         onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
         onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
+        onToggleUserSidebarMember={props.onToggleUserSidebarMember}
       />
       {embeddedNavigation}
       {appSection === "tasks" ? <Sidebar
@@ -6595,6 +7061,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onSmartView={(view) => {
           selectSmartView(view);
         }}
+        onUser={(userId) => {
+          selectSmartView(userTaskViewKey(userId));
+        }}
         onLabel={(labelId) => {
           selectLabel(labelId);
         }}
@@ -6607,6 +7076,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onUpdateLabel={props.onUpdateLabel}
         onReorderChildLabels={props.onReorderChildLabels}
         onSetUserTopLevelLabelOrder={props.onSetUserTopLevelLabelOrder}
+        onToggleUserSidebarMember={props.onToggleUserSidebarMember}
         onDeleteLabel={props.onDeleteLabel}
         onMoveLabelToInbox={props.onMoveLabelToInbox}
         onCreateCustomTaskView={props.onCreateCustomTaskView}
@@ -6723,6 +7193,48 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               : { workspaceId: props.workspaceId, kind: "view", view: smartView, mode });
           }}
           onNotice={props.onNotice}
+        /> : appSection === "weekly_reports" ? <WeeklyReportsWorkspace
+          workspaceId={props.workspaceId}
+          currentUserId={props.currentUserId}
+          members={props.bundle.members}
+          userGroups={props.bundle.userGroups}
+          labels={props.bundle.labels}
+          tasks={props.bundle.tasks}
+          online={props.online}
+          demoMode={props.demoMode}
+          route={renderedRoute?.kind === "weekly_reports"
+            ? renderedRoute
+            : { workspaceId: props.workspaceId, kind: "weekly_reports" }}
+          onNavigate={(route, replace) => writeRoute(route, replace)}
+          onMenu={openMobileNavigation}
+          onNotice={props.onNotice}
+        /> : appSection === "okr" ? <OkrWorkspace
+          workspaceId={props.workspaceId}
+          currentUserId={props.currentUserId}
+          currentRole={workspace.role
+            ?? props.bundle.members.find((member) => member.user_id === props.currentUserId)?.role
+            ?? "member"}
+          members={props.bundle.members}
+          userGroups={props.bundle.userGroups}
+          online={props.online}
+          initialOwnerId={renderedRoute?.kind === "okr"
+            ? renderedRoute.ownerId
+            : undefined}
+          initialCycleId={renderedRoute?.kind === "okr"
+            ? renderedRoute.cycleId
+            : undefined}
+          initialTarget={renderedRoute?.kind === "okr"
+            ? renderedRoute.target
+            : undefined}
+          onNavigate={(ownerId, cycleId) => writeRoute({
+            workspaceId: props.workspaceId,
+            kind: "okr",
+            ownerId,
+            cycleId,
+          }, true)}
+          onMenu={openMobileNavigation}
+          onOpenTask={(taskId) => void openOkrLinkedTask(taskId)}
+          onNotice={props.onNotice}
         /> : appSection === "calendar" ? <CalendarWorkspace
           bundle={props.bundle}
           currentUserId={props.currentUserId}
@@ -6771,6 +7283,30 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           navigationDate={calendarNavigationDate}
           onVisibleDateChange={(date) => setCalendarVisibleDate((current) =>
             current.getTime() === date.getTime() ? current : new Date(date))}
+        /> : appSection === "matrix" ? <MatrixWorkspace
+          workspaceId={props.workspaceId}
+          currentUserId={props.currentUserId}
+          bundle={props.bundle}
+          online={props.online}
+          now={now}
+          dateTimePreferences={props.dateTimePreferences}
+          selectedTaskId={selectedTaskId}
+          tasksHasMore={props.tasksHasMore}
+          tasksLoadingMore={props.tasksLoadingMore}
+          onMenu={openMobileNavigation}
+          onSelectTask={(taskId, anchor) => {
+            setMatrixDetailAnchor(anchor);
+            selectTask(taskId);
+          }}
+          onCreateTask={props.onCreateTask}
+          onUpdateTask={props.onUpdateTask}
+          onSaveTaskSchedule={props.onSaveTaskSchedule}
+          onToggleTaskLabel={props.onToggleTaskLabel}
+          onAssignTask={props.onAssignTask}
+          onSavePreference={props.onSaveMatrixQuadrantPreference}
+          onLoadMoreTasks={props.onLoadMoreTasks}
+          canEditTask={workspaceCanEditTask}
+          onNotice={props.onNotice}
         /> : appSection === "focus" ? <FocusWorkspace
           workspaceId={props.workspaceId}
           userId={props.currentUserId}
@@ -6882,6 +7418,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               : null}
             onClose={closeTask}
             onOpenTask={selectTask}
+            onOpenOkr={openLinkedOkr}
             onUpdate={(patch, options) =>
               props.onUpdateTask(selectedTask.id, patch, options)}
             onSaveSchedule={(patch, schedule) =>
@@ -6916,6 +7453,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       {dialogSection && selectedTask && (
         <TaskDetailDialog
           open
+          contentClassName={appSection === "matrix"
+            ? clsx("matrix-task-detail-dialog", matrixDetailAnchor && "matrix-task-detail-anchored")
+            : undefined}
+          contentStyle={matrixDetailStyle}
           task={selectedTask}
           bundle={props.bundle}
           currentUserId={props.currentUserId}
@@ -6933,6 +7474,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             : null}
           onClose={closeTask}
           onOpenTask={selectTask}
+          onOpenOkr={openLinkedOkr}
           onUpdate={(patch, options) =>
             props.onUpdateTask(selectedTask.id, patch, options)}
           onSaveSchedule={(patch, schedule) =>
@@ -7071,18 +7613,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           installErrorDetail={updateInstallErrorDetail}
         />
       )}
-      {props.notice && (
-        <div
-          className={clsx("toast", props.noticeTone === "error" && "error")}
-          role={props.noticeTone === "error" ? "alert" : "status"}
-        >
-          {props.noticeTone === "error" ? <CircleAlert size={18} /> : <CheckCircle2 size={18} />}
-          <span>{props.notice}</span>
-          <button aria-label="关闭提示" onClick={props.onDismissNotice}><X size={15} /></button>
-        </div>
-      )}
+      {props.notice && <NoticeToast key={props.noticeOptions.id} message={props.notice} tone={props.noticeTone}
+        options={props.noticeOptions} online={props.online} onDismiss={props.onDismissNotice} onNotice={props.onNotice} />}
+
     </main>
     </ShortcutProvider>
+    </TaskStatusActionsProvider>
   );
 }
 
@@ -7229,17 +7765,6 @@ function NavigationRail({
                 </button>
               </div>
             )}
-            <button
-              className="profile-menu-item"
-              role="menuitem"
-              onClick={() => {
-                closeProfileMenu();
-                onSettings();
-              }}
-            >
-              <Settings />
-              <span>设置</span>
-            </button>
             <div className="profile-menu-separator" />
             <button
               className="profile-menu-item danger"
@@ -7296,6 +7821,14 @@ function NavigationRail({
         onReadAll={onMarkAllNotificationsRead}
         onOpenTask={onOpenNotificationTask}
       />
+      <button
+        className="rail-button"
+        type="button"
+        aria-label="设置"
+        onClick={onSettings}
+      >
+        <Settings />
+      </button>
     </nav>
   );
 }
@@ -7324,6 +7857,7 @@ function MobileAppSidebar({
   onCreateWorkspace,
   onSectionChange,
   onSmartView,
+  onUser,
   onLabel,
   onToggleCalendar,
   onShowAllCalendars,
@@ -7344,6 +7878,7 @@ function MobileAppSidebar({
   onDeleteCustomTaskView,
   onToggleSystemViewVisibility,
   onToggleCustomViewVisibility,
+  onToggleUserSidebarMember,
 }: {
   open: boolean;
   activeSection: AppSection;
@@ -7368,6 +7903,7 @@ function MobileAppSidebar({
   onCreateWorkspace: () => void;
   onSectionChange: (section: AppSection) => void;
   onSmartView: (view: SmartView) => void;
+  onUser: (userId: string) => void;
   onLabel: (id: string) => void;
   onToggleCalendar: (id: string) => void;
   onShowAllCalendars: () => void;
@@ -7388,6 +7924,7 @@ function MobileAppSidebar({
   onDeleteCustomTaskView: WorkspaceAppProps["onDeleteCustomTaskView"];
   onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
   onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
+  onToggleUserSidebarMember: WorkspaceAppProps["onToggleUserSidebarMember"];
 }) {
   const [workspaceListOpen, setWorkspaceListOpen] = useState(false);
   const [collapsedLabels, setCollapsedLabels] = useState<Record<string, boolean>>({});
@@ -7731,10 +8268,21 @@ function MobileAppSidebar({
                   onToggleCustomViewVisibility={onToggleCustomViewVisibility}
                 />
               </div>
+              <UserSidebarSection
+                bundle={bundle}
+                currentUserId={currentUserId}
+                smartView={smartView}
+                selectedLabelId={selectedLabelId}
+                online={online}
+                mobile
+                onSelect={onUser}
+                onToggle={onToggleUserSidebarMember}
+                onNotice={onNotice}
+              />
               <div className="mobile-sidebar-section-title">标签</div>
               <div className="label-tree mobile-label-tree">
                 <LabelTree
-                  labels={bundle.labels}
+                  labels={userLabels(bundle.labels)}
                   userLabelOrder={bundle.userLabelOrder}
                   canManageLabel={() => false}
                   canDragLabel={() => false}
@@ -7964,7 +8512,7 @@ function TaskSearchSurface({
             </header>
             <div className="task-search-result-list">
               {results.map((task) => {
-                const labels = bundle.labels.filter((label) =>
+                const labels = userLabels(bundle.labels).filter((label) =>
                   task.label_ids.includes(label.id),
                 );
                 return (
@@ -7986,7 +8534,7 @@ function TaskSearchSurface({
                       ) : task.status === "completed" ? (
                         <Check />
                       ) : task.status === "cancelled" ? (
-                        <Archive />
+                        <TaskStatusIcon status="cancelled" />
                       ) : (
                         <Circle />
                       )}
@@ -8075,6 +8623,176 @@ function SearchBinoculars() {
   );
 }
 
+function UserSidebarSection({
+  bundle,
+  currentUserId,
+  smartView,
+  selectedLabelId = null,
+  online,
+  mobile = false,
+  onSelect,
+  onToggle,
+  onNotice,
+}: {
+  bundle: WorkspaceBundle;
+  currentUserId: string;
+  smartView: SmartView;
+  selectedLabelId?: string | null;
+  online: boolean;
+  mobile?: boolean;
+  onSelect: (userId: string) => void;
+  onToggle: WorkspaceAppProps["onToggleUserSidebarMember"];
+  onNotice: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const rootRef = useRef<HTMLElement>(null);
+  const selectedUserId = selectedLabelId ? null : userTaskViewId(smartView);
+  const currentMember = bundle.members.find((member) => member.user_id === currentUserId) ?? null;
+  const userSidebarMembers = bundle.userSidebarMembers ?? [];
+  const followedIds = new Set(userSidebarMembers.map((item) => item.member_user_id));
+  const followedMembers = userSidebarMembers
+    .map((item) => ({
+      item,
+      member: bundle.members.find((member) => member.user_id === item.member_user_id) ?? null,
+    }))
+    .filter((entry): entry is { item: typeof entry.item; member: Member } => Boolean(entry.member))
+    .sort((left, right) => left.item.created_at.localeCompare(right.item.created_at))
+    .map((entry) => entry.member);
+  const selectedMember = selectedUserId
+    ? bundle.members.find((member) => member.user_id === selectedUserId) ?? null
+    : null;
+  const visibleMembers = [
+    ...(currentMember ? [currentMember] : []),
+    ...followedMembers,
+    ...(selectedMember
+      && selectedMember.user_id !== currentUserId
+      && !followedIds.has(selectedMember.user_id)
+      ? [selectedMember]
+      : []),
+  ].filter((member, index, members) =>
+    members.findIndex((candidate) => candidate.user_id === member.user_id) === index);
+  const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
+  const pickerMembers = [...bundle.members]
+    .sort((left, right) => {
+      if (left.user_id === currentUserId) return -1;
+      if (right.user_id === currentUserId) return 1;
+      return memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN");
+    })
+    .filter((member) => !normalizedQuery
+      || memberDisplayName(member).toLocaleLowerCase("zh-CN").includes(normalizedQuery));
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+
+  async function toggleMember(userId: string) {
+    if (!online || userId === currentUserId || busyIds.has(userId)) return;
+    const selected = !followedIds.has(userId);
+    setBusyIds((current) => new Set(current).add(userId));
+    try {
+      await onToggle(userId, selected);
+      if (!selected && selectedUserId === userId) onSelect(currentUserId);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "用户关注设置保存失败，请重试");
+    } finally {
+      setBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+    }
+  }
+
+  return (
+    <section
+      ref={rootRef}
+      className={clsx("sidebar-user-section", mobile && "mobile-sidebar-user-section")}
+      aria-label="用户空间"
+    >
+      <div className={mobile ? "mobile-sidebar-section-title sidebar-user-section-title" : "sidebar-section-header"}>
+        <span>用户空间</span>
+        <button
+          type="button"
+          aria-label="管理关注用户"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={!online}
+          onClick={() => {
+            setOpen((value) => !value);
+            setQuery("");
+          }}
+        >
+          <Plus />
+        </button>
+      </div>
+      <div className={clsx("sidebar-user-list", mobile && "mobile-calendar-list")}>
+        {visibleMembers.map((member) => (
+          <button
+            key={member.user_id}
+            type="button"
+            className={clsx("sidebar-user-row", selectedUserId === member.user_id && "active")}
+            aria-pressed={selectedUserId === member.user_id}
+            onClick={() => onSelect(member.user_id)}
+          >
+            <MemberAvatar member={member} className="sidebar-user-avatar" />
+            <span>{memberDisplayName(member)}</span>
+          </button>
+        ))}
+      </div>
+      {open && (
+        <div className="sidebar-user-picker" role="menu" aria-label="管理关注用户">
+          <label className="sidebar-user-search">
+            <Search aria-hidden="true" />
+            <input
+              value={query}
+              autoFocus
+              placeholder="搜索团队成员"
+              aria-label="搜索团队成员"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <div className="sidebar-user-picker-list">
+            {pickerMembers.map((member) => {
+              const self = member.user_id === currentUserId;
+              const checked = self || followedIds.has(member.user_id);
+              return (
+                <button
+                  key={member.user_id}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={checked}
+                  disabled={self || !online || busyIds.has(member.user_id)}
+                  onClick={() => void toggleMember(member.user_id)}
+                >
+                  <MemberAvatar member={member} className="sidebar-user-picker-avatar" />
+                  <span>{memberDisplayName(member)}</span>
+                  {self && <small>自己</small>}
+                  {checked && <Check />}
+                </button>
+              );
+            })}
+            {pickerMembers.length === 0 && <p>没有匹配的成员</p>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Sidebar({
   openMobile,
   bundle,
@@ -8084,6 +8802,7 @@ function Sidebar({
   selectedLabelId,
   onCloseMobile,
   onSmartView,
+  onUser,
   onLabel,
   onOpenAiWorkSettings,
   onNotice,
@@ -8092,6 +8811,7 @@ function Sidebar({
   onUpdateLabel,
   onReorderChildLabels,
   onSetUserTopLevelLabelOrder,
+  onToggleUserSidebarMember,
   onDeleteLabel,
   onMoveLabelToInbox,
   onCreateCustomTaskView,
@@ -8107,6 +8827,7 @@ function Sidebar({
   selectedLabelId: string | null;
   onCloseMobile: () => void;
   onSmartView: (view: SmartView) => void;
+  onUser: (userId: string) => void;
   onLabel: (id: string) => void;
   onOpenAiWorkSettings: (labelName: string) => void;
   onNotice: (message: string) => void;
@@ -8115,6 +8836,7 @@ function Sidebar({
   onUpdateLabel: WorkspaceAppProps["onUpdateLabel"];
   onReorderChildLabels: WorkspaceAppProps["onReorderChildLabels"];
   onSetUserTopLevelLabelOrder: WorkspaceAppProps["onSetUserTopLevelLabelOrder"];
+  onToggleUserSidebarMember: WorkspaceAppProps["onToggleUserSidebarMember"];
   onDeleteLabel: WorkspaceAppProps["onDeleteLabel"];
   onMoveLabelToInbox: WorkspaceAppProps["onMoveLabelToInbox"];
   onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
@@ -8140,7 +8862,7 @@ function Sidebar({
   );
   const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isRootTask(task) && isActiveTask(task));
   const userLabelOrder = userOrderOverride ?? bundle.userLabelOrder;
-  const labels = bundle.labels
+  const labels = userLabels(bundle.labels)
     .map((label) => {
       let next = label;
       if (Object.hasOwn(parentOverrides, label.id)) {
@@ -8385,6 +9107,16 @@ function Sidebar({
             onToggleCustomViewVisibility={onToggleCustomViewVisibility}
           />
         </div>
+        <UserSidebarSection
+          bundle={bundle}
+          currentUserId={currentUserId}
+          smartView={smartView}
+          selectedLabelId={selectedLabelId}
+          online={online}
+          onSelect={onUser}
+          onToggle={onToggleUserSidebarMember}
+          onNotice={onNotice}
+        />
         <div className="sidebar-section-header">
           <span>标签</span>
           <button
@@ -9480,7 +10212,7 @@ function SmartViewsSidebarList({
 
   function fallbackSmartView(hidden: SmartView): SmartView {
     const candidates: SmartView[] = [
-      DEFAULT_SMART_VIEW,
+      "all",
       ...systemOrder,
       ...customViews.map((view) => customTaskViewKey(view.id)),
     ];
@@ -9547,7 +10279,7 @@ function SmartViewsSidebarList({
     onOpenActions: (x: number, y: number) => openActions(view, x, y),
   });
 
-  function renderSystemView(view: TaskSystemViewPreference["view_key"]) {
+  function renderSystemView(view: SystemSmartViewKey) {
     if (!systemSmartViewVisible(bundle, view, smartView)) return null;
     switch (view) {
       case "all":
@@ -9588,17 +10320,6 @@ function SmartViewsSidebarList({
             {...itemProps("week")}
           />
         );
-      case "assigned":
-        return (
-          <SidebarItem
-            key={view}
-            active={!selectedLabelId && smartView === "assigned"}
-            icon={<UserRound />}
-            label="指派给我"
-            onClick={() => onSmartView("assigned")}
-            {...itemProps("assigned")}
-          />
-        );
       case "watching":
         return (
           <SidebarItem
@@ -9618,7 +10339,7 @@ function SmartViewsSidebarList({
             icon={<Inbox />}
             label="收集箱"
             count={openTasks.filter((task) =>
-              task.label_ids.length === 0 && task.created_by === currentUserId).length}
+              !taskHasUserLabels(task, bundle.labels) && task.created_by === currentUserId).length}
             onClick={() => onSmartView("inbox")}
             {...itemProps("inbox")}
           />
@@ -9630,7 +10351,7 @@ function SmartViewsSidebarList({
             active={!selectedLabelId && smartView === "trash"}
             icon={<Trash2 />}
             label="回收站"
-            count={trashedTasks.length}
+            count={trashedTasks.filter((task) => task.created_by === currentUserId).length}
             onClick={() => onSmartView("trash")}
             {...itemProps("trash")}
           />
@@ -9733,14 +10454,14 @@ function SmartViewsSidebarList({
 
 function systemSmartViewPreferredVisible(
   bundle: WorkspaceBundle,
-  view: TaskSystemViewPreference["view_key"],
+  view: SystemSmartViewKey,
 ) {
   return bundle.taskSystemViewPreferences?.find((item) => item.view_key === view)?.visible ?? true;
 }
 
 function systemSmartViewVisible(
   bundle: WorkspaceBundle,
-  view: TaskSystemViewPreference["view_key"],
+  view: SystemSmartViewKey,
   active: string,
 ) {
   // Keep the active view in the sidebar so hide does not leave the user with
@@ -10046,6 +10767,16 @@ function TaskWorkspace({
   const taskScrollRef = useRef<HTMLDivElement>(null);
   const taskLoadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const selectedLabel = bundle.labels.find((label) => label.id === selectedLabelId);
+  const selectedUserViewId = selectedLabelId ? null : userTaskViewId(smartView);
+  const selectedUserViewMember = selectedUserViewId
+    ? bundle.members.find((member) => member.user_id === selectedUserViewId) ?? null
+    : null;
+  const defaultViewAssigneeId = selectedUserViewMember?.user_id ?? null;
+  const defaultLabelIds = defaultViewLabelIds({
+    selectedLabelId,
+    userViewId: selectedUserViewId,
+    labels: bundle.labels,
+  });
   const customView = bundle.customTaskViews.find(
     (view) => view.id === customTaskViewId(smartView),
   ) ?? null;
@@ -10081,7 +10812,10 @@ function TaskWorkspace({
     currentUserId,
   );
   const isTrashView = !selectedLabelId && (smartView === "trash" || customView?.definition.scope === "trash");
-  const title = selectedLabel?.name ?? customView?.name ?? ({
+  const title = selectedLabel?.name
+    ?? (selectedUserViewMember ? memberDisplayName(selectedUserViewMember) : null)
+    ?? customView?.name
+    ?? ({
     all: "所有",
     today: "今天",
     week: "本周",
@@ -10091,19 +10825,17 @@ function TaskWorkspace({
     trash: "回收站",
   } as Record<string, string>)[smartView] ?? "智能视图";
   const listKey = taskListKey(smartView, selectedLabelId);
-  const preference = isTrashView && !customView
-    ? {
-        ...DEFAULT_TASK_LIST_PREFERENCE,
-        list_key: listKey,
-        show_completed: false,
-        view_mode: "list" as const,
-      }
-    : resolveTaskListPreference(
-        bundle.taskListPreferences,
-        listKey,
-        bundle.labels,
-        viewMode,
-      );
+  const preference = (() => {
+    const resolved = resolveTaskListPreference(
+      bundle.taskListPreferences,
+      listKey,
+      bundle.labels,
+      viewMode,
+    );
+    return isTrashView && !customView
+      ? { ...resolved, show_completed: false, view_mode: "list" as const }
+      : resolved;
+  })();
   const sections = useMemo(
     () => bundle.taskSections.filter((section) => section.list_key === listKey),
     [bundle.taskSections, listKey],
@@ -10130,6 +10862,31 @@ function TaskWorkspace({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  const childTaskIds = useMemo(
+    () => new Set(bundle.tasks.filter((item) => item.parent_task_id).map((item) => item.id)),
+    [bundle.tasks],
+  );
+  const listCollisionDetection = useMemo(() => (args: Parameters<typeof closestCenter>[0]) => {
+    const activeId = String(args.active.id);
+    const active = bundle.tasks.find((item) => item.id === activeId);
+    if (active?.parent_task_id) {
+      const siblingIds = new Set(
+        childrenOf(bundle.tasks, active.parent_task_id).map((item) => item.id),
+      );
+      return closestCenter({
+        ...args,
+        droppableContainers: args.droppableContainers.filter((container) => (
+          siblingIds.has(String(container.id))
+        )),
+      });
+    }
+    return closestCenter({
+      ...args,
+      droppableContainers: args.droppableContainers.filter((container) => (
+        !childTaskIds.has(String(container.id))
+      )),
+    });
+  }, [bundle.tasks, childTaskIds]);
 
   useEffect(() => {
     setQuickKind(initialQuickSettings.kind);
@@ -10235,7 +10992,8 @@ function TaskWorkspace({
     ],
   );
   // System smart-view presets stay fixed; custom views keep editable, auto-saved filters.
-  const filtersLocked = !selectedLabelId && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
+  const filtersLocked = !selectedLabelId
+    && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
 
   const groups = useMemo(() => {
     if (viewMode === "kanban") return [];
@@ -10244,6 +11002,7 @@ function TaskWorkspace({
     }
     return groupTasks({
       tasks,
+      includeClosed: preference.show_completed,
       grouping: preference.grouping,
       sort: preference.sort,
       direction: preference.direction,
@@ -10266,6 +11025,7 @@ function TaskWorkspace({
     placements,
     preference.direction,
     preference.grouping,
+    preference.show_completed,
     preference.sort,
     sections,
     selectedLabelId,
@@ -10275,41 +11035,11 @@ function TaskWorkspace({
   const ungroupedListTasks = preference.grouping === "custom"
     ? groups.find((group) => group.id === UNGROUPED_GROUP_ID)?.tasks ?? []
     : groups[0]?.tasks ?? [];
-  const completedTasks = useMemo(
-    () => {
-      if (viewMode === "kanban" || isTrashView) return [];
-      return sortTasks(
-        tasks.filter(isCompletedTask),
-        preference.sort,
-        preference.direction,
-        bundle.labels,
-        bundle.members,
-        placements,
-        bundle.userLabelOrder,
-      );
-    },
-    [
-      bundle.labels,
-      bundle.members,
-      isTrashView,
-      placements,
-      preference.direction,
-      preference.sort,
-      tasks,
-      viewMode,
-    ],
-  );
-
   function orderedIdsForSelect() {
     const fromDom = visibleTaskIdsFromElement(taskScrollRef.current);
     if (fromDom.length > 0) return fromDom;
     return visibleListTaskIds({
-      groups: [
-        ...groups,
-        ...(preference.show_completed && completedTasks.length > 0
-          ? [{ tasks: completedTasks }]
-          : []),
-      ],
+      groups,
       treeTasks: bundle.tasks,
       collapsedChildIds: collapsedTaskChildTasks,
     });
@@ -10504,7 +11234,7 @@ function TaskWorkspace({
     const taskTitle = payload.title.trim();
     if (!taskTitle) return;
     const labelIds = new Set([
-      ...(selectedLabelId ? [selectedLabelId] : []),
+      ...defaultLabelIds,
       ...payload.labelIds,
     ]);
     if (isYunxiaoQuickCreateInput(taskTitle)) {
@@ -10730,6 +11460,7 @@ function TaskWorkspace({
           labelIds: payload.labelIds,
           kind: "todo",
           priority: "low",
+          assigneeId: payload.assigneeId,
         });
         const createdId = typeof created === "object" && created && "id" in created
           ? String(created.id)
@@ -10831,6 +11562,13 @@ function TaskWorkspace({
         await onReorderTaskSections(listKey, nextOrder);
         return;
       }
+      if (childTaskIds.has(activeId)) {
+        const childPatch = siblingReorderPatch(bundle.tasks, activeId, overId);
+        if (childPatch?.parent_task_id) {
+          await onUpdateChildTask(activeId, childPatch);
+        }
+        return;
+      }
       if (!taskDragEnabled) return;
       const source = groups.find((group) => group.tasks.some((task) => task.id === activeId));
       const target = overId.startsWith("group:")
@@ -10908,40 +11646,38 @@ function TaskWorkspace({
             online={online}
             onChange={savePreference}
           />
+          <TaskFilterMenu
+            preference={preference}
+            members={bundle.members}
+            online={online}
+            locked={filtersLocked}
+            onChange={savePreference}
+          />
           {!isTrashView && (
-            <>
-              <TaskFilterMenu
-                preference={preference}
-                members={bundle.members}
-                online={online}
-                locked={filtersLocked}
-                onChange={savePreference}
-              />
-              <LabelActionsMenu
-                hasSelectedLabel={Boolean(selectedLabel)}
-                canManageSelectedLabel={canManageSelectedLabel}
-                viewMode={viewMode}
-                showLabels={preference.show_labels}
-                showCompleted={preference.show_completed}
-                showHours={preference.show_hours}
-                online={online}
-                aiWorkAvailable={desktopAiAvailable}
-                onChangeViewMode={(mode) => {
-                  void changeViewMode(mode).catch(() => onNotice("视图切换失败，请重试"));
-                }}
-                onOpenPermissions={() => setLabelSettingsOpen(true)}
-                onAddGroup={() => void beginAddSection().catch((error) =>
-                  onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
-                onSaveAsView={() => setSaveViewOpen(true)}
-                onToggleShowLabels={() =>
-                  void savePreference({ show_labels: !preference.show_labels })}
-                onToggleShowCompleted={() =>
-                  void savePreference({ show_completed: !preference.show_completed })}
-                onToggleShowHours={() =>
-                  void savePreference({ show_hours: !preference.show_hours })}
-                onOpenAiWorkSettings={() => openAiWorkSettings()}
-              />
-            </>
+            <LabelActionsMenu
+              hasSelectedLabel={Boolean(selectedLabel)}
+              canManageSelectedLabel={canManageSelectedLabel}
+              viewMode={viewMode}
+              showLabels={preference.show_labels}
+              showCompleted={preference.show_completed}
+              showHours={preference.show_hours}
+              online={online}
+              aiWorkAvailable={desktopAiAvailable}
+              onChangeViewMode={(mode) => {
+                void changeViewMode(mode).catch(() => onNotice("视图切换失败，请重试"));
+              }}
+              onOpenPermissions={() => setLabelSettingsOpen(true)}
+              onAddGroup={() => void beginAddSection().catch((error) =>
+                onNotice(error instanceof Error ? error.message : "添加分组失败，请重试"))}
+              onSaveAsView={() => setSaveViewOpen(true)}
+              onToggleShowLabels={() =>
+                void savePreference({ show_labels: !preference.show_labels })}
+              onToggleShowCompleted={() =>
+                void savePreference({ show_completed: !preference.show_completed })}
+              onToggleShowHours={() =>
+                void savePreference({ show_hours: !preference.show_hours })}
+              onOpenAiWorkSettings={() => openAiWorkSettings()}
+            />
           )}
         </div>
       </header>
@@ -10962,8 +11698,8 @@ function TaskWorkspace({
         labelPermissionLevels={bundle.labelPermissionLevels}
         userLabelOrder={bundle.userLabelOrder}
         currentUserId={currentUserId}
-        defaultLabelIds={selectedLabelId ? [selectedLabelId] : []}
-        defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
+        defaultLabelIds={defaultLabelIds}
+        defaultAssigneeId={defaultViewAssigneeId}
         settings={(
           <QuickAddSettings
             online={writable && !busy}
@@ -10992,7 +11728,7 @@ function TaskWorkspace({
             userLabelOrder={bundle.userLabelOrder}
             workspaceId={workspaceId}
             currentUserId={currentUserId}
-            defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
+            defaultAssigneeId={defaultViewAssigneeId}
             selectedTaskId={selectedTaskId}
             online={writable}
             now={now}
@@ -11006,6 +11742,7 @@ function TaskWorkspace({
             sectionDraftName={sectionDraftName}
             sectionDraftBusy={sectionDraftBusy}
             canEditTask={canEditTask}
+            canOrganizeTask={(task) => canOrganizeTask(bundle, task, currentUserId)}
             canCreateInColumn={canCreateInKanbanColumn}
             canReceiveInColumn={canReceiveInKanbanColumn}
             onCreateInColumn={createInKanbanColumn}
@@ -11057,10 +11794,10 @@ function TaskWorkspace({
             const patch = schedulePatchForTimelineDrop(day, timeZone);
             const created = await onCreateTask({
               title: "新任务",
-              labelIds: selectedLabelId ? [selectedLabelId] : [],
+              labelIds: defaultLabelIds,
               kind: "todo",
               priority: quickPriority,
-              assigneeId: !selectedLabelId && smartView === "assigned" ? currentUserId : null,
+              assigneeId: defaultViewAssigneeId,
               dueAt: patch.due_at,
               dueTimezone: timeZone,
             });
@@ -11086,8 +11823,7 @@ function TaskWorkspace({
             当前显示上次缓存，恢复网络后会自动刷新
           </div>
         )}
-        {groups.length === 0
-          && !(preference.show_completed && completedTasks.length > 0) ? (
+        {groups.length === 0 ? (
           <div className="empty-state">
             <CheckCircle2 />
             <h2>{isTrashView ? "回收站是空的" : "这里很清爽"}</h2>
@@ -11096,7 +11832,7 @@ function TaskWorkspace({
         ) : (
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCenter}
+            collisionDetection={listCollisionDetection}
             onDragStart={handleListDragStart}
             onDragCancel={() => setListDragOverlay(null)}
             onDragEnd={(event) => void handleDragEnd(event)}
@@ -11144,13 +11880,14 @@ function TaskWorkspace({
                       collapsedTaskChildTasks={collapsedTaskChildTasks}
                       editableSection={editableSection}
                       canEditTask={canEditTask}
+                      canOrganizeTask={(task) => canOrganizeTask(bundle, task, currentUserId)}
                       canCompleteTask={canCompleteTask}
                       contextMenuVariant={isTrashView ? "trash" : "default"}
                       currentUserId={currentUserId}
                       labelPermissionLevels={bundle.labelPermissionLevels}
                       userLabelOrder={bundle.userLabelOrder}
                       composerMembers={assigneeMembers}
-                      defaultAssigneeId={!selectedLabelId && smartView === "assigned" ? currentUserId : null}
+                      defaultAssigneeId={defaultViewAssigneeId}
                       canCreate={column ? !isTrashView && canCreateInKanbanColumn(column) : false}
                       onCreateInGroup={column && !isTrashView
                         ? (payload) => createInKanbanColumn(column, payload)
@@ -11233,49 +11970,6 @@ function TaskWorkspace({
             <Plus />
             添加分组
           </button>
-        )}
-        {!isTrashView && preference.show_completed && completedTasks.length > 0 && (
-          <TaskGroup
-            id="completed"
-            title="已完成"
-            tasks={completedTasks}
-            pickerTasks={bundle.tasks}
-            labels={bundle.labels}
-            members={bundle.members}
-            selectedTaskId={selectedTaskId}
-            selectedTaskIds={selectedTaskIds}
-            workspaceId={workspaceId}
-            online={writable}
-            now={now}
-            dateTimePreferences={dateTimePreferences}
-            showLabels={preference.show_labels}
-            showHours={preference.show_hours}
-            selectedLabelId={selectedLabelId}
-            collapsedTaskChildTasks={collapsedTaskChildTasks}
-            onSelect={handleSelectTask}
-            onSelectChildTask={handleSelectTask}
-            onSelectGroup={onSelectTasks}
-            onToggleChildTasks={toggleTaskChildTasks}
-            canEditTask={canEditTask}
-            canCompleteTask={canCompleteTask}
-            contextMenuVariant="default"
-            onToggle={async (task) =>
-              onUpdateTask(task.id, { status: "open", completed_at: null }).catch((error) => {
-                onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
-              })
-            }
-            onToggleChildTask={onToggleChildTask}
-            onUpdateTask={onUpdateTask}
-            onSaveTaskSchedule={onSaveTaskSchedule}
-            onSaveChildTaskSchedule={onSaveChildTaskSchedule}
-            onCreateTask={onCreateTask}
-            onCreateChildTask={onCreateChildTask}
-            onUpdateChildTask={onUpdateChildTask}
-            onDeleteChildTask={onDeleteChildTask}
-            onAddTaskDependencies={onAddTaskDependencies}
-            onPurgeTask={onPurgeTask}
-            onNotice={onNotice}
-          />
         )}
         {tasksHasMore && (
           <div
@@ -11607,6 +12301,7 @@ function TaskGroupQuickAdd({
             kind={tokens.token.kind}
             assigneeCandidates={tokens.assigneeCandidates}
             labelCandidates={tokens.labelCandidates}
+            labelTreeLabels={labels}
             activeIndex={tokens.activeIndex}
             onSelectAssignee={tokens.selectAssignee}
             onSelectLabel={tokens.selectLabel}
@@ -11671,6 +12366,7 @@ function TaskGroup({
   onPurgeTask,
   onNotice,
   canEditTask,
+  canOrganizeTask,
   canCompleteTask,
 }: {
   id: string;
@@ -11720,6 +12416,7 @@ function TaskGroup({
   onPurgeTask: WorkspaceAppProps["onPurgeTask"];
   onNotice: WorkspaceAppProps["onNotice"];
   canEditTask: (task: Task) => boolean;
+  canOrganizeTask: (task: Task) => boolean;
   canCompleteTask: (task: Task) => boolean;
 }) {
   const selectedIds = selectedTaskIds.length > 0
@@ -11981,6 +12678,7 @@ function TaskGroup({
               showHours={showHours}
               selectedLabelId={selectedLabelId}
               draggable={draggable && !isOptimisticTaskId(task.id) && canEditTask(task)}
+              childDraggable={online && !isOptimisticTaskId(task.id)}
               childrenCollapsed={collapsedTaskChildTasks.has(task.id)}
               onSelect={(event) => {
                 if (!isOptimisticTaskId(task.id)) onSelect(task.id, event);
@@ -11991,6 +12689,7 @@ function TaskGroup({
               onToggleChildTasks={() => onToggleChildTasks(task.id)}
               onToggle={() => onToggle(task)}
               onToggleChildTask={onToggleChildTask}
+              canEditTask={canEditTask}
               onNotice={onNotice}
               onContextMenu={(x, y, targetTaskId) => {
                 if (isOptimisticTaskId(task.id) || !(canEditTask(task) || Boolean(task.connector_id))) return;
@@ -12015,6 +12714,8 @@ function TaskGroup({
           task={menuTask}
           childTask={menuChildTask}
           workspaceId={workspaceId}
+          currentUserId={currentUserId}
+          canAssociateOkr={canOrganizeTask}
           x={taskMenu.x}
           y={taskMenu.y}
           online={online}
@@ -12075,10 +12776,10 @@ function TaskListDragOverlay({
   showHours: boolean;
   selectedLabelId?: string | null;
 }) {
-  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
+  const taskLabels = userLabels(labels).filter((label) => task.label_ids.includes(label.id));
   const labelBarColor = taskLabelBarColor(labels, task.label_ids, selectedLabelId);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
-  const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
+  const dueStatus = task.status !== "open" ? null : getDueStatus(task.due_at, now);
   const showContactNames = useShowContactNames();
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
@@ -12087,7 +12788,7 @@ function TaskListDragOverlay({
 
   return (
     <article
-      className="task-row task-row-drag-overlay"
+      className={clsx("task-row task-row-drag-overlay", task.kind !== "note" && task.status === "cancelled" && "cancelled")}
       style={{
         width: width > 0 ? width : undefined,
         "--priority-color": getPriorityOption(task.priority).color,
@@ -12103,7 +12804,7 @@ function TaskListDragOverlay({
         <span className="task-note-icon"><NotebookPen /></span>
       ) : (
         <span className="task-checkbox">
-          {task.status === "completed" ? <Check /> : <Circle />}
+          {<TaskStatusIcon status={task.status} />}
         </span>
       )}
       <span className="task-row-content">
@@ -12181,6 +12882,8 @@ function TaskRow({
   selectedLabelId = null,
   draggable = false,
   childrenCollapsed,
+  childDraggable = false,
+  canEditTask,
   onSelect,
   onSelectChildTask,
   onToggleChildTasks,
@@ -12202,6 +12905,8 @@ function TaskRow({
   selectedLabelId?: string | null;
   draggable?: boolean;
   childrenCollapsed: boolean;
+  childDraggable?: boolean;
+  canEditTask: (task: Task) => boolean;
   onSelect: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onSelectChildTask: (targetTaskId: string, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onToggleChildTasks: () => void;
@@ -12210,6 +12915,7 @@ function TaskRow({
   onNotice: WorkspaceAppProps["onNotice"];
   onContextMenu: (x: number, y: number, targetTaskId?: string) => void;
 }) {
+  const statusActions = useTaskStatusActions();
   const {
     attributes,
     listeners,
@@ -12218,11 +12924,11 @@ function TaskRow({
     transition,
     isDragging,
   } = useSortable({ id: task.id, disabled: !draggable });
-  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
+  const taskLabels = userLabels(labels).filter((label) => task.label_ids.includes(label.id));
   const labelBarColor = taskLabelBarColor(labels, task.label_ids, selectedLabelId);
   const optimistic = isOptimisticTaskId(task.id);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
-  const dueStatus = task.status === "completed" ? null : getDueStatus(task.due_at, now);
+  const dueStatus = task.status !== "open" ? null : getDueStatus(task.due_at, now);
   const showContactNames = useShowContactNames();
   const hoursLabel = showHours
     ? formatHoursList(task.estimate_hours, task.actual_hours)
@@ -12230,30 +12936,20 @@ function TaskRow({
   const liveChildren = useMemo(() => childrenOf(treeTasks, task.id), [task.id, treeTasks]);
   const hasChildTasks = task.kind !== "note" && liveChildren.length > 0;
   const [collapsedNestedIds, setCollapsedNestedIds] = useState<Set<string>>(new Set());
-  const visibleChildTasks = useMemo(
-    () => visibleFlattenedTasks(treeTasks, task.id, collapsedNestedIds),
-    [collapsedNestedIds, task.id, treeTasks],
-  );
   const runningTerminalTaskIds = useAiTerminalRunningTaskIds();
   const terminalRunning = runningTerminalTaskIds.has(task.id);
 
   function toggleChildTask(childTask: Task) {
     if (!online) return;
-    void onToggleChildTask(childTask.id, !(childTask.status === "completed")).catch((error) => {
+    void (childTask.status === "cancelled" ? statusActions.change([childTask.id], "open") : onToggleChildTask(childTask.id, childTask.status === "open")).catch((error) => {
       onNotice(error instanceof Error ? error.message : "更新任务失败，请重试", "error");
     });
   }
 
   return (
-    <div
-      ref={setNodeRef}
-      className={clsx("task-tree-item", isDragging && "dragging")}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-      }}
-    >
+    <div className="task-tree-item">
       <article
+        ref={setNodeRef}
         aria-busy={optimistic || undefined}
         data-task-id={task.id}
         className={clsx(
@@ -12261,9 +12957,14 @@ function TaskRow({
           selected && "selected",
           labelBarColor && "has-label-bar",
           task.kind !== "note" && task.status === "completed" && "completed",
+          task.kind !== "note" && task.status === "cancelled" && "cancelled",
           optimistic && "pending",
           isDragging && "dragging",
         )}
+        style={{
+          transform: CSS.Transform.toString(transform),
+          transition,
+        }}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -12313,17 +13014,17 @@ function TaskRow({
       ) : (
         <button
           className="task-checkbox"
-          disabled={!online}
-          aria-label={task.status === "completed" ? "标记未完成" : "完成任务"}
+          disabled={!online || (task.status === "cancelled" && !statusActions.canChange(task, "open"))}
+          aria-label={task.status === "cancelled" ? "重新开始" : task.status === "completed" ? "标记未完成" : "完成任务"}
           style={{
             "--priority-color": getPriorityOption(task.priority).color,
           } as React.CSSProperties}
           onClick={(event) => {
             event.stopPropagation();
-            void onToggle();
+            void (task.status === "cancelled" ? statusActions.change([task.id], "open") : onToggle());
           }}
         >
-          {task.status === "completed" ? <Check /> : <Circle />}
+          {<TaskStatusIcon status={task.status} />}
         </button>
       )}
       <button
@@ -12407,14 +13108,21 @@ function TaskRow({
           role="list"
           aria-label={`子级任务：${task.title}`}
         >
-          {visibleChildTasks.map(({ task: childTask, depth }) => {
+          <SortableTaskTree
+            tasks={treeTasks}
+            parentId={task.id}
+            collapsedIds={collapsedNestedIds}
+            disabled={!childDraggable}
+            embedded
+            canDragItem={canEditTask}
+            renderRow={({ task: childTask, depth, dragHandle }) => {
             const nestOffset = (depth - 1) * 16;
             const childCount = childrenOf(treeTasks, childTask.id).length;
             const nestedCollapsed = collapsedNestedIds.has(childTask.id);
             const childTaskAssignee = members.find(
               (member) => member.user_id === childTask.assignee_id,
             );
-            const childTaskDueStatus = (childTask.status === "completed")
+            const childTaskDueStatus = (childTask.status !== "open")
               ? null
               : getDueStatus(childTask.due_at, now);
             const childTaskHoursLabel = showHours
@@ -12427,6 +13135,7 @@ function TaskRow({
                 className={clsx(
                   "task-list-childTask-row",
                   (childTask.status === "completed") && "completed",
+                  childTask.status === "cancelled" && "cancelled",
                   selectedTaskIds.includes(childTask.id) && "selected",
                   labelBarColor && "has-label-bar",
                 )}
@@ -12439,6 +13148,18 @@ function TaskRow({
                   onContextMenu(event.clientX, event.clientY, childTask.id);
                 }}
               >
+                {dragHandle && (
+                  <button
+                    type="button"
+                    className="task-drag-handle"
+                    aria-label={`拖动子级任务“${childTask.title}”`}
+                    style={{ left: 22 + nestOffset }}
+                    {...dragHandle.attributes}
+                    {...dragHandle.listeners}
+                  >
+                    <GripVertical />
+                  </button>
+                )}
                 {childTask.priority && childTask.priority !== "none" && (
                     <span
                     className="task-list-childTask-priority"
@@ -12475,15 +13196,15 @@ function TaskRow({
                 <button
                   type="button"
                   className="task-list-childTask-checkbox"
-                  aria-label={`${(childTask.status === "completed") ? "重新打开" : "完成"}子级任务：${childTask.title}`}
-                  disabled={!online}
+                  aria-label={`${childTask.status === "cancelled" ? "重新开始" : childTask.status === "completed" ? "重新打开" : "完成"}子级任务：${childTask.title}`}
+                  disabled={!online || (childTask.status === "cancelled" && !statusActions.canChange(childTask, "open"))}
                   onClick={(event) => {
                     event.stopPropagation();
                     toggleChildTask(childTask);
                   }}
                 >
-                  <span className={clsx("task-list-childTask-check", (childTask.status === "completed") && "checked")}>
-                    {(childTask.status === "completed") && <Check />}
+                  <span className={clsx("task-list-childTask-check", childTask.status === "completed" && "checked", childTask.status === "cancelled" && "cancelled")}>
+                    <TaskStatusIcon status={childTask.status} empty="none" />
                   </span>
                 </button>
                 <button
@@ -12533,7 +13254,8 @@ function TaskRow({
                 </button>
               </article>
             );
-          })}
+            }}
+          />
         </div>
       )}
     </div>

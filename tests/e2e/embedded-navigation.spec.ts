@@ -124,6 +124,6 @@ test("regular Web mode keeps the rail and modal search", async ({ page }) => {
   await expect(page.locator(".task-search-workspace")).toHaveCount(0);
 
   await page.goto("/?demo=1#/workspaces/workspace-team/search");
-  await expect(page).toHaveURL(/\/views\/assigned$/);
+  await expect(page).toHaveURL(/\/users\/demo-user$/);
   await expect(page.getByRole("dialog", { name: "搜索任务" })).toBeVisible();
 });

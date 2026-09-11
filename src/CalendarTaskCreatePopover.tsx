@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Check, Inbox } from "lucide-react";
+import { Inbox } from "lucide-react";
 import {
   forwardRef,
   useEffect,
@@ -12,13 +12,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { DueDateControl, type DueDateTarget } from "./DueDateControl";
+import { LabelTreeMenuItems } from "./LabelTreeMenuItems";
 import {
   fromZonedDateTime,
   systemTimeZone,
   toDateInput,
 } from "./lib/dateTimePreferences";
-import { orderedLabels } from "./lib/taskList";
 import { PriorityControl } from "./PriorityControl";
+import { userLabels } from "./lib/labels";
 import type {
   DateTimePreferences,
   ReminderSchedule,
@@ -74,8 +75,7 @@ function DraftLabelControl({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const selectedIds = useMemo(() => new Set(labelIds), [labelIds]);
-  const selectedLabels = bundle.labels.filter((label) => selectedIds.has(label.id));
-  const labels = orderedLabels(bundle.labels, bundle.userLabelOrder);
+  const selectedLabels = userLabels(bundle.labels).filter((label) => selectedIds.has(label.id));
 
   useEffect(() => {
     if (!open) return;
@@ -125,25 +125,15 @@ function DraftLabelControl({
       </button>
       {open && (
         <div className="task-label-menu" role="menu" aria-label="选择任务标签">
-          {labels.map((label) => {
-            const selected = selectedIds.has(label.id);
-            const editable = (bundle.labelPermissionLevels[label.id] ?? 0) >= 2;
-            return (
-              <button
-                key={label.id}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={selected}
-                disabled={disabled || !editable}
-                onClick={() => toggleLabel(label.id)}
-              >
-                <i style={{ background: label.color }} />
-                <span>{label.name}</span>
-                {selected && <Check />}
-              </button>
-            );
-          })}
-          {labels.length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
+          <LabelTreeMenuItems
+            labels={bundle.labels}
+            userLabelOrder={bundle.userLabelOrder}
+            selectionFor={(label) => selectedIds.has(label.id)}
+            disabledFor={(label) => disabled
+              || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
+            onToggle={(label) => toggleLabel(label.id)}
+          />
+          {userLabels(bundle.labels).length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
         </div>
       )}
     </div>

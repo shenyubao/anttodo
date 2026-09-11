@@ -30,7 +30,6 @@ const SYSTEM_VIEW_LABELS: Record<SystemSmartViewKey, string> = {
   all: "所有",
   today: "今天",
   week: "本周",
-  assigned: "指派给我",
   watching: "我关注的",
   inbox: "收集箱",
   trash: "回收站",

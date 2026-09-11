@@ -544,6 +544,12 @@ verify_jwt = false
 import_map = "./functions/notification-dispatch/deno.json"
 entrypoint = "./functions/notification-dispatch/index.ts"
 
+[functions.weekly-report-notifications]
+enabled = true
+verify_jwt = true
+import_map = "./functions/weekly-report-notifications/deno.json"
+entrypoint = "./functions/weekly-report-notifications/index.ts"
+
 [functions.cli-device-auth]
 enabled = true
 verify_jwt = false

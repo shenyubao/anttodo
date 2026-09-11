@@ -10,13 +10,20 @@ vi.mock("./storage.js", () => storage);
 import { resolveWorkspace } from "./api.js";
 
 function clientFor(workspaces: Array<{ id: string; name: string; slug: string; role: string }>) {
-  const rows = workspaces.map(({ role, ...workspace }) => ({ role, workspaces: workspace }));
-  const builder = {
-    select: vi.fn(() => builder),
-    eq: vi.fn(() => builder),
-    order: vi.fn(async () => ({ data: rows, error: null })),
+  const memberships = workspaces.map(({ id, role }) => ({ role, workspace_id: id }));
+  const workspaceRows = workspaces.map(({ id, name, slug }) => ({ id, name, slug }));
+  const membersBuilder = {
+    select: vi.fn(() => membersBuilder),
+    eq: vi.fn(() => membersBuilder),
+    order: vi.fn(async () => ({ data: memberships, error: null })),
   };
-  return { from: vi.fn(() => builder) };
+  const workspacesBuilder = {
+    select: vi.fn(() => workspacesBuilder),
+    in: vi.fn(async () => ({ data: workspaceRows, error: null })),
+  };
+  return {
+    from: vi.fn((table: string) => (table === "workspaces" ? workspacesBuilder : membersBuilder)),
+  };
 }
 
 describe("workspace selection", () => {

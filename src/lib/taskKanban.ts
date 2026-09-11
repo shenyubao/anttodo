@@ -14,7 +14,6 @@ import type {
 import {
   groupTasks,
   isActiveTask,
-  isCompletedTask,
   labelSubtreeIds,
   leafLabelsInScope,
   orderedGroupKeys,
@@ -196,8 +195,7 @@ export function buildKanbanColumns(input: {
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }) {
   if (input.preference.grouping === "custom") {
-    // Keep completed todos in their section columns so they stay draggable.
-    // Other groupings still isolate completed into a trailing column.
+    // Closed todos keep their section placement when they are visible.
     const tasks = input.preference.show_completed
       ? input.tasks
       : input.tasks.filter(isActiveTask);
@@ -246,9 +244,9 @@ export function buildKanbanColumns(input: {
   }
 
   const listTasks = input.tasks.filter(isRootTask);
-  const activeTasks = listTasks.filter(isActiveTask);
   const groups = groupTasks({
-    tasks: activeTasks,
+    tasks: listTasks,
+    includeClosed: input.preference.show_completed,
     grouping: input.preference.grouping,
     sort: input.preference.sort,
     direction: input.preference.direction,
@@ -271,22 +269,6 @@ export function buildKanbanColumns(input: {
     (["codex", "claude"] as const).filter((tool) =>
       listTasks.some((task) => task.cli_assignee === tool)),
   ).map((column) => ({ ...column, tasks: tasksByGroup.get(column.id) ?? [] }));
-  if (input.preference.show_completed) {
-    columns.push({
-      id: "completed",
-      title: "已完成",
-      target: { kind: "completed" },
-      tasks: sortTasks(
-        listTasks.filter(isCompletedTask),
-        input.preference.sort,
-        input.preference.direction,
-        input.labels,
-        input.members,
-        input.placements,
-        input.userLabelOrder,
-      ),
-    });
-  }
   return columns;
 }
 

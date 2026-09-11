@@ -6,6 +6,7 @@ import {
   createFocusSession,
   createTag,
   createTask,
+  createWeeklyReport,
   createWorkspace,
   deleteAttachment,
   deleteComment,
@@ -14,6 +15,7 @@ import {
   downloadAttachment,
   getTag,
   getTask,
+  getWeeklyReport,
   listActivity,
   listComments,
   listTags,
@@ -21,7 +23,9 @@ import {
   listTasks,
   moveTask,
   listUsers,
+  listWeeklyReports,
   listWorkspaces,
+  publishWeeklyReport,
   purgeTask,
   removeWorkspaceMember,
   reorderTags,
@@ -37,6 +41,7 @@ import {
   updateComment,
   updateTag,
   updateTask,
+  updateWeeklyReport,
   updateWorkspace,
   updateWorkspaceMemberRole,
   uploadAttachment,
@@ -70,6 +75,9 @@ import {
   parseRecurrence,
   parseReminder,
   parseStatus,
+  parseWeekStart,
+  parseWeeklyReportStatus,
+  parseWeeklyReportVisibility,
   positiveInteger,
   validateTimeZone,
 } from "./validation.js";
@@ -254,7 +262,7 @@ export function buildProgram() {
           active: true,
           last_verified_at: config.lastVerifiedAt,
         }
-      : { address: DEFAULT_APP_URL, display_name: "AntTodo 官方服务", active: true } );
+      : { address: DEFAULT_APP_URL, display_name: "AntTodo.com", active: true } );
   }), "read");
   setRisk(service.command("reset").description("Restore the official service").action(async (_options, command) => {
     await selectServiceKey("official");
@@ -747,6 +755,121 @@ export function buildProgram() {
     const data = await listUserGroups(context.client, context.workspace.id);
     emit(command, data, { count: data.length });
   }), "read");
+
+  const weeklyReport = program.command("weekly-report").description("Weekly report operations");
+  setRisk(addListOptions(weeklyReport.command("list").description("List weekly reports"), false)
+    .option("--week <week>", "current|last|yyyy-MM-dd (Monday)", "current")
+    .option("--author <user-id>")
+    .option("--status <status>", "draft|published|all", "all")
+    .action(async (options, command) => {
+      const context = await businessContext(command);
+      if (options.author) assertUuid(options.author, "author");
+      const weekStart = parseWeekStart(options.week);
+      const data = await listWeeklyReports(context.client, context.workspace.id, {
+        weekStart,
+        author: options.author,
+        status: parseWeeklyReportStatus(options.status),
+        limit: positiveInteger(options.limit, "limit", 1000, 1),
+        offset: positiveInteger(options.offset, "offset", 1_000_000),
+      });
+      emit(command, data, { count: data.length, workspace: context.workspace.id, week_start: weekStart });
+    }), "read");
+  setRisk(weeklyReport.command("get <report-id>").description("Get one weekly report").action(async (id, _options, command) => {
+    const context = await businessContext(command);
+    emit(command, await getWeeklyReport(context.client, context.workspace.id, assertUuid(id, "report-id")));
+  }), "read");
+  setRisk(weeklyReport.command("create").description("Create a weekly report")
+    .option("--week <week>", "current|last|yyyy-MM-dd (Monday)", "current")
+    .option("--completed <markdown>", "this week's completed work")
+    .option("--next-plan <markdown>", "next week's plan")
+    .option("--reflection <markdown>", "reflection")
+    .option("--visibility <scope>", "workspace|users|groups", "workspace")
+    .option("--user <user-id>", "visible user; repeatable", collect, [])
+    .option("--group <group-id>", "visible group; repeatable", collect, [])
+    .option("--notification-group <id>", "notification group; repeatable", collect, [])
+    .option("--publish", "publish immediately")
+    .action(async (options, command) => {
+      const context = await businessContext(command);
+      emit(command, await createWeeklyReport(context.client, context.user.id, {
+        workspaceId: context.workspace.id,
+        weekStart: parseWeekStart(options.week),
+        completedText: options.completed ?? "",
+        nextPlanText: options.nextPlan ?? "",
+        reflectionText: options.reflection ?? "",
+        visibility: parseWeeklyReportVisibility(options.visibility),
+        userIds: parseIdList(options.user, "user"),
+        groupIds: parseIdList(options.group, "group"),
+        notificationGroupIds: parseIdList(options.notificationGroup, "notification-group"),
+        publish: Boolean(options.publish),
+      }));
+    }), "write");
+  setRisk(weeklyReport.command("update <report-id>").description("Update a weekly report")
+    .option("--completed <markdown>", "this week's completed work")
+    .option("--next-plan <markdown>", "next week's plan")
+    .option("--reflection <markdown>", "reflection")
+    .option("--visibility <scope>", "workspace|users|groups")
+    .option("--user <user-id>", "replace visible users; repeatable", collect, [])
+    .option("--group <group-id>", "replace visible groups; repeatable", collect, [])
+    .option("--notification-group <id>", "replace notification groups; repeatable", collect, [])
+    .option("--clear-users", "remove visible users")
+    .option("--clear-groups", "remove visible groups")
+    .option("--clear-notification-groups", "remove notification groups")
+    .option("--publish", "publish after saving")
+    .action(async (id, options, command) => {
+      if (options.clearUsers && options.user?.length) {
+        throw new CliError({ type: "validation", code: "conflicting_users", message: "Pass --user or --clear-users, not both" });
+      }
+      if (options.clearGroups && options.group?.length) {
+        throw new CliError({ type: "validation", code: "conflicting_groups", message: "Pass --group or --clear-groups, not both" });
+      }
+      if (options.clearNotificationGroups && options.notificationGroup?.length) {
+        throw new CliError({
+          type: "validation",
+          code: "conflicting_notification_groups",
+          message: "Pass --notification-group or --clear-notification-groups, not both",
+        });
+      }
+      if (
+        options.completed === undefined
+        && options.nextPlan === undefined
+        && options.reflection === undefined
+        && options.visibility === undefined
+        && !options.user?.length
+        && !options.group?.length
+        && !options.notificationGroup?.length
+        && !options.clearUsers
+        && !options.clearGroups
+        && !options.clearNotificationGroups
+        && !options.publish
+      ) {
+        throw new CliError({ type: "validation", code: "empty_update", message: "Pass at least one field to update" });
+      }
+      const context = await businessContext(command);
+      emit(command, await updateWeeklyReport(
+        context.client,
+        context.workspace.id,
+        assertUuid(id, "report-id"),
+        {
+          ...(options.completed === undefined ? {} : { completedText: options.completed }),
+          ...(options.nextPlan === undefined ? {} : { nextPlanText: options.nextPlan }),
+          ...(options.reflection === undefined ? {} : { reflectionText: options.reflection }),
+          ...(options.visibility === undefined ? {} : { visibility: parseWeeklyReportVisibility(options.visibility) }),
+          ...(options.user?.length ? { userIds: parseIdList(options.user, "user") } : {}),
+          ...(options.group?.length ? { groupIds: parseIdList(options.group, "group") } : {}),
+          ...(options.notificationGroup?.length
+            ? { notificationGroupIds: parseIdList(options.notificationGroup, "notification-group") }
+            : {}),
+          ...(options.clearUsers ? { clearUsers: true } : {}),
+          ...(options.clearGroups ? { clearGroups: true } : {}),
+          ...(options.clearNotificationGroups ? { clearNotificationGroups: true } : {}),
+          ...(options.publish ? { publish: true } : {}),
+        },
+      ));
+    }), "write");
+  setRisk(weeklyReport.command("publish <report-id>").description("Publish a weekly report").action(async (id, _options, command) => {
+    const context = await businessContext(command);
+    emit(command, await publishWeeklyReport(context.client, context.workspace.id, assertUuid(id, "report-id")));
+  }), "write");
 
   setRisk(program.command("search <query>").description("Search tasks and notes")
     .option("--kind <kind>", "todo|note|all", "all")

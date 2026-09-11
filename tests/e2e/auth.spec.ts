@@ -181,6 +181,11 @@ test("desktop enterprise login requests a desktop state and opens DingTalk exter
   });
   await page.reload();
 
+  const officialServiceSelect = page.getByLabel("当前服务", { exact: true });
+  await expect(officialServiceSelect.locator("option:checked")).toHaveText("AntTodo.com");
+  await expect(page.getByRole("heading", { name: "蚂蚁清单" })).toBeVisible();
+  await expect(page).toHaveTitle("蚂蚁清单");
+
   await page.getByRole("tab", { name: "企业单点登录" }).click();
   await page.getByPlaceholder("例如 yucekj").fill("yucekj");
   await page.getByRole("button", { name: "确认并继续" }).click();
@@ -354,13 +359,14 @@ test("desktop validates, remembers, and restores a custom service", async ({ pag
   await page.reload();
 
   const service = page.getByLabel("登录服务");
-  await expect(service.getByText("AntTodo 官方服务")).toBeVisible();
+  const serviceSelect = service.getByLabel("当前服务", { exact: true });
+  await expect(serviceSelect.locator("option:checked")).toHaveText("AntTodo.com");
   await service.getByRole("button").first().click();
   await service.getByPlaceholder("https://todo.yuce-tech.cn").fill("todo.yuce-tech.cn");
   await service.getByRole("button", { name: "连接此服务" }).click();
 
   await expect(service.getByText("宇策科技 AntTodo")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "蚂蚁待办 x 宇策科技 AntTodo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "蚂蚁清单 x 宇策科技 AntTodo" })).toBeVisible();
   await expect(page).toHaveTitle("宇策科技 AntTodo");
   await expect.poll(() => page.evaluate(() => localStorage.getItem("anttodo:selected-service-origin")))
     .toBe("https://todo.yuce-tech.cn");
@@ -376,7 +382,7 @@ test("desktop validates, remembers, and restores a custom service", async ({ pag
 
   await service.getByRole("button").first().click();
   await service.getByRole("button", { name: "恢复官方服务" }).click();
-  await expect(service.getByText("AntTodo 官方服务")).toBeVisible();
+  await expect(serviceSelect.locator("option:checked")).toHaveText("AntTodo.com");
   await expect.poll(() => page.evaluate(() => localStorage.getItem("anttodo:selected-service-origin")))
     .toBeNull();
 });

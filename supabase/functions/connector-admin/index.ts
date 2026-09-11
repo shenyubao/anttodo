@@ -129,7 +129,7 @@ function serializeYunxiaoQuickCreate(connector: {
   return {
     id: connector.id,
     type: "yunxiao-quick-create" as const,
-    name: connector.name,
+    name: "输入框拓展-云效工单",
     enabled: connector.enabled,
     organizationId: config.organizationId,
     targetLabelId: connector.target_label_id,
@@ -566,7 +566,7 @@ export default {
           .insert({
             workspace_id: workspaceId,
             type: "yunxiao",
-            name: "云效创建",
+            name: "输入框拓展-云效工单",
             enabled: false,
             schedule_minutes: 1440,
             target_label_id: body.targetLabelId,
@@ -590,7 +590,9 @@ export default {
             });
           }
         }
-        if (createError || !connector) throw new Error(createError?.message ?? "云效创建接入失败");
+        if (createError || !connector) {
+          throw new Error(createError?.message ?? "输入框拓展-云效工单接入失败");
+        }
         const { data: hint, error: secretError } = await ctx.supabaseAdmin.rpc(
           "set_connector_secret",
           { p_connector_id: connector.id, p_actor_id: userId, p_secret: token },
@@ -605,13 +607,18 @@ export default {
           .eq("id", connector.id)
           .select("id,name,enabled,target_label_id,public_config,credential_hint,last_synced_at,created_at")
           .single();
-        if (enableError || !enabled) throw new Error(enableError?.message ?? "云效创建启用失败");
+        if (enableError || !enabled) {
+          throw new Error(enableError?.message ?? "输入框拓展-云效工单启用失败");
+        }
         return Response.json({
           connector: serializeYunxiaoQuickCreate({ ...enabled, credential_hint: hint }),
           created: true,
         });
       } catch (error) {
-        return jsonError(error instanceof Error ? error.message : "云效创建接入失败", 422);
+        return jsonError(
+          error instanceof Error ? error.message : "输入框拓展-云效工单接入失败",
+          422,
+        );
       }
     }
 

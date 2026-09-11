@@ -1,6 +1,37 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
-import { createTask, loadTaskTree } from "./api";
+import { createTask, loadTaskTree, loadWorkspaces, loadWorkspaceTasksByIds } from "./api";
+
+describe("workspace list query", () => {
+  it("loads workspaces without embedding through foreign keys", async () => {
+    const selects: Record<string, string> = {};
+    const client = {
+      from: (table: string) => ({
+        select: (columns: string) => {
+          selects[table] = columns;
+          return {
+            eq: () => ({
+              order: async () => ({
+                data: [{ role: "owner", workspace_id: "workspace-1" }],
+                error: null,
+              }),
+            }),
+            in: async () => ({
+              data: [{ id: "workspace-1", name: "Team", slug: "team" }],
+              error: null,
+            }),
+          };
+        },
+      }),
+    } as unknown as SupabaseClient;
+
+    await expect(loadWorkspaces(client, "user-1")).resolves.toEqual([
+      { id: "workspace-1", name: "Team", slug: "team", role: "owner" },
+    ]);
+    expect(selects.workspace_members).toBe("role, workspace_id");
+    expect(selects.workspaces).toBe("*");
+  });
+});
 
 describe("task detail query", () => {
   it("selects dependencies through the owning task foreign key", async () => {
@@ -54,6 +85,33 @@ describe("task detail query", () => {
     expect(queriedBatches.map((batch) => batch.length)).toEqual([50, 50, 12]);
     expect(queriedBatches.flat()).toEqual(ids);
     expect(tasks).toHaveLength(ids.length);
+  });
+
+  it("loads selected task ids without querying the rest of the workspace", async () => {
+    const queriedBatches: string[][] = [];
+    const client = {
+      from: () => ({
+        select: () => ({
+          in: async (_column: string, batch: string[]) => {
+            queriedBatches.push(batch);
+            return {
+              data: batch.map((id) => ({
+                id,
+                parent_task_id: null,
+                task_dependencies: [],
+              })),
+              error: null,
+            };
+          },
+        }),
+      }),
+    } as unknown as SupabaseClient;
+
+    const tasks = await loadWorkspaceTasksByIds(client, ["task-1", "task-1", ""]);
+
+    expect(queriedBatches).toEqual([["task-1"]]);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.id).toBe("task-1");
   });
 });
 

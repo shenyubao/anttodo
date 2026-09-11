@@ -8,9 +8,12 @@ import {
 } from "./featureModulePreferences";
 
 describe("featureModulePreferences", () => {
-  it("defaults to calendar and focus enabled with mind map disabled", () => {
+  it("defaults to weekly reports, OKR, calendar, matrix and focus enabled with mind map disabled", () => {
     expect(DEFAULT_FEATURE_MODULE_PREFERENCES).toEqual({
+      weeklyReportsEnabled: true,
+      okrEnabled: true,
       calendarEnabled: true,
+      matrixEnabled: true,
       focusEnabled: true,
       mindMapEnabled: false,
     });
@@ -21,16 +24,25 @@ describe("featureModulePreferences", () => {
 
   it("parses complete and partial preferences", () => {
     expect(parseFeatureModulePreferences(JSON.stringify({
+      weeklyReportsEnabled: false,
+      okrEnabled: false,
       calendarEnabled: false,
+      matrixEnabled: false,
       focusEnabled: false,
       mindMapEnabled: true,
     }))).toEqual({
+      weeklyReportsEnabled: false,
+      okrEnabled: false,
       calendarEnabled: false,
+      matrixEnabled: false,
       focusEnabled: false,
       mindMapEnabled: true,
     });
     expect(parseFeatureModulePreferences(JSON.stringify({ mindMapEnabled: true }))).toEqual({
+      weeklyReportsEnabled: true,
+      okrEnabled: true,
       calendarEnabled: true,
+      matrixEnabled: true,
       focusEnabled: true,
       mindMapEnabled: true,
     });
@@ -40,11 +52,17 @@ describe("featureModulePreferences", () => {
     expect(parseFeatureModulePreferences("{"))
       .toEqual(DEFAULT_FEATURE_MODULE_PREFERENCES);
     expect(parseFeatureModulePreferences(JSON.stringify({
+      weeklyReportsEnabled: "yes",
+      okrEnabled: "yes",
       calendarEnabled: "yes",
+      matrixEnabled: "yes",
       focusEnabled: false,
       mindMapEnabled: 1,
     }))).toEqual({
+      weeklyReportsEnabled: true,
+      okrEnabled: true,
       calendarEnabled: true,
+      matrixEnabled: true,
       focusEnabled: false,
       mindMapEnabled: false,
     });
@@ -59,7 +77,10 @@ describe("featureModulePreferences", () => {
       },
     };
     const preferences = {
+      weeklyReportsEnabled: false,
+      okrEnabled: false,
       calendarEnabled: false,
+      matrixEnabled: false,
       focusEnabled: true,
       mindMapEnabled: true,
     };

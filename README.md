@@ -121,8 +121,9 @@ Twilio 凭据。
 `http://localhost:5173/team/{slug}` 调试团队登录页。
 
 `ANTTODO_INSTANCE_DISPLAY_NAME` 是公开实例名称，写入 `/.well-known/anttodo.json`
-的 `displayName`。登录页标题显示为「蚂蚁待办 x {ANTTODO_INSTANCE_DISPLAY_NAME}」，
-浏览器标签也使用该名称；未配置时默认“蚂蚁清单”。
+的 `displayName`。官方服务在登录服务选择器中显示为「AntTodo.com」，页面品牌和
+浏览器标签显示为「蚂蚁清单」；自托管实例的登录页标题显示为
+「蚂蚁清单 x {ANTTODO_INSTANCE_DISPLAY_NAME}」，浏览器标签也使用实例名称。
 
 `ANTTODO_DEPLOY_MODE` 用于区分 SaaS 与独立部署：`saas` 登录时需要用户填写企业
 Slug；`onPremises` 则从 `/.well-known/anttodo.json` 读取

@@ -72,7 +72,7 @@ describe("public configuration", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       schemaVersion: 1,
       instanceId: "00000000-0000-4000-8000-000000000001",
-      displayName: "AntTodo 官方服务",
+      displayName: "AntTodo.com",
       appUrl: DEFAULT_APP_URL,
       supabaseUrl: "https://supabase.example.com",
       publishableKey: "sb_publishable_production_key",

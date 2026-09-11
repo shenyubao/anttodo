@@ -1,4 +1,4 @@
-import { CalendarDays, Target, Workflow } from "lucide-react";
+import { CalendarDays, FileText, Goal, Grid2X2, Target, Workflow } from "lucide-react";
 import type { FeatureModulePreferences } from "./lib/featureModulePreferences";
 
 const MODULE_OPTIONS: Array<{
@@ -7,9 +7,24 @@ const MODULE_OPTIONS: Array<{
   icon: typeof CalendarDays;
 }> = [
   {
+    key: "weeklyReportsEnabled",
+    label: "周报",
+    icon: FileText,
+  },
+  {
+    key: "okrEnabled",
+    label: "OKR",
+    icon: Goal,
+  },
+  {
     key: "calendarEnabled",
     label: "日历",
     icon: CalendarDays,
+  },
+  {
+    key: "matrixEnabled",
+    label: "四象限",
+    icon: Grid2X2,
   },
   {
     key: "focusEnabled",

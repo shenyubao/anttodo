@@ -68,11 +68,7 @@ import {
   taskMatchesCalendarSmartViews,
 } from "./lib/calendarVisibility";
 import { customTaskViewKey } from "./lib/taskList";
-import {
-  compareSiblingLabels,
-  hasExplicitLabelColor,
-  userLabelOrderMap,
-} from "./lib/labels";
+import { compareSiblingLabels, hasExplicitLabelColor, userLabelOrderMap, userLabels } from "./lib/labels";
 import { memberDisplayName } from "./lib/taskTitleTokens";
 import { MemberAvatar } from "./MemberAvatar";
 import type {
@@ -143,7 +139,7 @@ function taskEvent(task: Task, labels: Label[], editable = false): EventInput | 
   if (task.deleted_at) return null;
   const range = calendarEventRangeFromTask(task);
   if (!range) return null;
-  const label = labels.find((candidate) => task.label_ids.includes(candidate.id));
+  const label = userLabels(labels).find((candidate) => task.label_ids.includes(candidate.id));
   const color = label?.color || "#9EB3FC";
   return {
     id: task.id,
@@ -347,7 +343,7 @@ export function CalendarSidebar({
   const [labelsSectionCollapsed, setLabelsSectionCollapsed] = useState(
     () => readStoredCollapsed(LABELS_COLLAPSED_KEY),
   );
-  const calendarIds = ["inbox", ...bundle.labels.map((label) => label.id)];
+  const calendarIds = ["inbox", ...userLabels(bundle.labels).map((label) => label.id)];
   const allVisible = calendarIds.every((calendarId) => visibleCalendarIds.has(calendarId));
   const inboxVisible = visibleCalendarIds.has("inbox");
   const assigneeIds = calendarAssigneeFilterIds(bundle.members);
@@ -653,7 +649,7 @@ export function CalendarSidebar({
                 </button>
                 <div className="calendar-label-tree" role="tree" aria-label="标签树">
                   <CalendarLabelTree
-                    labels={bundle.labels}
+                    labels={userLabels(bundle.labels)}
                     userLabelOrder={bundle.userLabelOrder}
                     visibleCalendarIds={visibleCalendarIds}
                     collapsed={collapsedLabels}
@@ -715,6 +711,7 @@ function ScheduleTaskPanel({
         currentUserId,
         now,
         weekStartsOn,
+        bundle.labels,
       ))
       .map((task) => optimisticallyUnscheduledTaskIds.has(task.id)
         ? { ...task, ...clearSchedulePatch() }
@@ -876,7 +873,7 @@ export function CalendarWorkspace({
   const events = useMemo(() => [
     ...bundle.tasks.flatMap((task) => {
       if (optimisticallyUnscheduledTaskIds.has(task.id)) return [];
-      if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds)) return [];
+      if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds, bundle.labels)) return [];
       if (!taskMatchesCalendarSmartViews(
         task,
         activeSmartViewIds,
@@ -884,6 +881,7 @@ export function CalendarWorkspace({
         currentUserId,
         now,
         dateTimePreferences.weekStartsOn,
+        bundle.labels,
       )) return [];
       const event = taskEvent(
         task,

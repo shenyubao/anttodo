@@ -1,8 +1,17 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useMemo } from "react";
 import { edgeFunctionErrorMessage } from "./sso";
 import { supabase } from "./supabase";
-import type { Connector, Workspace, YunxiaoConnectorConfig } from "../types";
+import type {
+  Connector,
+  Workspace,
+  WorkspaceBundle,
+  YunxiaoConnectorConfig,
+} from "../types";
 
 export type ConnectorListItem = {
   id: string;
@@ -56,6 +65,58 @@ export type ConnectorListResponse = {
 
 export function connectorSettingsQueryKey(workspaceId: string) {
   return ["connector-settings", workspaceId] as const;
+}
+
+export function patchConnectorSettingsEnabled(
+  current: ConnectorListResponse,
+  connectorId: string,
+  enabled: boolean,
+): ConnectorListResponse {
+  return {
+    ...current,
+    connectors: current.connectors.map((connector) =>
+      connector.id === connectorId ? { ...connector, enabled } : connector
+    ),
+    yunxiaoConnectors: current.yunxiaoConnectors.map((connector) =>
+      connector.id === connectorId ? { ...connector, enabled } : connector
+    ),
+    yunxiaoQuickCreate: current.yunxiaoQuickCreate?.id === connectorId
+      ? { ...current.yunxiaoQuickCreate, enabled }
+      : current.yunxiaoQuickCreate,
+  };
+}
+
+export function patchWorkspaceConnector(
+  current: WorkspaceBundle,
+  connectorId: string,
+  patch: Partial<Connector>,
+): WorkspaceBundle {
+  return {
+    ...current,
+    connectors: current.connectors.map((connector) =>
+      connector.id === connectorId ? { ...connector, ...patch } : connector
+    ),
+  };
+}
+
+export function setConnectorEnabledInCache(
+  queryClient: QueryClient,
+  workspaceId: string,
+  connectorId: string,
+  enabled: boolean,
+) {
+  queryClient.setQueryData<ConnectorListResponse>(
+    connectorSettingsQueryKey(workspaceId),
+    (current) => current
+      ? patchConnectorSettingsEnabled(current, connectorId, enabled)
+      : current,
+  );
+  queryClient.setQueryData<WorkspaceBundle>(
+    ["workspace-bundle", workspaceId],
+    (current) => current
+      ? patchWorkspaceConnector(current, connectorId, { enabled })
+      : current,
+  );
 }
 
 export function isDemoWorkspace(workspaceId: string) {
@@ -180,5 +241,14 @@ export function useConnectorSettings(workspace: Workspace, bundleConnectors: Con
     ]);
   }
 
-  return { demo, connectorQuery, data, refresh };
+  function updateEnabled(connectorId: string, enabled: boolean) {
+    setConnectorEnabledInCache(
+      queryClient,
+      workspace.id,
+      connectorId,
+      enabled,
+    );
+  }
+
+  return { demo, connectorQuery, data, refresh, updateEnabled };
 }

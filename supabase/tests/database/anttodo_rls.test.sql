@@ -896,8 +896,8 @@ select is(
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
   ),
-  false,
-  'show_completed defaults to false for a newly saved preference'
+  true,
+  'show_completed defaults to true for a newly saved preference'
 );
 select is(
   (
@@ -989,7 +989,7 @@ select is(
 select lives_ok(
   $$
     update public.task_list_preferences
-    set show_completed = true
+    set show_completed = false
     where user_id = '10000000-0000-0000-0000-000000000001'
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
@@ -1004,8 +1004,8 @@ select is(
       and workspace_id = '20000000-0000-0000-0000-000000000001'
       and list_key = 'label:30000000-0000-0000-0000-000000000001'
   ),
-  true,
-  'show_completed persists after update'
+  false,
+  'explicitly hiding completed tasks persists after update'
 );
 select lives_ok(
   $$

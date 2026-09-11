@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bootstrapInstanceConfig,
   currentAuthBrandTitle,
+  currentBrandName,
   fetchInstanceConfig,
   isOnPremisesInstance,
   loginWelcomeTitle,
@@ -78,10 +79,10 @@ describe("instance configuration", () => {
     expect(parseInstanceManifest({ ...manifest, deployMode: undefined, workspaceSlug: undefined }, manifest.appUrl, false))
       .toMatchObject({ deployMode: "saas" });
     expect(isOnPremisesInstance(manifest)).toBe(true);
-    expect(currentAuthBrandTitle("预策科技")).toBe("蚂蚁待办 x 预策科技");
-    expect(currentAuthBrandTitle()).toBe("蚂蚁待办");
-    expect(loginWelcomeTitle("official")).toBe("蚂蚁待办");
-    expect(loginWelcomeTitle("custom")).toBe("蚂蚁待办");
+    expect(currentAuthBrandTitle("预策科技")).toBe("蚂蚁清单 x 预策科技");
+    expect(currentAuthBrandTitle()).toBe("蚂蚁清单");
+    expect(loginWelcomeTitle("official")).toBe("蚂蚁清单");
+    expect(loginWelcomeTitle("custom")).toBe("蚂蚁清单");
     expect(parseInstanceManifest({ ...manifest, custom_brand_name: "预策科技" }, manifest.appUrl, false))
       .toEqual(manifest);
     expect(() => parseInstanceManifest({ ...manifest, deployMode: "onPremises", workspaceSlug: undefined }, manifest.appUrl, false))
@@ -169,10 +170,25 @@ describe("instance configuration", () => {
 
     const custom = await selectCustomService(manifest.appUrl);
     setActiveInstanceConfig(custom);
-    expect(currentAuthBrandTitle()).toBe("蚂蚁待办 x 宇策科技 AntTodo");
-    expect(loginWelcomeTitle(custom.appUrl)).toBe("蚂蚁待办 x 宇策科技 AntTodo");
-    expect(loginWelcomeTitle("official")).toBe("蚂蚁待办");
-    expect(loginWelcomeTitle("custom")).toBe("蚂蚁待办");
+    expect(currentAuthBrandTitle()).toBe("蚂蚁清单 x 宇策科技 AntTodo");
+    expect(loginWelcomeTitle(custom.appUrl)).toBe("蚂蚁清单 x 宇策科技 AntTodo");
+    expect(loginWelcomeTitle("official")).toBe("蚂蚁清单");
+    expect(loginWelcomeTitle("custom")).toBe("蚂蚁清单");
     setActiveInstanceConfig(null);
+  });
+
+  it("keeps the official page brand separate from the service display name", () => {
+    setActiveInstanceConfig({
+      ...manifest,
+      schemaVersion: 1,
+      appUrl: "https://app.anttodo.com",
+      displayName: "AntTodo.com",
+      namespace: "official",
+      official: true,
+      source: "builtin",
+    });
+
+    expect(currentBrandName()).toBe("蚂蚁清单");
+    expect(currentAuthBrandTitle()).toBe("蚂蚁清单");
   });
 });

@@ -1,5 +1,7 @@
-import { X } from "lucide-react";
+import { FolderOpen, X } from "lucide-react";
+import type { CSSProperties } from "react";
 import { MemberAvatar } from "./MemberAvatar";
+import { orderedLabelTreeRows } from "./lib/taskList";
 import { memberDisplayName } from "./lib/taskTitleTokens";
 import type { Label, Member } from "./types";
 
@@ -7,6 +9,7 @@ export function TaskTitleTokenMenu({
   kind,
   assigneeCandidates,
   labelCandidates,
+  labelTreeLabels,
   activeIndex,
   onSelectAssignee,
   onSelectLabel,
@@ -14,6 +17,7 @@ export function TaskTitleTokenMenu({
   kind: "assignee" | "label";
   assigneeCandidates: Member[];
   labelCandidates: Label[];
+  labelTreeLabels?: Label[];
   activeIndex: number;
   onSelectAssignee: (member: Member) => void;
   onSelectLabel: (label: Label) => void;
@@ -44,30 +48,43 @@ export function TaskTitleTokenMenu({
     );
   }
 
+  const treeRowById = new Map(
+    orderedLabelTreeRows(labelTreeLabels ?? labelCandidates)
+      .map((row) => [row.label.id, row]),
+  );
+
   return (
     <div className="task-title-token-menu" role="listbox" aria-label="选择标签">
       {labelCandidates.length === 0 ? (
         <p>没有匹配的标签</p>
       ) : (
-        labelCandidates.map((label, index) => (
-          <button
-            key={label.id}
-            type="button"
-            role="option"
-            aria-selected={index === activeIndex}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              onSelectLabel(label);
-            }}
-          >
-            <span
-              className="task-title-token-label-swatch"
-              style={{ background: label.color }}
-              aria-hidden="true"
-            />
-            <span>{label.name}</span>
-          </button>
-        ))
+        labelCandidates.map((label, index) => {
+          const treeRow = treeRowById.get(label.id);
+          return (
+            <button
+              key={label.id}
+              type="button"
+              className="task-title-token-label-option"
+              style={{ "--label-tree-depth": treeRow?.depth ?? 0 } as CSSProperties}
+              role="option"
+              aria-selected={index === activeIndex}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onSelectLabel(label);
+              }}
+            >
+              <span className="task-label-tree-parent-icon" aria-hidden="true">
+                {treeRow?.hasChildren && <FolderOpen />}
+              </span>
+              <span
+                className="task-title-token-label-swatch"
+                style={{ background: label.color }}
+                aria-hidden="true"
+              />
+              <span>{label.name}</span>
+            </button>
+          );
+        })
       )}
     </div>
   );

@@ -43,7 +43,7 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
       const appUrl = env.VITE_PUBLIC_APP_URL;
       if (!supabaseUrl || !publishableKey || !appUrl) return;
       const instanceId = env.ANTTODO_INSTANCE_ID || "00000000-0000-4000-8000-000000000001";
-      const displayName = env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim() || "AntTodo 官方服务";
+      const displayName = env.ANTTODO_INSTANCE_DISPLAY_NAME?.trim() || "AntTodo.com";
       if (!displayName || displayName.length > 80) {
         throw new Error("ANTTODO_INSTANCE_DISPLAY_NAME must contain 1 to 80 characters");
       }

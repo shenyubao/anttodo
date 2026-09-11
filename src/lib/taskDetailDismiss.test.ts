@@ -38,6 +38,14 @@ describe("shouldDismissTaskDetailOnPointerDown", () => {
       el('<form class="task-group-quick-add"><input /></form>')
         ?.querySelector("input") ?? null,
     )).toBe(false);
+    expect(shouldDismissTaskDetailOnPointerDown(
+      el('<div class="sortable-task-tree-item"><article class="task-list-childTask-row"><button>子任务</button></article></div>')
+        ?.querySelector("button") ?? null,
+    )).toBe(false);
+    expect(shouldDismissTaskDetailOnPointerDown(
+      el('<div class="childTask-row"><button class="task-drag-handle">拖动</button></div>')
+        ?.querySelector("button") ?? null,
+    )).toBe(false);
   });
 
   it("ignores non-primary buttons", () => {

@@ -12,6 +12,7 @@ import type {
   FocusSettings,
   Label,
   LabelAccessDraft,
+  MatrixQuadrantPreference,
   Member,
   NotificationChannelPreferences,
   NotificationPreferences,
@@ -31,6 +32,7 @@ import type {
   TaskSection,
   TaskPriority,
   UserLabelOrder,
+  UserSidebarMember,
   UserQuota,
   Workspace,
   WorkspaceBundle,
@@ -124,6 +126,12 @@ export async function loadTaskTree(client: SupabaseClient, taskId: string) {
   assertNoError(error);
   const rows = await enrichTaskIds(client, (data ?? []).map((row: { id: string }) => row.id));
   return normalizeTaskRows(rows);
+}
+
+export async function loadWorkspaceTasksByIds(client: SupabaseClient, taskIds: string[]) {
+  const ids = [...new Set(taskIds.filter((taskId) => taskId.length > 0))];
+  if (ids.length === 0) return [] as Task[];
+  return normalizeTaskRows(await enrichTaskIds(client, ids));
 }
 
 function normalizeTaskRow(row: TaskRow): Task {
@@ -512,17 +520,28 @@ export async function loadWorkspaces(
 ): Promise<Workspace[]> {
   // RLS lets members read every row in their workspaces; filter to the current
   // user so the switcher is one entry per joined team, not one per teammate.
+  // Query the two tables separately. Join-table FKs make PostgREST embeds of
+  // workspaces from workspace_members ambiguous (PGRST201).
   const { data: memberships, error } = await client
     .from("workspace_members")
-    .select("role, workspaces(*)")
+    .select("role, workspace_id")
     .eq("user_id", userId)
     .order("joined_at", { ascending: true });
   assertNoError(error);
 
+  const workspaceIds = [...new Set((memberships ?? []).map((row) => row.workspace_id))];
+  const { data: workspaceRows, error: workspacesError } = workspaceIds.length
+    ? await client.from("workspaces").select("*").in("id", workspaceIds)
+    : { data: [], error: null };
+  assertNoError(workspacesError);
+
+  const workspacesById = new Map(
+    (workspaceRows ?? []).map((workspace) => [workspace.id, workspace as Workspace]),
+  );
   const seen = new Set<string>();
   const workspaces: Workspace[] = [];
   for (const membership of memberships ?? []) {
-    const workspace = membership.workspaces as unknown as Workspace | null;
+    const workspace = workspacesById.get(membership.workspace_id);
     if (!workspace || seen.has(workspace.id)) continue;
     seen.add(workspace.id);
     workspaces.push({ ...workspace, role: membership.role });
@@ -741,10 +760,12 @@ export async function loadWorkspaceBundle(
     placementsResult,
     customTaskViewsResult,
     taskSystemViewPreferencesResult,
+    matrixQuadrantPreferencesResult,
     userGroupsResult,
     userGroupMembersResult,
     labelPermissionLevelsResult,
     userLabelOrderResult,
+    userSidebarMembersResult,
     labelTaskCountsResult,
   ] = await Promise.all([
     client
@@ -798,6 +819,10 @@ export async function loadWorkspaceBundle(
       .eq("workspace_id", workspaceId)
       .order("position", { ascending: true }),
     client
+      .from("task_matrix_quadrants")
+      .select("*")
+      .eq("workspace_id", workspaceId),
+    client
       .from("user_groups")
       .select("*")
       .eq("workspace_id", workspaceId)
@@ -812,6 +837,11 @@ export async function loadWorkspaceBundle(
       .select("user_id, workspace_id, label_id, position")
       .eq("workspace_id", workspaceId)
       .order("position", { ascending: true }),
+    client
+      .from("user_sidebar_members")
+      .select("user_id, workspace_id, member_user_id, created_at")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: true }),
     client.rpc("list_label_task_counts", { p_workspace_id: workspaceId }),
   ]);
   assertNoError(membersResult.error);
@@ -823,10 +853,12 @@ export async function loadWorkspaceBundle(
   assertNoError(placementsResult.error);
   assertNoError(customTaskViewsResult.error);
   assertNoError(taskSystemViewPreferencesResult.error);
+  assertNoError(matrixQuadrantPreferencesResult.error);
   assertNoError(userGroupsResult.error);
   assertNoError(userGroupMembersResult.error);
   assertNoError(labelPermissionLevelsResult.error);
   assertNoError(userLabelOrderResult.error);
+  assertNoError(userSidebarMembersResult.error);
   assertNoError(labelTaskCountsResult.error);
 
   const memberIds = (membersResult.data ?? []).map((member) => member.user_id);
@@ -908,6 +940,7 @@ export async function loadWorkspaceBundle(
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
     userLabelOrder: (userLabelOrderResult.data ?? []) as UserLabelOrder[],
+    userSidebarMembers: (userSidebarMembersResult.data ?? []) as UserSidebarMember[],
     labelTaskCounts: Object.fromEntries(
       (labelTaskCountsResult.data ?? []).map(
         (row: { label_id: string; task_count: number }) => [row.label_id, row.task_count],
@@ -916,9 +949,36 @@ export async function loadWorkspaceBundle(
     taskListPreferences: (preferencesResult.data ?? []) as WorkspaceBundle["taskListPreferences"],
     customTaskViews: (customTaskViewsResult.data ?? []) as CustomTaskView[],
     taskSystemViewPreferences: (taskSystemViewPreferencesResult.data ?? []) as TaskSystemViewPreference[],
+    matrixQuadrantPreferences: (matrixQuadrantPreferencesResult.data ?? []) as MatrixQuadrantPreference[],
     taskSections: (sectionsResult.data ?? []) as WorkspaceBundle["taskSections"],
     taskPlacements: (placementsResult.data ?? []) as WorkspaceBundle["taskPlacements"],
   };
+}
+
+export async function addUserSidebarMember(
+  client: SupabaseClient,
+  input: Pick<UserSidebarMember, "user_id" | "workspace_id" | "member_user_id">,
+) {
+  const { data, error } = await client
+    .from("user_sidebar_members")
+    .insert(input)
+    .select("user_id, workspace_id, member_user_id, created_at")
+    .single();
+  assertNoError(error);
+  return data as UserSidebarMember;
+}
+
+export async function removeUserSidebarMember(
+  client: SupabaseClient,
+  workspaceId: string,
+  memberUserId: string,
+) {
+  const { error } = await client
+    .from("user_sidebar_members")
+    .delete()
+    .eq("workspace_id", workspaceId)
+    .eq("member_user_id", memberUserId);
+  assertNoError(error);
 }
 
 export async function loadWorkspaceTasksPage(
@@ -1057,6 +1117,19 @@ export async function saveTaskSystemViewPreference(
     .single();
   assertNoError(error);
   return data as TaskSystemViewPreference;
+}
+
+export async function saveMatrixQuadrantPreference(
+  client: SupabaseClient,
+  preference: MatrixQuadrantPreference,
+) {
+  const { data, error } = await client
+    .from("task_matrix_quadrants")
+    .upsert(preference, { onConflict: "user_id,workspace_id,quadrant_key" })
+    .select("*")
+    .single();
+  assertNoError(error);
+  return data as MatrixQuadrantPreference;
 }
 
 export async function reorderSystemSmartViews(

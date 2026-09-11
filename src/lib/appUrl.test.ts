@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildTaskOpenUrl } from "../../supabase/functions/_shared/app-url";
+import {
+  buildTaskOpenUrl,
+  buildWeeklyReportOpenUrl,
+} from "../../supabase/functions/_shared/app-url";
 
 describe("buildTaskOpenUrl", () => {
   it("builds a task detail path under the public app origin", () => {
@@ -18,5 +21,10 @@ describe("buildTaskOpenUrl", () => {
     expect(buildTaskOpenUrl("space/a", "task/b")).toBe(
       "https://app.anttodo.com/workspaces/space%2Fa/tasks/task%2Fb",
     );
+  });
+
+  it("builds and encodes a weekly report detail URL", () => {
+    expect(buildWeeklyReportOpenUrl("space/a", "report/b", "https://tasks.example.com/"))
+      .toBe("https://tasks.example.com/workspaces/space%2Fa/weekly-reports/report%2Fb");
   });
 });

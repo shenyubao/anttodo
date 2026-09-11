@@ -11,6 +11,8 @@ import {
   isRootTask,
   nextSiblingPosition,
   outdentTaskPatch,
+  siblingReorderPatch,
+  applyTaskTreeMove,
   taskDepth,
   taskCollectionProgress,
   taskProgress,
@@ -153,5 +155,66 @@ describe("taskTree", () => {
     expect(visibleFlattenedTasks(tasks, "a", new Set()).map((row) => row.task.id)).toEqual(["a1"]);
     expect(nextSiblingPosition(tasks, "a")).toBe(2);
     expect(taskProgress(tasks, "a")).toEqual({ completed: 0, total: 1 });
+  });
+
+  it("reorders siblings without changing parent", () => {
+    const moved = applyTaskTreeMove(tree, "a2", "a", 0);
+    expect(childrenOf(moved.tasks, "a").map((task) => task.id)).toEqual(["a2", "a1"]);
+    expect(moved.tasks.find((task) => task.id === "a2")).toMatchObject({
+      parent_task_id: "a",
+      position: 0,
+    });
+    expect(moved.tasks.find((task) => task.id === "a1")).toMatchObject({
+      parent_task_id: "a",
+      position: 1,
+    });
+    expect(moved.tasks.find((task) => task.id === "a1a")?.parent_task_id).toBe("a1");
+    expect(moved.changedIds.sort()).toEqual(["a1", "a2"]);
+  });
+
+  it("moves a first sibling to the end", () => {
+    const moved = applyTaskTreeMove(tree, "a1", "a", 1);
+    expect(childrenOf(moved.tasks, "a").map((task) => task.id)).toEqual(["a2", "a1"]);
+    expect(moved.tasks.find((task) => task.id === "a1")?.position).toBe(1);
+    expect(moved.tasks.find((task) => task.id === "a2")?.position).toBe(0);
+    expect(moved.tasks.find((task) => task.id === "a1a")?.parent_task_id).toBe("a1");
+  });
+
+  it("shifts both sibling groups when changing parent", () => {
+    const moved = applyTaskTreeMove(tree, "a2", "a1", 1);
+    expect(childrenOf(moved.tasks, "a").map((task) => task.id)).toEqual(["a1"]);
+    expect(childrenOf(moved.tasks, "a1").map((task) => task.id)).toEqual(["a1a", "a2"]);
+    expect(moved.tasks.find((task) => task.id === "a2")).toMatchObject({
+      parent_task_id: "a1",
+      position: 1,
+    });
+  });
+
+  it("keeps deleted sibling holes when taking another live task's slot", () => {
+    const tasks = [
+      item("a", 0),
+      item("a1", 0, "a"),
+      { ...item("gone", 1, "a"), deleted_at: "2026-08-18T10:16:12.314Z" },
+      item("a2", 2, "a"),
+    ];
+    const moved = applyTaskTreeMove(tasks, "a1", "a", 2);
+    expect(childrenOf(moved.tasks, "a").map((task) => task.id)).toEqual(["a2", "a1"]);
+    expect(moved.tasks.find((task) => task.id === "a1")?.position).toBe(2);
+    expect(moved.tasks.find((task) => task.id === "gone")?.position).toBe(0);
+    expect(moved.tasks.find((task) => task.id === "a2")?.position).toBe(1);
+  });
+
+  it("builds a same-parent reorder patch and rejects cross-parent drops", () => {
+    expect(siblingReorderPatch(tree, "a2", "a1")).toEqual({
+      parent_task_id: "a",
+      position: 0,
+    });
+    expect(siblingReorderPatch(tree, "b", "a")).toEqual({
+      parent_task_id: null,
+      position: 0,
+    });
+    expect(siblingReorderPatch(tree, "a2", "a2")).toBeNull();
+    expect(siblingReorderPatch(tree, "a2", "a1a")).toBeNull();
+    expect(siblingReorderPatch(tree, "a2", "missing")).toBeNull();
   });
 });

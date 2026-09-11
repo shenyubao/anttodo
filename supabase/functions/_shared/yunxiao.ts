@@ -273,11 +273,13 @@ export function isYunxiaoQuickCreateConfig(value: unknown): value is YunxiaoQuic
 
 export function validateYunxiaoQuickCreateConfig(value: unknown): YunxiaoQuickCreateConfig {
   const config = record(value);
-  if (!config || config.kind !== "quick_create") throw new Error("云效创建配置无效");
+  if (!config || config.kind !== "quick_create") {
+    throw new Error("输入框拓展-云效工单配置无效");
+  }
   const organizationId = typeof config.organizationId === "string"
     ? config.organizationId.trim()
     : "";
-  if (!organizationId) throw new Error("云效创建配置缺少 organizationId");
+  if (!organizationId) throw new Error("输入框拓展-云效工单配置缺少 organizationId");
   return { kind: "quick_create", organizationId };
 }
 

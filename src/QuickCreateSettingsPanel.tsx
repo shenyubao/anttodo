@@ -26,6 +26,7 @@ import type {
 const yunxiaoPersonalTokenUrl = "https://account-devops.aliyun.com/settings/personalAccessToken";
 const yunxiaoConnectorDocsUrl = "https://docs.anttodo.com/企业管理/云效连接器";
 const yunxiaoOrganizationUrl = "https://account-devops.aliyun.com/settings/joinedOrganizations";
+const yunxiaoQuickCreateName = "输入框拓展-云效工单";
 
 export function QuickCreateSettingsPanel({
   workspace,
@@ -44,7 +45,7 @@ export function QuickCreateSettingsPanel({
   onNavigateToSso: () => void;
   onNotice: (message: string) => void;
 }) {
-  const { demo, connectorQuery, data, refresh } = useConnectorSettings(
+  const { demo, connectorQuery, data, refresh, updateEnabled } = useConnectorSettings(
     workspace,
     bundleConnectors,
   );
@@ -66,7 +67,8 @@ export function QuickCreateSettingsPanel({
   const yunxiaoQuickCreate = data.yunxiaoQuickCreate;
   const detailsId = connector ? `quick-create-details-${connector.id}` : "";
   const yunxiaoDetailsId = yunxiaoQuickCreate ? `quick-create-yunxiao-${yunxiaoQuickCreate.id}` : "";
-  const editableLabels = labels.filter((label) => (labelPermissionLevels[label.id] ?? 0) >= 2);
+  const editableLabels = labels.filter((label) =>
+    !label.is_system && (labelPermissionLevels[label.id] ?? 0) >= 2);
 
   async function installDingtalk() {
     if (demo) {
@@ -92,15 +94,16 @@ export function QuickCreateSettingsPanel({
 
   async function toggleDingtalkEnabled() {
     if (!connector || demo) return;
+    const enabled = !connector.enabled;
     setBusyAction("toggle-dingtalk");
     setError("");
     try {
       await invokeConnectorAdmin({
         action: "set-enabled",
         connectorId: connector.id,
-        enabled: !connector.enabled,
+        enabled,
       });
-      await refresh();
+      updateEnabled(connector.id, enabled);
       onNotice(connector.enabled ? "钉钉群机器人已停用" : "钉钉群机器人已启用");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "状态更新失败。");
@@ -141,7 +144,7 @@ export function QuickCreateSettingsPanel({
 
   function openYunxiaoInstall() {
     if (demo) {
-      onNotice("演示模式仅预览云效创建接入效果");
+      onNotice(`演示模式仅预览${yunxiaoQuickCreateName}接入效果`);
       return;
     }
     setError("");
@@ -187,9 +190,9 @@ export function QuickCreateSettingsPanel({
       await refresh();
       setInstallingYunxiao(false);
       setYunxiaoDetailsOpen(true);
-      onNotice("云效创建已接入，粘贴云效链接即可生成外部待办");
+      onNotice(`${yunxiaoQuickCreateName}已接入，粘贴云效链接即可生成外部待办`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "云效创建接入失败");
+      setError(cause instanceof Error ? cause.message : `${yunxiaoQuickCreateName}接入失败`);
     } finally {
       setYunxiaoStepBusy(false);
     }
@@ -197,16 +200,21 @@ export function QuickCreateSettingsPanel({
 
   async function toggleYunxiaoEnabled() {
     if (!yunxiaoQuickCreate || demo) return;
+    const enabled = !yunxiaoQuickCreate.enabled;
     setBusyAction("toggle-yunxiao");
     setError("");
     try {
       await invokeConnectorAdmin({
         action: "set-yunxiao-enabled",
         connectorId: yunxiaoQuickCreate.id,
-        enabled: !yunxiaoQuickCreate.enabled,
+        enabled,
       });
-      await refresh();
-      onNotice(yunxiaoQuickCreate.enabled ? "云效创建已停用" : "云效创建已启用");
+      updateEnabled(yunxiaoQuickCreate.id, enabled);
+      onNotice(
+        yunxiaoQuickCreate.enabled
+          ? `${yunxiaoQuickCreateName}已停用`
+          : `${yunxiaoQuickCreateName}已启用`,
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "状态更新失败。");
     } finally {
@@ -237,7 +245,7 @@ export function QuickCreateSettingsPanel({
 
   async function removeYunxiao() {
     if (!yunxiaoQuickCreate || demo) return;
-    if (!window.confirm("确定移除云效创建？还有任务未删除（包含回收站）时系统会拒绝移除。")) return;
+    if (!window.confirm(`确定移除${yunxiaoQuickCreateName}？还有任务未删除（包含回收站）时系统会拒绝移除。`)) return;
     setBusyAction("delete-yunxiao");
     setError("");
     try {
@@ -247,7 +255,7 @@ export function QuickCreateSettingsPanel({
       });
       await refresh();
       setYunxiaoDetailsOpen(false);
-      onNotice("云效创建已移除");
+      onNotice(`${yunxiaoQuickCreateName}已移除`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "移除失败。");
     } finally {
@@ -280,7 +288,7 @@ export function QuickCreateSettingsPanel({
             返回
           </button>
           <div>
-            <h2 id="yunxiao-quick-create-title">接入云效创建</h2>
+            <h2 id="yunxiao-quick-create-title">接入{yunxiaoQuickCreateName}</h2>
             {error ? <p className="form-error" role="alert">{error}</p> : null}
           </div>
         </header>
@@ -500,7 +508,7 @@ export function QuickCreateSettingsPanel({
                     <header>
                       <span className="connector-logo yunxiao">云</span>
                       <div>
-                        <strong>{yunxiaoQuickCreate.name}</strong>
+                        <strong>{yunxiaoQuickCreateName}</strong>
                         <span className={clsx(
                           "connector-status",
                           yunxiaoQuickCreate.enabled ? "enabled" : "disabled",
@@ -544,7 +552,7 @@ export function QuickCreateSettingsPanel({
                             </dd>
                           </div>
                         </dl>
-                        <section className="connector-setup-guide" aria-label="云效创建使用说明">
+                        <section className="connector-setup-guide" aria-label={`${yunxiaoQuickCreateName}使用说明`}>
                           <h2>在任务创建框粘贴云效链接</h2>
                           <p>支持需求、缺陷等短链，例如 <code>https://devops.aliyun.com/projex/req/HQGS-354</code>。</p>
                           {data.canManage && !demo ? (
@@ -625,7 +633,7 @@ export function QuickCreateSettingsPanel({
                   <article className="connector-market-card">
                     <span className="connector-logo yunxiao">云</span>
                     <div className="connector-market-copy">
-                      <strong>云效创建</strong>
+                      <strong>{yunxiaoQuickCreateName}</strong>
                       <p>在任务创建框粘贴云效链接，自动生成带云效标记的外部待办。</p>
                     </div>
                     <div className="connector-market-action">

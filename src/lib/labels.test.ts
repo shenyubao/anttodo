@@ -52,7 +52,8 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelUserAcls: [],
   labelGroupAcls: [],
   labelPermissionLevels: {},
-    userLabelOrder: [],
+  userLabelOrder: [],
+  userSidebarMembers: [],
     labelTaskCounts: {},
     tasks: [],
   connectors: [],
@@ -61,6 +62,7 @@ const emptyBundle = (): WorkspaceBundle => ({
     taskListPreferences: [],
     customTaskViews: [],
     taskSystemViewPreferences: [],
+    matrixQuadrantPreferences: [],
     taskSections: [],
   taskPlacements: [],
 });

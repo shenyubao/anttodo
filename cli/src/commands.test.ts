@@ -12,7 +12,7 @@ describe("command tree", () => {
     const program = buildProgram();
     expect(program.commands.map((command) => command.name())).toEqual([
       "service", "auth", "workspace", "task", "note", "tag", "user",
-      "group", "search", "comment", "activity", "attachment", "pomodoro", "stopwatch", "man",
+      "group", "weekly-report", "search", "comment", "activity", "attachment", "pomodoro", "stopwatch", "man",
     ]);
   });
 
@@ -60,6 +60,30 @@ describe("command tree", () => {
     ]);
     expect(commandTree(pomodoro!).risk).toBe("write");
     expect(commandTree(stopwatch!).risk).toBe("write");
+  });
+
+  it("exposes weekly report list, get, create, update, and publish", () => {
+    const weeklyReport = buildProgram().commands.find((command) => command.name() === "weekly-report");
+    expect(weeklyReport?.commands.map((command) => command.name())).toEqual([
+      "list", "get", "create", "update", "publish",
+    ]);
+    const create = weeklyReport?.commands.find((command) => command.name() === "create");
+    expect(create?.options.map((option) => option.flags)).toEqual([
+      "--week <week>",
+      "--completed <markdown>",
+      "--next-plan <markdown>",
+      "--reflection <markdown>",
+      "--visibility <scope>",
+      "--user <user-id>",
+      "--group <group-id>",
+      "--notification-group <id>",
+      "--publish",
+    ]);
+    expect(commandTree(weeklyReport!.commands.find((command) => command.name() === "list")!).risk).toBe("read");
+    expect(commandTree(weeklyReport!.commands.find((command) => command.name() === "get")!).risk).toBe("read");
+    expect(commandTree(create!).risk).toBe("write");
+    expect(commandTree(weeklyReport!.commands.find((command) => command.name() === "update")!).risk).toBe("write");
+    expect(commandTree(weeklyReport!.commands.find((command) => command.name() === "publish")!).risk).toBe("write");
   });
 
   it("prints OpenInsight-style text for man --format pretty and JSON otherwise", async () => {

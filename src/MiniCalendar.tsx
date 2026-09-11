@@ -92,7 +92,7 @@ export function MiniCalendar({
     const dates = new Set<string>();
     for (const task of bundle.tasks) {
       if (!task.due_at || task.deleted_at) continue;
-      if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds)) continue;
+      if (!taskIsVisibleOnCalendar(task, visibleCalendarIds, visibleAssigneeIds, bundle.labels)) continue;
       if (
         activeSmartViewIds
         && currentUserId
@@ -103,6 +103,7 @@ export function MiniCalendar({
           currentUserId,
           now,
           dateTimePreferences.weekStartsOn,
+          bundle.labels,
         )
       ) continue;
       for (const key of occupiedCalendarDateKeys(task)) dates.add(key);

@@ -1,6 +1,6 @@
 {
   "name": "@anttodos/cli",
-  "version": "1.0.202608260902",
+  "version": "1.0.202609111433",
   "description": "Command-line client for AntTodo",
   "type": "module",
   "license": "UNLICENSED",

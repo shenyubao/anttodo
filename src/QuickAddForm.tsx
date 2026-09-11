@@ -341,6 +341,7 @@ export function QuickAddForm({
             kind={tokens.token.kind}
             assigneeCandidates={tokens.assigneeCandidates}
             labelCandidates={tokens.labelCandidates}
+            labelTreeLabels={labels}
             activeIndex={tokens.activeIndex}
             onSelectAssignee={tokens.selectAssignee}
             onSelectLabel={tokens.selectLabel}

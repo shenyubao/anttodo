@@ -29,7 +29,7 @@ async function expandAllMindMapBranches(page: Page) {
 
 test("demo task flow and details drawer", async ({ page }) => {
   await page.goto("/?demo=1");
-  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "沈宇宝" })).toBeVisible();
   await page.getByText(demoTaskTitle, { exact: true }).click();
   await expect(page.locator(".task-detail")).toBeVisible();
   await expect(page.locator(".detail-title")).toHaveValue(demoTaskTitle);
@@ -38,8 +38,93 @@ test("demo task flow and details drawer", async ({ page }) => {
 test("clicking outside the task detail panel closes it", async ({ page }) => {
   await openDemoTask(page);
   await expect(page.locator(".task-detail-panel")).toBeVisible();
-  await page.getByRole("heading", { name: "指派给我" }).click();
+  await page.getByRole("heading", { name: "沈宇宝" }).click();
   await expect(page.locator(".task-detail-panel")).toHaveCount(0);
+});
+
+test("user shortcuts filter assignees and quick-create unlabelled assigned tasks", async ({ page }) => {
+  await page.goto("/?demo=1");
+
+  const users = page.locator(".sidebar-user-section");
+  await expect(users.getByRole("button", { name: "沈宇宝" })).toBeVisible();
+  await expect(users.getByRole("button", { name: "产品同学" })).toHaveCount(0);
+
+  await users.getByRole("button", { name: "管理关注用户" }).click();
+  const colleagueOption = users.getByRole("menuitemcheckbox", { name: "产品同学" });
+  await expect(colleagueOption).toHaveAttribute("aria-checked", "false");
+  await colleagueOption.click();
+  await users.getByRole("button", { name: "管理关注用户" }).click();
+
+  const colleague = users.getByRole("button", { name: "产品同学" });
+  await expect(colleague).toBeVisible();
+  await colleague.click();
+  await expect(page).toHaveURL(/\/users\/demo-member$/);
+  await expect(page.getByRole("heading", { name: "产品同学" })).toBeVisible();
+  await expect(page.getByText("优化任务详情抽屉交互", { exact: true })).toBeVisible();
+  await expect(page.getByText(demoTaskTitle, { exact: true })).toHaveCount(0);
+
+  const taskTitle = "跟进产品同学的用户视图";
+  const quickInput = page.getByPlaceholder('添加任务至“产品同学”');
+  await quickInput.fill(taskTitle);
+  await quickInput.press("Enter");
+  await expect(page.getByText(taskTitle, { exact: true })).toBeVisible();
+
+  await users.getByRole("button", { name: "沈宇宝" }).click();
+  await expect(page).toHaveURL(/\/users\/demo-user$/);
+  await expect(page.getByText(taskTitle, { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: /^收集箱(?: \d+)?$/ }).click();
+  await expect(page.getByText(taskTitle, { exact: true })).toBeVisible();
+
+  await colleague.click();
+  await users.getByRole("button", { name: "管理关注用户" }).click();
+  await users.getByRole("menuitemcheckbox", { name: "产品同学" }).click();
+  await expect(page).toHaveURL(/\/users\/demo-user$/);
+  await expect(users.getByRole("button", { name: "产品同学" })).toHaveCount(0);
+});
+
+test("user space and labels are mutually exclusive in the sidebar", async ({ page }) => {
+  await page.goto("/?demo=1");
+
+  const users = page.locator(".sidebar .sidebar-user-section");
+  const me = users.getByRole("button", { name: "沈宇宝" });
+  const product = page.locator('.sidebar .label-row[data-label-id="product"]');
+
+  await expect(me).toHaveAttribute("aria-pressed", "true");
+  await expect(product).not.toHaveClass(/active/);
+
+  await product.click();
+  await expect(page).toHaveURL(/\/tags\/product/);
+  await expect(me).toHaveAttribute("aria-pressed", "false");
+  await expect(product).toHaveClass(/active/);
+
+  await me.click();
+  await expect(page).toHaveURL(/\/users\/demo-user$/);
+  await expect(me).toHaveAttribute("aria-pressed", "true");
+  await expect(product).not.toHaveClass(/active/);
+});
+
+test("mobile user shortcuts stay inside the navigation sheet and become read-only offline", async ({ page, context }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?demo=1");
+  await page.getByRole("button", { name: "打开导航" }).click();
+
+  const mobileNavigation = page.getByRole("complementary", { name: "移动端导航" });
+  const users = mobileNavigation.getByRole("region", { name: "用户空间" });
+  const manage = users.getByRole("button", { name: "管理关注用户" });
+  await expect(users.getByRole("button", { name: "沈宇宝" })).toBeVisible();
+  await manage.click();
+  const picker = users.locator(".sidebar-user-picker");
+  await expect(picker).toBeVisible();
+  const bounds = await picker.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await manage.click();
+
+  await context.setOffline(true);
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await expect(manage).toBeDisabled();
+  await context.setOffline(false);
 });
 
 test("task views switch per list and kanban supports column creation", async ({ page }) => {
@@ -47,27 +132,27 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await expect(page.getByRole("menuitemradio", { name: "列表" }))
     .toHaveAttribute("aria-checked", "true");
-  await expect(page.getByRole("menuitem", { name: "时间线，暂未开放" })).toBeDisabled();
+  await expect(page.getByRole("menuitemradio", { name: "时间线" })).toBeVisible();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
 
-  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
+  await expect(page).toHaveURL(/\/users\/demo-user\/kanban$/);
   const board = page.getByLabel("任务看板");
   await expect(board).toBeVisible();
   await expect(board.getByRole("heading", { name: "未分组", exact: true })).toBeVisible();
   await expect(board.getByRole("heading", { name: "笔记", exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "今天" }).click();
+  await page.getByRole("button", { name: "今天", exact: true }).click();
   await expect(page).toHaveURL(/\/views\/today$/);
   await expect(page.getByLabel("任务看板")).toHaveCount(0);
-  await page.getByRole("button", { name: "指派给我" }).click();
-  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
+  await page.getByRole("button", { name: "沈宇宝", exact: true }).click();
+  await expect(page).toHaveURL(/\/users\/demo-user\/kanban$/);
 
   await board.getByText(demoTaskTitle, { exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "关闭详情" }).click();
-  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
+  await expect(page).toHaveURL(/\/users\/demo-user\/kanban$/);
 
-  await page.getByRole("button", { name: "所有" }).click();
+  await page.getByRole("button", { name: /^所有 \d+$/ }).click();
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
   await expect(page).toHaveURL(/\/tasks\/kanban$/);
@@ -133,23 +218,18 @@ test("custom task views can be saved, filtered, hidden, and deleted", async ({ p
   // Custom views keep filters editable; changes auto-save via list preference.
   await page.getByRole("button", { name: "过滤" }).click();
   await page.getByRole("menuitem", { name: /时间/ }).click();
-  await page.getByRole("menuitemradio", { name: "今天" }).click();
-  await page.getByRole("button", { name: "过滤" }).click();
-  await page.getByRole("menuitem", { name: /时间/ }).click();
-  await expect(page.getByRole("menuitemradio", { name: "今天" })).toHaveAttribute("aria-checked", "true");
-  await page.keyboard.press("Escape");
+  await page.getByRole("menuitemcheckbox", { name: "今天" }).click();
 
-  await page.getByRole("button", { name: "指派给我" }).click();
-  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
+  await page.getByRole("button", { name: "沈宇宝", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "沈宇宝" })).toBeVisible();
   await customSidebarItem.click();
   await expect(page.getByRole("heading", { name: "我的筛选视图" })).toBeVisible();
   await page.getByRole("button", { name: "过滤" }).click();
   await page.getByRole("menuitem", { name: /时间/ }).click();
-  await expect(page.getByRole("menuitemradio", { name: "今天" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("menuitemcheckbox", { name: "今天" })).toHaveAttribute("aria-checked", "true");
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
   const settings = page.getByRole("dialog", { name: "设置" });
   await settings.getByRole("button", { name: "智能视图" }).click();
   await expect(settings.getByText("我的筛选视图", { exact: true })).toBeVisible();
@@ -160,7 +240,7 @@ test("custom task views can be saved, filtered, hidden, and deleted", async ({ p
   await settings.getByRole("button", { name: "删除我的筛选视图" }).click();
   await expect(settings.getByText("我的筛选视图", { exact: true })).toHaveCount(0);
   await settings.getByRole("button", { name: "关闭设置" }).click();
-  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "沈宇宝" })).toBeVisible();
   await expect(customSidebarItem).toHaveCount(0);
 });
 
@@ -244,23 +324,105 @@ test("task list expands, completes, and remembers nested tasks per workspace", a
   await expect(noChildTasksRow.locator(".task-children-expander")).toHaveCount(0);
 });
 
+test("nested child tasks can be reordered by dragging in the list and detail", async ({ page }) => {
+  await page.goto("/?demo=1");
+  const parentRow = page.locator(".task-row").filter({ hasText: demoTaskTitle });
+  await parentRow.locator(".task-title").click();
+  const detail = page.locator(".task-detail");
+  await expect(detail.locator(".detail-title")).toHaveValue(demoTaskTitle);
+
+  const childTaskList = page.getByRole("list", { name: `子级任务：${demoTaskTitle}` });
+  const detailList = detail.locator(".childTask-list");
+  await expect(childTaskList.locator(".task-list-childTask-title")).toHaveText([
+    "运行数据库安全测试",
+    "检查 Mac 安装包",
+  ]);
+  await expect(detailList.locator(".childTask-title")).toHaveText([
+    "运行数据库安全测试",
+    "检查 Mac 安装包",
+  ]);
+
+  const listSource = childTaskList.getByRole("button", { name: "拖动子级任务“检查 Mac 安装包”" });
+  const listTarget = childTaskList.getByRole("button", { name: "拖动子级任务“运行数据库安全测试”" });
+  await childTaskList.locator(".task-list-childTask-row").last().hover();
+  const listSourceBox = await listSource.boundingBox();
+  const listTargetBox = await listTarget.boundingBox();
+  expect(listSourceBox).not.toBeNull();
+  expect(listTargetBox).not.toBeNull();
+  await page.mouse.move(
+    listSourceBox!.x + listSourceBox!.width / 2,
+    listSourceBox!.y + listSourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    listTargetBox!.x + 80,
+    listTargetBox!.y + listTargetBox!.height / 2,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await expect(childTaskList.locator(".task-list-childTask-title")).toHaveText([
+    "检查 Mac 安装包",
+    "运行数据库安全测试",
+  ]);
+  await expect(detailList.locator(".childTask-title")).toHaveText([
+    "检查 Mac 安装包",
+    "运行数据库安全测试",
+  ]);
+
+  const detailSource = detailList.getByRole("button", { name: "拖动子级任务“运行数据库安全测试”" });
+  const detailTarget = detailList.getByRole("button", { name: "拖动子级任务“检查 Mac 安装包”" });
+  await detailList.locator(".childTask-row").last().hover();
+  const detailSourceBox = await detailSource.boundingBox();
+  const detailTargetBox = await detailTarget.boundingBox();
+  expect(detailSourceBox).not.toBeNull();
+  expect(detailTargetBox).not.toBeNull();
+  await page.mouse.move(
+    detailSourceBox!.x + detailSourceBox!.width / 2,
+    detailSourceBox!.y + detailSourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    detailTargetBox!.x + 80,
+    detailTargetBox!.y + detailTargetBox!.height / 2,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await expect(detailList.locator(".childTask-title")).toHaveText([
+    "运行数据库安全测试",
+    "检查 Mac 安装包",
+  ]);
+  await expect(childTaskList.locator(".task-list-childTask-title")).toHaveText([
+    "运行数据库安全测试",
+    "检查 Mac 安装包",
+  ]);
+
+  const packageTitle = detailList.getByRole("button", { name: "检查 Mac 安装包", exact: true });
+  await packageTitle.focus();
+  await packageTitle.press("Tab");
+  await expect(detailList.locator(".childTask-row").nth(1)).toHaveCSS("padding-left", "24px");
+  await expect(childTaskList.locator(".task-list-childTask-row").nth(1)).toHaveCSS("padding-left", "74px");
+  await packageTitle.press("Shift+Tab");
+  await expect(detailList.locator(".childTask-row").nth(1)).toHaveCSS("padding-left", "8px");
+  await expect(childTaskList.locator(".task-list-childTask-row").nth(1)).toHaveCSS("padding-left", "58px");
+});
+
 test("quick add creates notes and keeps its per-workspace settings", async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
   await page.goto("/?demo=1");
-  const quickInput = page.getByPlaceholder('添加任务至“指派给我”');
+  const quickInput = page.getByPlaceholder('添加任务至“沈宇宝”');
   await quickInput.click();
   await page.getByRole("button", { name: "快速新增设置" }).click();
   const menu = page.getByRole("menu", { name: "快速新增设置" });
   await menu.getByRole("radio", { name: "笔记" }).click();
   await expect(menu.getByRole("radio", { name: "高优先级" })).toBeDisabled();
-  await expect(page.getByPlaceholder('添加笔记至“指派给我”')).toBeVisible();
+  await expect(page.getByPlaceholder('添加笔记至“沈宇宝”')).toBeVisible();
 
   const noteTitle = "快速新增笔记";
-  await page.getByPlaceholder('添加笔记至“指派给我”').fill(noteTitle);
-  await page.getByPlaceholder('添加笔记至“指派给我”').press("Enter");
+  await page.getByPlaceholder('添加笔记至“沈宇宝”').fill(noteTitle);
+  await page.getByPlaceholder('添加笔记至“沈宇宝”').press("Enter");
   const row = page.locator(".task-row").filter({ hasText: noteTitle });
   await expect(row).toHaveCount(1);
   await expect(row.locator(".task-note-icon")).toBeVisible();
@@ -281,7 +443,7 @@ test("quick add creates notes and keeps its per-workspace settings", async ({ pa
   await expect(detail.locator(".priority-trigger")).toBeVisible();
 
   await page.reload();
-  await expect(page.getByPlaceholder('添加笔记至“指派给我”')).toBeVisible();
+  await expect(page.getByPlaceholder('添加笔记至“沈宇宝”')).toBeVisible();
   expect(consoleErrors).toEqual([]);
 });
 
@@ -328,8 +490,6 @@ test("notes hide and restore preserved task state across every entry surface", a
   await detail.getByRole("button", { name: "关闭详情" }).click();
 
   const noteTitle = "优化任务详情抽屉交互";
-  await page.getByRole("button", { name: "更多操作", exact: true }).click();
-  await page.getByRole("menuitemcheckbox", { name: "显示已完成" }).click();
   row = page.locator(".task-row").filter({ hasText: noteTitle });
   await row.locator(".task-checkbox").click();
   row = page.locator(".task-row").filter({ hasText: noteTitle });
@@ -411,13 +571,13 @@ test("completing a calendar task stays on the calendar page", async ({ page }) =
   await expect(dialog).toBeVisible();
   await expect(page.locator(".calendar-workspace")).toBeVisible();
   await expect(page.locator(".task-detail-panel")).toHaveCount(0);
-  await expect(page.getByPlaceholder('添加任务至“指派给我”')).toHaveCount(0);
+  await expect(page.getByPlaceholder('添加任务至“沈宇宝”')).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(page.locator(".calendar-workspace")).toBeVisible();
   await expect(page.locator(".calendar-toolbar")).toBeVisible();
-  await expect(page.getByPlaceholder('添加任务至“指派给我”')).toHaveCount(0);
+  await expect(page.getByPlaceholder('添加任务至“沈宇宝”')).toHaveCount(0);
 });
 
 test("calendar quick-create matches the reference and commits drafts on close", async ({ page }) => {
@@ -1094,8 +1254,7 @@ test("offline mode disables task assignment", async ({ context, page }) => {
 test("quick create settings shows the installed DingTalk robot", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
 
   const dialog = page.getByRole("dialog", { name: "设置" });
   await dialog.getByRole("button", { name: "快速创建", exact: true }).click();
@@ -1103,11 +1262,11 @@ test("quick create settings shows the installed DingTalk robot", async ({ page }
   await expect(dialog.getByRole("tab", { name: "连接器市场" })).toHaveCount(0);
   await expect(dialog.getByRole("tab", { name: "已接入" })).toHaveCount(0);
   await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("云效创建", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("输入框拓展-云效工单", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "接入", exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "接入", exact: true }).click();
-  await expect(page.locator(".toast")).toContainText("演示模式仅预览云效创建接入效果");
-  await expect(dialog.getByRole("heading", { name: "接入云效创建" })).toHaveCount(0);
+  await expect(page.locator(".toast")).toContainText("演示模式仅预览输入框拓展-云效工单接入效果");
+  await expect(dialog.getByRole("heading", { name: "接入输入框拓展-云效工单" })).toHaveCount(0);
 
   await dialog.getByRole("button", { name: "查看详情" }).click();
   const setupGuide = dialog.getByRole("region", { name: "钉钉机器人配置步骤" });
@@ -1124,7 +1283,7 @@ test("quick create settings shows the installed DingTalk robot", async ({ page }
 
 test("quick add does not create a local todo from a Yunxiao URL in demo", async ({ page }) => {
   await page.goto("/?demo=1");
-  const quickInput = page.getByPlaceholder('添加任务至“指派给我”');
+  const quickInput = page.getByPlaceholder('添加任务至“沈宇宝”');
   await quickInput.fill("https://devops.aliyun.com/projex/req/HQGS-354");
   await quickInput.press("Enter");
   await expect(page.locator(".toast")).toContainText("演示模式无法从云效链接创建待办");
@@ -1134,8 +1293,7 @@ test("quick add does not create a local todo from a Yunxiao URL in demo", async 
 test("connector settings exposes the Yunxiao marketplace", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
 
   const dialog = page.getByRole("dialog", { name: "设置" });
   await dialog.getByRole("button", { name: "连接器", exact: true }).click();
@@ -1157,8 +1315,7 @@ test("connector settings exposes the Yunxiao marketplace", async ({ page }) => {
 test("settings matches the reference geometry and reads account data", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
 
   const dialog = page.getByRole("dialog", { name: "设置" });
   await expect(dialog).toBeVisible();
@@ -1275,7 +1432,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
   await dialog.getByRole("button", { name: "快速创建", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "快速创建" })).toBeVisible();
   await expect(dialog.getByText("钉钉群机器人", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("云效创建", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("输入框拓展-云效工单", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "查看详情" }).click();
   await expect(dialog.getByRole("region", { name: "钉钉机器人配置步骤" })).toBeVisible();
   await expect(dialog.getByText("Asia/Shanghai", { exact: true })).toBeVisible();
@@ -1321,8 +1478,7 @@ test("settings matches the reference geometry and reads account data", async ({ 
 
 test("account settings update nickname and avatar in demo mode", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
   const settings = page.getByRole("dialog", { name: "设置" });
 
   await settings.locator(".account-setting-row").filter({ hasText: "昵称" })
@@ -1358,8 +1514,7 @@ test("account settings update nickname and avatar in demo mode", async ({ page }
 
 test("offline account settings keep profile editing read-only", async ({ context, page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
   await context.setOffline(true);
   await page.evaluate(() => window.dispatchEvent(new Event("offline")));
   const settings = page.getByRole("dialog", { name: "设置" });
@@ -1635,8 +1790,7 @@ test("reminder picker saves multiple, custom, all-day and persistent rules", asy
 
 test("date and time preferences affect the picker and task timezone", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
   const settings = page.getByRole("dialog", { name: "设置" });
   await settings.getByRole("button", { name: "日期与时间", exact: true }).click();
   await settings.getByRole("combobox", { name: "时间格式" }).selectOption("12h");
@@ -1814,6 +1968,8 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
 
 test("custom sorting supports pointer and keyboard sorting", async ({ page }) => {
   await page.goto("/?demo=1");
+  await page.getByRole("button", { name: /^所有 \d+$/ }).click();
+  await expect(page.getByRole("heading", { name: "所有" })).toBeVisible();
   const sourceHandle = page.getByRole("button", {
     name: "拖动任务“记录下一轮产品想法”",
   });
@@ -1855,6 +2011,7 @@ test("offline task list preferences and custom layout are read-only", async ({ p
       .getByRole("menuitemradio", { name: "时间", exact: true }),
   ).toBeDisabled();
   await expect(page.getByRole("button", { name: /拖动任务/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /拖动子级任务/ })).toHaveCount(0);
 });
 
 test("moving a label to inbox removes the label and keeps inbox outside the label tree", async ({ page }) => {
@@ -1890,19 +2047,28 @@ test("connector page is removed from the main navigation", async ({ page }) => {
   await expect(page.getByText("产品演示同步")).toHaveCount(0);
 });
 
-test("account menu contains workspace, settings, and sign-out actions", async ({ page }) => {
+test("account menu contains workspace and sign-out, with settings below notifications", async ({ page }) => {
   await page.goto("/?demo=1");
+  const rail = page.getByRole("navigation", { name: "主导航" });
+  const notification = rail.getByRole("button", { name: /通知/ });
+  const settings = rail.getByRole("button", { name: "设置" });
+  await expect(settings).toBeVisible();
+  const notificationBox = await notification.boundingBox();
+  const settingsBox = await settings.boundingBox();
+  expect(notificationBox).not.toBeNull();
+  expect(settingsBox).not.toBeNull();
+  expect(settingsBox!.y).toBeGreaterThan(notificationBox!.y);
+
   await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
 
   await expect(page.getByRole("menuitem", { name: "切换团队" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "成员管理" })).toHaveCount(0);
-  await expect(page.getByRole("menuitem", { name: "设置" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "设置" })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "退出登录" })).toBeVisible();
 
   await page.getByRole("menuitem", { name: "切换团队" }).click();
   await page.getByRole("menuitemradio", { name: "个人空间" }).click();
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await settings.click();
   const settingsDialog = page.getByRole("dialog", { name: "设置" });
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.locator(".account-profile > span:last-child")).toContainText(
@@ -1936,8 +2102,7 @@ test("creates a workspace from the switcher and lets only its owner confirm dele
   ).toBeDisabled();
   await page.getByRole("dialog", { name: "创建团队" }).getByRole("button", { name: "取消" }).click();
 
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
   const settings = page.getByRole("dialog", { name: "设置" });
   await settings.getByRole("button", { name: "团队管理", exact: true }).click();
   const item = settings.locator(".team-management-item").filter({ hasText: "客户端体验团队" });

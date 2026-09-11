@@ -1,3 +1,4 @@
+import { TaskStatusMenuItems } from "./TaskStatusActions";
 import clsx from "clsx";
 import {
   CalendarDays,
@@ -8,7 +9,6 @@ import {
   Flag,
   List,
   Merge,
-  Minus,
   Pin,
   RotateCcw,
   SquareStack,
@@ -27,6 +27,7 @@ import {
 import { createPortal } from "react-dom";
 import { DueDateControl, type DueDateTarget } from "./DueDateControl";
 import { FocusTaskPicker } from "./FocusTaskPicker";
+import { LabelTreeMenuItems } from "./LabelTreeMenuItems";
 import { getPriorityOption, PriorityControl } from "./PriorityControl";
 import { formatDueExact } from "./lib/dueTime";
 import { shouldDismissTaskDetailOnPointerDown } from "./lib/taskDetailDismiss";
@@ -176,11 +177,11 @@ export function TaskMultiSelectPanel({
   const dueFields = sharedDueFields(tasks);
   const dueLabel = dueFields?.due_at ? formatDueExact(dueFields) : "设置日期";
   const dueSet = Boolean(dueFields?.due_at);
-  const sharedLabelIds = intersectLabelIds(tasks);
+  const sharedLabelIds = intersectLabelIds(tasks, bundle.labels);
   const sharedLabels = labels.filter((label) => sharedLabelIds.includes(label.id));
   const listLabel = sharedLabels[0] ?? null;
   const tagLabels = sharedLabels.slice(1);
-  const inbox = allTasksUnlabeled(tasks);
+  const inbox = allTasksUnlabeled(tasks, bundle.labels);
   const listText = listLabel?.name ?? (inbox ? "收集箱" : "清单");
   const tagText = tagLabels.length > 0 ? tagLabels.map((label) => label.name).join("、") : "标签";
   const priorityOption = currentPriority ? getPriorityOption(currentPriority) : null;
@@ -359,6 +360,7 @@ export function TaskMultiSelectPanel({
                 <CheckSquare />
                 <span>完成</span>
               </button>
+              <TaskStatusMenuItems tasks={tasks} role="button" className="task-multi-select-action" />
               <button
                 type="button"
                 className="task-multi-select-action pin"
@@ -473,23 +475,20 @@ export function TaskMultiSelectPanel({
           aria-label="批量设置标签"
           style={labelMenuPosition}
         >
-          {labels.map((label) => {
-            const state = labelSelectionState(organizableTasks, label.id);
-            return (
-              <button
-                key={label.id}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={state === "all" ? true : state === "some" ? "mixed" : false}
-                disabled={!writable || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
-                onClick={() => void run(() => onToggleLabel(label.id, state !== "all"))}
-              >
-                <i style={{ background: label.color }} />
-                <span>{label.name}</span>
-                {state === "all" ? <Check /> : state === "some" ? <Minus /> : null}
-              </button>
-            );
-          })}
+          <LabelTreeMenuItems
+            labels={bundle.labels}
+            userLabelOrder={bundle.userLabelOrder}
+            selectionFor={(label) => {
+              const state = labelSelectionState(organizableTasks, label.id);
+              return state === "all" ? true : state === "some" ? "mixed" : false;
+            }}
+            disabledFor={(label) => !writable
+              || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
+            onToggle={(label) => {
+              const state = labelSelectionState(organizableTasks, label.id);
+              void run(() => onToggleLabel(label.id, state !== "all"));
+            }}
+          />
           {labels.length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
         </div>,
         document.body,

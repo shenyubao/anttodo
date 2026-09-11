@@ -121,6 +121,76 @@ export function outdentTaskPatch(tasks: readonly Task[], taskId: string) {
   return { parent_task_id: parent.parent_task_id, position: parent.position + 1 };
 }
 
+export type TaskTreeMoveResult = {
+  tasks: Task[];
+  changedIds: string[];
+};
+
+function sameParent(left: string | null, right: string | null) {
+  return left === right;
+}
+
+export function applyTaskTreeMove(
+  tasks: readonly Task[],
+  taskId: string,
+  parentTaskId: string | null,
+  position: number,
+): TaskTreeMoveResult {
+  const moving = tasks.find((item) => item.id === taskId);
+  if (!moving) return { tasks: [...tasks], changedIds: [] };
+  const nextPosition = Math.max(0, position);
+  const oldParent = taskParentId(moving);
+  if (sameParent(oldParent, parentTaskId) && moving.position === nextPosition) {
+    return { tasks: [...tasks], changedIds: [] };
+  }
+
+  const afterClose = tasks.map((item) => {
+    if (item.id === moving.id) return item;
+    if (sameParent(taskParentId(item), oldParent) && item.position > moving.position) {
+      return { ...item, position: item.position - 1 };
+    }
+    return item;
+  });
+  const afterOpen = afterClose.map((item) => {
+    if (item.id === moving.id) return item;
+    if (sameParent(taskParentId(item), parentTaskId) && item.position >= nextPosition) {
+      return { ...item, position: item.position + 1 };
+    }
+    return item;
+  });
+  const next = afterOpen.map((item) => (
+    item.id === moving.id
+      ? { ...item, parent_task_id: parentTaskId, position: nextPosition }
+      : item
+  ));
+  const previous = new Map(tasks.map((item) => [item.id, item]));
+  const changedIds = next.flatMap((item) => {
+    const last = previous.get(item.id);
+    if (!last) return [item.id];
+    if (last.position !== item.position || last.parent_task_id !== item.parent_task_id) {
+      return [item.id];
+    }
+    return [];
+  });
+  return { tasks: next, changedIds };
+}
+
+export function siblingReorderPatch(
+  tasks: readonly Task[],
+  taskId: string,
+  overTaskId: string,
+): { parent_task_id: string | null; position: number } | null {
+  if (taskId === overTaskId) return null;
+  const moving = tasks.find((item) => item.id === taskId);
+  const over = tasks.find((item) => item.id === overTaskId);
+  if (!moving || !over) return null;
+  if (taskParentId(moving) !== taskParentId(over)) return null;
+  return {
+    parent_task_id: taskParentId(moving),
+    position: over.position,
+  };
+}
+
 export function buildTaskForest(tasks: readonly Task[], parentId: string | null = null, depth = 1): TaskTreeNode[] {
   return childrenOf(tasks, parentId).map((task) => ({
     task,

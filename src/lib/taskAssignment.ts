@@ -11,6 +11,9 @@ function labelPermissionForMember(
   member: Member,
   bundle: WorkspaceBundle,
 ): PermissionLevel {
+  if (label.is_system) {
+    return member.workspace_id === label.workspace_id ? 1 : 0;
+  }
   let current: Label | undefined = label;
   let effectiveCanView = true;
   let effectiveCanManage = true;

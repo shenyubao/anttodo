@@ -48,8 +48,7 @@ test("web shows disabled AI settings entry and notes hide assignment/terminal", 
 
 test("AI feature settings manage prompt overrides and task-detail entries", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
 
   const settings = page.getByRole("dialog", { name: "设置" });
   await settings.getByRole("button", { name: "AI功能", exact: true }).click();
@@ -88,8 +87,7 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
 
 test("offline AI feature settings stay read-only", async ({ context, page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "沈宇宝的账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "设置" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
   const settings = page.getByRole("dialog", { name: "设置" });
   await settings.getByRole("button", { name: "AI功能", exact: true }).click();
   await context.setOffline(true);

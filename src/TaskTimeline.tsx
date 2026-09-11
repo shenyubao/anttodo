@@ -109,7 +109,7 @@ function scheduleForTask(task: Task): ReminderSchedule {
 }
 
 function labelColor(task: Task, labels: Label[]) {
-  return labels.find((label) => task.label_ids.includes(label.id))?.color ?? "#9EB3FC";
+  return labels.find((label) => !label.is_system && task.label_ids.includes(label.id))?.color ?? "#9EB3FC";
 }
 
 function barBackground(color: string, isChildTask: boolean) {
@@ -778,6 +778,7 @@ export function TaskTimeline({
                           isChildTask && "is-childTask",
                           selected && "selected",
                           source.completed && "completed",
+                          (source.childTask ?? source.task).status === "cancelled" && "cancelled",
                           editable && "editable",
                           !isChildTask && pendingIds.has(task.id) && "pending",
                           titleOutside && "title-outside",

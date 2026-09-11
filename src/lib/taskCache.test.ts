@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceBundle } from "../types";
 import {
+  applyTaskLabelIdsToBundle,
   applyTaskListOrderToBundle,
   applyTaskSectionInsertToBundle,
   applyTaskSectionOrderToBundle,
   applyTaskScheduleToBundle,
+  applyTaskTreeMoveToBundle,
   appendChildTaskInBundle,
   appendTaskToBundle,
   createOptimisticChildTask,
@@ -17,6 +19,7 @@ import {
   persistableListOrderTaskIds,
   patchChildTaskInBundle,
   patchTaskInBundle,
+  reconcileFetchedTasksInBundle,
   removeChildTaskFromBundle,
   removeTaskFromBundle,
   removeTaskSectionFromBundle,
@@ -36,8 +39,9 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelUserAcls: [],
   labelGroupAcls: [],
   labelPermissionLevels: {},
-    userLabelOrder: [],
-    labelTaskCounts: {},
+  userLabelOrder: [],
+  userSidebarMembers: [],
+  labelTaskCounts: {},
     tasks: [],
   connectors: [],
   syncRuns: [],
@@ -45,6 +49,7 @@ const emptyBundle = (): WorkspaceBundle => ({
     taskListPreferences: [],
     customTaskViews: [],
     taskSystemViewPreferences: [],
+    matrixQuadrantPreferences: [],
     taskSections: [],
   taskPlacements: [],
 });
@@ -78,10 +83,13 @@ describe("task cache updates", () => {
     delete (stale as { customTaskViews?: WorkspaceBundle["customTaskViews"] }).customTaskViews;
     delete (stale as { taskSystemViewPreferences?: WorkspaceBundle["taskSystemViewPreferences"] })
       .taskSystemViewPreferences;
+    delete (stale as { userSidebarMembers?: WorkspaceBundle["userSidebarMembers"] })
+      .userSidebarMembers;
 
     const normalized = normalizeWorkspaceBundle(stale as WorkspaceBundle);
     expect(normalized.customTaskViews).toEqual([]);
     expect(normalized.taskSystemViewPreferences).toEqual([]);
+    expect(normalized.userSidebarMembers).toEqual([]);
     expect(normalized.tasks[0]).toMatchObject({
       external_id: null,
       connector_id: null,
@@ -387,6 +395,11 @@ describe("task cache updates", () => {
       new: { view_key: "today", visible: false },
       old: {},
     })).toBe("today");
+    expect(smartViewIdFromRealtimeChange({
+      table: "task_matrix_quadrants",
+      new: { quadrant_key: "important_urgent" },
+      old: {},
+    })).toBe("important_urgent");
   });
 
   it("replaces an optimistic task in place and keeps its custom placement", () => {
@@ -669,5 +682,124 @@ describe("label task count cache", () => {
 
     bundle = removeTaskFromBundle(bundle, task.id);
     expect(bundle.labelTaskCounts).toEqual({ product: 0, urgent: 0 });
+  });
+
+  it("reorders sibling child tasks and rebuilds children arrays", () => {
+    const parent = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "父任务",
+      labelIds: [],
+      optimisticId: "parent",
+    });
+    const first = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "第一个",
+      labelIds: [],
+      parentTaskId: parent.id,
+      position: 0,
+      optimisticId: "child-a",
+    });
+    const second = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "第二个",
+      labelIds: [],
+      parentTaskId: parent.id,
+      position: 1,
+      optimisticId: "child-b",
+    });
+    const nested = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "孙任务",
+      labelIds: [],
+      parentTaskId: first.id,
+      position: 0,
+      optimisticId: "child-a1",
+    });
+    const bundle = [parent, first, second, nested].reduce(
+      (current, task) => appendTaskToBundle(current, task),
+      emptyBundle(),
+    );
+    const moved = applyTaskTreeMoveToBundle(bundle, second.id, parent.id, 0);
+    expect(moved.changedIds.sort()).toEqual([first.id, second.id]);
+    expect(moved.bundle.tasks.find((task) => task.id === parent.id)?.children.map((task) => task.id))
+      .toEqual([second.id, first.id]);
+    expect(moved.bundle.tasks.find((task) => task.id === first.id)?.children.map((task) => task.id))
+      .toEqual([nested.id]);
+    expect(moved.bundle.tasks.find((task) => task.id === nested.id)?.parent_task_id).toBe(first.id);
+  });
+
+  it("copies root labels onto descendants without inflating label counts", () => {
+    const parent = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "父任务",
+      labelIds: ["product"],
+      optimisticId: "parent",
+    });
+    const child = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "子任务",
+      labelIds: ["product"],
+      parentTaskId: parent.id,
+      optimisticId: "child",
+    });
+    const bundle = [parent, child].reduce(
+      (current, task) => appendTaskToBundle(current, task),
+      emptyBundle(),
+    );
+    bundle.labelTaskCounts = { product: 1 };
+
+    const labeled = applyTaskLabelIdsToBundle(bundle, parent.id, ["product", "urgent"]);
+    expect(labeled.tasks.find((task) => task.id === parent.id)?.label_ids)
+      .toEqual(["product", "urgent"]);
+    expect(labeled.tasks.find((task) => task.id === child.id)?.label_ids)
+      .toEqual(["product", "urgent"]);
+    expect(labeled.labelTaskCounts).toEqual({ product: 1, urgent: 1 });
+  });
+
+  it("merges a targeted task refetch and drops tasks that disappeared", () => {
+    const kept = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "保留",
+      labelIds: ["product"],
+      optimisticId: "kept",
+    });
+    const removed = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "消失",
+      labelIds: ["product"],
+      optimisticId: "removed",
+    });
+    const child = createOptimisticTask({
+      workspaceId: "workspace",
+      userId: "user",
+      title: "子任务",
+      labelIds: ["product"],
+      parentTaskId: kept.id,
+      optimisticId: "child",
+    });
+    const bundle = [kept, removed, child].reduce(
+      (current, task) => appendTaskToBundle(current, task),
+      emptyBundle(),
+    );
+    bundle.labelTaskCounts = { product: 2 };
+    const fetchedKept = {
+      ...kept,
+      title: "已更新",
+      label_ids: ["urgent"],
+      updated_at: "2026-09-11T00:00:00.000Z",
+    };
+    const next = reconcileFetchedTasksInBundle(bundle, [kept.id, removed.id], [fetchedKept]);
+    expect(next.tasks.map((task) => task.id).sort()).toEqual([child.id, kept.id].sort());
+    expect(next.tasks.find((task) => task.id === kept.id)?.title).toBe("已更新");
+    expect(next.tasks.find((task) => task.id === child.id)?.label_ids).toEqual(["urgent"]);
+    expect(next.labelTaskCounts).toEqual({ product: 0, urgent: 1 });
   });
 });

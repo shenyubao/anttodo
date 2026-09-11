@@ -17,6 +17,8 @@ export const TASK_DETAIL_DISMISS_IGNORE_SELECTOR = [
   ".task-row",
   ".kanban-card",
   ".task-list-childTask-row",
+  ".childTask-row",
+  ".sortable-task-tree-item",
   ".task-group-header",
   ".task-group-quick-add",
   ".task-hours-dialog",

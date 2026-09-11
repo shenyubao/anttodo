@@ -75,10 +75,10 @@ export default {
       isYunxiaoQuickCreateConfig(item.public_config)
     );
     if (!quickCreate) {
-      return jsonError("请在设置 → 快速创建中接入云效创建", 422);
+      return jsonError("请在设置 → 快速创建中接入输入框拓展-云效工单", 422);
     }
     if (!quickCreate.enabled) {
-      return jsonError("云效创建已停用，请在设置 → 快速创建中启用", 409);
+      return jsonError("输入框拓展-云效工单已停用，请在设置 → 快速创建中启用", 409);
     }
     const config = validateYunxiaoQuickCreateConfig(quickCreate.public_config);
     const { data: token, error: tokenError } = await ctx.supabaseAdmin.rpc(
@@ -132,7 +132,7 @@ export default {
     const targetConnector = yunxiaoConnectors.find((item) => item.id === targetConnectorId)
       ?? quickCreate;
     if (!targetConnector.enabled) {
-      return jsonError("云效创建已停用，请在设置 → 快速创建中启用", 409);
+      return jsonError("输入框拓展-云效工单已停用，请在设置 → 快速创建中启用", 409);
     }
 
     let completedStatusId: string | undefined;

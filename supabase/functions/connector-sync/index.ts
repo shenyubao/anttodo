@@ -56,7 +56,7 @@ export default {
       return jsonError("Yunxiao connector not found", 404);
     }
     if (isYunxiaoQuickCreateConfig(connector.public_config)) {
-      return jsonError("云效创建不支持定时同步", 400);
+      return jsonError("输入框拓展-云效工单不支持定时同步", 400);
     }
     if (!scheduled && connector.created_by !== user?.id) {
       return jsonError("Connector owner access required", 403);

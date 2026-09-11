@@ -17,6 +17,7 @@ AntTodo CLI（`@anttodos/cli`）适合在终端、脚本和 CI 中管理任务�
 - 团队空间：创建、编辑、删除、成员角色、移除成员和邀请链接；`user list`、`group list` 可查询成员与用户组。
 - 专注记录：通过 `pomodoro` 和 `stopwatch` 写入完整、已结束的专注 session。
 - 协作 API：搜索、评论、附件和活动记录。
+- 周报：列出某一周、查看详情、创建草稿、更新栏目/可见范围，以及发布。
 
 ## 1. 安装
 
@@ -212,7 +213,26 @@ anttodo tag reorder <标签 ID> --before <另一个标签 ID>
 
 笔记和标签的永久删除同样需要 `--yes`；回收站中的笔记可先用 `note list --trash` 检查，再执行 `note restore` 或 `note purge`。
 
-## 9. 搜索、评论、附件和活动记录
+## 9. 周报
+
+周报按自然周（周一到周日）组织。`--week` 默认为本周，也可以传 `last` 或某个周一日期。每人每周只能有一份周报；若已存在，请用 `update` 而不是再次 `create`。创建只允许本周或上周。
+
+```bash
+anttodo weekly-report list --week current --format table
+anttodo weekly-report get <周报 ID>
+
+anttodo weekly-report create \
+  --completed "完成 CLI 周报命令" \
+  --next-plan "补充文档" \
+  --reflection "先打通读写路径"
+
+anttodo weekly-report update <周报 ID> --next-plan "补充文档和集成测试"
+anttodo weekly-report publish <周报 ID>
+```
+
+可见范围默认为团队空间内不限。指定用户或用户组时，配合 `--visibility users|groups` 与可重复的 `--user` / `--group`。`create --publish` 可以在创建时直接发布，发布前至少一个栏目需要有内容。
+
+## 10. 搜索、评论、附件和活动记录
 
 ```bash
 anttodo search "发布说明" --kind all --format table
@@ -227,7 +247,7 @@ anttodo attachment download <附件 URI> --output ./release-notes.pdf
 
 上传附件后，CLI 会返回附件 URI；需要在评论中插入附件时，可以使用 `--comment-image` 上传为评论图片，或将 URI 传给 `comment create --image-uri`。
 
-## 10. 在脚本和 CI 中使用
+## 11. 在脚本和 CI 中使用
 
 所有命令都支持统一的输出格式：`json`、`pretty`、`table`、`ndjson` 和 `csv`。自动化场景建议使用 JSON，并让退出码控制流水线：
 
@@ -242,7 +262,7 @@ anttodo search "待发布" --format ndjson | jq -r '.id'
 anttodo man --format pretty
 ```
 
-## 11. 常见问题
+## 12. 常见问题
 
 - `not_logged_in`：先执行 `anttodo auth login`，再用 `auth status --verify` 检查会话。
 - `workspace_required`：执行 `workspace list` 后用 `workspace use` 设置默认团队空间，或在命令上加 `--workspace`。

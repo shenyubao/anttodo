@@ -6,6 +6,8 @@ import type {
   ReminderRule,
   TaskPriority,
   TaskStatus,
+  WeeklyReportStatus,
+  WeeklyReportVisibility,
 } from "./types.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -163,4 +165,148 @@ export function parseRecurrence(value: string | undefined): RecurrenceRule | nul
     throw new CliError({ type: "validation", code: "invalid_recurrence", message: `Invalid recurrence: ${value}` });
   }
   return { freq: value as RecurrenceRule["freq"], interval: 1, mode: "due" };
+}
+
+const WEEK_START_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function formatLocalYmd(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseLocalYmd(value: string, name = "week") {
+  const match = value.match(WEEK_START_PATTERN);
+  const year = Number(match?.[1]);
+  const month = Number(match?.[2]);
+  const day = Number(match?.[3]);
+  const date = new Date(year, month - 1, day);
+  const valid = Boolean(match)
+    && date.getFullYear() === year
+    && date.getMonth() === month - 1
+    && date.getDate() === day;
+  if (!valid) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_week_start",
+      message: `${name} must be current, last, or yyyy-MM-dd`,
+      hint: "Weekly report weeks start on Monday",
+      details: { name, value },
+    });
+  }
+  return date;
+}
+
+export function weeklyReportWeekStart(now = new Date()) {
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekday = date.getDay();
+  date.setDate(date.getDate() - (weekday === 0 ? 6 : weekday - 1));
+  return formatLocalYmd(date);
+}
+
+export function shiftWeeklyReportWeek(weekStart: string, amount: number) {
+  const date = parseLocalYmd(weekStart);
+  date.setDate(date.getDate() + amount * 7);
+  return formatLocalYmd(date);
+}
+
+export function parseWeekStart(value: string | undefined, now = new Date()) {
+  if (!value || value === "current") return weeklyReportWeekStart(now);
+  if (value === "last") return shiftWeeklyReportWeek(weeklyReportWeekStart(now), -1);
+  const date = parseLocalYmd(value);
+  if (date.getDay() !== 1) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_week_start",
+      message: "Weekly report week must start on Monday",
+      hint: "Use --week current, --week last, or a Monday date such as 2026-08-31",
+      details: { value },
+    });
+  }
+  return formatLocalYmd(date);
+}
+
+export function canCreateWeeklyReportForWeek(weekStart: string, now = new Date()) {
+  const current = weeklyReportWeekStart(now);
+  return weekStart === current || weekStart === shiftWeeklyReportWeek(current, -1);
+}
+
+export function parseWeeklyReportVisibility(value: string): WeeklyReportVisibility {
+  if (value === "workspace" || value === "users" || value === "groups") return value;
+  throw new CliError({
+    type: "validation",
+    code: "invalid_weekly_report_visibility",
+    message: `Visibility must be workspace, users, or groups`,
+    details: { value },
+  });
+}
+
+export function parseWeeklyReportStatus(value: string): WeeklyReportStatus | "all" {
+  if (value === "draft" || value === "published" || value === "all") return value;
+  throw new CliError({
+    type: "validation",
+    code: "invalid_weekly_report_status",
+    message: `Status must be draft, published, or all`,
+    details: { value },
+  });
+}
+
+export function assertWeeklyReportSubjects(
+  visibility: WeeklyReportVisibility,
+  userIds: string[],
+  groupIds: string[],
+) {
+  if (visibility === "workspace" && (userIds.length || groupIds.length)) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_weekly_report_visibility",
+      message: "Workspace visibility cannot include --user or --group",
+    });
+  }
+  if (visibility === "users" && groupIds.length) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_weekly_report_visibility",
+      message: "User visibility cannot include --group",
+    });
+  }
+  if (visibility === "groups" && userIds.length) {
+    throw new CliError({
+      type: "validation",
+      code: "invalid_weekly_report_visibility",
+      message: "Group visibility cannot include --user",
+    });
+  }
+}
+
+export function assertWeeklyReportCanPublish(input: {
+  completedText: string;
+  nextPlanText: string;
+  reflectionText: string;
+  visibility: WeeklyReportVisibility;
+  userIds: string[];
+  groupIds: string[];
+}) {
+  if (![input.completedText, input.nextPlanText, input.reflectionText].some((value) => value.trim())) {
+    throw new CliError({
+      type: "validation",
+      code: "weekly_report_empty",
+      message: "Pass at least one weekly report section before publishing",
+    });
+  }
+  if (input.visibility === "users" && input.userIds.length === 0) {
+    throw new CliError({
+      type: "validation",
+      code: "weekly_report_users_required",
+      message: "Pass --user at least once for users visibility",
+    });
+  }
+  if (input.visibility === "groups" && input.groupIds.length === 0) {
+    throw new CliError({
+      type: "validation",
+      code: "weekly_report_groups_required",
+      message: "Pass --group at least once for groups visibility",
+    });
+  }
 }
