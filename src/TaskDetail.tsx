@@ -77,7 +77,6 @@ import { formatDueWithPreferences, systemTimeZone, toDateInput } from "./lib/dat
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
 import { canOrganizeTask } from "./lib/permissions";
-import { userLabels } from "./lib/labels";
 import { LabelTreeMenuItems } from "./LabelTreeMenuItems";
 import {
   dependencyTargetKey,
@@ -660,7 +659,7 @@ function TaskLabelControl({
     };
   }, [open]);
 
-  const selectedLabels = userLabels(bundle.labels).filter((label) => draftLabelIds.has(label.id));
+  const selectedLabels = bundle.labels.filter((label) => draftLabelIds.has(label.id));
   async function toggle(labelId: string) {
     if (!online || savingLabelId) return;
     const previous = new Set(draftLabelIds);
@@ -714,7 +713,7 @@ function TaskLabelControl({
               || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
             onToggle={(label) => void toggle(label.id)}
           />
-          {userLabels(bundle.labels).length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
+          {bundle.labels.length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
           {error && <p className="task-label-menu-error" role="alert">{error}</p>}
         </div>
       )}

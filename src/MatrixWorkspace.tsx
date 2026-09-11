@@ -31,7 +31,6 @@ import {
 import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { TaskStatusIcon } from "./TaskStatusIcon";
 import { formatPreferenceDate } from "./lib/dateTimePreferences";
-import { taskUserLabelIds, userLabels } from "./lib/labels";
 import {
   MATRIX_QUADRANT_COLORS,
   MATRIX_QUADRANT_KEYS,
@@ -332,7 +331,7 @@ function MatrixTaskRow({
     data: { taskId: task.id, quadrantKey },
     disabled: !online || !editable,
   });
-  const taskLabels = userLabels(labels).filter((label) => task.label_ids.includes(label.id)).slice(0, 2);
+  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id)).slice(0, 2);
   const member = bundle.members.find((item) => item.user_id === task.assignee_id);
   const due = task.due_at ? formatPreferenceDate(task.due_at, dateTimePreferences, task.due_timezone) : null;
   const overdue = task.status === "open" && task.due_at && new Date(task.due_at).getTime() < now.getTime();
@@ -418,7 +417,7 @@ function MatrixQuadrant({
     due_timezone: null,
     label_ids: [],
     assignee_id: null,
-  }, preference.definition, props.now, editableLabelIds, assignableUserIds, props.bundle.labels), [assignableUserIds, editableLabelIds, preference.definition, props.bundle.labels, props.now]);
+  }, preference.definition, props.now, editableLabelIds, assignableUserIds), [assignableUserIds, editableLabelIds, preference.definition, props.now]);
   const quickDisabledReason = "error" in quickDraft ? quickDraft.error : null;
 
   const savePresentation = (patch: Partial<Pick<MatrixQuadrantPreference, "grouping" | "sort" | "direction">>) => {
@@ -543,7 +542,7 @@ export function MatrixWorkspace(props: MatrixWorkspaceProps) {
   const tasksByQuadrant = useMemo(() => Object.fromEntries(preferences.map((preference) => [
     preference.quadrant_key,
     props.bundle.tasks.filter((task) =>
-      taskMatchesMatrixRule(task, preference.definition, props.now, props.bundle.labels)),
+      taskMatchesMatrixRule(task, preference.definition, props.now)),
   ])) as Record<MatrixQuadrantKey, Task[]>, [preferences, props.bundle.tasks, props.now]);
   const editableLabelIds = useMemo(() => new Set(Object.entries(props.bundle.labelPermissionLevels)
     .filter(([, level]) => level === 2).map(([id]) => id)), [props.bundle.labelPermissionLevels]);
@@ -572,16 +571,14 @@ export function MatrixWorkspace(props: MatrixWorkspaceProps) {
       props.now,
       editableLabelIds,
       assignableUserIds,
-      props.bundle.labels,
     );
     if ("error" in result) {
       props.onNotice(result.error);
       return;
     }
     const { resolution } = result;
-    const userLabelIds = taskUserLabelIds(task.label_ids, props.bundle.labels);
     if (resolution.clearLabels) {
-      const lockedLabel = userLabelIds.find((labelId) => !editableLabelIds.has(labelId));
+      const lockedLabel = task.label_ids.find((labelId) => !editableLabelIds.has(labelId));
       if (lockedLabel) {
         props.onNotice("现有标签中包含无权移除的标签");
         return;
@@ -607,7 +604,7 @@ export function MatrixWorkspace(props: MatrixWorkspaceProps) {
         scheduleChanged = true;
       }
       if (resolution.clearLabels) {
-        await Promise.all(userLabelIds.map((labelId) => props.onToggleTaskLabel(task.id, labelId, false)));
+        await Promise.all(task.label_ids.map((labelId) => props.onToggleTaskLabel(task.id, labelId, false)));
         labelsChanged = true;
       }
       if (resolution.addLabelId) {

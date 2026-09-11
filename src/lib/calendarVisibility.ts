@@ -6,7 +6,6 @@ import type {
   UserGroupMember,
 } from "../types";
 import { applyTaskListFilters, customTaskViewKey } from "./taskList";
-import { taskHasUserLabels, taskUserLabelIds } from "./labels";
 
 export const CALENDAR_UNASSIGNED_ID = "unassigned";
 
@@ -80,12 +79,10 @@ export function toggleAllUserGroupsInAssigneeFilter(
 export function taskMatchesCalendarLabels(
   task: Pick<Task, "label_ids">,
   visibleCalendarIds: ReadonlySet<string>,
-  labels: Iterable<{ id: string; is_system?: boolean }> = [],
 ) {
-  const userLabelIds = taskUserLabelIds(task.label_ids, labels);
-  return userLabelIds.length === 0
+  return task.label_ids.length === 0
     ? visibleCalendarIds.has("inbox")
-    : userLabelIds.some((labelId) => visibleCalendarIds.has(labelId));
+    : task.label_ids.some((labelId) => visibleCalendarIds.has(labelId));
 }
 
 export function taskMatchesCalendarAssignees(
@@ -103,7 +100,6 @@ export function taskMatchesCalendarSmartViews(
   currentUserId: string,
   now = new Date(),
   weekStartsOn: DateTimePreferences["weekStartsOn"] = 1,
-  labels: Iterable<{ id: string; is_system?: boolean }> = [],
 ) {
   if (activeViewIds.size === 0) return true;
   const customViewsByKey = new Map<string, CustomTaskView>(
@@ -116,7 +112,7 @@ export function taskMatchesCalendarSmartViews(
 
     const customView = customViewsByKey.get(viewId);
     if (!customView || customView.definition.scope === "trash") continue;
-    if (customView.definition.scope === "inbox" && taskHasUserLabels(task, labels)) continue;
+    if (customView.definition.scope === "inbox" && task.label_ids.length > 0) continue;
     if (
       customView.definition.scope === "label"
       && !task.label_ids.some((labelId) => customView.definition.label_ids.includes(labelId))
@@ -142,8 +138,7 @@ export function taskIsVisibleOnCalendar(
   task: Pick<Task, "label_ids" | "assignee_id">,
   visibleCalendarIds: ReadonlySet<string>,
   visibleAssigneeIds: ReadonlySet<string>,
-  labels: Iterable<{ id: string; is_system?: boolean }> = [],
 ) {
-  return taskMatchesCalendarLabels(task, visibleCalendarIds, labels)
+  return taskMatchesCalendarLabels(task, visibleCalendarIds)
     && taskMatchesCalendarAssignees(task, visibleAssigneeIds);
 }

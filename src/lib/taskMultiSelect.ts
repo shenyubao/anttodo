@@ -1,5 +1,4 @@
-import type { Label, Task } from "../types";
-import { taskHasUserLabels, taskUserLabelIds } from "./labels";
+import type { Task } from "../types";
 import { visibleFlattenedTasks } from "./taskTree";
 
 export type TaskPointerModifiers = {
@@ -160,21 +159,14 @@ export function sharedDueFields(tasks: readonly Task[]) {
     : null;
 }
 
-export function intersectLabelIds(
-  tasks: readonly Pick<Task, "label_ids">[],
-  labels: Iterable<Pick<Label, "id" | "is_system">> = [],
-) {
+export function intersectLabelIds(tasks: readonly Pick<Task, "label_ids">[]) {
   if (tasks.length === 0) return [];
-  const userIds = taskUserLabelIds(tasks[0]!.label_ids, labels);
-  return userIds.filter((id) =>
+  return tasks[0]!.label_ids.filter((id) =>
     tasks.every((task) => task.label_ids.includes(id)));
 }
 
-export function allTasksUnlabeled(
-  tasks: readonly Pick<Task, "label_ids">[],
-  labels: Iterable<Pick<Label, "id" | "is_system">> = [],
-) {
-  return tasks.length > 0 && tasks.every((task) => !taskHasUserLabels(task, labels));
+export function allTasksUnlabeled(tasks: readonly Pick<Task, "label_ids">[]) {
+  return tasks.length > 0 && tasks.every((task) => task.label_ids.length === 0);
 }
 
 export async function runBulkTaskUpdates<T>(

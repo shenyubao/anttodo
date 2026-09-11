@@ -451,7 +451,7 @@ export async function softDeleteTask(client: SupabaseClient, workspaceId: string
 export async function listTags(client: SupabaseClient, workspaceId: string) {
   const { data, error } = await client.from("labels").select("*").eq("workspace_id", workspaceId).order("position");
   throwError(error);
-  return (data ?? []).filter((tag) => !tag.is_system);
+  return data ?? [];
 }
 
 export async function getTag(client: SupabaseClient, workspaceId: string, id: string) {

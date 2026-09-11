@@ -12,7 +12,6 @@ import type {
   TaskPriority,
 } from "../types";
 import { toDateInput } from "./timeZoneCore";
-import { taskHasUserLabels, userLabels } from "./labels";
 
 export const MATRIX_QUADRANT_KEYS: readonly MatrixQuadrantKey[] = [
   "important_urgent",
@@ -133,10 +132,9 @@ export function effectiveMatrixPriority(task: Pick<Task, "kind" | "priority">): 
 function taskMatchesLabels(
   task: Pick<Task, "label_ids">,
   labels: MatrixRuleDefinition["labels"],
-  catalog: Iterable<Pick<Label, "id" | "is_system">> = [],
 ) {
   if (labels === "all") return true;
-  if (labels.includes("inbox") && !taskHasUserLabels(task, catalog)) return true;
+  if (labels.includes("inbox") && task.label_ids.length === 0) return true;
   return task.label_ids.some((id) => labels.includes(id));
 }
 
@@ -144,14 +142,13 @@ export function taskMatchesMatrixRule(
   task: Pick<Task, "kind" | "priority" | "due_at" | "due_timezone" | "label_ids" | "assignee_id" | "deleted_at" | "parent_task_id">,
   rule: MatrixRuleDefinition,
   now: Date,
-  catalog: Iterable<Pick<Label, "id" | "is_system">> = [],
 ) {
   if (task.deleted_at || task.parent_task_id) return false;
   if (rule.assignee !== "all" && task.assignee_id !== rule.assignee) return false;
   if (rule.kinds !== "all" && !rule.kinds.includes(task.kind)) return false;
   if (rule.priorities !== "all" && !rule.priorities.includes(effectiveMatrixPriority(task))) return false;
   if (rule.due !== "all" && !rule.due.includes(matrixDueBucket(task.due_at, now, task.due_timezone))) return false;
-  return taskMatchesLabels(task, rule.labels, catalog);
+  return taskMatchesLabels(task, rule.labels);
 }
 
 const priorityRank: Record<TaskPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
@@ -217,12 +214,11 @@ export function groupMatrixTasks(
     (["high", "medium", "low", "none"] as TaskPriority[])
       .forEach((priority) => push(`priority:${priority}`, PRIORITY_TITLES[priority], active.filter((task) => effectiveMatrixPriority(task) === priority)));
   } else if (grouping === "label") {
-    const visible = userLabels(labels);
-    const visibleLabelIds = new Set(visible.map((label) => label.id));
-    visible.forEach((label) => push(`label:${label.id}`, label.name, active.filter((task) =>
+    const visibleLabelIds = new Set(labels.map((label) => label.id));
+    labels.forEach((label) => push(`label:${label.id}`, label.name, active.filter((task) =>
       task.label_ids.find((id) => visibleLabelIds.has(id)) === label.id)));
     push("label:inbox", "收集箱", active.filter((task) =>
-      !taskHasUserLabels(task, labels)));
+      task.label_ids.length === 0));
   } else {
     push("all", "", active);
   }
@@ -247,7 +243,6 @@ export function resolveTaskForMatrixRule(
   now: Date,
   editableLabelIds: ReadonlySet<string>,
   assignableUserIds?: ReadonlySet<string>,
-  catalog: Iterable<Pick<Label, "id" | "is_system">> = [],
 ): { resolution: MatrixRuleResolution } | { error: string } {
   if (rule.kinds !== "all" && !rule.kinds.includes(task.kind)) {
     return { error: "目标象限不接受当前任务类型" };
@@ -272,7 +267,7 @@ export function resolveTaskForMatrixRule(
     if (!dueBucket) return { error: "仅含已过期日期的象限无法安全接收此任务" };
     resolution.dueBucket = dueBucket;
   }
-  if (!taskMatchesLabels(task, rule.labels, catalog)) {
+  if (!taskMatchesLabels(task, rule.labels)) {
     if (rule.labels === "all" || rule.labels.length === 0) return { error: "目标象限没有可用标签" };
     if (rule.labels.includes("inbox")) {
       resolution.clearLabels = true;

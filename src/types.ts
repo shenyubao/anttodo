@@ -428,8 +428,6 @@ export type Label = {
   inherit_permissions: boolean;
   position: number;
   created_by: string;
-  is_system?: boolean;
-  owner_user_id?: string | null;
 };
 
 export type LabelUserAcl = {

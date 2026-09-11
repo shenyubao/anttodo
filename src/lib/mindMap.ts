@@ -16,7 +16,7 @@ import {
   zonedDate,
 } from "./dateTimePreferences";
 import type { DateTimePreferences, Label, Task, UserLabelOrder } from "../types";
-import { compareSiblingLabels, userLabelOrderMap, taskHasUserLabels, userLabels } from "./labels";
+import { compareSiblingLabels, userLabelOrderMap } from "./labels";
 import { isRootTask } from "./taskTree";
 
 export type MindMapNodeKind =
@@ -325,12 +325,11 @@ function labelTreeNodes({
 }): MindMapTreeNode[] {
   if (labelDisplayMode === "hidden") return [];
 
-  const visible = userLabels(labels);
-  const labelIds = new Set(visible.map((label) => label.id));
-  const byId = labelsById(visible);
+  const labelIds = new Set(labels.map((label) => label.id));
+  const byId = labelsById(labels);
   const tasksByLabel = tasksByVisibleLabel(tasks, labelIds);
   const hasChildLabel = new Set(
-    visible
+    labels
       .filter((label) => label.parent_id !== null && labelIds.has(label.parent_id))
       .map((label) => label.parent_id as string),
   );
@@ -358,7 +357,7 @@ function labelTreeNodes({
       .map((task) => taskNode(task, contextKey, preferences, label.id));
 
   if (labelDisplayMode === "merged") {
-    return orderedLabelsFlat(visible, userOrder).flatMap((label) => {
+    return orderedLabelsFlat(labels, userOrder).flatMap((label) => {
       const children = directTaskNodes(label);
       if (!children.length) return [];
       return [makeLabelNode(label, labelPath(label, byId), children)];
@@ -366,7 +365,7 @@ function labelTreeNodes({
   }
 
   if (labelDisplayMode === "leaf") {
-    return orderedLabelsFlat(visible, userOrder).flatMap((label) => {
+    return orderedLabelsFlat(labels, userOrder).flatMap((label) => {
       if (hasChildLabel.has(label.id)) return [];
       const children = directTaskNodes(label);
       if (!children.length) return [];
@@ -377,7 +376,7 @@ function labelTreeNodes({
   const build = (label: Label, visiting: Set<string>): MindMapTreeNode | null => {
     if (visiting.has(label.id)) return null;
     const nextVisiting = new Set(visiting).add(label.id);
-    const childLabels = visible
+    const childLabels = labels
       .filter((candidate) => candidate.parent_id === label.id)
       .sort((a, b) => compareSiblingLabels(a, b, label.id, userOrder))
       .flatMap((candidate) => {
@@ -389,7 +388,7 @@ function labelTreeNodes({
     return makeLabelNode(label, label.name, [...childLabels, ...directTasks]);
   };
 
-  return visible
+  return labels
     .filter((label) => label.parent_id === null || !labelIds.has(label.parent_id))
     .sort((a, b) => compareSiblingLabels(a, b, null, userOrder))
     .flatMap((label) => {
@@ -407,27 +406,26 @@ function unlabeledTasksForBranch({
   labels: Label[];
   labelDisplayMode: MindMapLabelDisplayMode;
 }) {
-  const visible = userLabels(labels);
-  const labelIds = new Set(visible.map((label) => label.id));
+  const labelIds = new Set(labels.map((label) => label.id));
   if (labelDisplayMode === "hidden") {
     return tasks.filter((task) => (
-      !taskHasUserLabels(task, labels) || taskHasVisibleLabel(task, labelIds)
+      task.label_ids.length === 0 || taskHasVisibleLabel(task, labelIds)
     ));
   }
   if (labelDisplayMode === "leaf") {
     const hasChildLabel = new Set(
-      visible
+      labels
         .filter((label) => label.parent_id !== null && labelIds.has(label.parent_id))
         .map((label) => label.parent_id as string),
     );
     return tasks.filter((task) => {
-      if (!taskHasUserLabels(task, labels)) return true;
+      if (task.label_ids.length === 0) return true;
       const visibleIds = task.label_ids.filter((labelId) => labelIds.has(labelId));
       if (!visibleIds.length) return false;
       return visibleIds.every((labelId) => hasChildLabel.has(labelId));
     });
   }
-  return tasks.filter((task) => !taskHasUserLabels(task, labels));
+  return tasks.filter((task) => task.label_ids.length === 0);
 }
 
 function taskBranchChildren({
@@ -553,7 +551,6 @@ export function buildMindMapTree({
   labelDisplayMode?: MindMapLabelDisplayMode;
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>;
 }): MindMapTreeNode {
-  const visibleLabels = userLabels(labels);
   const userOrder = userLabelOrderMap(userLabelOrder);
   const visibleTasks = tasks.filter((task) => !task.deleted_at && task.kind !== "note" && isRootTask(task));
   const dayTasks = new Map<string, Task[]>();
@@ -565,8 +562,8 @@ export function buildMindMapTree({
   visibleTasks.forEach((task) => {
     const schedule = classifyTaskSchedule(task, preferences);
     if (schedule.level === "none") {
-      if (taskHasUserLabels(task, labels)) unscheduled.push(task);
-      else inbox.push(task);
+      if (task.label_ids.length === 0) inbox.push(task);
+      else unscheduled.push(task);
       return;
     }
     if (schedule.level === "month") {

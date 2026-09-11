@@ -19,7 +19,6 @@ import {
   toDateInput,
 } from "./lib/dateTimePreferences";
 import { PriorityControl } from "./PriorityControl";
-import { userLabels } from "./lib/labels";
 import type {
   DateTimePreferences,
   ReminderSchedule,
@@ -75,7 +74,7 @@ function DraftLabelControl({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const selectedIds = useMemo(() => new Set(labelIds), [labelIds]);
-  const selectedLabels = userLabels(bundle.labels).filter((label) => selectedIds.has(label.id));
+  const selectedLabels = bundle.labels.filter((label) => selectedIds.has(label.id));
 
   useEffect(() => {
     if (!open) return;
@@ -133,7 +132,7 @@ function DraftLabelControl({
               || (bundle.labelPermissionLevels[label.id] ?? 0) < 2}
             onToggle={(label) => toggleLabel(label.id)}
           />
-          {userLabels(bundle.labels).length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
+          {bundle.labels.length === 0 && <p className="task-label-menu-empty">暂无可用标签</p>}
         </div>
       )}
     </div>

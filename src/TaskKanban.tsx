@@ -818,7 +818,7 @@ function resolveTaskLabels(task: Task, labelById: Map<string, Label>) {
   const result: Label[] = [];
   for (const labelId of task.label_ids) {
     const label = labelById.get(labelId);
-    if (label && !label.is_system) result.push(label);
+    if (label) result.push(label);
   }
   return result;
 }

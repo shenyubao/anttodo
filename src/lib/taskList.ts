@@ -23,10 +23,6 @@ import type {
 import { aiCliLabel } from "./aiWork";
 import {
   compareSiblingLabels,
-  systemLabelIdSet,
-  taskHasUserLabels,
-  userLabels,
-  userSpaceLabelFor,
   userLabelOrderMap,
 } from "./labels";
 import { isRootTask } from "./taskTree";
@@ -331,10 +327,11 @@ export function userTaskViewId(smartView: string) {
 }
 
 export function userTaskViewFilters(smartView: string): TaskListFilterFields | null {
-  return userTaskViewId(smartView)
+  const userId = userTaskViewId(smartView);
+  return userId
     ? {
-        filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
-        filter_assignee_ids: [],
+        filter_assignee: "users",
+        filter_assignee_ids: [userId],
         filter_watching: "all",
         filter_creator: "all",
         filter_due: ["all"],
@@ -542,11 +539,13 @@ export function resolveTaskListFilters(
   preference: TaskListFilterFields,
   customView?: CustomTaskView | null,
 ): TaskListFilterFields {
-  // Smart system views keep fixed presets. Custom views, user spaces, and free
-  // lists use the live preference so filters can be edited and auto-saved.
+  // Smart system views and user spaces keep fixed presets. Custom views and
+  // free lists use the live preference so filters can be edited and auto-saved.
   if (SMART_VIEW_FILTER_PRESETS[listKey]) {
     return SMART_VIEW_FILTER_PRESETS[listKey];
   }
+  const userView = userTaskViewFilters(listKey);
+  if (userView) return userView;
   if (customView) {
     const seed = customTaskViewFilters(customView);
     return {
@@ -581,11 +580,10 @@ export function orderedLabelTreeRows(
   labels: Label[],
   userLabelOrder?: Iterable<Pick<UserLabelOrder, "label_id" | "position">>,
 ): OrderedLabelTreeRow[] {
-  const visibleLabels = userLabels(labels);
   const byParent = new Map<string | null, Label[]>();
   const orderMap = userLabelOrderMap(userLabelOrder);
-  const labelIds = new Set(visibleLabels.map((label) => label.id));
-  for (const label of visibleLabels) {
+  const labelIds = new Set(labels.map((label) => label.id));
+  for (const label of labels) {
     const parentId = label.parent_id !== label.id && labelIds.has(label.parent_id ?? "")
       ? label.parent_id
       : null;
@@ -611,7 +609,7 @@ export function orderedLabelTreeRows(
     }
   };
   visit(null, 0);
-  for (const label of visibleLabels) {
+  for (const label of labels) {
     if (visited.has(label.id)) continue;
     visited.add(label.id);
     result.push({
@@ -691,7 +689,7 @@ export function filterTasksForView(input: {
   }
   let result = tasks.filter((task) => !task.deleted_at && isRootTask(task));
   if (customView?.definition.scope === "inbox") {
-    return result.filter((task) => !taskHasUserLabels(task, labels));
+    return result.filter((task) => task.label_ids.length === 0);
   }
   if (customView?.definition.scope === "label") {
     const scope = new Set(customView.definition.label_ids);
@@ -701,15 +699,9 @@ export function filterTasksForView(input: {
     const scope = labelSubtreeIds(labels, selectedLabelId);
     return result.filter((task) => task.label_ids.some((id) => scope.has(id)));
   }
-  const userViewId = userTaskViewId(smartView);
-  if (userViewId) {
-    const space = userSpaceLabelFor(labels, userViewId);
-    if (!space) return [];
-    return result.filter((task) => task.label_ids.includes(space.id));
-  }
   // today / assigned / watching stay on locked presets; inbox / trash default to mine.
   if (smartView === "inbox") {
-    return result.filter((task) => !taskHasUserLabels(task, labels));
+    return result.filter((task) => task.label_ids.length === 0);
   }
   return result;
 }
@@ -1148,7 +1140,6 @@ export function groupTasks(input: {
     const scopeIds = selectedLabelId ? labelSubtreeIds(labels, selectedLabelId) : undefined;
     const leafLabels = leafLabelsInScope(labels, scopeIds, userLabelOrder);
     const leafIds = new Set(leafLabels.map((label) => label.id));
-    const systemIds = systemLabelIdSet(labels);
     for (const label of leafLabels) {
       add(
         `label:${label.id}`,
@@ -1157,10 +1148,9 @@ export function groupTasks(input: {
       );
     }
     const intermediateTasks = tasks.filter((task) => {
-      const scopedIds = (scopeIds
+      const scopedIds = scopeIds
         ? task.label_ids.filter((id) => scopeIds.has(id))
-        : task.label_ids
-      ).filter((id) => !systemIds.has(id));
+        : task.label_ids;
       if (scopedIds.length === 0) return false;
       return scopedIds.every((id) => !leafIds.has(id));
     });
@@ -1169,7 +1159,7 @@ export function groupTasks(input: {
       : "其他标签";
     add("label:intermediate", intermediateTitle, intermediateTasks);
     if (!selectedLabelId) {
-      add("label:none", "无标签", tasks.filter((task) => !taskHasUserLabels(task, labels)));
+      add("label:none", "无标签", tasks.filter((task) => task.label_ids.length === 0));
     }
   } else if (grouping === "priority") {
     add("priority:high", "高优先级", tasks.filter((task) => effectiveTaskPriority(task) === "high"));

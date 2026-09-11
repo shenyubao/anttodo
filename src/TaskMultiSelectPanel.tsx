@@ -177,11 +177,11 @@ export function TaskMultiSelectPanel({
   const dueFields = sharedDueFields(tasks);
   const dueLabel = dueFields?.due_at ? formatDueExact(dueFields) : "设置日期";
   const dueSet = Boolean(dueFields?.due_at);
-  const sharedLabelIds = intersectLabelIds(tasks, bundle.labels);
+  const sharedLabelIds = intersectLabelIds(tasks);
   const sharedLabels = labels.filter((label) => sharedLabelIds.includes(label.id));
   const listLabel = sharedLabels[0] ?? null;
   const tagLabels = sharedLabels.slice(1);
-  const inbox = allTasksUnlabeled(tasks, bundle.labels);
+  const inbox = allTasksUnlabeled(tasks);
   const listText = listLabel?.name ?? (inbox ? "收集箱" : "清单");
   const tagText = tagLabels.length > 0 ? tagLabels.map((label) => label.name).join("、") : "标签";
   const priorityOption = currentPriority ? getPriorityOption(currentPriority) : null;

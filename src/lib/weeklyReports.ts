@@ -10,7 +10,6 @@ import {
 } from "date-fns";
 import { buildTaskOpenUrl } from "../../supabase/functions/_shared/app-url";
 import type { Label, Task, WeeklyReport, WeeklyReportVisibility } from "../types";
-import { taskUserLabelIds } from "./labels";
 
 type WeeklyReportTaskRef = Pick<Task, "id" | "workspace_id" | "title" | "kind">;
 type WeeklyReportSelectedTask = Pick<Task, "id" | "workspace_id" | "title" | "kind" | "label_ids" | "parent_task_id">;
@@ -132,7 +131,7 @@ export function appendWeeklyReportTaskLines(
   for (const task of tasks) {
     const title = task.title.trim();
     if (!title) continue;
-  const names = taskUserLabelIds(task.label_ids, labels)
+    const names = task.label_ids
       .map((id) => labelNames.get(id))
       .filter((name): name is string => Boolean(name));
     const groupName = names.length ? names.join(" / ") : "收集箱";

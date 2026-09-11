@@ -1,5 +1,4 @@
 import type { Task, WorkspaceBundle } from "../types";
-import { taskUserLabelIds } from "./labels";
 
 export type PermissionLevel = 0 | 1 | 2;
 
@@ -22,10 +21,9 @@ export function currentTaskPermissionLevel(
   task: Task,
   currentUserId: string,
 ): PermissionLevel {
-  const userLabelIds = taskUserLabelIds(task.label_ids, bundle.labels ?? []);
-  if (userLabelIds.length > 0) {
+  if (task.label_ids.length > 0) {
     return intersectPermissionLevels(
-      userLabelIds.map((labelId) => currentLabelPermissionLevel(bundle, labelId)),
+      task.label_ids.map((labelId) => currentLabelPermissionLevel(bundle, labelId)),
     );
   }
   const member = bundle.members.find((item) => item.user_id === currentUserId);

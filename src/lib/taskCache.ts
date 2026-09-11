@@ -99,11 +99,6 @@ export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBund
     taskSystemViewPreferences: bundle.taskSystemViewPreferences ?? [],
     matrixQuadrantPreferences: bundle.matrixQuadrantPreferences ?? [],
     userSidebarMembers: bundle.userSidebarMembers ?? [],
-    labels: (bundle.labels ?? []).map((label) => ({
-      ...label,
-      is_system: Boolean(label.is_system),
-      owner_user_id: label.owner_user_id ?? null,
-    })),
     labelTaskCounts: bundle.labelTaskCounts ?? countLiveTasksByLabel(tasks),
   };
 }

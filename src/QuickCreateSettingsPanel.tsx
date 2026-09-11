@@ -67,8 +67,7 @@ export function QuickCreateSettingsPanel({
   const yunxiaoQuickCreate = data.yunxiaoQuickCreate;
   const detailsId = connector ? `quick-create-details-${connector.id}` : "";
   const yunxiaoDetailsId = yunxiaoQuickCreate ? `quick-create-yunxiao-${yunxiaoQuickCreate.id}` : "";
-  const editableLabels = labels.filter((label) =>
-    !label.is_system && (labelPermissionLevels[label.id] ?? 0) >= 2);
+  const editableLabels = labels.filter((label) => (labelPermissionLevels[label.id] ?? 0) >= 2);
 
   async function installDingtalk() {
     if (demo) {

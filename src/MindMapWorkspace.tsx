@@ -54,7 +54,7 @@ import {
   type CSSProperties,
   type FormEvent,
 } from "react";
-import { compareSiblingLabels, hasExplicitLabelColor, userLabelOrderMap, userLabels } from "./lib/labels";
+import { compareSiblingLabels, hasExplicitLabelColor, userLabelOrderMap } from "./lib/labels";
 import {
   buildMindMapTree,
   classifyTaskSchedule,
@@ -1113,7 +1113,7 @@ function MindMapCanvas({
 
   const hideAllLabels = useCallback(() => {
     setHiddenLabelIds(() => {
-      const next = new Set(userLabels(bundle.labels).map((label) => label.id));
+      const next = new Set(bundle.labels.map((label) => label.id));
       storeHiddenLabelIds(workspaceId, next);
       return next;
     });
@@ -1152,7 +1152,7 @@ function MindMapCanvas({
   }
 
   const visibleLabels = useMemo(
-    () => userLabels(bundle.labels).filter((label) => !hiddenLabelIds.has(label.id)),
+    () => bundle.labels.filter((label) => !hiddenLabelIds.has(label.id)),
     [bundle.labels, hiddenLabelIds],
   );
 
@@ -1559,12 +1559,7 @@ function MindMapCanvas({
     const currentSchedule = classifyTaskSchedule(task, dateTimePreferences);
     const dateChanged = assignment.applySchedule
       && scheduleTargetKey(assignment.schedule) !== scheduleTargetKey(currentSchedule);
-    const labelsToRemove = assignment.clearLabels
-      ? task.label_ids.filter((labelId) => {
-          const label = bundle.labels.find((item) => item.id === labelId);
-          return label ? !label.is_system : true;
-        })
-      : [];
+    const labelsToRemove = assignment.clearLabels ? task.label_ids : [];
     const labelToAdd = !assignment.clearLabels
       && assignment.labelId
       && !task.label_ids.includes(assignment.labelId)
@@ -1668,7 +1663,7 @@ function MindMapCanvas({
       </header>
       {displaySettingsOpen && (
         <MindMapDisplaySettingsDialog
-          labels={userLabels(bundle.labels)}
+          labels={bundle.labels}
           userLabelOrder={bundle.userLabelOrder}
           hiddenLabelIds={hiddenLabelIds}
           labelDisplayMode={labelDisplayMode}

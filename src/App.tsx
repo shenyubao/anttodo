@@ -447,13 +447,9 @@ import {
   DEFAULT_LABEL_COLOR,
   applyLabelAccessToBundle,
   appendCreatedLabelToBundle,
-  defaultViewLabelIds,
   hasExplicitLabelColor,
   LABEL_COLORS,
-  taskHasUserLabels,
   taskLabelBarColor,
-  taskUserLabelIds,
-  userLabels,
   labelDropPlacementFromY,
   labelIdFromRealtimeChange,
   moveIdInOrder,
@@ -4203,7 +4199,7 @@ function RemoteApplication({
           }
           assertCanAssociateTaskLabels(
             currentBundle?.labelTaskCounts,
-            taskUserLabelIds(input.labelIds, currentBundle?.labels ?? []),
+            input.labelIds,
           );
         }
         const taskInput = {
@@ -4705,7 +4701,7 @@ function DemoApplication({
         if (!input.parentTaskId) {
           assertCanAssociateTaskLabels(
             bundle.labelTaskCounts,
-            taskUserLabelIds(input.labelIds, bundle.labels),
+            input.labelIds,
           );
         }
         const createdAt = new Date().toISOString();
@@ -8282,7 +8278,7 @@ function MobileAppSidebar({
               <div className="mobile-sidebar-section-title">标签</div>
               <div className="label-tree mobile-label-tree">
                 <LabelTree
-                  labels={userLabels(bundle.labels)}
+                  labels={bundle.labels}
                   userLabelOrder={bundle.userLabelOrder}
                   canManageLabel={() => false}
                   canDragLabel={() => false}
@@ -8512,7 +8508,7 @@ function TaskSearchSurface({
             </header>
             <div className="task-search-result-list">
               {results.map((task) => {
-                const labels = userLabels(bundle.labels).filter((label) =>
+                const labels = bundle.labels.filter((label) =>
                   task.label_ids.includes(label.id),
                 );
                 return (
@@ -8862,7 +8858,7 @@ function Sidebar({
   );
   const openTasks = bundle.tasks.filter((task) => !task.deleted_at && isRootTask(task) && isActiveTask(task));
   const userLabelOrder = userOrderOverride ?? bundle.userLabelOrder;
-  const labels = userLabels(bundle.labels)
+  const labels = bundle.labels
     .map((label) => {
       let next = label;
       if (Object.hasOwn(parentOverrides, label.id)) {
@@ -10339,7 +10335,7 @@ function SmartViewsSidebarList({
             icon={<Inbox />}
             label="收集箱"
             count={openTasks.filter((task) =>
-              !taskHasUserLabels(task, bundle.labels) && task.created_by === currentUserId).length}
+              task.label_ids.length === 0 && task.created_by === currentUserId).length}
             onClick={() => onSmartView("inbox")}
             {...itemProps("inbox")}
           />
@@ -10772,11 +10768,7 @@ function TaskWorkspace({
     ? bundle.members.find((member) => member.user_id === selectedUserViewId) ?? null
     : null;
   const defaultViewAssigneeId = selectedUserViewMember?.user_id ?? null;
-  const defaultLabelIds = defaultViewLabelIds({
-    selectedLabelId,
-    userViewId: selectedUserViewId,
-    labels: bundle.labels,
-  });
+  const defaultLabelIds = selectedLabelId ? [selectedLabelId] : [];
   const customView = bundle.customTaskViews.find(
     (view) => view.id === customTaskViewId(smartView),
   ) ?? null;
@@ -10993,7 +10985,7 @@ function TaskWorkspace({
   );
   // System smart-view presets stay fixed; custom views keep editable, auto-saved filters.
   const filtersLocked = !selectedLabelId
-    && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
+    && (Boolean(SMART_VIEW_FILTER_PRESETS[smartView]) || Boolean(userTaskViewId(smartView)));
 
   const groups = useMemo(() => {
     if (viewMode === "kanban") return [];
@@ -12776,7 +12768,7 @@ function TaskListDragOverlay({
   showHours: boolean;
   selectedLabelId?: string | null;
 }) {
-  const taskLabels = userLabels(labels).filter((label) => task.label_ids.includes(label.id));
+  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
   const labelBarColor = taskLabelBarColor(labels, task.label_ids, selectedLabelId);
   const assignee = members.find((member) => member.user_id === task.assignee_id);
   const dueStatus = task.status !== "open" ? null : getDueStatus(task.due_at, now);
@@ -12924,7 +12916,7 @@ function TaskRow({
     transition,
     isDragging,
   } = useSortable({ id: task.id, disabled: !draggable });
-  const taskLabels = userLabels(labels).filter((label) => task.label_ids.includes(label.id));
+  const taskLabels = labels.filter((label) => task.label_ids.includes(label.id));
   const labelBarColor = taskLabelBarColor(labels, task.label_ids, selectedLabelId);
   const optimistic = isOptimisticTaskId(task.id);
   const assignee = members.find((member) => member.user_id === task.assignee_id);

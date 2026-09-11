@@ -86,36 +86,6 @@ const labels: Label[] = [
     position: 1,
     created_by: userId,
   },
-  {
-    id: "user-space-demo-user",
-    workspace_id: "workspace-team",
-    parent_id: null,
-    name: "沈宇宝",
-    color: DEFAULT_LABEL_COLOR,
-    kind: "team",
-    view_scope: "all",
-    manage_scope: "users",
-    inherit_permissions: false,
-    position: 0,
-    created_by: userId,
-    is_system: true,
-    owner_user_id: userId,
-  },
-  {
-    id: "user-space-demo-member",
-    workspace_id: "workspace-team",
-    parent_id: null,
-    name: "产品同学",
-    color: DEFAULT_LABEL_COLOR,
-    kind: "team",
-    view_scope: "all",
-    manage_scope: "users",
-    inherit_permissions: false,
-    position: 0,
-    created_by: "demo-member",
-    is_system: true,
-    owner_user_id: "demo-member",
-  },
 ];
 
 const task = (
@@ -166,7 +136,7 @@ const tasks: Task[] = [
     description: "验证 Web、Mac 桌面端、Supabase 权限与 Mock 连接器。",
     priority: "high",
     due_at: subDays(now, 1).toISOString(),
-    label_ids: ["product", "urgent", "user-space-demo-user"],
+    label_ids: ["product", "urgent"],
     participant_ids: ["demo-member"],
   }),
   task("task-1-security", "运行数据库安全测试", {
@@ -188,17 +158,17 @@ const tasks: Task[] = [
   task("task-2", "优化任务详情抽屉交互", {
     due_at: addDays(now, 2).toISOString(),
     assignee_id: "demo-member",
-    label_ids: ["frontend", "user-space-demo-member"],
+    label_ids: ["frontend"],
   }),
   task("task-3", "补齐树形标签 RLS 测试", {
     priority: "medium",
     due_at: addDays(now, 5).toISOString(),
-    label_ids: ["backend", "urgent", "user-space-demo-user"],
+    label_ids: ["backend", "urgent"],
   }),
   task("task-4", "整理云效字段映射表", {
     description: "预留 organizationId、projectId、workItemType 与状态映射。",
     due_at: addDays(now, 14).toISOString(),
-    label_ids: ["product", "user-space-demo-user"],
+    label_ids: ["product"],
   }),
   task("task-5", "记录下一轮产品想法", {
     assignee_id: null,
@@ -207,7 +177,7 @@ const tasks: Task[] = [
   task("task-6", "搭建只读离线缓存", {
     status: "completed",
     completed_at: subDays(now, 1).toISOString(),
-    label_ids: ["frontend", "user-space-demo-user"],
+    label_ids: ["frontend"],
   }),
 ];
 
@@ -282,9 +252,7 @@ export function createDemoBundle(): WorkspaceBundle {
       },
     ],
     labelGroupAcls: [],
-    labelPermissionLevels: Object.fromEntries(
-      labels.map((label) => [label.id, label.is_system ? 1 : 2]),
-    ),
+    labelPermissionLevels: Object.fromEntries(labels.map((label) => [label.id, 2])),
     userLabelOrder: [],
     userSidebarMembers: [],
     tasks: structuredClone(tasks).map((task) => ({
