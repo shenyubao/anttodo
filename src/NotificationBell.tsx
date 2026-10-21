@@ -11,7 +11,7 @@ export function NotificationBell({
   online,
   onRead,
   onReadAll,
-  onOpenTask,
+  onOpenNotification,
   variant = "rail",
   active = true,
 }: {
@@ -20,7 +20,7 @@ export function NotificationBell({
   online: boolean;
   onRead: (id: string) => Promise<void>;
   onReadAll: () => Promise<void>;
-  onOpenTask: (taskId: string) => void;
+  onOpenNotification: (item: AppNotification) => void;
   variant?: "rail" | "menu";
   active?: boolean;
 }) {
@@ -88,14 +88,14 @@ export function NotificationBell({
               return (
                 <button type="button" className={item.read_at ? "read" : "unread"} key={item.id}
                   onClick={async () => {
-                    if (!item.read_at) await onRead(item.id);
+                    if (online && !item.read_at) await onRead(item.id);
                     setOpen(false);
-                    onOpenTask(item.task_id);
+                    onOpenNotification(item);
                   }}>
                   <MemberAvatar member={actor} className="notification-avatar" />
                   <span className="notification-copy">
                     <span>{notificationHeadline(item)}</span>
-                    <em>{item.task?.title || "已删除内容"}</em>
+                    <em>{item.task?.title || String(item.payload?.title || "已删除内容")}</em>
                     {summary ? <span className="notification-summary">{summary}</span> : null}
                   </span>
                   <time dateTime={item.created_at}>{commentRelativeTime(item.created_at)}</time>

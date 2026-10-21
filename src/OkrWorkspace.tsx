@@ -1,8 +1,11 @@
+import { OkrNoteContent, OkrNoteEditor } from "./OkrNoteEditor";
+import type { TaskRichTextEditorHandle } from "./TaskRichTextEditor";
 import { AssigneePicker } from "./AssigneePicker";
 import { okrObjectiveHistory } from "./lib/okrHistory";
 import { loadOkrKeyResultHistory } from "./lib/weeklyReportOkrApi";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -25,12 +28,14 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { MemberAvatar } from "./MemberAvatar";
 import { TaskStatusIcon } from "./TaskStatusIcon";
+import { OkrTaskComposer, type OkrTaskCreation } from "./OkrTaskComposer";
 import type {
+  CommentMention,
   Member,
   MyActiveOkrTree,
   OkrBreakdown,
@@ -108,9 +113,11 @@ type OkrWorkspaceProps = {
   online: boolean;
   initialOwnerId?: string;
   initialCycleId?: string;
-  initialTarget?: { kind: "objective" | "key_result"; id: string; initialTab?: "tasks" };
+  initialTargetRevision?: number;
+  initialTarget?: { kind: "objective" | "key_result"; id: string; initialTab?: "tasks" | "notes" };
   onNavigate: (ownerId: string, cycleId: string) => void;
   onOpenTask?: (taskId: string) => void;
+  taskCreation?: OkrTaskCreation;
   onMenu: () => void;
   onNotice: (message: string, tone?: "success" | "error") => void;
 };
@@ -129,7 +136,7 @@ export type ProgressTarget = {
   statusMode: OkrObjective["status_mode"];
   metricUnit: OkrMetricUnit;
   customUnit: string | null;
-  initialTab?: "progress" | "tasks" | "records";
+  initialTab?: "progress" | "tasks" | "records" | "notes";
 };
 
 const UNITS: OkrMetricUnit[] = ["percent", "cny", "usd", "none", "custom"];
@@ -163,7 +170,7 @@ function emptyPreferences(userId: string, workspaceId: string, cycleId: string):
     workspace_id: workspaceId,
     cycle_id: cycleId,
     show_progress: true,
-    show_score: true,
+    show_score: false,
     show_weight: true,
     apply_all_cycles: false,
   };
@@ -274,6 +281,16 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     setObjectiveDraft(null);
   }, [props.online]);
 
+  useEffect(() => {
+    if (!props.initialTarget) return;
+    const incomingOwner = props.initialOwnerId ?? props.currentUserId;
+    const incomingCycle = props.initialCycleId ?? cycleId;
+    initialRoutePairRef.current = `${incomingOwner}:${incomingCycle}`;
+    setOwnerId(incomingOwner);
+    if (incomingCycle) setCycleId(incomingCycle);
+  }, [props.initialOwnerId, props.initialCycleId, props.initialTarget?.id, props.initialTarget?.kind,
+    props.initialTarget?.initialTab, props.initialTargetRevision]);
+
   const cyclesQuery = useQuery({
     queryKey: cycleKey(props.workspaceId),
     queryFn: () => loadOkrCycles(client, props.workspaceId),
@@ -324,7 +341,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     enabled: backendAvailable && Boolean(cycleId && ownerId),
   });
   const preferencesQuery = useQuery({
-    queryKey: ["okr-display", props.currentUserId, props.workspaceId, cycleId],
+    queryKey: ["okr-display-v2", props.currentUserId, props.workspaceId, cycleId],
     queryFn: () => loadOkrDisplayPreferences(client, props.currentUserId, props.workspaceId, cycleId),
     enabled: backendAvailable && Boolean(cycleId),
   });
@@ -377,7 +394,9 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
 
   useEffect(() => {
     if (!props.initialTarget || !okrSet || !selectedCycle) return;
-    const targetKey = `${props.initialTarget.kind}:${props.initialTarget.id}`;
+    if (ownerId !== (props.initialOwnerId ?? props.currentUserId)
+      || (props.initialCycleId && cycleId !== props.initialCycleId)) return;
+    const targetKey = `${props.initialTarget.kind}:${props.initialTarget.id}:${props.initialTarget.initialTab}:${props.initialTargetRevision ?? 0}`;
     if (consumedTargetRef.current === targetKey) return;
     const objectiveIndex = okrSet.objectives.findIndex((item) => item.id === props.initialTarget!.id
       || item.key_results.some((keyResult) => keyResult.id === props.initialTarget!.id));
@@ -399,7 +418,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         statusMode: objective.status_mode,
         metricUnit: objective.metric_unit,
         customUnit: objective.custom_unit,
-        initialTab: "tasks",
+        initialTab: props.initialTarget.initialTab ?? "tasks",
       });
     } else {
       const keyResultIndex = objective.key_results.findIndex((item) => item.id === props.initialTarget!.id);
@@ -419,11 +438,11 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         statusMode: keyResult.status_mode,
         metricUnit: keyResult.metric_unit,
         customUnit: keyResult.custom_unit,
-        initialTab: "tasks",
+        initialTab: props.initialTarget.initialTab ?? "tasks",
       });
     }
     consumedTargetRef.current = targetKey;
-  }, [okrSet, props.initialTarget?.id, props.initialTarget?.kind, selectedCycle]);
+  }, [okrSet, props.initialTarget?.id, props.initialTarget?.kind, props.initialTarget?.initialTab, props.initialTargetRevision, ownerId, cycleId, selectedCycle]);
 
   useEffect(() => {
     if (ownerId === props.currentUserId || ownerIdsQuery.isLoading) return;
@@ -496,7 +515,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
       "okr_objective_user_acl", "okr_objective_group_acl", "okr_objective_responsibles",
       "okr_objective_alignments", "okr_key_results", "okr_key_result_user_acl",
       "okr_key_result_group_acl", "okr_key_result_responsibles", "okr_kr_breakdowns",
-      "okr_progress_records", "okr_versions",
+      "okr_progress_records", "okr_versions", "okr_note_mentions",
       "okr_access_revisions",
       "user_group_members",
       "task_okr_links", "tasks", "task_labels", "labels", "label_user_acl", "label_group_acl",
@@ -569,6 +588,35 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     } finally {
       await refresh();
     }
+  }
+
+  function saveNote(target: { kind: "objective" | "key_result"; id: string }, note: string, ids: string[] = []) {
+    const currentSet = okrSet;
+    const parent = currentSet?.objectives.find((item) => item.id === target.id || item.key_results.some((kr) => kr.id === target.id));
+    if (!currentSet || !parent || !editable || !navigator.onLine) return Promise.reject(new Error("离线时 OKR 仅可查看"));
+    const mentions = noteMentions(ids, props.members);
+    const changed = { id: target.id, fields: { note }, mentioned_user_ids: ids };
+    const key = setKey(props.workspaceId, cycleId, ownerId);
+    const save = async () => {
+      if (!writableRef.current || !navigator.onLine) throw new Error("离线时 OKR 仅可查看");
+      pendingOkrSavesRef.current += 1;
+      try {
+        await queryClient.cancelQueries({ queryKey: key });
+        const succeeded = await runOptimistic((current) => ({ ...current, objectives: current.objectives.map((item) => item.id !== parent.id ? item
+          : target.kind === "objective" ? { ...item, note, note_mentions: mentions }
+          : { ...item, key_results: item.key_results.map((kr) => kr.id === target.id ? { ...kr, note, note_mentions: mentions } : kr) }) }), async () => {
+          const saved = await saveOkrChanges(client, currentSet.id, { objectives: [target.kind === "objective" ? changed : { id: parent.id, key_results: [changed] }] });
+          if (saved) queryClient.setQueryData(key, saved);
+          if (target.kind === "objective" && lastPersistedDraftRef.current?.id === target.id) {
+            lastPersistedDraftRef.current = { ...lastPersistedDraftRef.current, note, note_mentions: mentions };
+          }
+        });
+        if (!succeeded) throw new Error("备注保存失败，请重试");
+      } finally { pendingOkrSavesRef.current -= 1; }
+    };
+    const pending = saveTailRef.current.then(save, save);
+    saveTailRef.current = pending.catch(() => {});
+    return pending;
   }
 
   async function ensureSet() {
@@ -678,15 +726,16 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   }, [client, editingObjectiveId, objectiveDraft, persistObjectiveDraft, props.online]);
 
   async function saveObjective(publish: boolean) {
-    if (!objectiveDraft || !okrSet || manualSavingRef.current) return;
-    if (!objectiveDraft.title.trim()) {
+    const currentDraft = latestDraftRef.current;
+    if (!currentDraft || !okrSet || manualSavingRef.current) return;
+    if (!currentDraft.title.trim()) {
       props.onNotice("Objective 标题不能为空", "error");
       return;
     }
-    const keyResults = withDefaultOkrWeights(objectiveDraft.key_results);
-    const draft = keyResults === objectiveDraft.key_results
-      ? objectiveDraft
-      : { ...objectiveDraft, key_results: keyResults };
+    const keyResults = withDefaultOkrWeights(currentDraft.key_results);
+    const draft = keyResults === currentDraft.key_results
+      ? currentDraft
+      : { ...currentDraft, key_results: keyResults };
     const objectives = okrSet.objectives.map((item) => {
       const current = item.id === draft.id ? draft : item;
       const nextKeyResults = withDefaultOkrWeights(current.key_results);
@@ -712,7 +761,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     }
     persistGenerationRef.current += 1;
     const generation = persistGenerationRef.current;
-    if (draft !== objectiveDraft) setObjectiveDraft(draft);
+    if (draft !== currentDraft) setObjectiveDraft(draft);
     manualSavingRef.current = true;
     setSavingObjective(true);
     try {
@@ -970,6 +1019,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
                   groups={props.userGroups}
                   preferences={preferences}
                   onChange={setObjectiveDraft}
+                  onSaveNote={(note, ids) => saveNote({ kind: "objective", id: objective.id }, note, ids)}
                   onAddKeyResult={() => void addKeyResult()}
                   onRemoveKeyResult={(keyResultId) => {
                     void runOnline(async () => {
@@ -1017,14 +1067,6 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
                   onStatus={(target, anchor) => setStatusEditor((current) =>
                     current?.target.id === target.id ? null : { target, anchor })}
                   statusTargetId={statusEditor?.target.id}
-                  onNote={async (note) => {
-                    await runOptimistic((current) => ({
-                      ...current,
-                      objectives: current.objectives.map((item) => item.id === objective.id ? { ...item, note } : item),
-                    }), async () => {
-                      await updateOkrObjective(client, { ...objective, note });
-                    });
-                  }}
                   onScore={async (kind, id, score) => {
                     await runOptimistic((current) => ({
                       ...current,
@@ -1104,7 +1146,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         cycleId={cycleId}
         onSave={(next) => runOnline(async () => {
           await saveOkrDisplayPreferences(client, next);
-          await queryClient.invalidateQueries({ queryKey: ["okr-display", props.currentUserId, props.workspaceId, cycleId] });
+          await queryClient.invalidateQueries({ queryKey: ["okr-display-v2", props.currentUserId, props.workspaceId] });
           setDisplayOpen(false);
         }, "显示设置已保存")}
       />
@@ -1144,6 +1186,13 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         }}
       />
       <ProgressDialog
+        taskCreation={props.taskCreation}
+        currentUserId={props.currentUserId}
+        preferences={preferences}
+        noteEntity={okrSet?.objectives.flatMap((item) => [item, ...item.key_results]).find((item) => item.id === progressTarget?.id)}
+        onSaveNote={(note, ids) => progressTarget ? saveNote(progressTarget, note, ids) : Promise.reject(new Error("OKR 已不可用"))}
+        online={props.online}
+        onNotice={props.onNotice}
         backendAvailable={backendAvailable}
         objective={okrSet?.objectives.find((objective) => objective.id === progressTarget?.id)}
         open={Boolean(progressTarget)}
@@ -1378,77 +1427,22 @@ function StatusPopover({
   );
 }
 
-const OKR_NOTE_PLACEHOLDER = "填写备注，让大家更了解你的 OKR";
-
-function resizeOkrNote(el: HTMLTextAreaElement | null) {
-  if (!el) return;
-  el.style.height = "22px";
-  el.style.height = `${Math.max(el.scrollHeight, 22)}px`;
+function OkrResponsibleAvatars({ ids, members }: { ids: string[]; members: Member[] }) {
+  return <span className="okr-responsibles">{ids.map((id) => {
+    const member = members.find((item) => item.user_id === id);
+    return member ? <span key={id} aria-label={memberName(members, id)}><MemberAvatar member={member}
+      className="okr-responsible-avatar" title={memberName(members, id)} /></span> : null;
+  })}</span>;
 }
 
-function ObjectiveNoteField({
-  value,
-  editable,
-  onChange,
-  onCommit,
-}: {
-  value: string;
-  editable: boolean;
-  onChange?: (value: string) => void;
-  onCommit?: (value: string) => void;
-}) {
-  const areaRef = useRef<HTMLTextAreaElement>(null);
-  const filled = Boolean(value.trim());
-  useLayoutEffect(() => { resizeOkrNote(areaRef.current); }, [value]);
-  useLayoutEffect(() => {
-    const area = areaRef.current;
-    if (!area || typeof ResizeObserver === "undefined") return;
-    let width = area.clientWidth;
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      if (area.clientWidth === width) return;
-      width = area.clientWidth;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => resizeOkrNote(area));
-    });
-    observer.observe(area);
-    return () => {
-      observer.disconnect();
-      cancelAnimationFrame(frame);
-    };
-  }, []);
-  return (
-    <div
-      className={clsx("okr-objective-note", filled ? "filled" : "empty")}
-      data-cy="okr progress"
-      onMouseDown={(event) => event.stopPropagation()}
-    >
-      <span className="okr-note-icon" aria-hidden="true"><FileText /></span>
-      <div className="okr-note-content">
-        {filled && <span className="okr-objective-note-label">备注</span>}
-        {!filled && <span className="okr-note-prefix" aria-hidden="true">备注：</span>}
-        <textarea
-          ref={areaRef}
-          value={value}
-          readOnly={!editable}
-          placeholder={OKR_NOTE_PLACEHOLDER}
-          aria-label="备注"
-          rows={1}
-          onChange={(event) => {
-            onChange?.(event.target.value);
-            resizeOkrNote(event.target);
-          }}
-          onBlur={() => {
-            if (!editable || !onCommit) return;
-            onCommit(value);
-          }}
-        />
-      </div>
-    </div>
-  );
+function NoteToggle({ expanded, onToggle, id }: { expanded: boolean; onToggle: () => void; id: string }) {
+  return <button className="okr-note-toggle" type="button" aria-label={expanded ? "收起备注" : "展开备注"}
+    aria-expanded={expanded} aria-controls={`okr-note-${id}`} onClick={(event) => { event.stopPropagation(); onToggle(); }}>
+    {expanded ? <ChevronDown /> : <ChevronRight />}
+  </button>;
 }
 
-function ObjectiveCard({ objective, index, members, cycle, preferences, editable, dragging, alignmentLabel, objectiveRecordCount, keyResultRecordCounts, objectiveTaskCount, keyResultTaskCounts, onAlign, onDragStart, onDrop, onEdit, onDelete, onProgress, onStatus, onNote, onScore, statusTargetId }: {
+function ObjectiveCard({ objective, index, members, cycle, preferences, editable, dragging, alignmentLabel, objectiveRecordCount, keyResultRecordCounts, objectiveTaskCount, keyResultTaskCounts, onAlign, onDragStart, onDrop, onEdit, onDelete, onProgress, onStatus, onScore, statusTargetId }: {
   objective: OkrObjective;
   index: number;
   members: Member[];
@@ -1468,12 +1462,10 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
   onDelete: () => void;
   onProgress: (target: ProgressTarget) => void;
   onStatus: (target: ProgressTarget, anchor: HTMLElement) => void;
-  onNote: (note: string) => Promise<void>;
   onScore: (kind: "objective" | "key_result", id: string, score: number | null) => Promise<void>;
   statusTargetId?: string;
 }) {
-  const [noteDraft, setNoteDraft] = useState(objective.note);
-  useEffect(() => { setNoteDraft(objective.note); }, [objective.note]);
+  const [noteExpanded, setNoteExpanded] = useState(false);
   const progress = okrObjectiveProgress(objective);
   const displayedStatus = objective.status_mode === "automatic"
     ? automaticOkrStatus(progress, cycle)
@@ -1534,10 +1526,9 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
       <div className="okr-objective-row">
         <div className="okr-title-cell">
           <span className="okr-index objective">O{index + 1}</span>
-          <strong>{objective.title}</strong>
-          {!!objective.responsible_ids.length && (
-            <span className="okr-responsibles">{objective.responsible_ids.map((id) => `@${memberName(members, id)}`).join(" ")}</span>
-          )}
+          <button type="button" className="okr-title-button objective" onClick={() => onProgress(progressTarget)}>{objective.title}</button>
+          {!!objective.note?.trim() && <NoteToggle id={objective.id} expanded={noteExpanded} onToggle={() => setNoteExpanded((open) => !open)} />}
+          <OkrResponsibleAvatars ids={objective.responsible_ids} members={members} />
         </div>
         {preferences.show_progress && (
           <OkrProgressMeter
@@ -1555,6 +1546,7 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
         <button className="okr-record-count" type="button" aria-label={`查看 ${progressTarget.label} 进展记录`} onClick={() => onProgress({ ...progressTarget, initialTab: "records" })}>{objectiveRecordCount}</button>
         <button className="okr-task-count" type="button" aria-label={`查看 ${progressTarget.label} 待办清单`} title="查看关联待办" onClick={() => onProgress({ ...progressTarget, initialTab: "tasks" })}>{objectiveTaskCount ?? "—"}</button>
       </div>
+      {noteExpanded && !!objective.note?.trim() && <div id={`okr-note-${objective.id}`} className="okr-inline-note"><OkrNoteContent value={objective.note} /></div>}
       <div className="okr-kr-list">
         {objective.key_results.map((kr, index) => (
           <KeyResultRow
@@ -1574,15 +1566,6 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
           />
         ))}
       </div>
-      <ObjectiveNoteField
-        value={noteDraft}
-        editable={editable}
-        onChange={setNoteDraft}
-        onCommit={(note) => {
-          if (note === objective.note) return;
-          void onNote(note);
-        }}
-      />
     </article>
   );
 }
@@ -1601,6 +1584,7 @@ function KeyResultRow({ keyResult, index, members, cycle, preferences, editable,
   onScore: (score: number | null) => Promise<void>;
   statusTargetId?: string;
 }) {
+  const [noteExpanded, setNoteExpanded] = useState(false);
   const progress = okrProgressPercent(keyResult);
   const displayedStatus = keyResult.status_mode === "automatic"
     ? automaticOkrStatus(progress, cycle)
@@ -1623,10 +1607,9 @@ function KeyResultRow({ keyResult, index, members, cycle, preferences, editable,
     <div className="okr-kr-row">
       <div className="okr-title-cell">
         <span className="okr-index kr">KR{index + 1}</span>
-        <span>{keyResult.title}</span>
-        {!!keyResult.responsible_ids.length && (
-          <span className="okr-responsibles">{keyResult.responsible_ids.map((id) => `@${memberName(members, id)}`).join(" ")}</span>
-        )}
+        <button type="button" className="okr-title-button" onClick={() => onProgress(progressTarget)}>{keyResult.title}</button>
+        {!!keyResult.note?.trim() && <NoteToggle id={keyResult.id} expanded={noteExpanded} onToggle={() => setNoteExpanded((open) => !open)} />}
+        <OkrResponsibleAvatars ids={keyResult.responsible_ids} members={members} />
         {preferences.show_weight && <span className="okr-weight">{keyResult.weight}%</span>}
       </div>
       {preferences.show_progress && (
@@ -1642,6 +1625,7 @@ function KeyResultRow({ keyResult, index, members, cycle, preferences, editable,
       {preferences.show_score && <ScoreInput value={keyResult.score} editable={editable} onCommit={onScore} />}
       <button className="okr-record-count" type="button" aria-label={`查看 ${progressTarget.label} 进展记录`} onClick={() => onProgress({ ...progressTarget, initialTab: "records" })}>{recordCount}</button>
       <button className="okr-task-count" type="button" aria-label={`查看 ${progressTarget.label} 待办清单`} title="查看关联待办" onClick={() => onProgress({ ...progressTarget, initialTab: "tasks" })}>{taskCount ?? "—"}</button>
+      {noteExpanded && !!keyResult.note?.trim() && <div id={`okr-note-${keyResult.id}`} className="okr-inline-note"><OkrNoteContent value={keyResult.note} /></div>}
     </div>
   );
 }
@@ -1670,7 +1654,7 @@ function ScoreInput({ value, editable, onCommit }: {
   />;
 }
 
-function ObjectiveEditor({ objective, busy, index, currentUserId, members, groups, preferences, online, autosaveStatus, onChange, onAddKeyResult, onRemoveKeyResult, onCancel, onSave, onPublish }: {
+function ObjectiveEditor({ objective, busy, index, currentUserId, members, groups, preferences, online, autosaveStatus, onChange, onSaveNote, onAddKeyResult, onRemoveKeyResult, onCancel, onSave, onPublish }: {
   objective: OkrObjective;
   index: number;
   members: Member[];
@@ -1679,6 +1663,7 @@ function ObjectiveEditor({ objective, busy, index, currentUserId, members, group
   online: boolean;
   autosaveStatus: "saved" | "saving" | "invalid" | "offline";
   onChange: (objective: OkrObjective) => void;
+  onSaveNote: (note: string, ids?: string[]) => Promise<void>;
   onAddKeyResult: () => void;
   onRemoveKeyResult: (id: string) => void;
   onCancel: () => void;
@@ -1687,6 +1672,12 @@ function ObjectiveEditor({ objective, busy, index, currentUserId, members, group
   currentUserId: string;
   busy: boolean;
 }) {
+  const currentObjectiveRef = useRef(objective);
+  currentObjectiveRef.current = objective;
+  const noteEditorRef = useRef<TaskRichTextEditorHandle>(null);
+  const flushNote = async (action: () => void) => {
+    try { await noteEditorRef.current?.flush(); action(); } catch { /* The editor shows the save error. */ }
+  };
   const [advancedKrId, setAdvancedKrId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draggingKrId, setDraggingKrId] = useState<string | null>(null);
@@ -1747,11 +1738,13 @@ function ObjectiveEditor({ objective, busy, index, currentUserId, members, group
           ))}
         </div>
         <button className="okr-add-kr" type="button" onClick={onAddKeyResult}><Plus />添加 Key Result</button>
-        <ObjectiveNoteField
-          value={objective.note}
-          editable
-          onChange={(note) => onChange({ ...objective, note })}
-        />
+        <OkrNoteEditor ref={noteEditorRef} value={objective.note ?? ""} mentions={objective.note_mentions}
+          members={members} currentUserId={currentUserId} editable={online}
+          loadCandidates={() => loadNoteCandidates("objective", objective.id)}
+          onSave={async (note, ids) => {
+            await onSaveNote(note, ids);
+            flushSync(() => onChange({ ...currentObjectiveRef.current, note, note_mentions: noteMentions(ids ?? [], members) }));
+          }} />
         <div id={`okr-objective-settings-${objective.id}`} hidden={!settingsOpen}>
           <div className="okr-editor-progress-settings">
             <span>进度方式：基于 KR 自动更新</span>
@@ -1768,9 +1761,9 @@ function ObjectiveEditor({ objective, busy, index, currentUserId, members, group
         </div>
       </div>
       <footer className="okr-editor-footer">
-        <button className="button primary" disabled={!online} onClick={onPublish}>发布</button>
-        <button className="button secondary" onClick={onCancel}>取消</button>
-        <button className="button ghost" disabled={!online} onClick={onSave}>保存草稿</button>
+        <button className="button primary" disabled={!online} onClick={() => void flushNote(onPublish)}>发布</button>
+        <button className="button secondary" onClick={() => void flushNote(onCancel)}>取消</button>
+        <button className="button ghost" disabled={!online} onClick={() => void flushNote(onSave)}>保存草稿</button>
         <span aria-live="polite">{{ saved: "已自动保存", saving: "自动保存中…", invalid: "有未保存的无效设置", offline: "离线只读" }[autosaveStatus]}</span>
       </footer>
     </article>
@@ -1785,7 +1778,7 @@ function MemberSelect({ members, selected, onChange, currentUserId, online }: {
     members={members} currentUserId={currentUserId} resetKey={currentUserId}
     target={selected[0] ? { kind: "user", userId: selected[0] } : { kind: "none" }}
     onAssign={async (target) => onChange(target.kind === "user" ? [target.userId] : [])}
-    disabled={!online} className="okr-member-control" showName placeholder="添加负责人" portal
+    disabled={!online} className="okr-member-control" showName={false} placeholder="添加负责人" portal
   />;
 }
 
@@ -2009,7 +2002,14 @@ function formatProgressRecordDate(value: string) {
   }).format(new Date(value)).replace("/", "-");
 }
 
-function ProgressDialog({ objective, open, onOpenChange, target, editable, cycle, members, workspaceId, demoMode, onOpenTask, onSave, backendAvailable }: {
+export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveNote, objective, open, onOpenChange, target, editable, cycle, members, workspaceId, demoMode, onOpenTask, onSave, backendAvailable, taskCreation, online, onNotice }: {
+  noteEntity?: OkrObjective | OkrKeyResult;
+  currentUserId: string;
+  preferences: OkrDisplayPreferences;
+  onSaveNote: (note: string, ids?: string[]) => Promise<void>;
+  taskCreation?: OkrTaskCreation;
+  online: boolean;
+  onNotice: OkrWorkspaceProps["onNotice"];
   objective?: OkrObjective;
   backendAvailable: boolean;
   demoMode: boolean;
@@ -2023,7 +2023,11 @@ function ProgressDialog({ objective, open, onOpenChange, target, editable, cycle
   onOpenTask: (taskId: string) => void;
   onSave: (value: number | null, status: OkrProgressStatus, detail: string) => Promise<boolean>;
 }) {
-  const [tab, setTab] = useState<"progress" | "tasks" | "records">("progress");
+  const noteEditorRef = useRef<TaskRichTextEditorHandle>(null);
+  const flushNote = async (action: () => void) => {
+    try { await noteEditorRef.current?.flush(); action(); } catch { /* Keep the editor open for retry. */ }
+  };
+  const [tab, setTab] = useState<"progress" | "tasks" | "records" | "notes">("progress");
   const [value, setValue] = useState("");
   const [status, setStatus] = useState<OkrProgressStatus>("none");
   const [detail, setDetail] = useState("");
@@ -2078,10 +2082,16 @@ function ProgressDialog({ objective, open, onOpenChange, target, editable, cycle
     setComposerOpen(false);
     await records.refetch();
   };
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}>
+  return <Dialog.Root open={open} onOpenChange={(next) => { if (next) onOpenChange(true); else void flushNote(() => onOpenChange(false)); }}>
     <Dialog.Portal>
       <Dialog.Overlay className="okr-detail-overlay" />
-      <Dialog.Content className="okr-detail-drawer" aria-describedby={undefined}>
+      <Dialog.Content className="okr-detail-drawer" aria-describedby={undefined}
+        onInteractOutside={(event) => {
+          if ((event.target as HTMLElement)?.closest(".rich-editor-mention-menu, .mdxeditor-popup-container")) event.preventDefault();
+        }}
+        onEscapeKeyDown={(event) => {
+          if (document.querySelector(".okr-detail-drawer .due-popover, .rich-editor-mention-menu, .mdxeditor-popup-container [role=dialog]")) event.preventDefault();
+        }}>
         <header className="okr-detail-header">
           <Dialog.Title>OKR 详情</Dialog.Title>
           <Dialog.Close aria-label="关闭 OKR 详情"><X /></Dialog.Close>
@@ -2099,19 +2109,28 @@ function ProgressDialog({ objective, open, onOpenChange, target, editable, cycle
                 <i><b style={{ width: `${progress ?? 0}%` }} /></i>
                 <small><span>0%</span><span>100%</span></small>
               </div>
-              <div className="okr-detail-score"><span>分数</span><strong>{target.score?.toFixed(1) ?? "0.0"}</strong></div>
+              {preferences.show_score && <div className="okr-detail-score"><span>分数</span><strong>{target.score?.toFixed(1) ?? "0.0"}</strong></div>}
             </div> : <div className="okr-detail-kr-metrics">
               <div><span>状态</span><em className={statusClass(target.status)}>{OKR_STATUS_LABELS[target.status]}</em></div>
-              <div><span>分数</span><strong>{target.score?.toFixed(1) ?? "0.0"}</strong></div>
+              {preferences.show_score && <div><span>分数</span><strong>{target.score?.toFixed(1) ?? "0.0"}</strong></div>}
             </div>}
           </section>
           <nav className="okr-detail-tabs" role="tablist" aria-label="OKR 详情">
-            {target.kind === "objective" && <button role="tab" aria-selected={tab === "progress"} onClick={() => setTab("progress")}>进度</button>}
-            <button role="tab" aria-selected={tab === "tasks"} onClick={() => setTab("tasks")}>待办清单</button>
-            <button role="tab" aria-selected={tab === "records"} onClick={() => setTab("records")}>进展记录</button>
+            {target.kind === "objective" && <button role="tab" aria-selected={tab === "progress"} onClick={() => void flushNote(() => setTab("progress"))}>进度</button>}
+            <button role="tab" aria-selected={tab === "tasks"} onClick={() => void flushNote(() => setTab("tasks"))}>待办清单</button>
+            <button role="tab" aria-selected={tab === "records"} onClick={() => void flushNote(() => setTab("records"))}>进展记录</button>
+            <button role="tab" aria-selected={tab === "notes"} onClick={() => void flushNote(() => setTab("notes"))}>备注</button>
           </nav>
-          {tab === "tasks"
-            ? <OkrTaskListPanel target={target} tasks={tasks} members={members} loading={linkedTasks.isLoading && !demoMode} onOpenTask={onOpenTask} />
+          {tab === "notes" ? <section role="tabpanel" aria-label="备注">
+            <OkrNoteEditor key={`${target.kind}:${target.id}:${editable && online}`} ref={noteEditorRef}
+              value={noteEntity?.note ?? ""} mentions={noteEntity?.note_mentions} members={members} currentUserId={currentUserId}
+              editable={editable && online} loadCandidates={() => loadNoteCandidates(target.kind, target.id)} onSave={onSaveNote} />
+          </section> : tab === "tasks"
+            ? <>
+                {taskCreation && <OkrTaskComposer key={`${target.kind}:${target.id}`} workspaceId={workspaceId} target={target} keyResults={objective?.key_results}
+                  creation={taskCreation} online={online} editable={editable} onNotice={onNotice} onOpenTask={onOpenTask} />}
+                <OkrTaskListPanel target={target} tasks={tasks} members={members} loading={linkedTasks.isLoading && !demoMode} onOpenTask={onOpenTask} />
+              </>
             : tab === "progress" && target.kind === "objective"
             ? <ObjectiveProgressPanel target={target} cycle={cycle} records={objective ? okrObjectiveHistory(objective, aggregateHistory.data ?? []) : []} />
             : <ProgressRecordPanel
@@ -2271,4 +2290,14 @@ export function ProgressRecordPanel({ target, records, members, editable, value,
       {!records.length && <div className="okr-record-empty"><span><Clock3 /></span><strong>暂无进展</strong></div>}
     </div>
   </section>;
+}
+
+function noteMentions(ids: string[], members: Member[]): CommentMention[] {
+  return ids.map((id) => ({ user_id: id, display_name_snapshot: memberName(members, id) }));
+}
+async function loadNoteCandidates(kind: "objective" | "key_result", id: string): Promise<string[]> {
+  if (!supabase || !navigator.onLine) return [];
+  const { data, error } = await supabase.rpc("load_okr_note_mention_candidates", { p_kind: kind, p_id: id });
+  if (error) throw error;
+  return data ?? [];
 }

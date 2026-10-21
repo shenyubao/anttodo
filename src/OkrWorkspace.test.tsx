@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, dehydrate } from "@tanstack/react-que
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OkrWorkspace, ProgressRecordPanel, type ProgressTarget } from "./OkrWorkspace";
 import { createDemoBundle } from "./lib/demo";
+import { createDemoOkrData } from "./lib/demoOkr";
 
 vi.mock("./lib/supabase", () => ({ supabase: null }));
 
@@ -49,15 +50,25 @@ describe("OKR demo without a configured Supabase client", () => {
     expect(container.querySelectorAll('[aria-label="OKR 周期"] option')).toHaveLength(3);
     expect(container.querySelector(".okr-progress-meter")).toBeTruthy();
     expect(container.querySelector(".okr-progress-bounds")).toBeNull();
-    expect([...container.querySelectorAll(".okr-card-toolbar-meta")].every((item) => item.textContent === "进度分数记录待办")).toBe(true);
+    expect([...container.querySelectorAll(".okr-card-toolbar-meta")].every((item) => item.textContent === "进度记录待办")).toBe(true);
     expect(container.querySelectorAll(".okr-kr-row")).toHaveLength(4);
-    expect([...container.querySelectorAll(".okr-objective-note-label")].map((item) => item.textContent))
-      .toEqual(["备注", "备注"]);
-    expect(container.querySelectorAll<HTMLTextAreaElement>('[aria-label="备注"]')[0]?.readOnly).toBe(true);
-    expect(container.textContent).not.toContain("备注：");
+    expect(container.querySelector(".okr-inline-note")).toBeNull();
+    const disclosure = container.querySelector<HTMLButtonElement>('[aria-label="展开备注"]')!;
+    await act(async () => disclosure.click());
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector(".okr-inline-note")?.textContent).toContain("Web、macOS 和 iOS");
+    expect(container.querySelector(".okr-responsible-avatar")).toBeTruthy();
     expect(container.querySelector('[aria-label="编辑 Objective"]')).toBeNull();
     expect([...container.querySelectorAll<HTMLInputElement>('[aria-label="评分"]')]
       .every((input) => input.disabled)).toBe(true);
+    await act(async () => container.querySelector<HTMLButtonElement>(".okr-kr-row .okr-title-button")!.click());
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("进展记录");
+    expect(document.querySelector(".okr-detail-kr-metrics")?.textContent).not.toContain("分数");
+    const noteTab = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((button) => button.textContent === "备注")!;
+    await act(async () => noteTab.click());
+    expect(document.querySelector('.okr-detail-drawer .okr-note-markdown strong')?.textContent).toBe("交付重点");
+    expect(document.querySelector('.okr-detail-drawer .okr-note-markdown ul li')).toBeTruthy();
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="关闭 OKR 详情"]')!.click());
     const counts = [...container.querySelectorAll<HTMLButtonElement>(".okr-task-count")];
     expect(counts.map((button) => button.textContent)).toEqual(["1", "1", "0", "0", "0", "0"]);
     await act(async () => counts[0].click());
@@ -89,6 +100,36 @@ describe("OKR demo without a configured Supabase client", () => {
     expect(queryClient.getQueryCache().getAll().every((query) =>
       query.state.status === "pending" && query.state.fetchStatus === "idle")).toBe(true);
     expect(dehydrate(queryClient).queries).toEqual([]);
+  });
+});
+
+describe("OKR note notification destinations", () => {
+  it("reopens a repeated target and switches to a different owner and cycle", async () => {
+    window.history.replaceState(null, "", "/?demo=1");
+    const bundle = createDemoBundle();
+    const demo = createDemoOkrData();
+    const first = demo.sets.find((set) => set.owner_id === "demo-user" && demo.cycles.find((cycle) => cycle.id === set.cycle_id)?.status === "active")!;
+    const other = demo.sets.find((set) => set.owner_id === "demo-member" && demo.cycles.find((cycle) => cycle.id === set.cycle_id)?.status === "closed")!;
+    const container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const renderTarget = async (set: typeof first, revision: number) => {
+      await act(async () => root!.render(<QueryClientProvider client={queryClient!}>
+        <OkrWorkspace workspaceId="workspace-team" currentUserId="demo-user" currentRole="owner"
+          members={bundle.members} userGroups={bundle.userGroups} online={false}
+          initialOwnerId={set.owner_id} initialCycleId={set.cycle_id} initialTargetRevision={revision}
+          initialTarget={{ kind: "key_result", id: set.objectives[0].key_results[0].id, initialTab: "notes" }}
+          onNavigate={vi.fn()} onMenu={vi.fn()} onNotice={vi.fn()} />
+      </QueryClientProvider>));
+    };
+    await renderTarget(first, 1);
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("备注");
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="关闭 OKR 详情"]')!.click());
+    expect(document.querySelector(".okr-detail-drawer")).toBeNull();
+    await renderTarget(first, 2);
+    expect(document.querySelector(".okr-detail-drawer")).toBeTruthy();
+    await renderTarget(other, 3);
+    expect(document.querySelector(".okr-detail-title-line")?.textContent).toContain(other.objectives[0].key_results[0].title);
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("备注");
   });
 });
 

@@ -396,6 +396,7 @@ export function QuickAddForm({
               autoOpen
               showTrigger={false}
               anchorPoint={dueAnchor}
+              portalContainer={inputRef.current?.closest<HTMLElement>('[role="dialog"]') ?? undefined}
               onClose={() => setDueOpen(false)}
               onSave={async (patch, _schedule: ReminderSchedule) => {
                 setDue({

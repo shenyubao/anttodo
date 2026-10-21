@@ -71,4 +71,18 @@ describe("SerialSaveQueue", () => {
     expect(states.at(-1)).toEqual({ status: "saved" });
     queue.stop();
   });
+  it("accepts remote updates only when no local edit or request is pending", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const queue = new SerialSaveQueue<string>("before", save, () => undefined);
+    expect(queue.acceptExternal("remote")).toBe(true);
+    await queue.flush();
+    expect(save).not.toHaveBeenCalled();
+    queue.schedule("local");
+    expect(queue.acceptExternal("new remote")).toBe(false);
+    await queue.flush();
+    expect(save).toHaveBeenCalledExactlyOnceWith("local");
+    expect(queue.acceptExternal("after save")).toBe(true);
+    queue.stop();
+  });
+
 });

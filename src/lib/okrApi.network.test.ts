@@ -161,6 +161,15 @@ describe("batched OKR saves", () => {
     expect(buildOkrChanges(next, structuredClone(next))).toEqual({ objectives: [] });
   });
 
+  it("saves KR Markdown and mention identities together without unrelated fields", () => {
+    const before = fixture();
+    const next = structuredClone(before.objectives);
+    next[0].key_results[0].note = "**Follow up** @Viewer";
+    next[0].key_results[0].note_mentions = [{ user_id: "viewer", display_name_snapshot: "Viewer" }];
+    expect(buildOkrChanges(next, before.objectives)).toEqual({ objectives: [{ id: next[0].id,
+      key_results: [{ id: next[0].key_results[0].id, fields: { note: "**Follow up** @Viewer" }, mentioned_user_ids: ["viewer"] }] }] });
+  });
+
   it("sends all changed Objectives, KRs and relationships in one RPC", async () => {
     const before = fixture();
     const next = structuredClone(before);

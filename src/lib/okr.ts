@@ -232,6 +232,7 @@ export function importedOkrObjectives(objectives: OkrObjective[], workspaceId: s
     const objectiveId = objectiveIds.get(objective.id)!;
     return {
       ...objective,
+      note_mentions: [],
       id: objectiveId,
       set_id: "",
       workspace_id: workspaceId,
@@ -250,6 +251,8 @@ export function importedOkrObjectives(objectives: OkrObjective[], workspaceId: s
         const keyResultId = nextId();
         return {
           ...kr,
+          note: kr.note ?? "",
+          note_mentions: [],
           id: keyResultId,
           objective_id: objectiveId,
           workspace_id: workspaceId,
@@ -302,9 +305,10 @@ function snapshotEntries(snapshot: Record<string, unknown> | null | undefined) {
       if (!rawKeyResult || typeof rawKeyResult !== "object") continue;
       const keyResult = rawKeyResult as Record<string, unknown>;
       const keyResultId = String(keyResult.id ?? "");
+      const { note, ...keyResultFields } = keyResult;
       if (keyResultId) entries.set(`key_result:${keyResultId}`, {
         kind: "key_result",
-        value: JSON.stringify(keyResult),
+        value: JSON.stringify({ ...keyResultFields, note: typeof note === "string" ? note : "" }),
       });
     }
   }

@@ -59,7 +59,7 @@ export function EmbeddedNavigation({
   onSettings: () => void;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
   onMarkAllNotificationsRead: () => Promise<void>;
-  onOpenNotificationTask: (taskId: string) => void;
+  onOpenNotificationTask: (item: AppNotification) => void;
   onDownloadClient: () => void;
   onNotice: (message: string) => void;
   onSignOut: () => unknown;
@@ -363,9 +363,9 @@ export function EmbeddedNavigation({
               online={online}
               onRead={onMarkNotificationRead}
               onReadAll={onMarkAllNotificationsRead}
-              onOpenTask={(taskId) => {
+              onOpenNotification={(item) => {
                 closeMore();
-                onOpenNotificationTask(taskId);
+                onOpenNotificationTask(item);
               }}
               variant="menu"
               active={moreOpen}

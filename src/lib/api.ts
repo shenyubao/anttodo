@@ -431,7 +431,7 @@ export async function loadNotifications(
   assertNoError(error);
   const rows = (data ?? []) as AppNotification[];
   const actorIds = [...new Set(rows.map((item) => item.actor_id))];
-  const taskIds = [...new Set(rows.map((item) => item.task_id))];
+  const taskIds = [...new Set(rows.flatMap((item) => item.task_id ? [item.task_id] : []))];
   const commentIds = [...new Set(
     rows.flatMap((item) => (item.comment_id ? [item.comment_id] : [])),
   )];
@@ -452,7 +452,8 @@ export async function loadNotifications(
   const profiles = new Map((profilesResult.data ?? []).map((item) => [item.id, item]));
   const tasks = new Map((tasksResult.data ?? []).map((item) => [item.id, item]));
   const comments = new Map((commentsResult.data ?? []).map((item) => [item.id, item]));
-  return rows.flatMap((item) => {
+  return rows.flatMap<AppNotification>((item) => {
+    if (item.notification_type === "okr_mentioned") return [{ ...item, actor: profiles.get(item.actor_id) }];
     const task = tasks.get(item.task_id);
     if (!task) return [];
     const comment = item.comment_id ? comments.get(item.comment_id) : undefined;

@@ -22,7 +22,7 @@ export type AppRoute =
       kind: "okr";
       ownerId?: string;
       cycleId?: string;
-      target?: { kind: "objective" | "key_result"; id: string; initialTab?: "tasks" };
+      target?: { kind: "objective" | "key_result"; id: string; initialTab?: "tasks" | "notes" };
     }
   | { workspaceId: string; kind: "search" };
 
@@ -167,7 +167,7 @@ export function parseAppRoute(pathname: string): AppRoute | null {
         ? { workspaceId, kind: "okr", ownerId, cycleId }
         : null;
     }
-    if (segments.length === 8 && segments[4] === "cycles") {
+    if ((segments.length === 8 || (segments.length === 9 && segments[8] === "notes")) && segments[4] === "cycles") {
       const cycleId = decodeSegment(segments[5]);
       const targetId = decodeSegment(segments[7]);
       const demoCyclePrefix = `demo-okr-${workspaceId}-`;
@@ -187,7 +187,7 @@ export function parseAppRoute(pathname: string): AppRoute | null {
             kind: "okr",
             ownerId,
             cycleId: cycleId!,
-            target: { kind: targetKind, id: targetId!, initialTab: "tasks" },
+            target: { kind: targetKind, id: targetId!, initialTab: segments[8] === "notes" ? "notes" : "tasks" },
           }
         : null;
     }
@@ -223,7 +223,7 @@ export function appRoutePath(route: AppRoute) {
     if (!route.cycleId) return ownerPath;
     const cyclePath = `${ownerPath}/cycles/${encodeURIComponent(route.cycleId)}`;
     if (!route.target) return cyclePath;
-    return `${cyclePath}/${route.target.kind === "objective" ? "objectives" : "key-results"}/${encodeURIComponent(route.target.id)}`;
+    return `${cyclePath}/${route.target.kind === "objective" ? "objectives" : "key-results"}/${encodeURIComponent(route.target.id)}${route.target.initialTab === "notes" ? "/notes" : ""}`;
   }
   if (route.kind === "weekly_reports") {
     const root = `${base}/weekly-reports`;
@@ -267,7 +267,7 @@ export function parseTaskReturnRoute(value: unknown, workspaceId: string): AppRo
       const target: Extract<AppRoute, { kind: "okr" }>["target"] = rawTarget
         && (rawTarget.kind === "objective" || rawTarget.kind === "key_result")
         && typeof rawTarget.id === "string"
-        ? { kind: rawTarget.kind, id: rawTarget.id, initialTab: "tasks" as const }
+        ? { kind: rawTarget.kind, id: rawTarget.id, initialTab: rawTarget.initialTab === "notes" ? "notes" as const : "tasks" as const }
         : undefined;
       return { workspaceId, kind: "okr", ...(ownerId ? { ownerId } : {}), ...(cycleId ? { cycleId } : {}), ...(target ? { target } : {}) };
     }

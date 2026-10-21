@@ -105,7 +105,8 @@ test.describe("local OKR saves", () => {
     await editor.getByRole("button", { name: "保存草稿", exact: true }).click();
     await checked(await ownerClient!.rpc("save_okr_changes", { p_set_id: setId,
       p_changes: { objectives: [{ id: objectiveId, fields: { note: "来自另一客户端的更新" } }] } }));
-    await expect(page.getByLabel("备注", { exact: true }).first()).toHaveValue("来自另一客户端的更新");
+    await page.locator(".okr-objective-row").first().getByRole("button", { name: "展开备注" }).click();
+    await expect(page.locator(".okr-inline-note").first()).toHaveText("来自另一客户端的更新");
     await context.setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
     await expect(page.getByRole("button", { name: "编辑 Objective" })).toHaveCount(0);

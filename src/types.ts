@@ -211,6 +211,8 @@ export type OkrBreakdown = {
 };
 
 export type OkrKeyResult = {
+  note: string;
+  note_mentions?: CommentMention[];
   id: string;
   objective_id: string;
   workspace_id: string;
@@ -241,6 +243,7 @@ export type OkrObjective = {
   workspace_id: string;
   title: string;
   note: string;
+  note_mentions?: CommentMention[];
   position: number;
   visibility: OkrVisibility;
   progress_mode: OkrProgressMode;
@@ -639,6 +642,7 @@ export type NotificationPreferences = Record<
 >;
 
 export type NotificationType =
+  | "okr_mentioned"
   | "comment_mention"
   | "todo_mentioned"
   | "task_assigned"
@@ -650,14 +654,12 @@ export type NotificationType =
   | "participant_new_comment"
   | "participant_task_created";
 
-export type AppNotification = {
+type NotificationBase = {
   id: string;
   workspace_id: string;
-  task_id: string;
   comment_id: string | null;
   recipient_id: string;
   actor_id: string;
-  notification_type: NotificationType;
   payload?: Record<string, unknown>;
   read_at: string | null;
   created_at: string;
@@ -665,6 +667,11 @@ export type AppNotification = {
   task?: Pick<Task, "id" | "title" | "kind"> & { description?: string };
   comment?: Pick<TaskComment, "id" | "body" | "image_uris">;
 };
+
+export type AppNotification = NotificationBase & (
+  | { notification_type: Exclude<NotificationType, "okr_mentioned">; task_id: string; objective_id?: null; key_result_id?: null }
+  | { notification_type: "okr_mentioned"; task_id: null; objective_id: string | null; key_result_id: string | null }
+);
 
 export type TaskListPreference = {
   user_id: string;

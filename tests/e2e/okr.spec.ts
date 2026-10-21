@@ -28,8 +28,11 @@ test("OKR target workspace keeps routing and responsive employee navigation", as
   await expect(page.getByText("让 AntTodo 成为团队每天信赖的协作工具", { exact: true })).toBeVisible();
   await expect(page.locator(".okr-objective-card")).toHaveCount(2);
   await expect(page.locator(".okr-kr-row")).toHaveCount(4);
-  await expect(page.locator(".okr-objective-note.filled")).toHaveCount(2);
-  await expect(page.locator(".okr-objective-note-label")).toHaveText(["备注", "备注"]);
+  await expect(page.locator(".okr-inline-note")).toHaveCount(0);
+  await expect(page.locator(".okr-score")).toHaveCount(0);
+  await expect(page.locator(".okr-responsible-avatar").first()).toBeVisible();
+  await page.locator(".okr-objective-row").first().getByRole("button", { name: "展开备注" }).click();
+  await expect(page.locator(".okr-inline-note").first()).toContainText("Web、macOS 和 iOS");
 
   await page.getByRole("button", { name: "更多" }).click();
   const moreMenu = page.getByRole("menu");
@@ -39,7 +42,7 @@ test("OKR target workspace keeps routing and responsive employee navigation", as
   await page.reload();
   await expect(page.locator(".okr-layout")).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole("heading", { name: "沈宇宝" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "任务", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.goForward();
   await expect(page.locator(".okr-layout")).toBeVisible();
 
@@ -121,6 +124,8 @@ test("task and KR details keep a bidirectional return path", async ({ page }) =>
   await expect(page).toHaveURL(/\/key-results\//);
   const okrDetail = page.getByRole("dialog", { name: "OKR 详情" });
   await expect(okrDetail.getByRole("tab", { name: "待办清单" })).toHaveAttribute("aria-selected", "true");
+  await expect(okrDetail.locator(".quick-add-input")).toBeVisible();
+  await expect(okrDetail.locator(".quick-add-input")).toBeDisabled();
   await expect(okrDetail.getByRole("button", { name: new RegExp(taskTitle) })).toBeVisible();
   const targetUrl = page.url();
 
@@ -131,6 +136,25 @@ test("task and KR details keep a bidirectional return path", async ({ page }) =>
   await expect(taskDialog).toHaveCount(0);
   await expect(page).toHaveURL(targetUrl);
   await expect(okrDetail.getByRole("tab", { name: "待办清单" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("OKR task composer stays above empty states on desktop and mobile", async ({ page }) => {
+  await page.goto("/?demo=1#/workspaces/workspace-team/okr");
+  await dismissDemoNotice(page);
+  await page.locator(".okr-kr-row .okr-task-count").nth(1).click();
+  const detail = page.getByRole("dialog", { name: "OKR 详情" });
+  const input = detail.locator(".quick-add");
+  await expect(input).toBeVisible();
+  await expect(detail).toContainText("暂无关联待办");
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await page.screenshot({ path: `test-results/okr-task-composer-${viewport.width}.png`, animations: "disabled" });
+    const box = (await input.boundingBox())!;
+    const tabs = (await detail.locator(".okr-detail-tabs").boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(tabs.y + tabs.height);
+    expect(box.height).toBe(39);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  }
 });
 
 test("OKR picker is available from task menus and becomes a mobile sheet", async ({ page }) => {
@@ -146,4 +170,28 @@ test("OKR picker is available from task menus and becomes a mobile sheet", async
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(picker).toHaveCSS("left", "8px");
   await expect(picker).toHaveCSS("right", "8px");
+});
+
+test("OKR notes expand independently and KR titles open the existing details", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/?demo=1#/workspaces/workspace-team/okr");
+  await dismissDemoNotice(page);
+  const row = page.locator(".okr-kr-row").first();
+  await row.getByRole("button", { name: "展开备注" }).click();
+  await expect(page.getByRole("dialog", { name: "OKR 详情" })).toHaveCount(0);
+  await expect(row.locator(".okr-inline-note strong")).toHaveText("交付重点");
+  await row.locator(".okr-title-button").click();
+  const detail = page.getByRole("dialog", { name: "OKR 详情" });
+  await expect(detail.getByRole("tab", { name: "进展记录" })).toHaveAttribute("aria-selected", "true");
+  await detail.getByRole("tab", { name: "备注", exact: true }).click();
+  await expect(detail.locator(".okr-note-markdown strong")).toHaveText("交付重点");
+  await expect(detail.locator(".okr-note-markdown li")).toHaveCount(2);
+  await expect(detail.locator(".okr-detail-kr-metrics")).not.toContainText("分数");
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(detail.getByRole("tab", { name: "备注", exact: true })).toBeVisible();
+    await page.screenshot({ path: `test-results/okr-notes-${width}.png`, animations: "disabled" });
+  }
+  expect(errors).toEqual([]);
 });

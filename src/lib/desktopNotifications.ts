@@ -129,6 +129,7 @@ export function shouldShowSystemNotification(
   item: AppNotification,
   preferences: NotificationPreferences,
 ) {
+  if (item.notification_type === "okr_mentioned") return false;
   const scenario = scenarioForNotification(item);
   if (!scenario) return true;
   return preferences[scenario]?.systemEnabled !== false;

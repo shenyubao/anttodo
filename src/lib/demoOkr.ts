@@ -129,6 +129,7 @@ export function createDemoOkrData(workspaceId = "workspace-team", now = new Date
             objective_id: objectiveId,
             workspace_id: workspaceId,
             title: kr.title,
+            note: index === 0 ? "**交付重点**\n\n- 每周跟踪核心指标\n- 保持跨端体验一致" : "",
             position: index,
             visibility: "inherit",
             status_mode: "manual",

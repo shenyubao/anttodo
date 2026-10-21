@@ -345,6 +345,8 @@ type KeyResultRow = Omit<OkrKeyResult, "responsible_ids" | "user_acl_ids" | "gro
 function normalizeOkrKeyResult(keyResult: OkrKeyResult): OkrKeyResult {
   return {
     ...keyResult,
+    note: keyResult.note ?? "",
+    note_mentions: keyResult.note_mentions ?? [],
     start_value: numberValue(keyResult.start_value),
     target_value: numberValue(keyResult.target_value, 100),
     current_value: keyResult.current_value === null ? null : numberValue(keyResult.current_value),
@@ -363,6 +365,8 @@ function normalizeOkrKeyResult(keyResult: OkrKeyResult): OkrKeyResult {
 function normalizeOkrObjective(objective: OkrObjective): OkrObjective {
   return {
     ...objective,
+    note: objective.note ?? "",
+    note_mentions: objective.note_mentions ?? [],
     progress_mode: "key_results",
     start_value: numberValue(objective.start_value),
     target_value: numberValue(objective.target_value, 100),
@@ -409,6 +413,7 @@ export type OkrEntityChange = {
   alignment_target_id?: string | null;
   breakdowns?: Array<Pick<OkrBreakdown, "user_id" | "allocated_value">>;
   key_results?: OkrEntityChange[];
+  mentioned_user_ids?: string[];
 };
 
 const commonOkrFields = [
@@ -423,6 +428,10 @@ function entityChange(next: OkrObjective | OkrKeyResult, previous?: OkrObjective
     const value = key === "title" ? next.title.trim() : next[key];
     const prior = previous && (key === "title" ? previous.title.trim() : previous[key]);
     if (!previous || value !== prior) fields[key] = value;
+  }
+  if (!previous || (next.note ?? "") !== (previous.note ?? "")) fields.note = next.note ?? "";
+  if (next.note_mentions && JSON.stringify(next.note_mentions) !== JSON.stringify(previous?.note_mentions ?? [])) {
+    change.mentioned_user_ids = next.note_mentions.map((mention) => mention.user_id);
   }
   if ("key_results" in next) {
     const before = previous && "key_results" in previous ? previous : undefined;
@@ -628,6 +637,7 @@ export async function updateOkrKeyResult(
   const { responsible_ids, user_acl_ids, group_acl_ids, breakdowns, ...row } = keyResult;
   const { data, error } = await client.from("okr_key_results").update({
     title: row.title.trim(),
+    note: row.note ?? "",
     position: row.position,
     visibility: row.visibility,
     status_mode: row.status_mode,
@@ -777,7 +787,7 @@ export async function loadOkrDisplayPreferences(
       workspace_id: workspaceId,
       cycle_id: cycleId,
       show_progress: true,
-      show_score: true,
+      show_score: false,
       show_weight: true,
       apply_all_cycles: false,
     };

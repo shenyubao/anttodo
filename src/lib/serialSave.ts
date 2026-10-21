@@ -19,6 +19,13 @@ export class SerialSaveQueue<T> {
     this.saved = initialValue;
   }
 
+  acceptExternal(value: T) {
+    if (this.inFlight || !Object.is(this.latest, this.saved)) return false;
+    this.latest = value;
+    this.saved = value;
+    return true;
+  }
+
   schedule(value: T) {
     if (this.stopped) return;
     this.latest = value;

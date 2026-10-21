@@ -139,14 +139,14 @@ describe("OKR helpers", () => {
 
   it("imports structure and metric settings while resetting period state", () => {
     const source = {
-      id: "o1", set_id: "s1", workspace_id: "w1", title: "增长", note: "背景",
+      id: "o1", set_id: "s1", workspace_id: "w1", title: "增长", note: "背景", note_mentions: [{user_id:"u2",display_name_snapshot:"同学"}],
       position: 0, visibility: "restricted", progress_mode: "key_results", status_mode: "automatic",
       progress_status: "risk", start_value: 0, target_value: 100, current_value: 40,
       metric_unit: "percent", custom_unit: null, score: 0.7, published_at: "2026-01-01",
       created_at: "2026-01-01", updated_at: "2026-01-01", responsible_ids: ["u1"],
       user_acl_ids: ["u2"], group_acl_ids: ["g1"], alignment_target_id: "o2",
       key_results: [{
-        id: "k1", objective_id: "o1", workspace_id: "w1", title: "收入", position: 0,
+        id: "k1", objective_id: "o1", workspace_id: "w1", title: "收入", note: "**说明** @同学", note_mentions: [{user_id:"u2",display_name_snapshot:"同学"}], position: 0,
         visibility: "restricted", status_mode: "automatic", progress_status: "risk",
         start_value: 10, target_value: 200, current_value: 80, metric_unit: "cny",
         custom_unit: null, weight: 100, score: 0.8, published_at: "2026-01-01",
@@ -159,12 +159,12 @@ describe("OKR helpers", () => {
     } as OkrObjective;
     const [imported] = importedOkrObjectives([source], "w2");
     expect(imported).toMatchObject({
-      workspace_id: "w2", note: "背景", responsible_ids: ["u1"], visibility: "inherit",
+      workspace_id: "w2", note: "背景", note_mentions: [], responsible_ids: ["u1"], visibility: "inherit",
       user_acl_ids: [], group_acl_ids: [], alignment_target_id: null,
       current_value: null, progress_status: "none", score: null,
     });
     expect(imported.key_results[0]).toMatchObject({
-      workspace_id: "w2", metric_unit: "cny", start_value: 10, target_value: 200,
+      workspace_id: "w2", note: "**说明** @同学", note_mentions: [], metric_unit: "cny", start_value: 10, target_value: 200,
       responsible_ids: ["u1"], visibility: "inherit", user_acl_ids: [], group_acl_ids: [],
       current_value: null, progress_status: "none", score: null,
     });
@@ -172,4 +172,13 @@ describe("OKR helpers", () => {
       workspace_id: "w2", user_id: "u1", allocated_value: 200,
     });
   });
+});
+
+it("treats missing historical KR notes as empty while detecting actual note edits", () => {
+  const previous = { objectives: [{ id: "o", title: "O", note: "", keyResults: [{ id: "kr", title: "KR" }] }] };
+  const current = structuredClone(previous) as { objectives: Array<{ id: string; title: string; note: string; keyResults: Array<{ id: string; title: string; note?: string }> }> };
+  current.objectives[0].keyResults[0].note = "";
+  expect(okrSnapshotDiff(current, previous)).toEqual([]);
+  current.objectives[0].keyResults[0].note = "**New note**";
+  expect(okrSnapshotDiff(current, previous)).toEqual([{ kind: "key_result", id: "kr", change: "changed" }]);
 });

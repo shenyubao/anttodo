@@ -4920,6 +4920,43 @@ html.dark .mind-map-date-content > svg {
   padding: 16px 24px 28px;
 }
 
+.okr-task-composer {
+  margin: 12px 0 0;
+}
+
+.okr-task-composer-target,
+.okr-task-composer-retry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.okr-task-composer-target > span {
+  flex-shrink: 0;
+}
+
+.okr-task-composer-target select {
+  min-width: 0;
+  flex: 1;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.okr-task-composer-retry {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.okr-task-composer-retry button {
+  color: var(--blue);
+}
+
 .okr-task-group + .okr-task-group {
   margin-top: 18px;
 }
@@ -24989,3 +25026,51 @@ html.dark .weekly-report-group-dialog input, html.dark .weekly-report-group-dial
 .weekly-report-group-dialog .weekly-report-config-body { flex: 1; min-height: 0; }
 .weekly-report-group-dialog .dialog-actions { flex-shrink: 0; }
 .weekly-report-group-main .weekly-reports-header > .mobile-menu-button { display: none; }
+
+/* OKR notes share the task editor and keep title disclosures separate from metrics. */
+.okr-title-button {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--okr-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+.okr-title-button.objective { font-size: 16px; line-height: 24px; }
+.okr-title-button:hover { color: var(--blue); }
+.okr-title-button:focus-visible, .okr-note-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
+.okr-note-toggle { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 3px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.okr-note-toggle:hover { background: rgba(25,25,25,.05); }
+.okr-note-toggle svg { width: 16px; height: 16px; }
+.okr-title-cell .okr-responsibles { display: inline-flex; flex: none; gap: 4px; overflow: visible; padding: 0; background: transparent; }
+.okr-responsibles:empty { display: none; }
+.okr-responsible-avatar { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; object-fit: cover; font-size: 10px; }
+.okr-inline-note { grid-column: 1 / -1; padding: 10px 22px 14px 58px; color: var(--text); }
+.okr-inline-note > .okr-note-markdown { opacity: .6; }
+.okr-kr-row > .okr-inline-note { padding: 12px 0 4px 43px; }
+.okr-note-markdown { overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
+.okr-note-markdown > :first-child { margin-top: 0; }
+.okr-note-markdown > :last-child { margin-bottom: 0; }
+.okr-note-markdown ul { list-style: disc; padding-left: 24px; }
+.okr-note-markdown ol { list-style: decimal; padding-left: 24px; }
+.okr-note-markdown blockquote { margin-left: 0; padding-left: 12px; border-left: 3px solid var(--divider); }
+.okr-note-markdown img { max-width: 100%; }
+.okr-note-editor { min-width: 0; padding: 16px 0; }
+.okr-note-editor .rich-editor-content { min-height: 160px; padding: 12px 0; }
+.okr-note-editor .rich-editor-toolbar-row { position: static; width: 100%; }
+.okr-note-editor .rich-editor-toolbar { flex-wrap: wrap; }
+.okr-note-empty { color: var(--muted); font-size: 14px; }
+.okr-detail-scroll > [role="tabpanel"] { padding: 0 24px 24px; }
+.okr-editor-body > .okr-note-editor { margin: 12px 22px 12px 58px; }
+@media (max-width: 760px) {
+  .okr-title-button { overflow-wrap: anywhere; }
+  .okr-title-button.objective { font-size: 15px; }
+  .okr-inline-note { padding-left: 18px; padding-right: 18px; }
+  .okr-kr-row > .okr-inline-note { padding-left: 0; }
+  .okr-editor-body > .okr-note-editor { margin: 12px 18px; }
+}
+.rich-editor-mention-menu { pointer-events: auto; }

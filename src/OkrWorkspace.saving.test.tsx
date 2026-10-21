@@ -188,7 +188,7 @@ describe("OKR save coordination", () => {
     backend.set!.objectives[0].responsible_ids = [];
     await render(); await edit();
     const add = container.querySelector(".okr-add-kr")!;
-    const note = container.querySelector(".okr-objective-card.editing .okr-objective-note")!;
+    const note = container.querySelector(".okr-objective-card.editing .okr-note-editor")!;
     expect(add.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const trigger = container.querySelector<HTMLButtonElement>(".okr-member-control .task-assignee-trigger")!;
     await act(async () => trigger.click());

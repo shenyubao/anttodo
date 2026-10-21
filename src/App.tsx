@@ -1,3 +1,4 @@
+import { notificationOkrRoute } from "./lib/notificationCopy";
 import { SortableTaskTree } from "./SortableTaskTree";
 import { NoticeToast, useNotice } from "./NoticeToast";
 import { TaskStatusActionsProvider, useTaskStatusActions } from "./TaskStatusActions";
@@ -2440,7 +2441,7 @@ function RemoteApplication({
         title,
         body,
         workspaceId: item.workspace_id,
-        taskId: item.task_id,
+        taskId: item.task_id ?? undefined,
         tag: `notification:${item.id}`,
       });
     }
@@ -2567,6 +2568,9 @@ function RemoteApplication({
             void queryClient.invalidateQueries({ queryKey: ["workspace-bundle", workspaceId] });
             void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
             return;
+          }
+          if (table === "okr_access_revisions" || table === "user_group_members" || table === "workspace_members") {
+            void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
           }
           if (table === "notifications") {
             void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
@@ -4513,7 +4517,7 @@ function DemoApplication({
           comment_id: null,
           recipient_id: mention.user_id,
           actor_id: "demo-user",
-          notification_type: mentionType as NotificationType,
+          notification_type: mentionType as Exclude<NotificationType, "okr_mentioned">,
           payload: { source: "description" },
           read_at: null,
           created_at: new Date().toISOString(),
@@ -5764,7 +5768,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         ? initialTaskReturnRoute.kind
         : "tasks",
   );
-  const [, setRouteRevision] = useState(0);
+  const [routeRevision, setRouteRevision] = useState(0);
   const [focusDeepLink, setFocusDeepLink] = useState<DesktopFocusDeepLinkEnvelope | null>(null);
   const deepLinkWorkspaceRequestsRef = useRef(new Set<number>());
   const deepLinkProcessingRef = useRef<number | null>(null);
@@ -6061,6 +6065,23 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
 
   function selectChildTask(taskId: string, modifiers?: TaskPointerModifiers, orderedIds?: readonly string[]) {
     selectTask(taskId, modifiers, orderedIds);
+  }
+
+  function openNotification(item: AppNotification) {
+    setMobileAppSidebar(false);
+    const okrRoute = notificationOkrRoute(item);
+    if (okrRoute) {
+      setAppSection("okr");
+      writeRoute(okrRoute);
+      // Reopen the same notification target after its drawer was closed.
+      setRouteRevision((value) => value + 1);
+      return;
+    }
+    if (!item.task_id) return;
+    setAppSection("tasks");
+    setSmartView("all");
+    setSelectedLabelId(null);
+    selectTask(item.task_id);
   }
 
   async function openOkrLinkedTask(taskId: string) {
@@ -6783,12 +6804,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       onSettings={() => openSettings()}
       onMarkNotificationRead={props.onMarkNotificationRead}
       onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
-      onOpenNotificationTask={(taskId) => {
-        setAppSection("tasks");
-        setSmartView("all");
-        setSelectedLabelId(null);
-        selectTask(taskId);
-      }}
+      onOpenNotificationTask={openNotification}
       onDownloadClient={() => setDownloadClientDialogOpen(true)}
       onNotice={props.onNotice}
       onSignOut={props.onSignOut}
@@ -6859,12 +6875,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onSettings={() => openSettings()}
         onMarkNotificationRead={props.onMarkNotificationRead}
         onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
-        onOpenNotificationTask={(taskId) => {
-          setAppSection("tasks");
-          setSmartView("all");
-          setSelectedLabelId(null);
-          selectTask(taskId);
-        }}
+        onOpenNotificationTask={openNotification}
         onDownloadClient={() => setDownloadClientDialogOpen(true)}
         onNotice={props.onNotice}
         onSignOut={props.onSignOut}
@@ -6944,13 +6955,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         }}
         onMarkNotificationRead={props.onMarkNotificationRead}
         onMarkAllNotificationsRead={props.onMarkAllNotificationsRead}
-        onOpenNotificationTask={(taskId) => {
-          setMobileAppSidebar(false);
-          setAppSection("tasks");
-          setSmartView("all");
-          setSelectedLabelId(null);
-          selectTask(taskId);
-        }}
+        onOpenNotificationTask={openNotification}
         onDownloadClient={() => {
           setMobileAppSidebar(false);
           setDownloadClientDialogOpen(true);
@@ -7118,6 +7123,43 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onMenu={openMobileNavigation}
           onNotice={props.onNotice}
         /> : appSection === "okr" ? <OkrWorkspace
+          taskCreation={{
+            formProps: {
+              now,
+              dateTimePreferences: props.dateTimePreferences,
+              members: props.bundle.members,
+              labels: props.bundle.labels,
+              labelPermissionLevels: props.bundle.labelPermissionLevels,
+              userLabelOrder: props.bundle.userLabelOrder,
+              currentUserId: props.currentUserId,
+            },
+            onCreateTask: async (payload) => {
+              const created = await props.onCreateTask({
+                title: payload.title,
+                labelIds: payload.labelIds,
+                kind: "todo",
+                priority: "low",
+                dueAt: payload.due?.due_at ?? null,
+                dueTimezone: payload.due?.due_timezone ?? null,
+                estimateHours: payload.estimateHours,
+                assigneeId: payload.assigneeId,
+              });
+              if (!created || typeof created !== "object" || !("id" in created)) {
+                throw new Error("未能获取新待办，请刷新后重试");
+              }
+              const taskId = String(created.id);
+              if (payload.due && (payload.due.due_is_all_day || payload.due.due_start_at)) {
+                try {
+                  await props.onSaveTaskSchedule(taskId, payload.due, {
+                    reminders: [], recurrence: null, persistent: false,
+                  });
+                } catch (cause) {
+                  props.onNotice(`待办已创建，但排期保存失败：${cause instanceof Error ? cause.message : "请重试"}`, "error");
+                }
+              }
+              return taskId;
+            },
+          }}
           workspaceId={props.workspaceId}
           currentUserId={props.currentUserId}
           currentRole={workspace.role
@@ -7132,6 +7174,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           initialCycleId={renderedRoute?.kind === "okr"
             ? renderedRoute.cycleId
             : undefined}
+          initialTargetRevision={routeRevision}
           initialTarget={renderedRoute?.kind === "okr"
             ? renderedRoute.target
             : undefined}
@@ -7571,7 +7614,7 @@ function NavigationRail({
   onSettings: () => void;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
   onMarkAllNotificationsRead: () => Promise<void>;
-  onOpenNotificationTask: (taskId: string) => void;
+  onOpenNotificationTask: (item: AppNotification) => void;
   onDownloadClient: () => void;
   onNotice: (message: string) => void;
   onSignOut: () => unknown;
@@ -7728,7 +7771,7 @@ function NavigationRail({
         online={online}
         onRead={onMarkNotificationRead}
         onReadAll={onMarkAllNotificationsRead}
-        onOpenTask={onOpenNotificationTask}
+        onOpenNotification={onOpenNotificationTask}
       />
       <button
         className="rail-button"
@@ -7822,7 +7865,7 @@ function MobileAppSidebar({
   onSettings: () => void;
   onMarkNotificationRead: (notificationId: string) => Promise<void>;
   onMarkAllNotificationsRead: () => Promise<void>;
-  onOpenNotificationTask: (taskId: string) => void;
+  onOpenNotificationTask: (item: AppNotification) => void;
   onDownloadClient: () => void;
   onNotice: (message: string) => void;
   onSignOut: () => unknown;
@@ -8097,7 +8140,7 @@ function MobileAppSidebar({
               online={online}
               onRead={onMarkNotificationRead}
               onReadAll={onMarkAllNotificationsRead}
-              onOpenTask={onOpenNotificationTask}
+              onOpenNotification={onOpenNotificationTask}
             />
           </div>
         </header>

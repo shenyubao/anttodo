@@ -93,8 +93,8 @@ export type TaskRichTextEditorHandle = {
 };
 
 type TaskRichTextEditorProps = {
-  attachmentContext: AttachmentContext;
-  attachmentService: AttachmentService;
+  attachmentContext?: AttachmentContext;
+  attachmentService?: AttachmentService;
   currentUserId?: string;
   immersive: boolean;
   initialMarkdown: string;
@@ -106,14 +106,19 @@ type TaskRichTextEditorProps = {
   onSave: (markdown: string, mentionedUserIds?: string[]) => Promise<void>;
   toolbarHost: HTMLElement | null;
   toolbarOpen: boolean;
+  placeholder?: string;
+  attachmentsEnabled?: boolean;
+  immersiveEnabled?: boolean;
 };
 
 type EditorToolbarProps = {
-  attachmentService: AttachmentService;
+  attachmentService?: AttachmentService;
   disabled: boolean;
   immersive: boolean;
   onImmersiveChange: (immersive: boolean) => void;
   uploadAttachment: (file: File) => Promise<UploadedAttachment>;
+  attachmentsEnabled?: boolean;
+  immersiveEnabled?: boolean;
 };
 
 function ImmersiveButton({
@@ -168,7 +173,7 @@ function AttachmentButton({
     try {
       insertMarkdown(attachmentMarkdown(attachment));
     } catch (error) {
-      await attachmentService.remove(attachment.uri).catch(() => undefined);
+      await attachmentService?.remove(attachment.uri).catch(() => undefined);
       throw error;
     }
   }
@@ -245,9 +250,9 @@ function EditorToolbar(props: EditorToolbarProps) {
     <div
       className={`rich-editor-toolbar-row${props.disabled ? " is-disabled" : ""}`}
     >
-      <div className="rich-toolbar-immersive-out">
+      {props.immersiveEnabled !== false && <div className="rich-toolbar-immersive-out">
         <ImmersiveButton {...props} />
-      </div>
+      </div>}
       <div
         className={`rich-editor-toolbar${props.disabled ? " is-disabled" : ""}`}
         aria-label="文本样式"
@@ -271,7 +276,7 @@ function EditorToolbar(props: EditorToolbarProps) {
         <span className="rich-toolbar-secondary">
           <QuoteButton />
         </span>
-        <AttachmentButton {...props} />
+        {props.attachmentsEnabled !== false && <AttachmentButton {...props} />}
         <MoreFormattingMenu />
       </div>
     </div>
@@ -296,6 +301,9 @@ export const TaskRichTextEditor = forwardRef<
     onSave,
     toolbarHost,
     toolbarOpen,
+    placeholder = "添加描述、会议结论或验收标准…",
+    attachmentsEnabled = true,
+    immersiveEnabled = true,
   },
   forwardedRef,
 ) {
@@ -347,6 +355,14 @@ export const TaskRichTextEditor = forwardRef<
       },
     );
   }
+
+  const initialMentionSignature = JSON.stringify(initialMentionUserIds);
+  useEffect(() => {
+    if (queueRef.current?.acceptExternal(initialMarkdown)) {
+      setSelectedMentionIds(initialMentionUserIds);
+      if (editorRef.current?.getMarkdown() !== initialMarkdown) editorRef.current?.setMarkdown(initialMarkdown);
+    }
+  }, [initialMarkdown, initialMentionSignature]);
 
   const candidates = useMemo(
     () => filterMentionCandidates({
@@ -499,11 +515,12 @@ export const TaskRichTextEditor = forwardRef<
   const uploadAttachment = useCallback(
     async (file: File) => {
       if (!onlineRef.current) throw new Error("离线时不能上传附件");
+      if (!attachmentsEnabled || !attachmentService || !attachmentContext) throw new Error("此编辑器不支持附件");
       setUploadState({ status: "uploading" });
       try {
         const attachment = await attachmentService.upload(attachmentContext, file);
         if (!mountedRef.current) {
-          await attachmentService.remove(attachment.uri).catch(() => undefined);
+          await attachmentService?.remove(attachment.uri).catch(() => undefined);
           throw new Error("编辑器已关闭");
         }
         setUploadState({ status: "idle" });
@@ -514,7 +531,7 @@ export const TaskRichTextEditor = forwardRef<
         throw error;
       }
     },
-    [attachmentContext, attachmentService],
+    [attachmentContext, attachmentService, attachmentsEnabled],
   );
 
   const plugins = useMemo(
@@ -525,13 +542,13 @@ export const TaskRichTextEditor = forwardRef<
       linkPlugin({ validateUrl: isSafeEditorUrl }),
       linkDialogPlugin({
         onClickLinkCallback: (url) => {
-          void attachmentService.open(url).catch((error) => {
+          void (attachmentService ? attachmentService.open(url) : Promise.resolve(window.open(url, "_blank", "noopener,noreferrer"))).catch((error) => {
             if (mountedRef.current) setUploadState({ status: "error", error });
           });
         },
         onReadOnlyClickLinkCallback: (event, _node, url) => {
           event.preventDefault();
-          void attachmentService.open(url).catch((error) => {
+          void (attachmentService ? attachmentService.open(url) : Promise.resolve(window.open(url, "_blank", "noopener,noreferrer"))).catch((error) => {
             if (mountedRef.current) setUploadState({ status: "error", error });
           });
         },
@@ -540,11 +557,11 @@ export const TaskRichTextEditor = forwardRef<
         allowSetImageDimensions: false,
         disableImageResize: true,
         disableImageSettingsButton: true,
-        imagePreviewHandler: (uri) => attachmentService.resolveImage(uri),
+        imagePreviewHandler: (uri) => attachmentService ? attachmentService.resolveImage(uri) : Promise.resolve(uri),
         imageUploadHandler: async (file) => {
           const attachment = await uploadAttachment(file);
           if (!attachment.image) {
-            await attachmentService.remove(attachment.uri).catch(() => undefined);
+            await attachmentService?.remove(attachment.uri).catch(() => undefined);
             throw new Error("粘贴区域只接受图片");
           }
           return attachment.uri;
@@ -562,6 +579,8 @@ export const TaskRichTextEditor = forwardRef<
                   immersive={immersive}
                   onImmersiveChange={onImmersiveChange}
                   uploadAttachment={uploadAttachment}
+                  attachmentsEnabled={attachmentsEnabled}
+                  immersiveEnabled={immersiveEnabled}
                 />,
                 toolbarHost,
               )
@@ -570,6 +589,8 @@ export const TaskRichTextEditor = forwardRef<
     ],
     [
       attachmentService,
+      attachmentsEnabled,
+      immersiveEnabled,
       immersive,
       onImmersiveChange,
       online,
@@ -594,7 +615,7 @@ export const TaskRichTextEditor = forwardRef<
         className="task-rich-editor-root"
         contentEditableClassName="detail-description rich-editor-content"
         markdown={initialMarkdown}
-        placeholder="添加描述、会议结论或验收标准…"
+        placeholder={placeholder}
         plugins={plugins}
         readOnly={!online}
         trim={false}
@@ -608,7 +629,7 @@ export const TaskRichTextEditor = forwardRef<
           }, 0);
         }}
         onChange={(markdown, initialMarkdownNormalize) => {
-          if (!initialMarkdownNormalize) queueRef.current?.schedule(markdown);
+          if (onlineRef.current && !initialMarkdownNormalize) queueRef.current?.schedule(markdown);
         }}
         onError={({ error }) => {
           setSaveState({ status: "error", error: new Error(error) });

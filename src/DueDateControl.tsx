@@ -160,6 +160,7 @@ export function DueDateControl({
   compact = false,
   anchorPoint,
   onClose,
+  portalContainer,
 }: {
   task: DueDateTarget;
   online: boolean;
@@ -178,6 +179,7 @@ export function DueDateControl({
   compact?: boolean;
   anchorPoint?: { left: number; top: number };
   onClose?: () => void;
+  portalContainer?: HTMLElement;
 }) {
   const [open, setOpen] = useState(autoOpen);
 
@@ -1037,7 +1039,7 @@ export function DueDateControl({
             </button>
           </div>
         </div>,
-        document.body,
+        portalContainer ?? document.body,
       )}
     </div>
   );

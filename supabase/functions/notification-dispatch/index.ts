@@ -119,6 +119,7 @@ export default {
     if (error) return Response.json({ error: error.message }, { status: 500 });
     if (!notification) return Response.json({ ok: true, skipped: "missing" });
 
+    if (notification.notification_type === "okr_mentioned") return Response.json({ ok: true, skipped: "in_app_only" });
     const scenario = SCENARIO_BY_TYPE[notification.notification_type];
     if (!scenario) return Response.json({ ok: true, skipped: "unknown_type" });
 

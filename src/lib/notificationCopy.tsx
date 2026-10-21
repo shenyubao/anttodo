@@ -1,3 +1,4 @@
+import type { AppRoute } from "./appRoute";
 import type { AppNotification } from "../types";
 
 export function notificationHeadlineText(item: AppNotification) {
@@ -5,6 +6,8 @@ export function notificationHeadlineText(item: AppNotification) {
   const kindLabel = item.task?.kind === "note" ? "笔记" : "待办";
 
   switch (item.notification_type) {
+    case "okr_mentioned":
+      return `${actor} 在 OKR 备注中提及了你`;
     case "task_assigned":
       return `${actor} 将待办指派给你`;
     case "task_new_comment":
@@ -42,6 +45,8 @@ export function notificationHeadline(item: AppNotification) {
   const kindLabel = item.task?.kind === "note" ? "笔记" : "待办";
 
   switch (item.notification_type) {
+    case "okr_mentioned":
+      return <><strong>{actor}</strong> 在 OKR 备注中提及了你</>;
     case "task_assigned":
       return (
         <>
@@ -127,6 +132,7 @@ export function notificationHeadline(item: AppNotification) {
 }
 
 export function notificationSummary(item: AppNotification) {
+  if (item.notification_type === "okr_mentioned") return String(item.payload?.summary ?? "");
   if (item.comment) {
     return item.comment.body.trim() ||
       (item.comment.image_uris.length ? "[图片]" : "");
@@ -146,4 +152,14 @@ export function notificationSummary(item: AppNotification) {
     return String(item.payload?.after ?? item.payload?.title ?? "");
   }
   return "";
+}
+
+export function notificationOkrRoute(item: AppNotification): AppRoute | null {
+  if (item.notification_type !== "okr_mentioned") return null;
+  const ownerId = String(item.payload?.owner_id ?? "");
+  const cycleId = String(item.payload?.cycle_id ?? "");
+  const id = item.key_result_id ?? item.objective_id;
+  if (!ownerId || !cycleId || !id) return null;
+  return { workspaceId: item.workspace_id, kind: "okr", ownerId, cycleId,
+    target: { kind: item.key_result_id ? "key_result" : "objective", id, initialTab: "notes" } };
 }
