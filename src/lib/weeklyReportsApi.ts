@@ -39,6 +39,7 @@ async function attachWeeklyReportAcl(client: SupabaseClient, rows: WeeklyReportR
   );
   return rows.map((row) => ({
     ...row,
+    okr_progress_text: row.okr_progress_text ?? "",
     user_acl_ids: (usersResult.data ?? [])
       .filter((item) => item.report_id === row.id)
       .map((item) => String(item.user_id)),
@@ -75,22 +76,24 @@ function notificationSummary(
   };
 }
 
-export function weeklyReportsKey(workspaceId: string, weekStart: string) {
-  return ["weekly-reports", workspaceId, weekStart] as const;
+export function weeklyReportsKey(workspaceId: string, weekStart: string, groupId: string) {
+  return ["weekly-reports", workspaceId, "groups-v1", groupId, weekStart] as const;
 }
 
 export function weeklyReportDetailKey(workspaceId: string, reportId: string) {
-  return ["weekly-report", workspaceId, reportId] as const;
+  return ["weekly-report", workspaceId, "groups-v1", reportId] as const;
 }
 
 export async function loadWeeklyReports(
   client: SupabaseClient,
   workspaceId: string,
   weekStart: string,
+  groupId: string,
 ) {
   const { data, error } = await client.from("weekly_reports")
     .select("*")
     .eq("workspace_id", workspaceId)
+    .eq("weekly_report_group_id", groupId)
     .eq("week_start", weekStart)
     .order("updated_at", { ascending: false });
   assertNoError(error);
@@ -113,8 +116,10 @@ export async function loadWeeklyReport(
 }
 
 export type SaveWeeklyReportInput = {
+  okrProgressText?: string;
   id?: string | null;
   workspaceId: string;
+  weeklyReportGroupId: string;
   weekStart: string;
   completedText: string;
   nextPlanText: string;
@@ -127,15 +132,17 @@ export type SaveWeeklyReportInput = {
 };
 
 export async function saveWeeklyReport(client: SupabaseClient, input: SaveWeeklyReportInput) {
-  const { data, error } = await client.rpc("save_weekly_report", {
+  const { data, error } = await client.rpc("save_group_weekly_report", {
+    p_weekly_report_group_id: input.weeklyReportGroupId,
     p_workspace_id: input.workspaceId,
     p_week_start: input.weekStart,
+    ...(input.okrProgressText === undefined ? {} : { p_okr_progress_text: input.okrProgressText }),
     p_completed_text: input.completedText,
     p_next_plan_text: input.nextPlanText,
     p_reflection_text: input.reflectionText,
-    p_visibility: input.visibility,
-    p_user_ids: input.visibility === "users" ? input.userIds : [],
-    p_group_ids: input.visibility === "groups" ? input.groupIds : [],
+    p_visibility: "workspace",
+    p_user_ids: [],
+    p_group_ids: [],
     p_report_id: input.id ?? null,
     p_publish: input.publish,
     p_notification_group_ids: input.notificationGroupIds,
@@ -145,8 +152,9 @@ export async function saveWeeklyReport(client: SupabaseClient, input: SaveWeekly
   if (!savedRow) throw new Error("周报保存成功，但服务端未返回记录");
   return {
     ...(savedRow as WeeklyReportRow),
-    user_acl_ids: input.visibility === "users" ? input.userIds : [],
-    group_acl_ids: input.visibility === "groups" ? input.groupIds : [],
+    okr_progress_text: (savedRow as WeeklyReportRow).okr_progress_text ?? "",
+    user_acl_ids: [],
+    group_acl_ids: [],
     notification_group_ids: input.notificationGroupIds,
     notification_summary: null,
   } satisfies WeeklyReport;

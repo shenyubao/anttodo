@@ -170,6 +170,7 @@ export function TaskOkrPicker({
       }
     });
     setSaving(false);
+    await queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", workspaceId] });
     await queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", workspaceId] });
     await Promise.all(tasks.map((task) => queryClient.invalidateQueries({ queryKey: taskOkrLinkKey(task.id) })));
     onNotice(formatTaskOkrBulkNotice({

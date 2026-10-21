@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(18);
+select plan(25);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -102,6 +102,26 @@ select is(
   'service role can execute the robot task transaction'
 );
 
+select is(
+  has_function_privilege(
+    'authenticated',
+    'public.attach_dingtalk_group_robot_images(uuid,text,uuid,text)',
+    'execute'
+  ),
+  false,
+  'authenticated clients cannot attach robot message images'
+);
+
+select is(
+  has_function_privilege(
+    'service_role',
+    'public.attach_dingtalk_group_robot_images(uuid,text,uuid,text)',
+    'execute'
+  ),
+  true,
+  'service role can attach robot message images'
+);
+
 set local role service_role;
 
 create temporary table robot_result as
@@ -156,6 +176,56 @@ select is(
   (select count(*)::integer from anttodo_private.dingtalk_group_robot_receipts),
   1,
   'the message receipt is recorded'
+);
+
+select is(
+  public.attach_dingtalk_group_robot_images(
+    '48000000-0000-0000-0000-000000000001',
+    'ding-message-1',
+    '18000000-0000-0000-0000-000000000001',
+    '![钉钉图片 1](anttodo-storage://task-attachments/28000000-0000-0000-0000-000000000001/' ||
+      (select task_id from robot_result)::text ||
+      '/58000000-0000-0000-0000-000000000001.png)'
+  ),
+  true,
+  'the robot can attach image references to a newly created task'
+);
+
+select is(
+  position(
+    'anttodo-storage://task-attachments/' in
+    (select description from public.tasks where id = (select task_id from robot_result))
+  ) > 0,
+  true,
+  'the stored image is referenced from the task description'
+);
+
+select is(
+  (select actor_id from public.activity_events
+   where task_id = (select task_id from robot_result) and event_type = 'task.updated'
+   order by created_at desc limit 1),
+  '18000000-0000-0000-0000-000000000001'::uuid,
+  'the image description activity records the mapped sender'
+);
+
+select is(
+  public.attach_dingtalk_group_robot_images(
+    '48000000-0000-0000-0000-000000000001',
+    'ding-message-1',
+    '18000000-0000-0000-0000-000000000001',
+    '不能覆盖已有正文'
+  ),
+  false,
+  'a repeated callback does not overwrite an existing description'
+);
+
+select is(
+  position(
+    '不能覆盖已有正文' in
+    (select description from public.tasks where id = (select task_id from robot_result))
+  ),
+  0,
+  'the existing image description is preserved on retry'
 );
 
 create temporary table duplicate_result as

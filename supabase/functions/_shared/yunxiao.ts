@@ -277,7 +277,7 @@ export function validateYunxiaoQuickCreateConfig(value: unknown): YunxiaoQuickCr
     throw new Error("输入框拓展-云效工单配置无效");
   }
   const organizationId = typeof config.organizationId === "string"
-    ? config.organizationId.trim()
+    ? normalizeYunxiaoOrganizationId(config.organizationId)
     : "";
   if (!organizationId) throw new Error("输入框拓展-云效工单配置缺少 organizationId");
   return { kind: "quick_create", organizationId };
@@ -553,9 +553,62 @@ export function formatYunxiaoTaskDescription(item: {
 }
 
 const YUNXIAO_TIMEOUT_MS = 15_000;
+const YUNXIAO_NO_API_PERMISSION_RE = /current token has no permission to api/i;
+
+export function normalizeYunxiaoPersonalToken(value: string) {
+  return value.trim().replace(/^Bearer\s+/i, "").replace(/^["']|["']$/g, "").trim();
+}
+
+export function normalizeYunxiaoOrganizationId(value: string) {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    const match = /\/organization\/([^/?#]+)/i.exec(url.pathname);
+    if (match?.[1]) return decodeURIComponent(match[1]).trim();
+  } catch {
+    // Fall through to a path-only extract for pasted fragments.
+  }
+  const pathMatch = /(?:^|\/)organization\/([^/?#\s]+)/i.exec(trimmed);
+  if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1]).trim();
+  return trimmed;
+}
 
 function apiUrl(path: string) {
   return `${YUNXIAO_API_ORIGIN}${path}`;
+}
+
+export function isYunxiaoNoApiPermissionError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return YUNXIAO_NO_API_PERMISSION_RE.test(error.message)
+    || error.message.includes("没有该接口的 OpenAPI 权限")
+    || error.message.includes("没有「更新工作项」权限");
+}
+
+export function yunxiaoUpdateWorkitemPermissionHint(canReadWorkitem: boolean) {
+  if (canReadWorkitem) {
+    return [
+      "当前个人令牌可以读取该工作项，但没有「更新工作项」OpenAPI 权限。",
+      "请打开云效个人访问令牌 → 项目协作，把「工作项」从「只读」改成「读写」。",
+      "顶部「批量选择 / 全部权限」通常只授予只读，所以同步能成功、勾选完成会失败。",
+      "若你新建了令牌，还需在 AntTodo 连接器里点「更新个人令牌」粘贴新密钥。",
+    ].join("");
+  }
+  return [
+    "当前个人令牌没有该接口的 OpenAPI 权限。",
+    "请使用以 pt- 开头的新版个人访问令牌，不要用旧版 Git 令牌。",
+    "展开「项目协作」把「工作项」设为读写，项目、工作项类型、工作项工作流为只读或读写，而不是「不可访问」。",
+  ].join("");
+}
+
+function explainYunxiaoApiMessage(message: string) {
+  const trimmed = message.trim();
+  if (YUNXIAO_NO_API_PERMISSION_RE.test(trimmed)) {
+    return yunxiaoUpdateWorkitemPermissionHint(false);
+  }
+  if (/^invalid token\.?$/i.test(trimmed) || /token is invalid/i.test(trimmed)) {
+    return "个人令牌无效或已过期，请新建令牌后更新。";
+  }
+  return trimmed;
 }
 
 function yunxiaoErrorText(detail: JsonRecord | null, fallback: string) {
@@ -563,7 +616,7 @@ function yunxiaoErrorText(detail: JsonRecord | null, fallback: string) {
     detail.message ?? detail.errorMessage ?? detail.errorMsg ?? detail.error_description
   );
   return typeof message === "string" && message.trim()
-    ? `云效 API：${message.trim()}`
+    ? `云效 API：${explainYunxiaoApiMessage(message)}`
     : fallback;
 }
 
@@ -582,7 +635,7 @@ async function readJson(response: Response) {
 function headers(token: string) {
   return {
     "Content-Type": "application/json",
-    "x-yunxiao-token": token,
+    "x-yunxiao-token": normalizeYunxiaoPersonalToken(token),
   };
 }
 
@@ -940,7 +993,15 @@ export async function updateWorkitemStatus(
     },
     fetcher,
   );
-  return await readJson(response);
+  try {
+    return await readJson(response);
+  } catch (error) {
+    if (!isYunxiaoNoApiPermissionError(error)) throw error;
+    const canRead = await getWorkitem(organizationId, workitemId, token, fetcher)
+      .then((item) => Boolean(item))
+      .catch(() => false);
+    throw new Error(`云效 API：${yunxiaoUpdateWorkitemPermissionHint(canRead)}`);
+  }
 }
 
 export type YunxiaoAttachment = {
@@ -1238,7 +1299,16 @@ const htmlToMarkdown = new NodeHtmlMarkdown({
 });
 
 function normalizeMarkdown(value: string) {
-  return value.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return rewriteMarkdownAutolinks(
+    value.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+  );
+}
+
+function rewriteMarkdownAutolinks(markdown: string) {
+  return markdown.replace(
+    /(?<!\]\()<((?:https?:\/\/)[^\s<>]+)>/gi,
+    (_match, url: string) => `[${url}](${url})`,
+  );
 }
 
 function looksLikeHtml(value: string) {
@@ -1349,7 +1419,7 @@ export function rewriteYunxiaoStoredDescription(description: string, taskId?: st
           .filter((line) => line !== "").join("\n");
     }
   }
-  result = rewriteYunxiaoDescriptionImages(result);
+  result = rewriteMarkdownAutolinks(rewriteYunxiaoDescriptionImages(result));
   return taskId ? rewriteYunxiaoStoredAttachmentTaskId(result, taskId) : result;
 }
 
@@ -1367,7 +1437,7 @@ export function validateYunxiaoPublicConfig(value: unknown): YunxiaoPublicConfig
   }
   parseConditions(config.conditions);
   return {
-    organizationId: String(config.organizationId).trim(),
+    organizationId: normalizeYunxiaoOrganizationId(String(config.organizationId)),
     projectId: String(config.projectId).trim(),
     workitemTypeId: String(config.workitemTypeId).trim(),
     workitemTypeName: String(config.workitemTypeName).trim(),

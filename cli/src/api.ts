@@ -796,6 +796,7 @@ async function attachWeeklyReportAcl(client: SupabaseClient, rows: WeeklyReportR
   );
   return rows.map((row) => ({
     ...row,
+    okr_progress_text: row.okr_progress_text ?? "",
     week_start: String(row.week_start).slice(0, 10),
     user_acl_ids: (usersResult.data ?? [])
       .filter((item) => item.report_id === row.id)
@@ -856,6 +857,7 @@ export async function getWeeklyReport(client: SupabaseClient, workspaceId: strin
 }
 
 export type SaveWeeklyReportInput = {
+  okrProgressText?: string;
   id?: string | null;
   workspaceId: string;
   weekStart: string;
@@ -873,6 +875,7 @@ function prepareWeeklyReportSave(input: SaveWeeklyReportInput) {
   assertWeeklyReportSubjects(input.visibility, input.userIds, input.groupIds);
   if (input.publish) {
     assertWeeklyReportCanPublish({
+      okrProgressText: input.okrProgressText,
       completedText: input.completedText,
       nextPlanText: input.nextPlanText,
       reflectionText: input.reflectionText,
@@ -884,6 +887,7 @@ function prepareWeeklyReportSave(input: SaveWeeklyReportInput) {
   return {
     p_workspace_id: input.workspaceId,
     p_week_start: input.weekStart,
+    ...(input.okrProgressText === undefined ? {} : { p_okr_progress_text: input.okrProgressText }),
     p_completed_text: input.completedText,
     p_next_plan_text: input.nextPlanText,
     p_reflection_text: input.reflectionText,
@@ -905,6 +909,7 @@ export async function saveWeeklyReport(client: SupabaseClient, input: SaveWeekly
   }
   return {
     ...(savedRow as WeeklyReportRow),
+    okr_progress_text: (savedRow as WeeklyReportRow).okr_progress_text ?? "",
     week_start: String((savedRow as WeeklyReportRow).week_start).slice(0, 10),
     user_acl_ids: input.visibility === "users" ? input.userIds : [],
     group_acl_ids: input.visibility === "groups" ? input.groupIds : [],
@@ -984,6 +989,7 @@ function mergeWeeklyReportUpdate(current: WeeklyReport, patch: UpdateWeeklyRepor
     id: current.id,
     workspaceId: current.workspace_id,
     weekStart: String(current.week_start).slice(0, 10),
+    okrProgressText: current.okr_progress_text ?? "",
     completedText: patch.completedText ?? current.completed_text,
     nextPlanText: patch.nextPlanText ?? current.next_plan_text,
     reflectionText: patch.reflectionText ?? current.reflection_text,

@@ -63,4 +63,31 @@ describe("weekly report notification helpers", () => {
     expect(message.text).toContain(`\\- 完成了 ${taskLink}`);
     expect(message.text).toContain("保持 \\*稳定\\*");
   });
+
+  it("puts each stored task line in its own DingTalk paragraph", () => {
+    const one = "[入参校验](https://app.anttodo.com/workspaces/w/tasks/a)";
+    const two = "[执行次数限制](https://app.anttodo.com/workspaces/w/tasks/b)";
+    const message = buildWeeklyReportNotificationMarkdown({
+      authorName: "天明",
+      weekStart: "2026-09-07",
+      completedText: `## RPA\n- 完成了 ${one}\n- 完成了 ${two}`,
+      nextPlanText: "- 计划完成 埋点优化\r\n- 计划完成 设备权限管理",
+      reflectionText: "",
+      openUrl: "https://app.anttodo.com/workspaces/w/weekly-reports/r",
+    });
+    expect(message.text).toContain(
+      `\\#\\# RPA\n\n\\- 完成了 ${one}\n\n\\- 完成了 ${two}`,
+    );
+    expect(message.text).toContain("\\- 计划完成 埋点优化\n\n\\- 计划完成 设备权限管理");
+  });
+});
+
+describe("OKR progress notifications", () => {
+  it("places the saved nested OKR markdown before completed tasks and omits an empty section", () => {
+    const input = { authorName: "用户", weekStart: "2026-10-12", completedText: "任务", nextPlanText: "", reflectionText: "", openUrl: "https://app.anttodo.com/report" };
+    const body = "- Objective 10%->50%\n  - KR 20%->60%\n    - 1016 正常 第一行\n      第二行";
+    const text = buildWeeklyReportNotificationMarkdown({ ...input, okrProgressText: body }).text;
+    expect(text).toContain(`#### OKR 进展\n\n${body}\n\n#### 本周完成`);
+    expect(buildWeeklyReportNotificationMarkdown({ ...input, okrProgressText: " " }).text).not.toContain("OKR 进展");
+  });
 });

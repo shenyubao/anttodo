@@ -11,10 +11,22 @@ describe("primary navigation", () => {
     expect(sections.indexOf("matrix")).toBe(sections.indexOf("calendar") + 1);
   });
 
-  it("places weekly reports directly after tasks", () => {
+  it("orders enabled modules as calendar, OKR, weekly reports, matrix, focus, and mind map", () => {
+    const sections = visiblePrimaryNavigationItems({
+      ...DEFAULT_FEATURE_MODULE_PREFERENCES,
+      weeklyReportsEnabled: true,
+      okrEnabled: true,
+      mindMapEnabled: true,
+    })
+      .map((item) => item.section);
+    expect(sections).toEqual(["tasks", "calendar", "okr", "weekly_reports", "matrix", "focus", "mindmap", "search"]);
+  });
+
+  it("hides weekly reports and OKR by default", () => {
     const sections = visiblePrimaryNavigationItems(DEFAULT_FEATURE_MODULE_PREFERENCES)
       .map((item) => item.section);
-    expect(sections.indexOf("weekly_reports")).toBe(sections.indexOf("tasks") + 1);
+    expect(sections).not.toContain("weekly_reports");
+    expect(sections).not.toContain("okr");
   });
 
   it("hides matrix when its feature module is disabled", () => {

@@ -3,10 +3,68 @@ import { toDateInput } from "./dateTimePreferences";
 import {
   dingtalkAtUserIdentifier,
   dingtalkGroupRobotSignature,
+  extractDingtalkGroupRobotImageReferences,
+  extractDingtalkGroupRobotMessageText,
   isAllowedDingtalkSessionWebhook,
   parseDingtalkGroupRobotTaskText,
   verifyDingtalkGroupRobotSignature,
 } from "./dingtalkGroupRobot";
+
+describe("DingTalk group robot message content", () => {
+  it("extracts ordinary text messages", () => {
+    expect(extractDingtalkGroupRobotMessageText({
+      msgtype: "text",
+      text: { content: "@蚂蚁清单 整理发布说明" },
+    })).toBe("@蚂蚁清单 整理发布说明");
+  });
+
+  it("combines text fragments from rich-text messages and ignores pictures", () => {
+    const messageText = extractDingtalkGroupRobotMessageText({
+      msgtype: "richText",
+      content: {
+        richText: [
+          { text: "@蚂蚁清单 新建" },
+          { downloadCode: "temporary-code", type: "picture" },
+          { text: "修复登录 #前端 明天下午3点" },
+        ],
+      },
+    });
+
+    expect(messageText).toBe("@蚂蚁清单 新建 修复登录 #前端 明天下午3点");
+    const parsed = parseDingtalkGroupRobotTaskText(messageText!);
+    expect(parsed).toMatchObject({
+      kind: "task",
+      title: "修复登录",
+      labelNames: ["前端"],
+    });
+  });
+
+  it("extracts and de-duplicates rich-text image download codes", () => {
+    expect(extractDingtalkGroupRobotImageReferences({
+      msgtype: "richText",
+      content: {
+        richText: [
+          { text: "任务内容" },
+          { type: "picture", downloadCode: "original-1", pictureDownloadCode: "preview-1" },
+          { type: "picture", pictureDownloadCode: "preview-2" },
+          { type: "picture", downloadCode: "original-1" },
+          { type: "file", downloadCode: "file-1" },
+        ],
+      },
+    })).toEqual([
+      { downloadCode: "original-1" },
+      { downloadCode: "preview-2" },
+    ]);
+  });
+
+  it("rejects unsupported or malformed message payloads", () => {
+    expect(extractDingtalkGroupRobotMessageText({ msgtype: "picture" })).toBeNull();
+    expect(extractDingtalkGroupRobotMessageText({
+      msgtype: "richText",
+      content: { richText: "not-an-array" },
+    })).toBeNull();
+  });
+});
 
 describe("DingTalk group robot task text", () => {
   const now = new Date("2026-08-09T02:00:00.000Z");

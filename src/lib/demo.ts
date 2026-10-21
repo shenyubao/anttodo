@@ -254,7 +254,6 @@ export function createDemoBundle(): WorkspaceBundle {
     labelGroupAcls: [],
     labelPermissionLevels: Object.fromEntries(labels.map((label) => [label.id, 2])),
     userLabelOrder: [],
-    userSidebarMembers: [],
     tasks: structuredClone(tasks).map((task) => ({
       ...task,
       children: tasks.filter((candidate) => candidate.parent_task_id === task.id && !candidate.deleted_at),

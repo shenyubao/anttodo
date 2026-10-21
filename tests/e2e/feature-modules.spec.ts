@@ -13,9 +13,9 @@ test("feature module settings control desktop and mobile navigation locally", as
   await page.reload();
   const rail = page.locator(".navigation-rail");
 
-  await expect(rail.getByRole("button", { name: "周报" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "周报" })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "日历" })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "OKR" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "OKR" })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "四象限" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "番茄专注" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "思维导图" })).toHaveCount(0);
@@ -27,27 +27,27 @@ test("feature module settings control desktop and mobile navigation locally", as
   const matrixSwitch = settings.getByRole("switch", { name: "在主导航中显示四象限" });
   const focusSwitch = settings.getByRole("switch", { name: "在主导航中显示番茄专注" });
   const mindMapSwitch = settings.getByRole("switch", { name: "在主导航中显示思维导图" });
-  await expect(weeklyReportsSwitch).toBeChecked();
+  await expect(weeklyReportsSwitch).not.toBeChecked();
   await expect(calendarSwitch).toBeChecked();
-  await expect(okrSwitch).toBeChecked();
+  await expect(okrSwitch).not.toBeChecked();
   await expect(matrixSwitch).toBeChecked();
   await expect(focusSwitch).toBeChecked();
   await expect(mindMapSwitch).not.toBeChecked();
 
   await mindMapSwitch.check();
-  await weeklyReportsSwitch.uncheck();
+  await weeklyReportsSwitch.check();
   await calendarSwitch.uncheck();
-  await okrSwitch.uncheck();
+  await okrSwitch.check();
   await matrixSwitch.uncheck();
   await expect(mindMapSwitch).toBeChecked();
-  await expect(weeklyReportsSwitch).not.toBeChecked();
+  await expect(weeklyReportsSwitch).toBeChecked();
   await expect(calendarSwitch).not.toBeChecked();
-  await expect(okrSwitch).not.toBeChecked();
+  await expect(okrSwitch).toBeChecked();
   await expect(matrixSwitch).not.toBeChecked();
   await settings.getByRole("button", { name: "关闭设置" }).click();
-  await expect(rail.getByRole("button", { name: "周报" })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "周报" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "日历" })).toHaveCount(0);
-  await expect(rail.getByRole("button", { name: "OKR" })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "OKR" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "四象限" })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "思维导图" })).toBeVisible();
 
@@ -76,6 +76,8 @@ test("feature module settings control desktop and mobile navigation locally", as
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "思维导图" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "周报" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "OKR" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "日历" })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "思维导图" })).toHaveCount(0);
 

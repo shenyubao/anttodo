@@ -567,3 +567,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/init-app-admin/deno.json"
 entrypoint = "./functions/init-app-admin/index.ts"
+
+[functions.weekly-report-reminders]
+enabled = true
+verify_jwt = false
+import_map = "./functions/weekly-report-reminders/deno.json"
+entrypoint = "./functions/weekly-report-reminders/index.ts"

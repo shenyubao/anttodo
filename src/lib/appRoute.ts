@@ -2,7 +2,7 @@ import type { TaskViewMode } from "../types";
 import { currentAppUrl } from "./instanceConfig";
 
 export type SystemSmartView = "all" | "today" | "week" | "assigned" | "watching" | "inbox" | "trash";
-export type AppSmartView = SystemSmartView | `custom:${string}` | `user:${string}`;
+export type AppSmartView = SystemSmartView | `custom:${string}`;
 
 export const DEFAULT_SMART_VIEW: AppSmartView = "assigned";
 
@@ -14,8 +14,8 @@ export type AppRoute =
   | { workspaceId: string; kind: "matrix" }
   | { workspaceId: string; kind: "mindmap" }
   | { workspaceId: string; kind: "focus" }
-  | { workspaceId: string; kind: "weekly_reports" }
-  | { workspaceId: string; kind: "weekly_reports"; page: "new"; weekStart: string }
+  | { workspaceId: string; kind: "weekly_reports"; groupId?: string }
+  | { workspaceId: string; kind: "weekly_reports"; groupId?: string; page: "new"; weekStart: string }
   | { workspaceId: string; kind: "weekly_reports"; page: "view" | "edit"; reportId: string }
   | {
       workspaceId: string;
@@ -99,7 +99,7 @@ export function parseAppRoute(pathname: string): AppRoute | null {
     const userId = decodeSegment(segments[3]);
     const mode = parseModeSegment(segments.length === 5 ? segments[4] : undefined);
     if (!userId || !isValidUserRouteId(userId) || !mode) return null;
-    return { workspaceId, kind: "view", view: `user:${userId}`, mode };
+    return { workspaceId, kind: "view", view: "assigned", mode };
   }
   if ((segments.length === 4 || segments.length === 5) && segments[2] === "tags") {
     const tagId = decodeSegment(segments[3]);
@@ -127,6 +127,14 @@ export function parseAppRoute(pathname: string): AppRoute | null {
   }
   if (segments[2] === "weekly-reports") {
     if (segments.length === 3) return { workspaceId, kind: "weekly_reports" };
+    if (segments[3] === "groups") {
+      const groupId = decodeSegment(segments[4]);
+      if (!groupId || (!UUID_SEGMENT.test(groupId) && !groupId.startsWith("demo-weekly-group-"))) return null;
+      if (segments.length === 5) return { workspaceId, kind: "weekly_reports", groupId };
+      const weekStart = decodeSegment(segments[6]);
+      return segments.length === 7 && segments[5] === "new" && weekStart && isValidDateSegment(weekStart)
+        ? { workspaceId, kind: "weekly_reports", groupId, page: "new", weekStart } : null;
+    }
     if (segments.length === 5 && segments[3] === "new") {
       const weekStart = decodeSegment(segments[4]);
       return weekStart && isValidDateSegment(weekStart)
@@ -194,9 +202,7 @@ export function parseAppRoute(pathname: string): AppRoute | null {
 export function appRoutePath(route: AppRoute) {
   const base = `/workspaces/${encodeURIComponent(route.workspaceId)}`;
   if (route.kind === "view") {
-    const path = route.view.startsWith("user:")
-      ? `${base}/users/${encodeURIComponent(route.view.slice("user:".length))}`
-      : route.view === "all"
+    const path = route.view === "all"
       ? `${base}/tasks`
       : route.view.startsWith("custom:")
         ? `${base}/views/custom/${encodeURIComponent(route.view.slice("custom:".length))}`
@@ -221,8 +227,9 @@ export function appRoutePath(route: AppRoute) {
   }
   if (route.kind === "weekly_reports") {
     const root = `${base}/weekly-reports`;
-    if (!("page" in route)) return root;
-    if (route.page === "new") return `${root}/new/${encodeURIComponent(route.weekStart)}`;
+    const groupRoot = "groupId" in route && route.groupId ? `${root}/groups/${encodeURIComponent(route.groupId)}` : root;
+    if (!("page" in route)) return groupRoot;
+    if (route.page === "new") return `${groupRoot}/new/${encodeURIComponent(route.weekStart)}`;
     const reportPath = `${root}/${encodeURIComponent(route.reportId)}`;
     return route.page === "edit" ? `${reportPath}/edit` : reportPath;
   }
@@ -240,6 +247,10 @@ export function parseTaskReturnRoute(value: unknown, workspaceId: string): AppRo
     kind?: unknown;
     view?: unknown;
     tagId?: unknown;
+    groupId?: unknown;
+    page?: unknown;
+    reportId?: unknown;
+    weekStart?: unknown;
     mode?: unknown;
     ownerId?: unknown;
     cycleId?: unknown;
@@ -260,7 +271,19 @@ export function parseTaskReturnRoute(value: unknown, workspaceId: string): AppRo
         : undefined;
       return { workspaceId, kind: "okr", ...(ownerId ? { ownerId } : {}), ...(cycleId ? { cycleId } : {}), ...(target ? { target } : {}) };
     }
-    if (route.kind === "weekly_reports") return { workspaceId, kind: "weekly_reports" };
+    if (route.kind === "weekly_reports") {
+      const groupId = typeof route.groupId === "string" ? route.groupId : undefined;
+      const group = groupId ? { groupId } : {};
+      if (route.page === "new") {
+        return typeof route.weekStart === "string"
+          ? parseAppRoute(appRoutePath({ workspaceId, kind: "weekly_reports", ...group, page: "new", weekStart: route.weekStart })) : null;
+      }
+      if (route.page === "view" || route.page === "edit") {
+        return typeof route.reportId === "string"
+          ? parseAppRoute(appRoutePath({ workspaceId, kind: "weekly_reports", page: route.page, reportId: route.reportId })) : null;
+      }
+      return parseAppRoute(appRoutePath({ workspaceId, kind: "weekly_reports", ...group }));
+    }
     return { workspaceId, kind: route.kind };
   }
   if (route.kind === "view") {
@@ -276,7 +299,7 @@ export function parseTaskReturnRoute(value: unknown, workspaceId: string): AppRo
       return null;
     }
     if (!TASK_RETURN_LIST_MODES.has(route.mode as TaskViewMode)) return null;
-    const view = route.view as AppSmartView;
+    const view = userViewId ? "assigned" : route.view as AppSmartView;
     const mode = route.mode as "list" | "kanban";
     return view === "trash"
       ? { workspaceId, kind: "view", view, mode: "list" }

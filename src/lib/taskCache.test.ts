@@ -40,7 +40,6 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelGroupAcls: [],
   labelPermissionLevels: {},
   userLabelOrder: [],
-  userSidebarMembers: [],
   labelTaskCounts: {},
     tasks: [],
   connectors: [],
@@ -80,16 +79,35 @@ describe("task cache updates", () => {
       next_sync_at: "2026-08-19T00:00:00.000Z",
       created_by: "user",
     } as WorkspaceBundle["connectors"][number]];
+    stale.taskListPreferences = [{
+      user_id: "user",
+      workspace_id: "workspace",
+      list_key: "user:00000000-0000-4000-8000-000000000002",
+    } as WorkspaceBundle["taskListPreferences"][number]];
+    stale.taskSections = [{
+      id: "user-section",
+      workspace_id: "workspace",
+      list_key: "user:00000000-0000-4000-8000-000000000002",
+      name: "旧用户空间分组",
+      position: 0,
+      created_by: "user",
+    }];
+    stale.taskPlacements = [{
+      task_id: staleTask.id,
+      workspace_id: "workspace",
+      list_key: "user:00000000-0000-4000-8000-000000000002",
+      section_id: null,
+      position: 0,
+    }];
     delete (stale as { customTaskViews?: WorkspaceBundle["customTaskViews"] }).customTaskViews;
     delete (stale as { taskSystemViewPreferences?: WorkspaceBundle["taskSystemViewPreferences"] })
       .taskSystemViewPreferences;
-    delete (stale as { userSidebarMembers?: WorkspaceBundle["userSidebarMembers"] })
-      .userSidebarMembers;
-
     const normalized = normalizeWorkspaceBundle(stale as WorkspaceBundle);
     expect(normalized.customTaskViews).toEqual([]);
     expect(normalized.taskSystemViewPreferences).toEqual([]);
-    expect(normalized.userSidebarMembers).toEqual([]);
+    expect(normalized.taskListPreferences).toEqual([]);
+    expect(normalized.taskSections).toEqual([]);
+    expect(normalized.taskPlacements).toEqual([]);
     expect(normalized.tasks[0]).toMatchObject({
       external_id: null,
       connector_id: null,
@@ -99,6 +117,43 @@ describe("task cache updates", () => {
 
     const current = emptyBundle();
     expect(normalizeWorkspaceBundle(current)).toStrictEqual(current);
+  });
+
+  it("drops leftover system labels from persisted workspace bundles", () => {
+    const bundle = emptyBundle();
+    const normalized = normalizeWorkspaceBundle({
+      ...bundle,
+      labels: [
+        {
+          id: "product",
+          workspace_id: "workspace",
+          parent_id: null,
+          name: "产品",
+          color: "#4ca1ff",
+          kind: "team",
+          view_scope: "all",
+          manage_scope: "users",
+          inherit_permissions: false,
+          position: 0,
+          created_by: "user",
+        },
+        {
+          id: "user-space",
+          workspace_id: "workspace",
+          parent_id: null,
+          name: "玉宝",
+          color: "#b8bdc8",
+          kind: "team",
+          view_scope: "all",
+          manage_scope: "users",
+          inherit_permissions: false,
+          position: 0,
+          created_by: "user",
+          is_system: true,
+        } as WorkspaceBundle["labels"][number] & { is_system: boolean },
+      ],
+    });
+    expect(normalized.labels.map((label) => label.id)).toEqual(["product"]);
   });
 
   it("keeps deleted nested tasks in the flat list but off the parent children", () => {

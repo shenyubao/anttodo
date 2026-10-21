@@ -5,6 +5,7 @@ import {
   listTasks,
   listWeeklyReports,
   saveWeeklyReport,
+  updateWeeklyReport,
 } from "./api.js";
 import { CliError } from "./errors.js";
 import { weeklyReportWeekStart } from "./validation.js";
@@ -69,6 +70,7 @@ const weeklyReportRow = {
   workspace_id: "workspace-1",
   author_id: "user-1",
   week_start: "2026-08-31",
+  okr_progress_text: "",
   completed_text: "完成",
   next_plan_text: "计划",
   reflection_text: "总结",
@@ -206,5 +208,22 @@ describe("weekly reports API", () => {
       notificationGroupIds: [],
       publish: false,
     })).rejects.toMatchObject({ code: "invalid_weekly_report_week" });
+  });
+});
+
+
+describe("OKR report CLI compatibility", () => {
+  it("preserves OKR-only content when publishing or updating existing reports", async () => {
+    let payload: Record<string, unknown> = {};
+    const row = { ...weeklyReportRow, okr_progress_text: "- Saved OKR", completed_text: "", next_plan_text: "", reflection_text: "" };
+    const client = {
+      from: (table: string) => createQuery(table === "weekly_reports" ? [row] : []),
+      rpc: (_name: string, input: Record<string, unknown>) => {
+        payload = input; return Promise.resolve({ data: row, error: null });
+      },
+    } as unknown as SupabaseClient;
+    const result = await updateWeeklyReport(client, "workspace-1", "report-1", { publish: true });
+    expect(payload.p_okr_progress_text).toBe("- Saved OKR");
+    expect(result.okr_progress_text).toBe("- Saved OKR");
   });
 });

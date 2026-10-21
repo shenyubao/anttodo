@@ -3,6 +3,7 @@ import { dingtalkGroupRobotSignature } from "./dingtalk-signature.ts";
 export type WeeklyReportNotificationMessageInput = {
   authorName: string;
   weekStart: string;
+  okrProgressText?: string;
   completedText: string;
   nextPlanText: string;
   reflectionText: string;
@@ -60,8 +61,11 @@ function escapeMarkdownPreservingLinks(value: string) {
 }
 
 function displaySection(value: string) {
-  const normalized = value.trim();
-  return normalized ? escapeMarkdownPreservingLinks(normalized) : "未填写";
+  const normalized = value.trim().replace(/\r\n/g, "\n");
+  if (!normalized) return "未填写";
+  // DingTalk markdown collapses a single newline into a space, so each stored
+  // line must become its own paragraph or the task items run together.
+  return escapeMarkdownPreservingLinks(normalized).replace(/\n+/g, "\n\n");
 }
 
 function formatDate(date: Date) {
@@ -93,6 +97,7 @@ export function buildWeeklyReportNotificationMarkdown(
       `### ${title}`,
       `${formatDate(start)} - ${formatDate(end)}`,
       "",
+      ...(input.okrProgressText?.trim() ? ["#### OKR 进展", "", input.okrProgressText.trim(), ""] : []),
       "#### 本周完成",
       "",
       displaySection(input.completedText),

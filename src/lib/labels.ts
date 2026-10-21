@@ -9,6 +9,18 @@ import type {
 
 export const DEFAULT_LABEL_COLOR = "#b8bdc8";
 
+export function isSystemLabel(label: object | null | undefined) {
+  return Boolean(
+    label
+    && "is_system" in label
+    && (label as { is_system?: unknown }).is_system === true,
+  );
+}
+
+export function withoutSystemLabels<T extends object>(labels: readonly T[]): T[] {
+  return labels.filter((label) => !isSystemLabel(label));
+}
+
 export const LABEL_COLORS = [
   "#ff6161",
   "#ffac38",

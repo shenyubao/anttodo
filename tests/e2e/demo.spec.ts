@@ -42,89 +42,71 @@ test("clicking outside the task detail panel closes it", async ({ page }) => {
   await expect(page.locator(".task-detail-panel")).toHaveCount(0);
 });
 
-test("user shortcuts filter assignees and quick-create unlabelled assigned tasks", async ({ page }) => {
+test("user spaces are removed and legacy links fall back to assigned tasks", async ({ page }) => {
   await page.goto("/?demo=1");
+  await expect(page.locator(".sidebar-user-section")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "指派给我", exact: true })).toBeVisible();
 
-  const users = page.locator(".sidebar-user-section");
-  await expect(users.getByRole("button", { name: "沈宇宝" })).toBeVisible();
-  await expect(users.getByRole("button", { name: "产品同学" })).toHaveCount(0);
+  await page.goto("/?demo=1#/workspaces/workspace-team/users/demo-member");
+  await expect(page).toHaveURL(/\/views\/assigned$/);
+  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
 
-  await users.getByRole("button", { name: "管理关注用户" }).click();
-  const colleagueOption = users.getByRole("menuitemcheckbox", { name: "产品同学" });
-  await expect(colleagueOption).toHaveAttribute("aria-checked", "false");
-  await colleagueOption.click();
-  await users.getByRole("button", { name: "管理关注用户" }).click();
-
-  const colleague = users.getByRole("button", { name: "产品同学" });
-  await expect(colleague).toBeVisible();
-  await colleague.click();
-  await expect(page).toHaveURL(/\/users\/demo-member$/);
-  await expect(page.getByRole("heading", { name: "产品同学" })).toBeVisible();
-  await expect(page.getByText("优化任务详情抽屉交互", { exact: true })).toBeVisible();
-  await expect(page.getByText(demoTaskTitle, { exact: true })).toHaveCount(0);
-
-  const taskTitle = "跟进产品同学的用户视图";
-  const quickInput = page.getByPlaceholder('添加任务至“产品同学”');
-  await quickInput.fill(taskTitle);
-  await quickInput.press("Enter");
-  await expect(page.getByText(taskTitle, { exact: true })).toBeVisible();
-
-  await users.getByRole("button", { name: "沈宇宝" }).click();
-  await expect(page).toHaveURL(/\/users\/demo-user$/);
-  await expect(page.getByText(taskTitle, { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: /^收集箱(?: \d+)?$/ }).click();
-  await expect(page.getByText(taskTitle, { exact: true })).toBeVisible();
-
-  await colleague.click();
-  await users.getByRole("button", { name: "管理关注用户" }).click();
-  await users.getByRole("menuitemcheckbox", { name: "产品同学" }).click();
-  await expect(page).toHaveURL(/\/users\/demo-user$/);
-  await expect(users.getByRole("button", { name: "产品同学" })).toHaveCount(0);
-});
-
-test("user space and labels are mutually exclusive in the sidebar", async ({ page }) => {
-  await page.goto("/?demo=1");
-
-  const users = page.locator(".sidebar .sidebar-user-section");
-  const me = users.getByRole("button", { name: "沈宇宝" });
-  const product = page.locator('.sidebar .label-row[data-label-id="product"]');
-
-  await expect(me).toHaveAttribute("aria-pressed", "true");
-  await expect(product).not.toHaveClass(/active/);
-
-  await product.click();
-  await expect(page).toHaveURL(/\/tags\/product/);
-  await expect(me).toHaveAttribute("aria-pressed", "false");
-  await expect(product).toHaveClass(/active/);
-
-  await me.click();
-  await expect(page).toHaveURL(/\/users\/demo-user$/);
-  await expect(me).toHaveAttribute("aria-pressed", "true");
-  await expect(product).not.toHaveClass(/active/);
-});
-
-test("mobile user shortcuts stay inside the navigation sheet and become read-only offline", async ({ page, context }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/?demo=1");
   await page.getByRole("button", { name: "打开导航" }).click();
-
   const mobileNavigation = page.getByRole("complementary", { name: "移动端导航" });
-  const users = mobileNavigation.getByRole("region", { name: "用户空间" });
-  const manage = users.getByRole("button", { name: "管理关注用户" });
-  await expect(users.getByRole("button", { name: "沈宇宝" })).toBeVisible();
-  await manage.click();
-  const picker = users.locator(".sidebar-user-picker");
-  await expect(picker).toBeVisible();
-  const bounds = await picker.boundingBox();
-  expect(bounds).not.toBeNull();
-  expect(bounds!.x).toBeGreaterThanOrEqual(0);
-  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
-  await manage.click();
+  await expect(mobileNavigation.getByRole("button", { name: "指派给我", exact: true })).toBeVisible();
+  await expect(mobileNavigation.getByRole("region", { name: "用户空间" })).toHaveCount(0);
+});
 
-  await context.setOffline(true);
-  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-  await expect(manage).toBeDisabled();
-  await context.setOffline(false);
+test("my space shows the streamlined smart lists on desktop and mobile", async ({ page }) => {
+  await page.goto("/?demo=1");
+
+  const sidebar = page.locator(".sidebar");
+  await expect(sidebar.locator(".sidebar-smart-view-header")).toHaveText("我的空间");
+  await expect(sidebar.locator(".sidebar-list .sidebar-item-label")).toHaveText([
+    "收集箱",
+    "指派给我",
+    "我关注的",
+  ]);
+  await expect(sidebar.getByRole("button", { name: "所有", exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "今天", exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "本周", exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "回收站", exact: true })).toHaveCount(0);
+
+  await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
+  const settings = page.getByRole("dialog", { name: "设置" });
+  await settings.getByRole("button", { name: "智能视图" }).click();
+  await expect(settings.locator('.smart-views-settings-list[aria-label="系统视图列表"] .smart-view-setting-row'))
+    .toHaveText(["收集箱", "指派给我", "我关注的", "本周", "回收站"]);
+  await expect(settings.getByRole("switch", { name: "显示本周" })).not.toBeChecked();
+  await expect(settings.getByRole("switch", { name: "显示回收站" })).not.toBeChecked();
+  await settings.getByRole("switch", { name: "显示本周" }).click();
+  await settings.getByRole("switch", { name: "显示回收站" }).click();
+  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await expect(sidebar.getByRole("button", { name: "本周", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "回收站", exact: true })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "打开导航" }).click();
+  const mobileNavigation = page.getByRole("complementary", { name: "移动端导航" });
+  await expect(mobileNavigation.getByText("我的空间", { exact: true })).toBeVisible();
+  await expect(mobileNavigation.locator(".mobile-task-views .sidebar-item-label")).toHaveText([
+    "收集箱",
+    "指派给我",
+    "我关注的",
+    "本周",
+    "回收站",
+  ]);
+});
+
+test("removed smart-list entries keep their legacy routes", async ({ page }) => {
+  await page.goto("/?demo=1#/workspaces/workspace-team/views/all");
+  await expect(page.getByRole("heading", { name: "所有" })).toBeVisible();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "所有", exact: true })).toHaveCount(0);
+
+  await page.goto("/?demo=1#/workspaces/workspace-team/views/today");
+  await expect(page.getByRole("heading", { name: "今天" })).toBeVisible();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "今天", exact: true })).toHaveCount(0);
 });
 
 test("task views switch per list and kanban supports column creation", async ({ page }) => {
@@ -135,24 +117,24 @@ test("task views switch per list and kanban supports column creation", async ({ 
   await expect(page.getByRole("menuitemradio", { name: "时间线" })).toBeVisible();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
 
-  await expect(page).toHaveURL(/\/users\/demo-user\/kanban$/);
+  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
   const board = page.getByLabel("任务看板");
   await expect(board).toBeVisible();
   await expect(board.getByRole("heading", { name: "未分组", exact: true })).toBeVisible();
   await expect(board.getByRole("heading", { name: "笔记", exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "今天", exact: true }).click();
+  await page.goto("/?demo=1#/workspaces/workspace-team/views/today");
   await expect(page).toHaveURL(/\/views\/today$/);
   await expect(page.getByLabel("任务看板")).toHaveCount(0);
-  await page.getByRole("button", { name: "沈宇宝", exact: true }).click();
-  await expect(page).toHaveURL(/\/users\/demo-user\/kanban$/);
+  await page.getByRole("button", { name: "指派给我", exact: true }).click();
+  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
 
   await board.getByText(demoTaskTitle, { exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "关闭详情" }).click();
-  await expect(page).toHaveURL(/\/users\/demo-user\/kanban$/);
+  await expect(page).toHaveURL(/\/views\/assigned\/kanban$/);
 
-  await page.getByRole("button", { name: /^所有 \d+$/ }).click();
+  await page.goto("/?demo=1#/workspaces/workspace-team/tasks");
   await page.getByRole("button", { name: "更多操作", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "看板" }).click();
   await expect(page).toHaveURL(/\/tasks\/kanban$/);
@@ -213,6 +195,7 @@ test("custom task views can be saved, filtered, hidden, and deleted", async ({ p
   await expect(page).toHaveURL(/\/views\/custom\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { name: "我的筛选视图" })).toBeVisible();
   const customSidebarItem = page.locator(".sidebar .sidebar-item").filter({ hasText: "我的筛选视图" });
+  const inboxSidebarItem = page.locator(".sidebar .sidebar-item").filter({ hasText: "收集箱" });
   await expect(customSidebarItem).toBeVisible();
 
   // Custom views keep filters editable; changes auto-save via list preference.
@@ -220,8 +203,8 @@ test("custom task views can be saved, filtered, hidden, and deleted", async ({ p
   await page.getByRole("menuitem", { name: /时间/ }).click();
   await page.getByRole("menuitemcheckbox", { name: "今天" }).click();
 
-  await page.getByRole("button", { name: "沈宇宝", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "沈宇宝" })).toBeVisible();
+  await inboxSidebarItem.locator(".sidebar-item-button").click();
+  await expect(page.getByRole("heading", { name: "收集箱" })).toBeVisible();
   await customSidebarItem.click();
   await expect(page.getByRole("heading", { name: "我的筛选视图" })).toBeVisible();
   await page.getByRole("button", { name: "过滤" }).click();
@@ -240,7 +223,7 @@ test("custom task views can be saved, filtered, hidden, and deleted", async ({ p
   await settings.getByRole("button", { name: "删除我的筛选视图" }).click();
   await expect(settings.getByText("我的筛选视图", { exact: true })).toHaveCount(0);
   await settings.getByRole("button", { name: "关闭设置" }).click();
-  await expect(page.getByRole("heading", { name: "沈宇宝" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "指派给我" })).toBeVisible();
   await expect(customSidebarItem).toHaveCount(0);
 });
 
@@ -317,7 +300,7 @@ test("task list expands, completes, and remembers nested tasks per workspace", a
   await page.getByRole("menuitemradio", { name: "AntTodo 产品团队" }).click();
   await expect(page.getByRole("button", { name: `展开子级任务：${demoTaskTitle}` })).toBeVisible();
 
-  await page.getByRole("button", { name: /^所有 \d+$/ }).click();
+  await page.goto("/?demo=1#/workspaces/workspace-team/tasks");
   const noChildTasksRow = page.locator(".task-tree-item").filter({
     hasText: "优化任务详情抽屉交互",
   });
@@ -1044,7 +1027,7 @@ test("task search matches titles and descriptions and opens the result", async (
 }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "今天", exact: true }).click();
+  await page.goto("/?demo=1#/workspaces/workspace-team/views/today");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
 
   const dialog = page.getByRole("dialog", { name: "搜索任务" });
@@ -1141,21 +1124,21 @@ test("task detail and labels follow the desktop reference layout", async ({ page
 test("colored labels show a list color bar on matching task rows", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: "所有" }).click();
+  await page.goto("/?demo=1#/workspaces/workspace-team/tasks");
 
   const coloredRow = page.locator(".task-row").filter({ hasText: demoTaskTitle });
   const uncoloredRow = page.locator(".task-row").filter({ hasText: "整理云效字段映射表" });
   await expect(coloredRow.locator(".task-label-bar")).toHaveCount(0);
   await expect(uncoloredRow.locator(".task-label-bar")).toHaveCount(0);
 
-  await page.locator('.label-row[data-label-id="urgent"]').click({ button: "right" });
+  await page.locator('.sidebar .label-row[data-label-id="urgent"]').click({ button: "right" });
   await page.getByRole("menuitem", { name: "编辑" }).click();
   const dialog = page.getByRole("dialog", { name: "编辑标签" });
   await dialog.locator('.label-color-option[title="#ffac38"]').click();
   await dialog.getByRole("button", { name: "保存" }).click();
   await expect(dialog).toBeHidden();
 
-  await expect(page.locator('.label-row[data-label-id="urgent"] .label-color-dot'))
+  await expect(page.locator('.sidebar .label-row[data-label-id="urgent"] .label-color-dot'))
     .toHaveCSS("background-color", "rgb(255, 172, 56)");
   await expect(coloredRow.locator(".task-label-bar")).toHaveCSS(
     "background-color",
@@ -1175,7 +1158,7 @@ test("colored labels show a list color bar on matching task rows", async ({ page
       .locator(".task-label-bar"),
   ).toHaveCSS("background-color", "rgb(255, 172, 56)");
 
-  await page.locator('.label-row[data-label-id="urgent"]').click();
+  await page.locator('.sidebar .label-row[data-label-id="urgent"]').click();
   await expect(page.locator(".task-row .task-label-bar")).toHaveCount(
     await page.locator(".task-row").count(),
   );
@@ -1879,7 +1862,7 @@ test("task list menu groups by labels and keeps multi-label tasks in every group
   await page.getByRole("button", { name: "分组与排序" }).click();
   await page.getByRole("menuitem", { name: "分组 无" }).click();
   const groupingMenu = page.getByRole("menu", { name: "分组方式" });
-  await groupingMenu.getByRole("menuitemradio", { name: "标签" }).click();
+  await groupingMenu.getByRole("menuitemradio", { name: "团队标签" }).click();
 
   await expect(
     page.locator(".workspace-main .task-group-collapse").filter({ hasText: "产品研发" }),
@@ -1968,7 +1951,7 @@ test("custom grouping is shared by list and kanban views", async ({ page }) => {
 
 test("custom sorting supports pointer and keyboard sorting", async ({ page }) => {
   await page.goto("/?demo=1");
-  await page.getByRole("button", { name: /^所有 \d+$/ }).click();
+  await page.goto("/?demo=1#/workspaces/workspace-team/tasks");
   await expect(page.getByRole("heading", { name: "所有" })).toBeVisible();
   const sourceHandle = page.getByRole("button", {
     name: "拖动任务“记录下一轮产品想法”",

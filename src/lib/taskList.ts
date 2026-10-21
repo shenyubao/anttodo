@@ -65,7 +65,7 @@ export const TASK_GROUPING_OPTIONS: Array<{ value: TaskListGrouping; label: stri
   { value: "custom", label: "自定义" },
   { value: "due", label: "时间" },
   { value: "created", label: "创建时间" },
-  { value: "label", label: "标签" },
+  { value: "label", label: "团队标签" },
   { value: "priority", label: "优先级" },
   { value: "assignee", label: "指派人" },
   { value: "none", label: "无" },
@@ -269,6 +269,7 @@ const MINE_TASK_LIST_FILTERS: TaskListFilterFields = {
 
 /** Smart views that are just fixed filter presets over the full task list. */
 export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
+  inbox: { ...MINE_TASK_LIST_FILTERS },
   today: {
     filter_due: ["today"],
     filter_assignee: "assigned_to_me",
@@ -299,10 +300,9 @@ export const SMART_VIEW_FILTER_PRESETS: Record<string, TaskListFilterFields> = {
   },
 };
 
-/** Default filters for lists that stay editable, including inbox and trash. */
+/** Default filters for system lists, including the editable trash list. */
 export const SMART_VIEW_FILTER_DEFAULTS: Record<string, TaskListFilterFields> = {
   ...SMART_VIEW_FILTER_PRESETS,
-  inbox: { ...MINE_TASK_LIST_FILTERS, filter_assignee_ids: [], filter_due: ["all"] },
   trash: { ...MINE_TASK_LIST_FILTERS, filter_assignee_ids: [], filter_due: ["all"] },
 };
 
@@ -318,52 +318,45 @@ export function isCustomTaskView(smartView: string) {
   return customTaskViewId(smartView) !== null;
 }
 
-export function userTaskViewKey(userId: string): `user:${string}` {
-  return `user:${userId}`;
-}
-
-export function userTaskViewId(smartView: string) {
-  return smartView.startsWith("user:") ? smartView.slice("user:".length) || null : null;
-}
-
-export function userTaskViewFilters(smartView: string): TaskListFilterFields | null {
-  const userId = userTaskViewId(smartView);
-  return userId
-    ? {
-        filter_assignee: "users",
-        filter_assignee_ids: [userId],
-        filter_watching: "all",
-        filter_creator: "all",
-        filter_due: ["all"],
-      }
-    : null;
-}
-
 /** System smart views that users may hide from the sidebar. */
 export type HideableSystemSmartView =
-  | "all"
-  | "today"
-  | "week"
-  | "watching"
   | "inbox"
+  | "assigned"
+  | "watching"
+  | "week"
   | "trash";
 
 export type SystemSmartViewKey = HideableSystemSmartView;
 
 export const DEFAULT_SYSTEM_SMART_VIEW_ORDER: readonly SystemSmartViewKey[] = [
-  "all",
-  "today",
-  "week",
-  "watching",
   "inbox",
+  "assigned",
+  "watching",
+  "week",
   "trash",
 ];
+
+export const DEFAULT_SYSTEM_SMART_VIEW_VISIBILITY: Readonly<Record<SystemSmartViewKey, boolean>> = {
+  inbox: true,
+  assigned: true,
+  watching: true,
+  week: false,
+  trash: false,
+};
 
 const HIDEABLE_SYSTEM_SMART_VIEWS: readonly HideableSystemSmartView[] = DEFAULT_SYSTEM_SMART_VIEW_ORDER;
 
 const DEFAULT_SYSTEM_SMART_VIEW_POSITION = new Map(
   DEFAULT_SYSTEM_SMART_VIEW_ORDER.map((key, index) => [key, index]),
 );
+
+const LEGACY_SYSTEM_SMART_VIEW_POSITION = new Map<SystemSmartViewKey, number>([
+  ["week", 2],
+  ["assigned", 3],
+  ["watching", 4],
+  ["inbox", 5],
+  ["trash", 6],
+]);
 
 export function isHideableSystemSmartView(view: string): view is HideableSystemSmartView {
   return (HIDEABLE_SYSTEM_SMART_VIEWS as readonly string[]).includes(view);
@@ -377,6 +370,20 @@ export function defaultSystemSmartViewPosition(viewKey: SystemSmartViewKey) {
   return DEFAULT_SYSTEM_SMART_VIEW_POSITION.get(viewKey) ?? 0;
 }
 
+export function defaultSystemSmartViewVisible(viewKey: SystemSmartViewKey) {
+  return DEFAULT_SYSTEM_SMART_VIEW_VISIBILITY[viewKey];
+}
+
+export function resolveSystemSmartViewVisible(
+  preferences: Iterable<Pick<TaskSystemViewPreference, "view_key" | "visible">>,
+  viewKey: SystemSmartViewKey,
+) {
+  for (const preference of preferences) {
+    if (preference.view_key === viewKey) return preference.visible;
+  }
+  return defaultSystemSmartViewVisible(viewKey);
+}
+
 /** Resolve the ordered system smart-view keys, filling missing prefs with defaults. */
 export function resolveSystemSmartViewOrder(
   preferences: Iterable<Pick<TaskSystemViewPreference, "view_key" | "position">>,
@@ -386,6 +393,10 @@ export function resolveSystemSmartViewOrder(
     if (!isHideableSystemSmartView(preference.view_key)) continue;
     positionByKey.set(preference.view_key, preference.position);
   }
+  const usesLegacyDefaultPositions = positionByKey.size > 0
+    && [...positionByKey].every(([key, position]) =>
+      LEGACY_SYSTEM_SMART_VIEW_POSITION.get(key) === position);
+  if (usesLegacyDefaultPositions) return [...DEFAULT_SYSTEM_SMART_VIEW_ORDER];
   return [...DEFAULT_SYSTEM_SMART_VIEW_ORDER].sort((left, right) => {
     const leftPosition = positionByKey.get(left) ?? defaultSystemSmartViewPosition(left);
     const rightPosition = positionByKey.get(right) ?? defaultSystemSmartViewPosition(right);
@@ -410,7 +421,7 @@ export function applySystemSmartViewOrder(
     user_id: context.userId,
     workspace_id: context.workspaceId,
     view_key: viewKey,
-    visible: byKey.get(viewKey)?.visible ?? true,
+    visible: byKey.get(viewKey)?.visible ?? defaultSystemSmartViewVisible(viewKey),
     position,
   }));
 }
@@ -492,9 +503,7 @@ export function buildCustomViewSnapshotFromSmartView(
     : smartViewKey === "trash"
       ? "trash"
       : "all";
-  const filters = SMART_VIEW_FILTER_DEFAULTS[smartViewKey]
-    ?? userTaskViewFilters(smartViewKey)
-    ?? {
+  const filters = SMART_VIEW_FILTER_DEFAULTS[smartViewKey] ?? {
     filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
     filter_assignee_ids: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee_ids,
     filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,
@@ -539,13 +548,11 @@ export function resolveTaskListFilters(
   preference: TaskListFilterFields,
   customView?: CustomTaskView | null,
 ): TaskListFilterFields {
-  // Smart system views and user spaces keep fixed presets. Custom views and
-  // free lists use the live preference so filters can be edited and auto-saved.
+  // Smart system views keep fixed presets. Custom views and free lists use the
+  // live preference so filters can be edited and auto-saved.
   if (SMART_VIEW_FILTER_PRESETS[listKey]) {
     return SMART_VIEW_FILTER_PRESETS[listKey];
   }
-  const userView = userTaskViewFilters(listKey);
-  if (userView) return userView;
   if (customView) {
     const seed = customTaskViewFilters(customView);
     return {
@@ -796,9 +803,7 @@ export function resolveTaskListPreference(
   viewMode?: TaskViewMode,
 ) {
   const found = preferences.find((item) => item.list_key === listKey);
-  const filterDefaults = SMART_VIEW_FILTER_DEFAULTS[listKey]
-    ?? userTaskViewFilters(listKey)
-    ?? {
+  const filterDefaults = SMART_VIEW_FILTER_DEFAULTS[listKey] ?? {
     filter_assignee: DEFAULT_TASK_LIST_PREFERENCE.filter_assignee,
     filter_assignee_ids: [...DEFAULT_TASK_LIST_PREFERENCE.filter_assignee_ids],
     filter_watching: DEFAULT_TASK_LIST_PREFERENCE.filter_watching,

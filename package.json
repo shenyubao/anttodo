@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202609011154",
+  "version": "1.0.202610161405",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -94,6 +94,8 @@
     "node-pty": "1.1.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "temporal-polyfill": "1.0.1",
     "zod": "4.4.3"
   },

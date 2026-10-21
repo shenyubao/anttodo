@@ -3,6 +3,8 @@ import { createDemoBundle } from "./demo";
 import {
   canAccessAllLabels,
   canOrganizeTask,
+  canAssignQuickCreateTask,
+  isYunxiaoQuickCreateTask,
   currentLabelPermissionLevel,
   currentTaskPermissionLevel,
   intersectPermissionLevels,
@@ -60,5 +62,47 @@ describe("strict multi-label permission intersection", () => {
     task.connector_id = "connector-1";
     expect(isExternalTask(task)).toBe(true);
     expect(canOrganizeTask(bundle, task, "demo-user")).toBe(true);
+  });
+});
+
+describe("local quick-create assignment", () => {
+  function fixture() {
+    const bundle = createDemoBundle();
+    const task = bundle.tasks.find((item) => item.id === "task-1")!;
+    bundle.labelPermissionLevels.product = 2;
+    bundle.labelPermissionLevels.urgent = 2;
+    task.connector_platform = "yunxiao";
+    task.connector_id = bundle.connectors[0].id;
+    Object.assign(bundle.connectors[0], {
+      workspace_id: task.workspace_id,
+      type: "yunxiao",
+      enabled: false,
+      public_config: { kind: "quick_create", organizationId: "org" },
+    });
+    return { bundle, task };
+  }
+
+  it("allows editors to assign existing quick-create tasks even with a disabled connector", () => {
+    const { bundle, task } = fixture();
+    expect(canAssignQuickCreateTask(bundle, task, "demo-user")).toBe(true);
+    task.deleted_at = new Date().toISOString();
+    expect(canAssignQuickCreateTask(bundle, task, "demo-user")).toBe(false);
+  });
+
+  it("requires edit permission on every label", () => {
+    const { bundle, task } = fixture();
+    bundle.labelPermissionLevels.urgent = 1;
+    expect(canAssignQuickCreateTask(bundle, task, "demo-user")).toBe(false);
+  });
+
+  it("checks the actual connector and fails closed for missing or mismatched metadata", () => {
+    const { bundle, task } = fixture();
+    bundle.connectors[0].public_config = { organizationId: "org" };
+    expect(isYunxiaoQuickCreateTask(bundle, task)).toBe(false);
+    bundle.connectors[0].public_config = { kind: "quick_create", organizationId: "org" };
+    bundle.connectors[0].workspace_id = "another-workspace";
+    expect(canAssignQuickCreateTask(bundle, task, "demo-user")).toBe(false);
+    bundle.connectors = [];
+    expect(canAssignQuickCreateTask(bundle, task, "demo-user")).toBe(false);
   });
 });

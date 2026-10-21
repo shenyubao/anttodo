@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(17);
+select plan(19);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password,
@@ -88,6 +88,9 @@ select is(
   '13000000-0000-0000-0000-000000000001',
   'changing a nested task assignee records its new value'
 );
+insert into public.tasks(id, workspace_id, parent_task_id, title, status, position, created_by)
+values ('63000000-0000-0000-0000-000000000001','23000000-0000-0000-0000-000000000001',
+  '53000000-0000-0000-0000-000000000001','Grandchild task','open',0,'13000000-0000-0000-0000-000000000001');
 
 select lives_ok(
   $$select public.save_task_schedule(
@@ -123,19 +126,32 @@ select is(
   'activity RPC honors its page limit'
 );
 select is(
+  (select count(*)::integer
+   from public.list_task_activity('43000000-0000-0000-0000-000000000001', null, null, 100)
+   where task_id <> '43000000-0000-0000-0000-000000000001'),
+  0,
+  'parent task activity excludes child task events'
+);
+select is(
+  (select count(*)::integer
+   from public.list_task_activity('53000000-0000-0000-0000-000000000001', null, null, 100)
+   where task_id <> '53000000-0000-0000-0000-000000000001'),
+  0,
+  'child task activity excludes descendant task events'
+);
+select is(
   (select count(*)::integer from public.list_task_activity(
     '43000000-0000-0000-0000-000000000001',
-    (select created_at from public.activity_events where task_id in (
-      '43000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'
-    ) order by created_at desc, id desc limit 1),
-    (select id from public.activity_events where task_id in (
-      '43000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'
-    ) order by created_at desc, id desc limit 1),
+    (select created_at from public.activity_events
+     where task_id = '43000000-0000-0000-0000-000000000001'
+     order by created_at desc, id desc limit 1),
+    (select id from public.activity_events
+     where task_id = '43000000-0000-0000-0000-000000000001'
+     order by created_at desc, id desc limit 1),
     100
   )),
-  (select count(*)::integer - 1 from public.activity_events where task_id in (
-    '43000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'
-  )),
+  (select count(*)::integer - 1 from public.activity_events
+   where task_id = '43000000-0000-0000-0000-000000000001'),
   'activity RPC cursor excludes the cursor event without skipping older rows'
 );
 

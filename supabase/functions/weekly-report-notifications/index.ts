@@ -159,7 +159,7 @@ export default {
     }
     const { data: report, error: reportError } = await ctx.supabaseAdmin
       .from("weekly_reports")
-      .select("id,workspace_id,author_id,week_start,completed_text,next_plan_text,reflection_text,status,notification_revision")
+      .select("id,workspace_id,weekly_report_group_id,author_id,week_start,okr_progress_text,completed_text,next_plan_text,reflection_text,status,notification_revision")
       .eq("id", reportId)
       .eq("author_id", user.id)
       .eq("notification_revision", revision)
@@ -168,6 +168,13 @@ export default {
     if (!report || report.status !== "published") {
       return jsonError("周报不存在、版本已过期或无权发送", 404);
     }
+
+    const { data: participant, error: participantError } = await ctx.supabaseAdmin
+      .from("weekly_report_groups").select("id")
+      .eq("workspace_id", report.workspace_id).eq("id", report.weekly_report_group_id)
+      .contains("participant_ids", [user.id]).maybeSingle();
+    if (participantError) return jsonError("读取周报填写权限失败", 500);
+    if (!participant) return jsonError("仅人员配置中的成员可以发送周报通知", 403);
 
     const [{ data: author }, { data: claimed, error: claimError }] = await Promise.all([
       ctx.supabaseAdmin.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
@@ -183,6 +190,7 @@ export default {
     const message = buildWeeklyReportNotificationMarkdown({
       authorName: author?.display_name ?? user.email ?? "团队成员",
       weekStart: report.week_start,
+      okrProgressText: report.okr_progress_text ?? "",
       completedText: report.completed_text,
       nextPlanText: report.next_plan_text,
       reflectionText: report.reflection_text,

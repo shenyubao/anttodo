@@ -4,6 +4,7 @@ import {
   applyLabelAccessToBundle,
   appendCreatedLabelToBundle,
   hasExplicitLabelColor,
+  isSystemLabel,
   LABEL_COLORS,
   taskLabelBarColor,
   labelDropPlacementFromY,
@@ -12,6 +13,7 @@ import {
   newLabelAccessDefaults,
   removeLabelSubtreeFromBundle,
   sortSiblingLabels,
+  withoutSystemLabels,
 } from "./labels";
 import type { Label, LabelAccessDraft, WorkspaceBundle } from "../types";
 
@@ -53,8 +55,7 @@ const emptyBundle = (): WorkspaceBundle => ({
   labelGroupAcls: [],
   labelPermissionLevels: {},
   userLabelOrder: [],
-  userSidebarMembers: [],
-    labelTaskCounts: {},
+  labelTaskCounts: {},
     tasks: [],
   connectors: [],
   syncRuns: [],
@@ -80,6 +81,15 @@ const teamDraft = (overrides: Partial<LabelAccessDraft> = {}): LabelAccessDraft 
 });
 
 describe("label colors", () => {
+  it("hides leftover system labels from persisted bundles", () => {
+    const system = { ...labels[0], id: "user-space", name: "玉宝", is_system: true };
+    expect(isSystemLabel(system)).toBe(true);
+    expect(withoutSystemLabels([...labels, system]).map((label) => label.id)).toEqual([
+      "team-parent",
+      "private-parent",
+    ]);
+  });
+
   it("treats the default task-label gray as no explicit label color", () => {
     expect(hasExplicitLabelColor(DEFAULT_LABEL_COLOR)).toBe(false);
     expect(hasExplicitLabelColor(DEFAULT_LABEL_COLOR.toUpperCase())).toBe(false);

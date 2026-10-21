@@ -1,5 +1,5 @@
 import { addQuarters, endOfQuarter, format, startOfQuarter } from "date-fns";
-import type { OkrCycle, OkrKeyResult, OkrObjective, OkrSet } from "../types";
+import type { OkrCycle, OkrKeyResult, OkrObjective, OkrSet, OkrLinkedTaskSummary } from "../types";
 
 type KeyResultExample = Pick<OkrKeyResult, "title" | "target_value" | "current_value">
   & Partial<Pick<OkrKeyResult, "start_value" | "metric_unit" | "custom_unit" | "progress_status">>;
@@ -154,4 +154,19 @@ export function createDemoOkrData(workspaceId = "workspace-team", now = new Date
   }));
 
   return { cycles, sets };
+}
+
+/** One shared demo link keeps the count column and detail list consistent. */
+export function createDemoOkrLinkedTasks(workspaceId: string): OkrLinkedTaskSummary[] {
+  const data = createDemoOkrData(workspaceId);
+  const activeCycle = data.cycles.find((cycle) => cycle.status === "active");
+  const objective = data.sets.find((set) => set.cycle_id === activeCycle?.id && set.owner_id === "demo-user")?.objectives[0];
+  const keyResult = objective?.key_results[0];
+  if (!keyResult) return [];
+  return [{
+    task_id: "task-1", workspace_id: workspaceId, parent_task_id: null,
+    title: "完成 AntTodo 项目框架验收", kind: "todo", status: "open", due_at: null,
+    assignee_id: "demo-user", updated_at: keyResult.updated_at,
+    key_result_id: keyResult.id, key_result_title: keyResult.title, key_result_position: keyResult.position,
+  }];
 }

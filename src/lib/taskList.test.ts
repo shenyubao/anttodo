@@ -12,6 +12,7 @@ import {
   clampGroupingForViewMode,
   customTaskViewKey,
   DEFAULT_SYSTEM_SMART_VIEW_ORDER,
+  DEFAULT_SYSTEM_SMART_VIEW_VISIBILITY,
   dueFilterLabel,
   exclusiveAssigneeFilter,
   filterTasksForView,
@@ -25,6 +26,7 @@ import {
   positionsFromGroupKeys,
   resolveCustomGroupKey,
   resolveSystemSmartViewOrder,
+  resolveSystemSmartViewVisible,
   resolveTaskListFilters,
   resolveTaskListPreference,
   SMART_VIEW_FILTER_DEFAULTS,
@@ -39,9 +41,6 @@ import {
   toggleDueFilter,
   UNGROUPED_GROUP_KEY,
   ungroupedPosition,
-  userTaskViewFilters,
-  userTaskViewId,
-  userTaskViewKey,
 } from "./taskList";
 
 const now = new Date("2026-07-30T12:00:00+08:00");
@@ -308,6 +307,7 @@ describe("task list grouping and sorting", () => {
     expect(groupingOptionsForViewMode("timeline").map((option) => option.value))
       .toEqual(["custom", "label", "priority", "none"]);
     expect(groupingOptionsForViewMode("list")).toEqual(TASK_GROUPING_OPTIONS);
+    expect(TASK_GROUPING_OPTIONS.find((option) => option.value === "label")?.label).toBe("团队标签");
     expect(clampGroupingForViewMode("due", "timeline")).toBe("none");
     expect(clampGroupingForViewMode("assignee", "timeline")).toBe("none");
     expect(clampGroupingForViewMode("created", "timeline")).toBe("none");
@@ -719,6 +719,36 @@ describe("task list grouping and sorting", () => {
     ).toEqual(["mine", "other"]);
   });
 
+  it("combines the inbox scope with the fixed current-user creator filter", () => {
+    const scoped = filterTasksForView({
+      tasks: [
+        task("mine-inbox", { label_ids: [], created_by: "u" }),
+        task("other-inbox", { label_ids: [], created_by: "other" }),
+        task("mine-labeled", { label_ids: ["a"], created_by: "u" }),
+      ],
+      labels,
+      smartView: "inbox",
+      selectedLabelId: null,
+    });
+    const filters = resolveTaskListFilters("inbox", {
+      filter_assignee: "all",
+      filter_assignee_ids: [],
+      filter_watching: "all",
+      filter_creator: "all",
+      filter_due: ["all"],
+    });
+    expect(applyTaskListFilters({
+      tasks: scoped,
+      filterAssignee: filters.filter_assignee,
+      filterAssigneeIds: filters.filter_assignee_ids,
+      filterWatching: filters.filter_watching,
+      filterCreator: filters.filter_creator,
+      filterDue: filters.filter_due,
+      currentUserId: "u",
+      now,
+    }).map((item) => item.id)).toEqual(["mine-inbox"]);
+  });
+
   it("keeps nested tasks out of top-level label, inbox, and all views", () => {
     const parent = task("parent", { title: "父任务", label_ids: ["a"] });
     const child = task("child", {
@@ -800,7 +830,8 @@ describe("task list preference filters", () => {
     }).map((item) => item.id)).toEqual(["today", "tomorrow"]);
   });
 
-  it("uses fixed filter presets for today, week, assigned, and watching smart views", () => {
+  it("uses fixed filter presets for inbox, today, week, assigned, and watching smart views", () => {
+    expect(resolveTaskListPreference([], "inbox")).toMatchObject(SMART_VIEW_FILTER_PRESETS.inbox);
     expect(resolveTaskListPreference([], "today")).toMatchObject(SMART_VIEW_FILTER_PRESETS.today);
     expect(resolveTaskListPreference([], "week")).toMatchObject(SMART_VIEW_FILTER_PRESETS.week);
     expect(resolveTaskListPreference([], "assigned")).toMatchObject(
@@ -816,17 +847,13 @@ describe("task list preference filters", () => {
       filter_creator: "all",
       filter_due: ["today"],
     })).toEqual(SMART_VIEW_FILTER_PRESETS.assigned);
-
-    expect(userTaskViewKey("member-1")).toBe("user:member-1");
-    expect(userTaskViewId("user:member-1")).toBe("member-1");
-    expect(userTaskViewId("user:")).toBeNull();
-    expect(resolveTaskListFilters("user:member-1", {
-      filter_assignee: "all",
+    expect(resolveTaskListFilters("inbox", {
+      filter_assignee: "assigned_to_me",
       filter_assignee_ids: [],
       filter_watching: "watching",
-      filter_creator: "created_by_me",
+      filter_creator: "all",
       filter_due: ["today"],
-    })).toEqual(userTaskViewFilters("user:member-1"));
+    })).toEqual(SMART_VIEW_FILTER_PRESETS.inbox);
 
     const tasks = [
       task("mine-today", {
@@ -916,7 +943,7 @@ describe("task list preference filters", () => {
         now,
       }).map((item) => item.id),
     ).toEqual(["watching-only"]);
-    const inbox = SMART_VIEW_FILTER_DEFAULTS.inbox;
+    const inbox = SMART_VIEW_FILTER_PRESETS.inbox;
     expect(
       applyTaskListFilters({
         tasks,
@@ -930,8 +957,8 @@ describe("task list preference filters", () => {
     ).toEqual(["mine-today", "other-today", "mine-later", "watching-only", "other"]);
   });
 
-  it("defaults inbox and trash to tasks created by the current user, and keeps those filters editable", () => {
-    expect(resolveTaskListPreference([], "inbox")).toMatchObject(SMART_VIEW_FILTER_DEFAULTS.inbox);
+  it("locks inbox to tasks created by the current user and keeps trash filters editable", () => {
+    expect(resolveTaskListPreference([], "inbox")).toMatchObject(SMART_VIEW_FILTER_PRESETS.inbox);
     expect(resolveTaskListPreference([], "trash")).toMatchObject(SMART_VIEW_FILTER_DEFAULTS.trash);
     expect(resolveTaskListFilters("inbox", {
       filter_assignee: "all",
@@ -943,7 +970,7 @@ describe("task list preference filters", () => {
       filter_assignee: "all",
       filter_assignee_ids: [],
       filter_watching: "all",
-      filter_creator: "all",
+      filter_creator: "created_by_me",
       filter_due: ["all"],
     });
     expect(resolveTaskListFilters("trash", {
@@ -1181,41 +1208,71 @@ describe("task list preference filters", () => {
 
 describe("smart view order helpers", () => {
   it("uses the default system order when preferences are empty", () => {
-    expect(resolveSystemSmartViewOrder([])).toEqual([...DEFAULT_SYSTEM_SMART_VIEW_ORDER]);
+    expect(resolveSystemSmartViewOrder([])).toEqual([
+      "inbox",
+      "assigned",
+      "watching",
+      "week",
+      "trash",
+    ]);
   });
 
-  it("sorts system views by position and fills missing keys from defaults", () => {
+  it("replaces legacy default positions and ignores removed system views", () => {
     const preferences: Array<Pick<TaskSystemViewPreference, "view_key" | "position">> = [
-      { view_key: "today", position: 0 },
-      { view_key: "all", position: 2 },
-      { view_key: "trash", position: 1 },
+      { view_key: "all", position: 0 },
+      { view_key: "today", position: 1 },
+      { view_key: "week", position: 2 },
+      { view_key: "assigned", position: 3 },
+      { view_key: "watching", position: 4 },
+      { view_key: "inbox", position: 5 },
+      { view_key: "trash", position: 6 },
     ];
-    expect(resolveSystemSmartViewOrder(preferences)).toEqual([
-      "today",
-      "trash",
-      "all",
-      "week",
-      "watching",
-      "inbox",
-    ]);
+    expect(resolveSystemSmartViewOrder(preferences)).toEqual([...DEFAULT_SYSTEM_SMART_VIEW_ORDER]);
+  });
+
+  it("respects customized positions for the remaining system views", () => {
+    expect(resolveSystemSmartViewOrder([
+      { view_key: "all", position: 0 },
+      { view_key: "today", position: 1 },
+      { view_key: "trash", position: 0 },
+      { view_key: "week", position: 1 },
+      { view_key: "watching", position: 2 },
+      { view_key: "inbox", position: 3 },
+      { view_key: "assigned", position: 4 },
+    ])).toEqual(["trash", "week", "watching", "inbox", "assigned"]);
+  });
+
+  it("uses centralized default visibility while preserving explicit preferences", () => {
+    expect(DEFAULT_SYSTEM_SMART_VIEW_VISIBILITY).toEqual({
+      inbox: true,
+      assigned: true,
+      watching: true,
+      week: false,
+      trash: false,
+    });
+    expect(resolveSystemSmartViewVisible([], "week")).toBe(false);
+    expect(resolveSystemSmartViewVisible([], "inbox")).toBe(true);
+    expect(resolveSystemSmartViewVisible([
+      { view_key: "week", visible: true },
+      { view_key: "all", visible: false },
+    ], "week")).toBe(true);
   });
 
   it("applies a new system order while preserving visibility", () => {
     const next = applySystemSmartViewOrder(
       [
         { view_key: "today", visible: false, position: 1 },
-        { view_key: "inbox", visible: false, position: 5 },
+        { view_key: "inbox", visible: false, position: 0 },
       ],
-      ["trash", "today", "all", "week", "watching", "inbox"],
+      ["trash", "week", "watching", "assigned", "inbox"],
       { userId: "user-1", workspaceId: "workspace-1" },
     );
     expect(next.map((item) => [item.view_key, item.position, item.visible])).toEqual([
-      ["trash", 0, true],
-      ["today", 1, false],
-      ["all", 2, true],
-      ["week", 3, true],
-      ["watching", 4, true],
-      ["inbox", 5, false],
+      ["trash", 0, false],
+      ["week", 1, false],
+      ["watching", 2, true],
+      ["assigned", 3, true],
+      ["inbox", 4, false],
     ]);
     expect(next.every((item) => item.user_id === "user-1" && item.workspace_id === "workspace-1")).toBe(true);
   });
@@ -1269,9 +1326,10 @@ describe("smart view order helpers", () => {
 });
 
 describe("smart view hide rules and create snapshots", () => {
-  it("marks all system smart views and custom views as hideable", () => {
-    expect(isHideableSystemSmartView("today")).toBe(true);
-    expect(isHideableSystemSmartView("all")).toBe(true);
+  it("only marks configurable system smart views and custom views as hideable", () => {
+    expect(isHideableSystemSmartView("today")).toBe(false);
+    expect(isHideableSystemSmartView("all")).toBe(false);
+    expect(isHideableSystemSmartView("assigned")).toBe(true);
     expect(canHideSmartView("inbox")).toBe(true);
     expect(canHideSmartView("trash")).toBe(true);
     expect(canHideSmartView(customTaskViewKey("view-1"))).toBe(true);
@@ -1285,20 +1343,6 @@ describe("smart view hide rules and create snapshots", () => {
       ...SMART_VIEW_FILTER_PRESETS.today,
     });
     expect(snapshot.presentation).toMatchObject(SMART_VIEW_FILTER_PRESETS.today);
-  });
-
-  it("builds an assignee-only definition from a user view", () => {
-    const snapshot = buildCustomViewSnapshotFromSmartView([], "user:member-1");
-    expect(snapshot.definition).toEqual({
-      scope: "all",
-      label_ids: [],
-      filter_assignee: "users",
-      filter_assignee_ids: ["member-1"],
-      filter_watching: "all",
-      filter_creator: "all",
-      filter_due: ["all"],
-    });
-    expect(snapshot.presentation).toMatchObject(userTaskViewFilters("user:member-1")!);
   });
 
   it("uses inbox/trash scopes for those smart views", () => {

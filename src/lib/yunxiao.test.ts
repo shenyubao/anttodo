@@ -7,6 +7,8 @@ import {
   listAllWorkitemTypes,
   listProjectWorkitemTypes,
   normalizeDescription,
+  normalizeYunxiaoOrganizationId,
+  normalizeYunxiaoPersonalToken,
   normalizeYunxiaoTimestamp,
   mapYunxiaoPlanToDue,
   formatYunxiaoSyncedAt,
@@ -23,6 +25,7 @@ import {
   shouldStopYunxiaoFirstSync,
   startYunxiaoSyncCursor,
   updateWorkitemStatus,
+  yunxiaoUpdateWorkitemPermissionHint,
   validateYunxiaoPublicConfig,
   yunxiaoFileIdentifier,
   yunxiaoTemporaryFileUrl,
@@ -217,6 +220,12 @@ describe("yunxiao connector helpers", () => {
       "MARKDOWN",
     )).toBe("**已是 Markdown**\n\n第二段");
     expect(normalizeDescription("# 标题\n\n- 条目", "MARKDOWN")).toBe("# 标题\n\n- 条目");
+    expect(normalizeDescription(
+      "<https://alidocs.dingtalk.com/i/nodes/example>",
+      "MARKDOWN",
+    )).toBe(
+      "[https://alidocs.dingtalk.com/i/nodes/example](https://alidocs.dingtalk.com/i/nodes/example)",
+    );
   });
 
   it("rewrites stored Yunxiao htmlValue JSON in the description block", () => {
@@ -243,6 +252,13 @@ describe("yunxiao connector helpers", () => {
     expect(rewriteYunxiaoStoredDescription("- 云效描述：\n已经是 Markdown")).toBe(
       "- 云效描述：\n已经是 Markdown",
     );
+    expect(rewriteYunxiaoStoredDescription([
+      "- 云效描述：",
+      "<https://alidocs.dingtalk.com/i/nodes/example>",
+    ].join("\n"))).toBe([
+      "- 云效描述：",
+      "[https://alidocs.dingtalk.com/i/nodes/example](https://alidocs.dingtalk.com/i/nodes/example)",
+    ].join("\n"));
   });
 
   it("rewrites relative, data-src, and leftover HTML image destinations", () => {
@@ -416,6 +432,33 @@ describe("yunxiao connector helpers", () => {
     expect(calls[0].init?.headers).toEqual(expect.objectContaining({
       "x-yunxiao-token": "token",
     }));
+  });
+
+  it("normalizes pasted organization IDs and personal tokens", () => {
+    expect(normalizeYunxiaoOrganizationId(
+      "https://devops.aliyun.com/organization/6141c43fdd62cdb60fbbdbda/setting",
+    )).toBe("6141c43fdd62cdb60fbbdbda");
+    expect(normalizeYunxiaoPersonalToken('Bearer "pt-abc_123"')).toBe("pt-abc_123");
+  });
+
+  it("rewrites OpenAPI gateway permission errors", async () => {
+    const fetcher: typeof fetch = async () =>
+      Response.json({ message: "Current token has no permission to api." }, { status: 403 });
+    await expect(searchProjects("org", "token", fetcher)).rejects.toThrow(
+      /以 pt- 开头的新版个人访问令牌/,
+    );
+  });
+
+  it("explains that completing a work item needs write scope even when read works", async () => {
+    expect(yunxiaoUpdateWorkitemPermissionHint(true)).toMatch(/把「工作项」从「只读」改成「读写」/);
+    const fetcher: typeof fetch = async (input, init) => {
+      if (init?.method === "PUT") {
+        return Response.json({ message: "Current token has no permission to api." }, { status: 403 });
+      }
+      return Response.json({ success: true, result: { id: "item-1", subject: "readable" } });
+    };
+    await expect(updateWorkitemStatus("org", "item-1", "done", "token", fetcher))
+      .rejects.toThrow(/可以读取该工作项，但没有「更新工作项」OpenAPI 权限/);
   });
 
   it("surfaces Yunxiao network failures as a readable error", async () => {

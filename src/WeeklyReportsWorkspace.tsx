@@ -1,4 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { WeeklyReportGroupDialog } from "./WeeklyReportGroupDialog";
+import { createDemoWeeklyReportGroups, useWeeklyReportGroups, weeklyReportGroupsKey } from "./lib/weeklyReportGroupsApi";
+import { WeeklyReportNotificationGroupDialog } from "./WeeklyReportNotificationGroupDialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import {
@@ -11,11 +14,16 @@ import {
   FileText,
   Menu,
   Plus,
+  Search,
+  Settings,
   Trash2,
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { WeeklyReportOkrSection } from "./WeeklyReportOkrSection";
 import { FocusTaskPicker } from "./FocusTaskPicker";
 import { MemberAvatar } from "./MemberAvatar";
 import type { AppRoute } from "./lib/appRoute";
@@ -42,7 +50,6 @@ import {
   canCreateWeeklyReportForWeek,
   defaultWeeklyReportTaskFilters,
   filterWeeklyReportPickerTasks,
-  parseWeeklyReportTextParts,
   shiftWeeklyReportWeek,
   sortWeeklyReports,
   weeklyReportPublishError,
@@ -60,6 +67,7 @@ import type {
   Task,
   UserGroup,
   WeeklyReport,
+  WeeklyReportGroup,
   WeeklyReportNotificationGroup,
   WeeklyReportNotificationSummary,
   WeeklyReportVisibility,
@@ -67,20 +75,7 @@ import type {
 
 type WeeklyReportsRoute = Extract<AppRoute, { kind: "weekly_reports" }>;
 
-export function WeeklyReportsWorkspace({
-  workspaceId,
-  currentUserId,
-  members,
-  userGroups,
-  labels,
-  tasks,
-  online,
-  demoMode,
-  route,
-  onNavigate,
-  onMenu,
-  onNotice,
-}: {
+type WeeklyReportsProps = {
   workspaceId: string;
   currentUserId: string;
   members: Member[];
@@ -93,24 +88,124 @@ export function WeeklyReportsWorkspace({
   onNavigate: (route: WeeklyReportsRoute, replace?: boolean) => void;
   onMenu: () => void;
   onNotice: NoticeHandler;
-}) {
+};
+type WeeklyReportNavigationGuard = { dirty: boolean; busy: boolean; save: () => Promise<boolean> };
+
+export function WeeklyReportsWorkspace(props: WeeklyReportsProps) {
+  const { workspaceId, currentUserId, members, userGroups, route, onNavigate, online, demoMode } = props;
+  const queryClient = useQueryClient();
+  const query = useWeeklyReportGroups(workspaceId, demoMode);
+  const demoGroups = useMemo(() => createDemoWeeklyReportGroups(workspaceId, members.map((member) => member.user_id)), [workspaceId, members]);
+  const groups = demoMode ? demoGroups : query.data ?? [];
+  const detail = useQuery({
+    queryKey: weeklyReportDetailKey(workspaceId, "reportId" in route ? route.reportId : "none"),
+    queryFn: () => loadWeeklyReport(supabase!, workspaceId, "reportId" in route ? route.reportId : ""),
+    initialData: () => "reportId" in route
+      ? queryClient.getQueriesData<WeeklyReport[]>({ queryKey: ["weekly-reports", workspaceId, "groups-v1"] })
+        .flatMap(([, reports]) => reports ?? []).find((report) => report.id === route.reportId)
+      : undefined,
+    enabled: Boolean(supabase) && !demoMode && "reportId" in route,
+  });
+  const selectedId = "reportId" in route ? detail.data?.weekly_report_group_id ?? (demoMode ? demoGroups[0]?.id : undefined)
+    : route.groupId ?? groups.find((group) => group.is_default)?.id ?? groups[0]?.id;
+  const group = groups.find((item) => item.id === selectedId);
+  const [search, setSearch] = useState("");
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [weekStart, setWeekStart] = useState(() => weeklyReportWeekStart());
+  const [dialog, setDialog] = useState<"new" | "edit" | null>(null);
+  const guard = useRef<WeeklyReportNavigationGuard | null>(null);
+  const [pendingRoute, setPendingRoute] = useState<WeeklyReportsRoute | null>(null);
+  const [savingBeforeLeave, setSavingBeforeLeave] = useState(false);
+  const role = members.find((member) => member.user_id === currentUserId)?.role;
+  const canManage = role === "owner" || role === "admin";
+  const selectGroup = (next: WeeklyReportsRoute) => {
+    if (guard.current?.busy) return;
+    if (guard.current?.dirty) { setPendingRoute(next); return; }
+    setMobileOpen(false); onNavigate(next);
+  };
+  useEffect(() => {
+    if (!supabase || demoMode) return;
+    const refreshAccess = () => {
+      // The workspace-level revision also reaches clients whose group access was revoked.
+      queryClient.removeQueries({ queryKey: ["weekly-reports", workspaceId], type: "inactive" });
+      queryClient.removeQueries({ queryKey: ["weekly-report", workspaceId], type: "inactive" });
+      void queryClient.invalidateQueries({ queryKey: weeklyReportGroupsKey(workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: ["weekly-reports", workspaceId] });
+      void queryClient.invalidateQueries({ queryKey: ["weekly-report", workspaceId] });
+    };
+    const channel = supabase.channel(`weekly-report-group-access:${workspaceId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "weekly_report_groups", filter: `workspace_id=eq.${workspaceId}` }, refreshAccess)
+      .on("postgres_changes", { event: "*", schema: "public", table: "weekly_report_access_revisions", filter: `workspace_id=eq.${workspaceId}` }, refreshAccess)
+      .subscribe();
+    return () => { void supabase!.removeChannel(channel); };
+  }, [workspaceId, demoMode, queryClient]);
+  useEffect(() => {
+    if (!online || demoMode || !query.isSuccess || query.isFetching) return;
+    const allowed = new Map((query.data ?? []).map((item) => [item.id, item]));
+    for (const cached of queryClient.getQueryCache().findAll({ queryKey: ["weekly-reports", workspaceId] })) {
+      const scope = allowed.get(String(cached.queryKey[3]));
+      if (!scope) queryClient.removeQueries({ queryKey: cached.queryKey, exact: true });
+      else if (scope.can_view_published === false) {
+        const reports = cached.state.data as WeeklyReport[] | undefined;
+        const own = reports?.filter((report) => report.author_id === currentUserId);
+        if (own && own.length !== reports?.length) queryClient.setQueryData(cached.queryKey, own);
+      }
+    }
+    for (const cached of queryClient.getQueryCache().findAll({ queryKey: ["weekly-report", workspaceId] })) {
+      const report = cached.state.data as WeeklyReport | null | undefined;
+      if (!report) continue;
+      const scope = allowed.get(report.weekly_report_group_id);
+      if (!scope || (scope.can_view_published === false && report.author_id !== currentUserId)) {
+        // Active observers must receive null rather than retain a detached private snapshot.
+        queryClient.setQueryData(cached.queryKey, null);
+        if (!cached.getObserversCount()) queryClient.removeQueries({ queryKey: cached.queryKey, exact: true });
+      }
+    }
+  }, [online, demoMode, query.data, query.dataUpdatedAt, query.isSuccess, query.isFetching, queryClient, workspaceId, currentUserId]);
+  return <div className="weekly-report-layout">
+    <button className={clsx("sidebar-scrim", mobileOpen && "visible")} type="button" aria-label="关闭周报组列表" onClick={() => setMobileOpen(false)} />
+    <aside className={clsx("weekly-report-group-sidebar", mobileOpen && "mobile-open")} aria-label="周报组">
+      <div className="okr-member-search"><Search aria-hidden="true" /><input aria-label="搜索周报组" placeholder="搜索周报组" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+      <div className="weekly-report-group-caption"><span>周报组</span>{canManage && <button type="button" aria-label="新建周报组" title="新建周报组" disabled={!online || demoMode || query.isError} onClick={() => setDialog("new")}><Plus /></button>}</div>
+      <div className="weekly-report-group-list">{groups.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item) => <button type="button" key={item.id} className={clsx("weekly-report-group-row", item.id === selectedId && "active")} aria-current={item.id === selectedId ? "page" : undefined} onClick={() => selectGroup({ workspaceId, kind: "weekly_reports", groupId: item.id })}><Users /><span>{item.name}</span></button>)}</div>
+      {query.isLoading && !demoMode ? <p className="okr-sidebar-empty">正在读取周报组…</p> : query.isError ? <p role="alert" className="okr-sidebar-empty">周报组加载失败<button type="button" className="button secondary" onClick={() => void query.refetch()}>重新加载</button></p> : !groups.length ? <p className="okr-sidebar-empty">暂无可查看的周报组</p> : groups.every((item) => !item.name.toLowerCase().includes(search.toLowerCase())) && <p className="okr-sidebar-empty">没有匹配的周报组</p>}
+      {canManage && <button type="button" className="weekly-report-group-add" disabled={!online || demoMode || query.isError} onClick={() => setDialog("new")}><Plus />新建周报组</button>}
+    </aside>
+    <div className="weekly-report-group-main">
+      <div className="weekly-report-mobile-toolbar"><button type="button" className="button secondary" aria-label="打开导航" onClick={props.onMenu}><Menu /></button><button type="button" className="button secondary" onClick={() => setMobileOpen(true)}><Users />{group?.name ?? "周报组"}<ChevronDown /></button></div>
+      {group ? <WeeklyReportGroupWorkspace {...props} key={group.id} group={group} groupError={query.isError}
+        navigationGuard={guard} weekStart={weekStart} onWeekChange={setWeekStart} configuration={<button type="button" className="weekly-report-config-button" onClick={() => setDialog("edit")}><Settings />周报组配置</button>} />
+        : <div className="weekly-reports-workspace"><WeeklyReportEmpty icon={query.isLoading || detail.isLoading ? "loading" : "error"} text={query.isLoading || detail.isLoading ? "正在读取周报组…" : query.isError ? "周报组加载失败，请重试" : "周报组不存在或你无权查看"} /></div>}
+    </div>
+    {dialog && (dialog === "new" || group) && <WeeklyReportGroupDialog key={dialog === "new" ? "new" : group!.id} workspaceId={workspaceId} group={dialog === "edit" ? group! : null} members={members} userGroups={userGroups} online={online} demoMode={demoMode} disabled={!online || demoMode || !canManage || query.isError} onClose={() => setDialog(null)} onSaved={(saved) => { setDialog(null); if (dialog === "new") selectGroup({ workspaceId, kind: "weekly_reports", groupId: saved.id }); }} onNotice={props.onNotice} />}
+    <Dialog.Root open={Boolean(pendingRoute)} onOpenChange={(open) => { if (!open && !savingBeforeLeave) setPendingRoute(null); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content weekly-report-leave-dialog"><Dialog.Title>有尚未保存的周报</Dialog.Title><Dialog.Description>切换周报组前，可以保存当前内容或放弃修改。</Dialog.Description><div className="dialog-actions"><button type="button" className="button secondary" disabled={savingBeforeLeave} onClick={() => setPendingRoute(null)}>继续编辑</button><button type="button" className="button secondary" disabled={savingBeforeLeave} onClick={() => { const next = pendingRoute; setPendingRoute(null); setMobileOpen(false); if (next) onNavigate(next); }}>放弃修改</button><button type="button" className="button primary" disabled={savingBeforeLeave || !online || demoMode || !group?.participant_ids.includes(currentUserId) || query.isError} onClick={async () => { setSavingBeforeLeave(true); try { if (await guard.current?.save()) { const next = pendingRoute; setPendingRoute(null); setMobileOpen(false); if (next) onNavigate(next); } } finally { setSavingBeforeLeave(false); } }}>{savingBeforeLeave ? "保存中…" : "保存并切换"}</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
+  </div>;
+}
+
+function WeeklyReportGroupWorkspace({
+  workspaceId, currentUserId, members, userGroups, labels, tasks, online, demoMode, route,
+  onNavigate: navigate, onMenu, onNotice, group, groupError, configuration, navigationGuard, weekStart, onWeekChange: setWeekStart,
+}: WeeklyReportsProps & { group: WeeklyReportGroup; groupError: boolean; configuration: ReactNode;
+  weekStart: string; onWeekChange: (week: string) => void;
+  navigationGuard: RefObject<WeeklyReportNavigationGuard | null> }) {
+  const onNavigate = (next: WeeklyReportsRoute, replace?: boolean) => navigate(
+    "reportId" in next ? next : { ...next, groupId: group.id }, replace);
   const queryClient = useQueryClient();
   const backendAvailable = Boolean(supabase) && !demoMode;
-  const [weekStart, setWeekStart] = useState(() => weeklyReportWeekStart());
-  const [selectedPeople, setSelectedPeople] = useState<Set<string>>(new Set());
+  const canWrite = group.participant_ids.includes(currentUserId) && !groupError;
   const demoReports = useMemo(
-    () => createDemoWeeklyReports(workspaceId, currentUserId, members, weekStart),
-    [currentUserId, members, weekStart, workspaceId],
+    () => createDemoWeeklyReports(workspaceId, currentUserId, members, weekStart, group.id),
+    [currentUserId, members, weekStart, workspaceId, group.id],
   );
   const listQuery = useQuery({
-    queryKey: weeklyReportsKey(workspaceId, weekStart),
-    queryFn: () => loadWeeklyReports(supabase!, workspaceId, weekStart),
+    queryKey: weeklyReportsKey(workspaceId, weekStart, group.id),
+    queryFn: () => loadWeeklyReports(supabase!, workspaceId, weekStart, group.id),
     enabled: backendAvailable && !("page" in route),
   });
   const newWeekStart = "page" in route && route.page === "new" ? route.weekStart : null;
   const existingWeekQuery = useQuery({
-    queryKey: weeklyReportsKey(workspaceId, newWeekStart ?? weeklyReportWeekStart()),
-    queryFn: () => loadWeeklyReports(supabase!, workspaceId, newWeekStart!),
+    queryKey: weeklyReportsKey(workspaceId, newWeekStart ?? weeklyReportWeekStart(), group.id),
+    queryFn: () => loadWeeklyReports(supabase!, workspaceId, newWeekStart ?? weeklyReportWeekStart(), group.id),
     enabled: backendAvailable && Boolean(newWeekStart),
   });
 
@@ -156,26 +251,27 @@ export function WeeklyReportsWorkspace({
 
   if (!("page" in route)) {
     const reports = backendAvailable ? listQuery.data ?? [] : demoReports;
-    const filtered = sortWeeklyReports(reports).filter((report) =>
-      selectedPeople.size === 0 || selectedPeople.has(report.author_id));
+    const filtered = sortWeeklyReports(group.can_view_published === false ? reports.filter((report) => report.author_id === currentUserId) : reports);
     const selectedWeekCreatable = canCreateWeeklyReportForWeek(weekStart);
     const createWeek = selectedWeekCreatable ? weekStart : weeklyReportWeekStart();
     return (
       <WeeklyReportFeed
+        groupName={group.name}
         reports={filtered}
         loading={listQuery.isLoading && backendAvailable}
         error={listQuery.isError && backendAvailable}
         weekStart={weekStart}
         members={members}
-        selectedPeople={selectedPeople}
+        canWrite={canWrite}
+        writeNotice={groupError ? "周报填写权限暂不可用，请稍后重试" : "你未被配置为本组周报填写人员，请联系团队空间管理员。"}
+        configuration={configuration}
         demoMode={demoMode}
         online={online}
         onMenu={onMenu}
         onWeekChange={setWeekStart}
-        onPeopleChange={setSelectedPeople}
         onCreate={() => {
-          if (!online || demoMode) {
-            onNotice(demoMode ? "产品演示中的周报为只读示例" : "离线时周报仅可查看", "error");
+          if (!online || demoMode || !canWrite) {
+            onNotice(demoMode ? "产品演示中的周报为只读示例" : !online ? "离线时周报仅可查看" : "仅本组应填人员可以填写周报", "error");
             return;
           }
           const existing = reports.find((report) =>
@@ -200,7 +296,10 @@ export function WeeklyReportsWorkspace({
     }
     return (
       <WeeklyReportEditor
-        key={`new:${route.weekStart}`}
+        key={`new:${group.id}:${route.weekStart}`}
+        group={group}
+        groupError={groupError}
+        navigationGuard={navigationGuard}
         report={null}
         weekStart={route.weekStart}
         workspaceId={workspaceId}
@@ -220,6 +319,9 @@ export function WeeklyReportsWorkspace({
 
   return (
     <WeeklyReportDetailRoute
+      group={group}
+      groupError={groupError}
+      navigationGuard={navigationGuard}
       workspaceId={workspaceId}
       currentUserId={currentUserId}
       members={members}
@@ -228,7 +330,7 @@ export function WeeklyReportsWorkspace({
       tasks={tasks}
       online={online}
       demoMode={demoMode}
-      demoReports={createDemoWeeklyReports(workspaceId, currentUserId, members, weeklyReportWeekStart())}
+      demoReports={createDemoWeeklyReports(workspaceId, currentUserId, members, weeklyReportWeekStart(), group.id)}
       route={route}
       onNavigate={onNavigate}
       onNotice={onNotice}
@@ -237,31 +339,35 @@ export function WeeklyReportsWorkspace({
 }
 
 function WeeklyReportFeed({
+  groupName,
   reports,
   loading,
   error,
   weekStart,
   members,
-  selectedPeople,
+  canWrite,
+  writeNotice,
+  configuration,
   demoMode,
   online,
   onMenu,
   onWeekChange,
-  onPeopleChange,
   onCreate,
   onOpen,
 }: {
+  groupName: string;
   reports: WeeklyReport[];
   loading: boolean;
   error: boolean;
   weekStart: string;
   members: Member[];
-  selectedPeople: Set<string>;
+  canWrite: boolean;
+  writeNotice: string;
+  configuration: ReactNode;
   demoMode: boolean;
   online: boolean;
   onMenu: () => void;
   onWeekChange: (week: string) => void;
-  onPeopleChange: (people: Set<string>) => void;
   onCreate: () => void;
   onOpen: (reportId: string) => void;
 }) {
@@ -271,10 +377,10 @@ function WeeklyReportFeed({
       <header className="weekly-reports-header">
         <button type="button" className="mobile-menu-button" aria-label="打开导航" onClick={onMenu}><Menu /></button>
         <div>
-          <h1>周报</h1>
+          <h1>{groupName}</h1>
           <span>{meta.year} 年第 {meta.week} 周 · {meta.range}</span>
         </div>
-        <button type="button" className="button primary weekly-report-create" disabled={!online || demoMode} onClick={onCreate}>
+        <button type="button" className="button primary weekly-report-create" disabled={!online || demoMode || !canWrite} title={!canWrite ? "仅人员配置中的成员可以填写周报" : undefined} onClick={onCreate}>
           <Plus />新建周报
         </button>
       </header>
@@ -295,29 +401,9 @@ function WeeklyReportFeed({
           <button type="button" aria-label="下一周" onClick={() => onWeekChange(shiftWeeklyReportWeek(weekStart, 1))}><ChevronRight /></button>
           <button type="button" className="weekly-report-current-week" onClick={() => onWeekChange(weeklyReportWeekStart())}>本周</button>
         </div>
-        <details className="weekly-report-people-filter">
-          <summary><Users />{selectedPeople.size ? `已选 ${selectedPeople.size} 人` : "全部人员"}</summary>
-          <div className="weekly-report-people-menu">
-            <button type="button" onClick={() => onPeopleChange(new Set())}>全部人员</button>
-            {members.map((member) => (
-              <label key={member.user_id}>
-                <input
-                  type="checkbox"
-                  checked={selectedPeople.has(member.user_id)}
-                  onChange={(event) => {
-                    const next = new Set(selectedPeople);
-                    if (event.target.checked) next.add(member.user_id);
-                    else next.delete(member.user_id);
-                    onPeopleChange(next);
-                  }}
-                />
-                <MemberAvatar member={member} className="weekly-report-filter-avatar" />
-                <span>{memberDisplayName(member)}</span>
-              </label>
-            ))}
-          </div>
-        </details>
+        {configuration}
       </div>
+      {!canWrite && !demoMode && <p className="weekly-report-write-notice">{writeNotice}</p>}
       {loading ? <WeeklyReportEmpty icon="loading" text="正在读取周报…" />
         : error ? <WeeklyReportEmpty icon="error" text="周报加载失败，请稍后重试" />
           : reports.length === 0 ? <WeeklyReportEmpty icon="empty" text="这一周还没有可查看的周报" />
@@ -348,6 +434,7 @@ function WeeklyReportFeed({
 }
 
 function WeeklyReportDetailRoute({
+  group, groupError, navigationGuard,
   workspaceId,
   currentUserId,
   members,
@@ -361,6 +448,9 @@ function WeeklyReportDetailRoute({
   onNavigate,
   onNotice,
 }: {
+  group: WeeklyReportGroup;
+  groupError: boolean;
+  navigationGuard: RefObject<WeeklyReportNavigationGuard | null>;
   workspaceId: string;
   currentUserId: string;
   members: Member[];
@@ -374,6 +464,7 @@ function WeeklyReportDetailRoute({
   onNavigate: (route: WeeklyReportsRoute, replace?: boolean) => void;
   onNotice: NoticeHandler;
 }) {
+  const canWrite = group.participant_ids.includes(currentUserId) && !groupError;
   const backendAvailable = Boolean(supabase) && !demoMode;
   const query = useQuery({
     queryKey: weeklyReportDetailKey(workspaceId, route.reportId),
@@ -385,7 +476,7 @@ function WeeklyReportDetailRoute({
     : demoReports.find((item) => item.id === route.reportId) ?? null;
 
   if (query.isLoading && backendAvailable) return <WeeklyReportEmpty icon="loading" text="正在读取周报…" />;
-  if (!report) {
+  if (!report || (group.can_view_published === false && report.author_id !== currentUserId)) {
     return <div className="weekly-report-page"><WeeklyReportEmpty icon="error" text="周报不存在或你无权查看" /><button className="button secondary" onClick={() => onNavigate({ workspaceId, kind: "weekly_reports" })}>返回周报</button></div>;
   }
   if (route.page === "edit") {
@@ -393,6 +484,9 @@ function WeeklyReportDetailRoute({
       return <WeeklyReportEmpty icon="error" text="只有作者可以编辑这份周报" />;
     }
     return <WeeklyReportEditor
+      group={group}
+      groupError={groupError}
+      navigationGuard={navigationGuard}
       key={report.id}
       report={report}
       weekStart={report.week_start}
@@ -413,7 +507,7 @@ function WeeklyReportDetailRoute({
     report={report}
     member={members.find((item) => item.user_id === report.author_id)}
     isAuthor={report.author_id === currentUserId}
-    readOnly={!online || demoMode || !supabase}
+    readOnly={!online || demoMode || !supabase || !canWrite}
     onBack={() => onNavigate({ workspaceId, kind: "weekly_reports" })}
     onEdit={() => onNavigate({ workspaceId, kind: "weekly_reports", page: "edit", reportId: report.id })}
     onDeleted={() => onNavigate({ workspaceId, kind: "weekly_reports" })}
@@ -440,7 +534,7 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
     if (readOnly) return;
     if (!window.confirm("确定永久删除这份周报吗？此操作无法撤销。")) return;
     setDeleting(true);
-    const listKey = weeklyReportsKey(report.workspace_id, report.week_start);
+    const listKey = weeklyReportsKey(report.workspace_id, report.week_start, report.weekly_report_group_id);
     const previous = queryClient.getQueryData<WeeklyReport[]>(listKey);
     queryClient.setQueryData<WeeklyReport[]>(listKey, (items) => items?.filter((item) => item.id !== report.id));
     try {
@@ -458,16 +552,17 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
   const publish = async () => {
     if (readOnly) return;
     const message = weeklyReportPublishError({
+      okrProgressText: report.okr_progress_text ?? "",
       completedText: report.completed_text,
       nextPlanText: report.next_plan_text,
       reflectionText: report.reflection_text,
-      visibility: report.visibility,
-      userIds: report.user_acl_ids,
-      groupIds: report.group_acl_ids,
+      visibility: "workspace",
+      userIds: [],
+      groupIds: [],
     });
     if (message) { onNotice(message, "error"); return; }
     setPublishing(true);
-    const listKey = weeklyReportsKey(report.workspace_id, report.week_start);
+    const listKey = weeklyReportsKey(report.workspace_id, report.week_start, report.weekly_report_group_id);
     const detailKey = weeklyReportDetailKey(report.workspace_id, report.id);
     const previousList = queryClient.getQueryData<WeeklyReport[]>(listKey);
     const previousDetail = queryClient.getQueryData<WeeklyReport>(detailKey);
@@ -484,7 +579,9 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
       const saved = await saveWeeklyReport(supabase!, {
         id: report.id,
         workspaceId: report.workspace_id,
+        weeklyReportGroupId: report.weekly_report_group_id,
         weekStart: report.week_start,
+        okrProgressText: report.okr_progress_text ?? "",
         completedText: report.completed_text,
         nextPlanText: report.next_plan_text,
         reflectionText: report.reflection_text,
@@ -520,7 +617,7 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
       const next = { ...report, notification_summary: summary };
       queryClient.setQueryData(weeklyReportDetailKey(report.workspace_id, report.id), next);
       queryClient.setQueryData<WeeklyReport[]>(
-        weeklyReportsKey(report.workspace_id, report.week_start),
+        weeklyReportsKey(report.workspace_id, report.week_start, report.weekly_report_group_id),
         (items) => items?.map((item) => item.id === report.id ? next : item),
       );
       onNotice(
@@ -545,7 +642,9 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
         </div>
         {isAuthor && <div className="weekly-report-page-actions"><button className="button secondary" disabled={readOnly} onClick={onEdit}>编辑</button>{report.status === "draft" && <button className="button primary" disabled={readOnly || publishing} onClick={() => void publish()}>发布</button>}<button className="button danger" disabled={readOnly || deleting} onClick={() => void remove()}><Trash2 />删除</button></div>}
       </header>
+      {readOnly && !supabase ? null : readOnly && <p className="weekly-report-write-notice">当前周报为只读；填写需要在线且在人员配置名单中。</p>}
       <div className="weekly-report-view-meta"><span className={clsx("weekly-report-status", report.status)}>{report.status === "draft" ? "草稿" : "已发布"}</span><span>{visibilityLabel(report)}</span><span>更新于 {new Date(report.updated_at).toLocaleString("zh-CN")}</span></div>
+      {report.okr_progress_text?.trim() && <WeeklyReportContent title="OKR 进展" value={report.okr_progress_text} className="weekly-report-okr-content" />}
       <WeeklyReportContent title="本周完成" value={report.completed_text} />
       <WeeklyReportContent title="下周计划" value={report.next_plan_text} />
       <WeeklyReportContent title="总结感想" value={report.reflection_text} />
@@ -560,19 +659,29 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
   );
 }
 
-function WeeklyReportContent({ title, value }: { title: string; value: string }) {
+export function WeeklyReportContent({ title, value, className }: { title: string; value: string; className?: string }) {
   const trimmed = value.trim();
   return (
-    <section className="weekly-report-content">
+    <section className={clsx("weekly-report-content", className)}>
       <h2>{title}</h2>
       {trimmed ? (
-        <p>
-          {parseWeeklyReportTextParts(trimmed).map((part, index) => (
-            part.type === "link"
-              ? <a key={`${part.href}-${index}`} href={part.href} target="_blank" rel="noreferrer">{part.label}</a>
-              : <span key={index}>{part.value}</span>
-          ))}
-        </p>
+        <div className="weekly-report-markdown">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              a: ({ children, href, title: linkTitle }) => (
+                <a href={href} title={linkTitle} target="_blank" rel="noreferrer">{children}</a>
+              ),
+              table: ({ children }) => (
+                <div className="weekly-report-table-scroll">
+                  <table>{children}</table>
+                </div>
+              ),
+            }}
+          >
+            {trimmed}
+          </ReactMarkdown>
+        </div>
       ) : <span>未填写</span>}
     </section>
   );
@@ -607,6 +716,7 @@ function WeeklyReportNotificationStatus({ summary, disabled, onRetry }: {
 }
 
 function WeeklyReportEditor({
+  group, groupError, navigationGuard,
   report,
   weekStart,
   workspaceId,
@@ -621,6 +731,9 @@ function WeeklyReportEditor({
   onNavigate,
   onNotice,
 }: {
+  group: WeeklyReportGroup;
+  groupError: boolean;
+  navigationGuard: RefObject<WeeklyReportNavigationGuard | null>;
   report: WeeklyReport | null;
   weekStart: string;
   workspaceId: string;
@@ -635,18 +748,20 @@ function WeeklyReportEditor({
   onNavigate: (route: WeeklyReportsRoute, replace?: boolean) => void;
   onNotice: NoticeHandler;
 }) {
+  const canWrite = group.participant_ids.includes(currentUserId) && !groupError;
   const queryClient = useQueryClient();
   const notificationGroupsQuery = useQuery({
     queryKey: weeklyReportNotificationGroupsKey(workspaceId),
     queryFn: () => loadWeeklyReportNotificationGroups(supabase!, workspaceId),
     enabled: Boolean(supabase) && !demoMode,
   });
+  const [okrProgressText, setOkrProgressText] = useState(report?.okr_progress_text ?? "");
   const [completedText, setCompletedText] = useState(report?.completed_text ?? "");
   const [nextPlanText, setNextPlanText] = useState(report?.next_plan_text ?? "");
   const [reflectionText, setReflectionText] = useState(report?.reflection_text ?? "");
-  const [visibility, setVisibility] = useState<WeeklyReportVisibility>(report?.visibility ?? "workspace");
-  const [userIds, setUserIds] = useState(report?.user_acl_ids ?? []);
-  const [groupIds, setGroupIds] = useState(report?.group_acl_ids ?? []);
+  const visibility: WeeklyReportVisibility = "workspace";
+  const userIds: string[] = [];
+  const groupIds: string[] = [];
   const [notificationGroupIds, setNotificationGroupIds] = useState(
     report?.notification_group_ids ?? [],
   );
@@ -659,7 +774,7 @@ function WeeklyReportEditor({
   const [pickerAnchor, setPickerAnchor] = useState<{ left: number; top: number }>();
   const [busy, setBusy] = useState(false);
   const meta = weeklyReportWeekMeta(weekStart);
-  const readOnly = !online || demoMode || !supabase;
+  const readOnly = !online || demoMode || !supabase || !canWrite;
   const notificationGroups = notificationGroupsQuery.data ?? [];
 
   const createNotificationGroup = async (input: {
@@ -697,27 +812,27 @@ function WeeklyReportEditor({
     }
   };
 
-  const submit = async (publish: boolean) => {
+  const submit = async (publish: boolean, stay = false): Promise<boolean> => {
     if (readOnly) {
-      onNotice(demoMode ? "产品演示中的周报为只读示例" : "离线时周报仅可查看", "error");
-      return;
+      onNotice(demoMode ? "产品演示中的周报为只读示例" : !online ? "离线时周报仅可查看" : "仅本组应填人员可以填写周报", "error");
+      return false;
     }
     const willBePublished = publish || report?.status === "published";
     if (willBePublished) {
-      const message = weeklyReportPublishError({ completedText, nextPlanText, reflectionText, visibility, userIds, groupIds });
-      if (message) { onNotice(message, "error"); return; }
+      const message = weeklyReportPublishError({ okrProgressText, completedText, nextPlanText, reflectionText, visibility, userIds, groupIds });
+      if (message) { onNotice(message, "error"); return false; }
     }
     setBusy(true);
-    const listKey = weeklyReportsKey(workspaceId, weekStart);
+    const listKey = weeklyReportsKey(workspaceId, weekStart, group.id);
     const detailKey = report ? weeklyReportDetailKey(workspaceId, report.id) : null;
     const previousList = queryClient.getQueryData<WeeklyReport[]>(listKey);
     const previousDetail = detailKey ? queryClient.getQueryData<WeeklyReport>(detailKey) : undefined;
     if (report) {
       const optimistic: WeeklyReport = {
-        ...report, completed_text: completedText, next_plan_text: nextPlanText,
+        ...report, okr_progress_text: okrProgressText, completed_text: completedText, next_plan_text: nextPlanText,
         reflection_text: reflectionText, visibility,
-        user_acl_ids: visibility === "users" ? userIds : [],
-        group_acl_ids: visibility === "groups" ? groupIds : [],
+        user_acl_ids: [],
+        group_acl_ids: [],
         notification_group_ids: notificationGroupIds,
         status: willBePublished ? "published" : "draft",
         published_at: willBePublished ? report.published_at ?? new Date().toISOString() : null,
@@ -731,7 +846,9 @@ function WeeklyReportEditor({
       const saved = await saveWeeklyReport(supabase!, {
         id: report?.id,
         workspaceId,
+        weeklyReportGroupId: group.id,
         weekStart,
+        okrProgressText,
         completedText,
         nextPlanText,
         reflectionText,
@@ -753,15 +870,31 @@ function WeeklyReportEditor({
         saved.status === "draft" ? "周报草稿已保存" : dispatchResult.message,
         saved.status === "draft" ? "success" : dispatchResult.tone,
       );
-      onNavigate({ workspaceId, kind: "weekly_reports", page: "view", reportId: saved.id }, true);
+      if (!stay) onNavigate({ workspaceId, kind: "weekly_reports", page: "view", reportId: saved.id }, true);
+      return true;
     } catch (error) {
       queryClient.setQueryData(listKey, previousList);
       if (detailKey) queryClient.setQueryData(detailKey, previousDetail);
       onNotice(error instanceof Error ? error.message : "保存周报失败", "error");
+      return false;
     } finally {
       setBusy(false);
     }
   };
+
+  const dirty = okrProgressText !== (report?.okr_progress_text ?? "") || completedText !== (report?.completed_text ?? "")
+    || nextPlanText !== (report?.next_plan_text ?? "") || reflectionText !== (report?.reflection_text ?? "")
+    || JSON.stringify(notificationGroupIds) !== JSON.stringify(report?.notification_group_ids ?? []);
+  useEffect(() => {
+    navigationGuard.current = { dirty, busy, save: () => submit(false, true) };
+    return () => { navigationGuard.current = null; };
+  });
+  useEffect(() => {
+    if (!dirty) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [dirty]);
 
   const openPicker = (section: WeeklyReportSection, button: HTMLButtonElement) => {
     const bounds = button.getBoundingClientRect();
@@ -789,7 +922,13 @@ function WeeklyReportEditor({
         <button type="button" className="weekly-report-back" aria-label="返回" onClick={onBack}><ArrowLeft /></button>
         <div><h1>{report ? "编辑周报" : "创建周报"}</h1><span>{meta.year} 年第 {meta.week} 周 · {meta.range}</span></div>
       </header>
+      {readOnly && <p className="weekly-report-write-notice">{!online ? "离线时周报仅可查看" : demoMode ? "产品演示中的周报为只读示例" : groupError ? "周报填写权限暂不可用，请稍后重试" : "你未被配置为周报填写人员，请联系团队空间管理员。"}</p>}
       {!report && <label className="weekly-report-week-choice">周次<select value={weekStart} onChange={(event) => onNavigate({ workspaceId, kind: "weekly_reports", page: "new", weekStart: event.target.value }, true)}><option value={weeklyReportWeekStart()}>本周 · {weeklyReportWeekMeta(weeklyReportWeekStart()).range}</option><option value={shiftWeeklyReportWeek(weeklyReportWeekStart(), -1)}>上一周 · {weeklyReportWeekMeta(shiftWeeklyReportWeek(weeklyReportWeekStart(), -1)).range}</option></select></label>}
+      <WeeklyReportOkrSection
+        workspaceId={workspaceId} currentUserId={currentUserId} weekStart={weekStart}
+        members={members} readOnly={readOnly} demoMode={demoMode}
+        value={okrProgressText} onChange={setOkrProgressText}
+      />
       <WeeklyReportEditorSection
         title="本周完成"
         value={completedText}
@@ -807,7 +946,7 @@ function WeeklyReportEditor({
         onPick={(button) => openPicker("next_plan", button)}
       />
       <section className="weekly-report-editor-section"><div className="weekly-report-editor-section-title"><h2>总结感想</h2></div><textarea aria-label="总结感想" placeholder="记录经验、问题与感想" value={reflectionText} readOnly={readOnly} onChange={(event) => setReflectionText(event.target.value)} /></section>
-      <section className="weekly-report-visibility"><h2>可见范围</h2><div className="weekly-report-visibility-options">{(["workspace", "users", "groups"] as const).map((scope) => <label key={scope}><input type="radio" name="weekly-report-visibility" checked={visibility === scope} disabled={readOnly} onChange={() => { setVisibility(scope); if (scope !== "users") setUserIds([]); if (scope !== "groups") setGroupIds([]); }} />{{ workspace: "团队内不限", users: "指定用户", groups: "指定用户组" }[scope]}</label>)}</div>{visibility === "users" && <PermissionChoices members={members.filter((member) => member.user_id !== currentUserId)} selected={userIds} disabled={readOnly} onChange={setUserIds} />}{visibility === "groups" && <GroupChoices groups={groups} selected={groupIds} disabled={readOnly} onChange={setGroupIds} />}</section>
+      <section className="weekly-report-visibility"><h2>可见范围</h2><p className="weekly-report-config-hint">继承周报组可见范围 · {group.visibility === "workspace" ? "团队空间全员可见" : "应填人员、指定用户和用户组可见"}</p></section>
       <WeeklyReportNotificationPicker
         groups={notificationGroups}
         selected={notificationGroupIds}
@@ -820,7 +959,7 @@ function WeeklyReportEditor({
       />
       <footer className="weekly-report-editor-footer"><button type="button" className="button secondary" onClick={onBack}>取消</button><button type="button" className="button secondary" disabled={readOnly || busy} onClick={() => void submit(false)}>保存</button>{report?.status !== "published" && <button type="button" className="button primary" disabled={readOnly || busy} onClick={() => void submit(true)}>发布</button>}</footer>
       <FocusTaskPicker
-        open={pickerSection !== null}
+        open={pickerSection !== null && !readOnly}
         mode="multi"
         title={pickerSection === "completed" ? "选择本周完成待办" : "选择下周计划待办"}
         tasks={pickerTasks}
@@ -860,7 +999,7 @@ function WeeklyReportEditor({
         onOpenChange={(open) => { if (!open) setPickerSection(null); }}
         onSelect={() => undefined}
         onConfirmTaskIds={(ids) => {
-          if (!pickerSection) return;
+          if (!pickerSection || readOnly) return;
           const selected = tasks.filter((task) => ids.includes(task.id));
           const appUrl = currentAppUrl();
           if (pickerSection === "completed") setCompletedText((current) => appendWeeklyReportTaskLines(current, selected, pickerSection, labels, tasks, appUrl));
@@ -870,6 +1009,7 @@ function WeeklyReportEditor({
       />
       <WeeklyReportNotificationGroupDialog
         open={notificationDialogOpen}
+        disabled={readOnly}
         onOpenChange={setNotificationDialogOpen}
         onCreate={createNotificationGroup}
       />
@@ -886,14 +1026,6 @@ function WeeklyReportEditorSection({ title, value, placeholder, readOnly, onChan
   onPick: (button: HTMLButtonElement) => void;
 }) {
   return <section className="weekly-report-editor-section"><div className="weekly-report-editor-section-title"><h2>{title}</h2><div><button type="button" disabled={readOnly} onClick={(event) => onPick(event.currentTarget)}><Plus />从待办选择</button></div></div><textarea aria-label={title} placeholder={placeholder} value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} /></section>;
-}
-
-function PermissionChoices({ members, selected, disabled, onChange }: { members: Member[]; selected: string[]; disabled: boolean; onChange: (ids: string[]) => void }) {
-  return <div className="weekly-report-subjects">{members.length ? members.map((member) => <label key={member.user_id}><input type="checkbox" disabled={disabled} checked={selected.includes(member.user_id)} onChange={(event) => onChange(event.target.checked ? [...selected, member.user_id] : selected.filter((id) => id !== member.user_id))} /><MemberAvatar member={member} className="weekly-report-filter-avatar" /><span>{memberDisplayName(member)}</span></label>) : <span>暂无其他成员</span>}</div>;
-}
-
-function GroupChoices({ groups, selected, disabled, onChange }: { groups: UserGroup[]; selected: string[]; disabled: boolean; onChange: (ids: string[]) => void }) {
-  return <div className="weekly-report-subjects">{groups.length ? groups.map((group) => <label key={group.id}><input type="checkbox" disabled={disabled} checked={selected.includes(group.id)} onChange={(event) => onChange(event.target.checked ? [...selected, group.id] : selected.filter((id) => id !== group.id))} /><Users /><span>{group.name}</span></label>) : <span>暂无用户组</span>}</div>;
 }
 
 function WeeklyReportNotificationPicker({
@@ -995,87 +1127,13 @@ function WeeklyReportNotificationPicker({
   );
 }
 
-function WeeklyReportNotificationGroupDialog({ open, onOpenChange, onCreate }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCreate: (input: { name: string; webhook: string; signingSecret: string }) => Promise<void>;
-}) {
-  const [name, setName] = useState("");
-  const [webhook, setWebhook] = useState("");
-  const [signingSecret, setSigningSecret] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    setName("");
-    setWebhook("");
-    setSigningSecret("");
-    setBusy(false);
-    setError("");
-  }, [open]);
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!name.trim() || !webhook.trim() || !signingSecret.trim()) {
-      setError("请填写全部通知群信息");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await onCreate({
-        name: name.trim(),
-        webhook: webhook.trim(),
-        signingSecret: signingSecret.trim(),
-      });
-      onOpenChange(false);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "创建通知群失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="dialog-content weekly-report-notification-dialog">
-          <form onSubmit={submit}>
-            <header>
-              <Dialog.Title>创建通知群</Dialog.Title>
-              <Dialog.Close asChild>
-                <button type="button" className="dialog-close-button" aria-label="关闭"><X /></button>
-              </Dialog.Close>
-            </header>
-            <Dialog.Description className="sr-only">配置当前团队共用的钉钉群通知</Dialog.Description>
-            <div className="weekly-report-notification-dialog-body">
-              <label>群类型<select aria-label="群类型" value="dingtalk" disabled><option value="dingtalk">钉钉群</option></select></label>
-              <label>群名称<input autoFocus aria-label="群名称" value={name} maxLength={100} placeholder="例如：研发周报群" onChange={(event) => setName(event.target.value)} /></label>
-              <label>群 WebHook<input aria-label="群 WebHook" value={webhook} inputMode="url" placeholder="https://oapi.dingtalk.com/robot/send?access_token=…" onChange={(event) => setWebhook(event.target.value)} /></label>
-              <label>安全加签<input aria-label="安全加签" type="password" value={signingSecret} autoComplete="new-password" placeholder="SEC…" onChange={(event) => setSigningSecret(event.target.value)} /></label>
-              {error && <p role="alert">{error}</p>}
-            </div>
-            <footer className="dialog-actions">
-              <Dialog.Close asChild><button type="button" className="button secondary" disabled={busy}>取消</button></Dialog.Close>
-              <button type="submit" className="button primary" disabled={busy || !name.trim() || !webhook.trim() || !signingSecret.trim()}>{busy ? "创建中…" : "创建"}</button>
-            </footer>
-          </form>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
 
 function WeeklyReportEmpty({ icon, text }: { icon: "loading" | "error" | "empty"; text: string }) {
   return <div className={clsx("weekly-report-empty", icon)}><FileText /><p>{text}</p></div>;
 }
 
-function visibilityLabel(report: WeeklyReport) {
-  if (report.visibility === "workspace") return "团队内不限";
-  if (report.visibility === "users") return "指定用户";
-  return "指定用户组";
+function visibilityLabel(_report: WeeklyReport) {
+  return "继承周报组可见范围";
 }
 
 function formatRelativeTime(value: string) {
@@ -1086,16 +1144,18 @@ function formatRelativeTime(value: string) {
   return new Date(value).toLocaleDateString("zh-CN");
 }
 
-function createDemoWeeklyReports(workspaceId: string, currentUserId: string, members: Member[], weekStart: string): WeeklyReport[] {
+function createDemoWeeklyReports(workspaceId: string, currentUserId: string, members: Member[], weekStart: string, groupId: string): WeeklyReport[] {
   if (weekStart !== weeklyReportWeekStart()) return [];
   const timestamp = new Date().toISOString();
   const ordered = [...members].sort((left, right) =>
     Number(right.user_id === currentUserId) - Number(left.user_id === currentUserId));
   return ordered.slice(0, 3).map((member, index) => ({
     id: `demo-weekly-report-${index + 1}`,
+    weekly_report_group_id: groupId,
     workspace_id: workspaceId,
     author_id: member.user_id,
     week_start: weekStart,
+    okr_progress_text: "",
     completed_text: "- 完成了 [产品体验优化](https://app.anttodo.com/workspaces/workspace-team/tasks/demo-product)\n- 完成 `本周需求验收`",
     next_plan_text: "- 计划完成 `周报模块联调`",
     reflection_text: "本周协作顺畅，下周继续收敛细节。",

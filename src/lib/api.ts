@@ -32,7 +32,6 @@ import type {
   TaskSection,
   TaskPriority,
   UserLabelOrder,
-  UserSidebarMember,
   UserQuota,
   Workspace,
   WorkspaceBundle,
@@ -55,6 +54,7 @@ import { mergeNotificationPreferenceRows } from "./notificationPreferences";
 import { coerceHours, coercePomodoros } from "./taskHours";
 import { edgeFunctionErrorMessage } from "./sso";
 import { mapLabelTaskLimitError } from "./labelTaskLimits";
+import { withoutSystemLabels } from "./labels";
 import {
   isValidWorkspaceSlug,
   normalizeWorkspaceSlug,
@@ -765,7 +765,6 @@ export async function loadWorkspaceBundle(
     userGroupMembersResult,
     labelPermissionLevelsResult,
     userLabelOrderResult,
-    userSidebarMembersResult,
     labelTaskCountsResult,
   ] = await Promise.all([
     client
@@ -837,11 +836,6 @@ export async function loadWorkspaceBundle(
       .select("user_id, workspace_id, label_id, position")
       .eq("workspace_id", workspaceId)
       .order("position", { ascending: true }),
-    client
-      .from("user_sidebar_members")
-      .select("user_id, workspace_id, member_user_id, created_at")
-      .eq("workspace_id", workspaceId)
-      .order("created_at", { ascending: true }),
     client.rpc("list_label_task_counts", { p_workspace_id: workspaceId }),
   ]);
   assertNoError(membersResult.error);
@@ -858,7 +852,6 @@ export async function loadWorkspaceBundle(
   assertNoError(userGroupMembersResult.error);
   assertNoError(labelPermissionLevelsResult.error);
   assertNoError(userLabelOrderResult.error);
-  assertNoError(userSidebarMembersResult.error);
   assertNoError(labelTaskCountsResult.error);
 
   const memberIds = (membersResult.data ?? []).map((member) => member.user_id);
@@ -924,7 +917,7 @@ export async function loadWorkspaceBundle(
     })) as Member[],
     userGroups: (userGroupsResult.data ?? []) as WorkspaceBundle["userGroups"],
     userGroupMembers: (userGroupMembersResult.data ?? []) as WorkspaceBundle["userGroupMembers"],
-    labels: (labelsResult.data ?? []) as Label[],
+    labels: withoutSystemLabels((labelsResult.data ?? []) as Label[]),
     labelUserAcls: labelUserAclsResult.data ?? [],
     labelGroupAcls: labelGroupAclsResult.data ?? [],
     labelPermissionLevels: Object.fromEntries(
@@ -940,7 +933,6 @@ export async function loadWorkspaceBundle(
     syncRuns: (runsResult.data ?? []) as SyncRun[],
     conflicts: (conflictsResult.data ?? []) as SyncConflict[],
     userLabelOrder: (userLabelOrderResult.data ?? []) as UserLabelOrder[],
-    userSidebarMembers: (userSidebarMembersResult.data ?? []) as UserSidebarMember[],
     labelTaskCounts: Object.fromEntries(
       (labelTaskCountsResult.data ?? []).map(
         (row: { label_id: string; task_count: number }) => [row.label_id, row.task_count],
@@ -953,32 +945,6 @@ export async function loadWorkspaceBundle(
     taskSections: (sectionsResult.data ?? []) as WorkspaceBundle["taskSections"],
     taskPlacements: (placementsResult.data ?? []) as WorkspaceBundle["taskPlacements"],
   };
-}
-
-export async function addUserSidebarMember(
-  client: SupabaseClient,
-  input: Pick<UserSidebarMember, "user_id" | "workspace_id" | "member_user_id">,
-) {
-  const { data, error } = await client
-    .from("user_sidebar_members")
-    .insert(input)
-    .select("user_id, workspace_id, member_user_id, created_at")
-    .single();
-  assertNoError(error);
-  return data as UserSidebarMember;
-}
-
-export async function removeUserSidebarMember(
-  client: SupabaseClient,
-  workspaceId: string,
-  memberUserId: string,
-) {
-  const { error } = await client
-    .from("user_sidebar_members")
-    .delete()
-    .eq("workspace_id", workspaceId)
-    .eq("member_user_id", memberUserId);
-  assertNoError(error);
 }
 
 export async function loadWorkspaceTasksPage(

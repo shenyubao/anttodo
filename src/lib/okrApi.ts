@@ -143,6 +143,37 @@ export async function setTaskOkrLink(
   return keyResultId ? loadTaskOkrLink(client, taskId) : null;
 }
 
+export function okrLinkedTaskCountsKey(workspaceId: string, setId: string | undefined, keyResultIds: string[]) {
+  return ["okr-linked-task-counts", workspaceId, setId, [...keyResultIds].sort()] as const;
+}
+
+/** Match the detail list's task RLS and soft-delete filter, without loading task bodies. */
+export async function loadOkrLinkedTaskCounts(
+  client: SupabaseClient,
+  workspaceId: string,
+  keyResultIds: string[],
+): Promise<Record<string, number>> {
+  const ids = [...new Set(keyResultIds)].sort();
+  const counts: Record<string, number> = Object.fromEntries(ids.map((id) => [id, 0]));
+  // Bound URL size and paginate so large OKR sets are not silently truncated.
+  for (let offset = 0; offset < ids.length; offset += 80) {
+    const batch = ids.slice(offset, offset + 80);
+    for (let from = 0; ; from += 500) {
+      const { data, error } = await client.from("task_okr_links")
+        .select("task_id,key_result_id,tasks!inner(id)")
+        .eq("workspace_id", workspaceId)
+        .in("key_result_id", batch)
+        .is("tasks.deleted_at", null)
+        .order("task_id")
+        .range(from, from + 499);
+      assertNoError(error);
+      for (const row of data ?? []) counts[row.key_result_id] = (counts[row.key_result_id] ?? 0) + 1;
+      if ((data?.length ?? 0) < 500) break;
+    }
+  }
+  return counts;
+}
+
 export async function loadOkrLinkedTasks(
   client: SupabaseClient,
   target: { kind: "objective" | "key_result"; id: string },
@@ -332,6 +363,7 @@ function normalizeOkrKeyResult(keyResult: OkrKeyResult): OkrKeyResult {
 function normalizeOkrObjective(objective: OkrObjective): OkrObjective {
   return {
     ...objective,
+    progress_mode: "key_results",
     start_value: numberValue(objective.start_value),
     target_value: numberValue(objective.target_value, 100),
     current_value: objective.current_value === null ? null : numberValue(objective.current_value),
@@ -366,6 +398,78 @@ export async function loadOkrSet(
   });
   assertNoError(error);
   return data ? normalizeOkrSet(data as OkrSet) : null;
+}
+
+export type OkrEntityChange = {
+  id: string;
+  fields?: Record<string, unknown>;
+  responsible_ids?: string[];
+  user_acl_ids?: string[];
+  group_acl_ids?: string[];
+  alignment_target_id?: string | null;
+  breakdowns?: Array<Pick<OkrBreakdown, "user_id" | "allocated_value">>;
+  key_results?: OkrEntityChange[];
+};
+
+const commonOkrFields = [
+  "title", "position", "visibility", "status_mode", "progress_status",
+  "start_value", "target_value", "current_value", "metric_unit", "custom_unit", "score",
+] as const;
+
+function entityChange(next: OkrObjective | OkrKeyResult, previous?: OkrObjective | OkrKeyResult): OkrEntityChange {
+  const change: OkrEntityChange = { id: next.id };
+  const fields: Record<string, unknown> = {};
+  for (const key of commonOkrFields) {
+    const value = key === "title" ? next.title.trim() : next[key];
+    const prior = previous && (key === "title" ? previous.title.trim() : previous[key]);
+    if (!previous || value !== prior) fields[key] = value;
+  }
+  if ("key_results" in next) {
+    const before = previous && "key_results" in previous ? previous : undefined;
+    if (!before || next.note !== before.note) fields.note = next.note;
+    if (!before || before.progress_mode !== "key_results") fields.progress_mode = "key_results";
+    if (!before || next.alignment_target_id !== before.alignment_target_id) {
+      change.alignment_target_id = next.alignment_target_id;
+    }
+    const priorKrs = new Map(before?.key_results.map((kr) => [kr.id, kr]));
+    const krs = next.key_results.map((kr) => entityChange(kr, priorKrs.get(kr.id)))
+      .filter((kr) => Object.keys(kr).length > 1);
+    if (krs.length) change.key_results = krs;
+  } else {
+    const before = previous && "breakdowns" in previous ? previous : undefined;
+    if (!before || next.weight !== before.weight) fields.weight = next.weight;
+    const breakdowns = next.breakdowns.map(({ user_id, allocated_value }) => ({ user_id, allocated_value }));
+    const prior = before?.breakdowns.map(({ user_id, allocated_value }) => ({ user_id, allocated_value }));
+    if (JSON.stringify(breakdowns) !== JSON.stringify(prior)) change.breakdowns = breakdowns;
+  }
+  if (Object.keys(fields).length) change.fields = fields;
+  for (const key of ["responsible_ids", "user_acl_ids", "group_acl_ids"] as const) {
+    if (!previous || JSON.stringify(next[key]) !== JSON.stringify(previous[key])) change[key] = next[key];
+  }
+  return change;
+}
+
+export function buildOkrChanges(objectives: OkrObjective[], previous: OkrObjective[]) {
+  const prior = new Map(previous.map((objective) => [objective.id, objective]));
+  return {
+    objectives: objectives.map((objective) => entityChange(objective, prior.get(objective.id)))
+      .filter((objective) => Object.keys(objective).length > 1),
+  };
+}
+
+export async function saveOkrChanges(
+  client: SupabaseClient,
+  setId: string,
+  changes: ReturnType<typeof buildOkrChanges>,
+  publish = false,
+): Promise<OkrSet | null> {
+  if (!changes.objectives.length && !publish) return null;
+  const { data, error } = await client.rpc("save_okr_changes", {
+    p_set_id: setId, p_changes: changes, p_publish: publish,
+  });
+  if (error) throw new Error(publish ? publishOkrErrorMessage(error.message) : error.message);
+  if (!data) throw new Error("OKR 保存失败，请重试");
+  return normalizeOkrSet(data as OkrSet);
 }
 
 export async function saveOkrSetVisibility(
@@ -464,38 +568,11 @@ export async function updateOkrObjective(
   client: SupabaseClient,
   objective: OkrObjective,
 ) {
-  const { responsible_ids, user_acl_ids, group_acl_ids, alignment_target_id, key_results, ...row } = objective;
-  const { data, error } = await client.from("okr_objectives").update({
-    title: row.title.trim(),
-    note: row.note,
-    position: row.position,
-    visibility: row.visibility,
-    progress_mode: row.progress_mode,
-    status_mode: row.status_mode,
-    progress_status: row.progress_status,
-    start_value: row.start_value,
-    target_value: row.target_value,
-    current_value: row.current_value,
-    metric_unit: row.metric_unit,
-    custom_unit: row.custom_unit,
-    score: row.score,
-    updated_at: new Date().toISOString(),
-  }).eq("id", row.id).select("*").single();
-  assertNoError(error);
-  await replaceIds(client, "okr_objective_responsibles", "objective_id", row.id, row.workspace_id, responsible_ids);
-  await replaceAclIds(client, "objective", row.id, row.workspace_id, user_acl_ids, group_acl_ids);
-  const removedAlignment = await client.from("okr_objective_alignments")
-    .delete().eq("source_objective_id", row.id);
-  assertNoError(removedAlignment.error);
-  if (alignment_target_id) {
-    const alignment = await client.from("okr_objective_alignments").insert({
-      source_objective_id: row.id,
-      target_objective_id: alignment_target_id,
-      workspace_id: row.workspace_id,
-    });
-    assertNoError(alignment.error);
-  }
-  return data as ObjectiveRow;
+  const { key_results: _keyResults, ...change } = entityChange(objective);
+  const saved = await saveOkrChanges(client, objective.set_id, { objectives: [change] });
+  const row = saved?.objectives.find((item) => item.id === objective.id);
+  if (!row) throw new Error("Objective 保存失败，请重试");
+  return row as ObjectiveRow;
 }
 
 export async function deleteOkrObjective(client: SupabaseClient, objectiveId: string) {
@@ -605,6 +682,13 @@ export async function publishOkrSet(client: SupabaseClient, setId: string) {
   const { data, error } = await client.rpc("publish_okr_set", { p_set_id: setId });
   if (error) throw new Error(publishOkrErrorMessage(error.message));
   return data as OkrSet;
+}
+
+export async function updateOkrObjectiveStatus(client: SupabaseClient, objectiveId: string, status: OkrProgressStatus) {
+  const { data, error } = await client.from("okr_objectives")
+    .update({ progress_status: status }).eq("id", objectiveId).select("*").single();
+  assertNoError(error);
+  return data;
 }
 
 export async function updateOkrProgress(

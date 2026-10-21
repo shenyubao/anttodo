@@ -3,27 +3,34 @@ import { withSupabase } from "@supabase/server";
 import {
   DINGTALK_GROUP_ROBOT_USAGE,
   dingtalkAtUserIdentifier,
+  extractDingtalkGroupRobotImageReferences,
+  extractDingtalkGroupRobotMessageText,
   isAllowedDingtalkSessionWebhook,
   parseDingtalkGroupRobotTaskText,
   verifyDingtalkGroupRobotSignature,
+  type DingtalkGroupRobotMessagePayload,
   type DingtalkRobotAtUser,
 } from "../_shared/dingtalk-group-robot.ts";
+import { getDingtalkAppAccessToken } from "../_shared/dingtalk-messaging.ts";
+import {
+  buildDingtalkGroupRobotImageDescription,
+  storeDingtalkGroupRobotImages,
+} from "../_shared/dingtalk-group-robot-images.ts";
 import {
   escapeDingtalkMarkdown,
   formatDingtalkDue,
 } from "../_shared/dingtalk-notification-cards.ts";
 import { buildTaskOpenUrl, publicAppUrl } from "../_shared/app-url.ts";
 
-type DingtalkRobotPayload = {
+type DingtalkRobotPayload = DingtalkGroupRobotMessagePayload & {
   msgId?: unknown;
-  msgtype?: unknown;
   chatbotCorpId?: unknown;
   chatbotUserId?: unknown;
   senderStaffId?: unknown;
   senderId?: unknown;
   senderNick?: unknown;
   sessionWebhook?: unknown;
-  text?: { content?: unknown };
+  robotCode?: unknown;
   atUsers?: DingtalkRobotAtUser[];
 };
 
@@ -90,6 +97,75 @@ async function resolveIdentity(
     if (bySubject?.user_id) return bySubject as { user_id: string };
   }
   return null;
+}
+
+async function attachRichTextImages(
+  // deno-lint-ignore no-explicit-any
+  supabaseAdmin: any,
+  input: {
+    actorId: string;
+    appKey: string;
+    appSecret: string;
+    connectorId: string;
+    images: ReturnType<typeof extractDingtalkGroupRobotImageReferences>;
+    messageId: string;
+    robotCode: string;
+    taskId: string;
+    workspaceId: string;
+  },
+) {
+  const { data: task, error: taskError } = await supabaseAdmin
+    .from("tasks")
+    .select("description")
+    .eq("id", input.taskId)
+    .maybeSingle();
+  if (taskError || !task) throw new Error(taskError?.message || "Task not found");
+
+  // A retried callback must never overwrite a description that was already
+  // populated by this handler or edited by a user after task creation.
+  if (task.description !== "") {
+    return { failedCount: 0, savedCount: 0, skipped: true };
+  }
+
+  const accessToken = await getDingtalkAppAccessToken({
+    appKey: input.appKey,
+    appSecret: input.appSecret,
+  });
+  const result = await storeDingtalkGroupRobotImages({
+    accessToken,
+    images: input.images,
+    messageId: input.messageId,
+    robotCode: input.robotCode,
+    supabaseAdmin,
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+  });
+  if (result.stored.length === 0) {
+    return { failedCount: result.failedCount, savedCount: 0, skipped: false };
+  }
+
+  const description = buildDingtalkGroupRobotImageDescription(result.stored);
+  const { data: attached, error: updateError } = await supabaseAdmin.rpc(
+    "attach_dingtalk_group_robot_images",
+    {
+      p_connector_id: input.connectorId,
+      p_message_id: input.messageId,
+      p_actor_id: input.actorId,
+      p_description: description,
+    },
+  );
+  if (updateError || attached !== true) {
+    await supabaseAdmin.storage.from("task-attachments")
+      .remove(result.stored.map((image) => image.path))
+      .catch(() => undefined);
+    if (updateError) throw new Error(updateError.message);
+    return { failedCount: 0, savedCount: 0, skipped: true };
+  }
+  return {
+    failedCount: result.failedCount,
+    savedCount: result.stored.length,
+    skipped: false,
+  };
 }
 
 export default {
@@ -169,15 +245,17 @@ export default {
       return Response.json({ ok: true, skipped: "connector-disabled" });
     }
 
-    if (body.msgtype !== "text" || typeof body.text?.content !== "string") {
+    const messageText = extractDingtalkGroupRobotMessageText(body);
+    if (messageText === null) {
       await sendMarkdownReply(sessionWebhook, "暂不支持该消息", [
         "### 暂不支持该消息",
-        `请发送文本：${escapeDingtalkMarkdown(DINGTALK_GROUP_ROBOT_USAGE)}`,
+        `请发送文本或含文字的图文消息：${escapeDingtalkMarkdown(DINGTALK_GROUP_ROBOT_USAGE)}`,
       ]);
       return Response.json({ ok: true, skipped: "unsupported-message" });
     }
+    const imageReferences = extractDingtalkGroupRobotImageReferences(body);
 
-    const parsed = parseDingtalkGroupRobotTaskText(body.text.content);
+    const parsed = parseDingtalkGroupRobotTaskText(messageText);
     if (parsed.kind === "help") {
       await sendMarkdownReply(sessionWebhook, "AntTodo 机器人使用说明", [
         "### AntTodo 机器人使用说明",
@@ -267,6 +345,35 @@ export default {
       participant_user_ids: string[];
       selected_label_ids: string[];
     };
+    let imageResult = { failedCount: 0, savedCount: 0, skipped: false };
+    if (imageReferences.length > 0) {
+      try {
+        const appKey = text(provider.public_config?.appKey);
+        const robotCode = text(body.robotCode);
+        if (!appKey || !robotCode) throw new Error("Missing DingTalk image credentials");
+        imageResult = await attachRichTextImages(ctx.supabaseAdmin, {
+          actorId: senderIdentity.user_id,
+          appKey,
+          appSecret,
+          connectorId: connector.id,
+          images: imageReferences,
+          messageId,
+          robotCode,
+          taskId: creation.task_id,
+          workspaceId: provider.workspace_id,
+        });
+      } catch (cause) {
+        imageResult = {
+          failedCount: imageReferences.length,
+          savedCount: 0,
+          skipped: false,
+        };
+        console.error(
+          "DingTalk rich-text images could not be attached",
+          cause instanceof Error ? cause.message : "Unknown error",
+        );
+      }
+    }
     const relatedUserIds = [
       creation.assigned_user_id,
       ...(creation.participant_user_ids ?? []),
@@ -300,18 +407,28 @@ export default {
       null,
       Deno.env.get("PUBLIC_APP_URL"),
     );
-    await sendMarkdownReply(sessionWebhook, "蚂蚁清单 任务已创建", [
+    const replyLines = [
       `### ${creation.duplicate ? "任务已存在" : "任务已创建"}`,
       `**${safeMarkdown(parsed.title, "未命名任务")}**`,
       `负责人：${safeMarkdown(assigneeName, "未指派")}`,
       `标签：${safeMarkdown(labelText, "无")}`,
       `截止时间：${escapeDingtalkMarkdown(dueText)}`,
-      `[打开蚂蚁清单查看任务](${taskUrl})`,
-    ]);
+    ];
+    if (imageReferences.length > 0 && !imageResult.skipped) {
+      replyLines.push(
+        imageResult.failedCount > 0
+          ? `图片：已保存 ${imageResult.savedCount}/${imageReferences.length} 张`
+          : `图片：已保存 ${imageResult.savedCount} 张`,
+      );
+    }
+    replyLines.push(`[打开蚂蚁清单查看任务](${taskUrl})`);
+    await sendMarkdownReply(sessionWebhook, "蚂蚁清单 任务已创建", replyLines);
     return Response.json({
       ok: true,
       taskId: creation.task_id,
       duplicate: creation.duplicate,
+      imagesSaved: imageResult.savedCount,
+      imagesFailed: imageResult.failedCount,
     });
   }),
 };

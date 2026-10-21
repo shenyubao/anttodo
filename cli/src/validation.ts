@@ -281,6 +281,7 @@ export function assertWeeklyReportSubjects(
 }
 
 export function assertWeeklyReportCanPublish(input: {
+  okrProgressText?: string;
   completedText: string;
   nextPlanText: string;
   reflectionText: string;
@@ -288,7 +289,7 @@ export function assertWeeklyReportCanPublish(input: {
   userIds: string[];
   groupIds: string[];
 }) {
-  if (![input.completedText, input.nextPlanText, input.reflectionText].some((value) => value.trim())) {
+  if (![input.okrProgressText ?? "", input.completedText, input.nextPlanText, input.reflectionText].some((value) => value.trim())) {
     throw new CliError({
       type: "validation",
       code: "weekly_report_empty",

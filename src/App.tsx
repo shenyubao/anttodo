@@ -99,7 +99,6 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { isSameDay } from "date-fns";
 import clsx from "clsx";
 import antTodoIconUrl from "./assets/anttodo-icon.png";
 import { AiCliAvatar } from "./AiCliAvatar";
@@ -159,7 +158,6 @@ import { formatAppVersionLabel, getBuildAppVersion } from "./lib/appVersion";
 import { WorkspaceShortcutBindings } from "./WorkspaceShortcutBindings";
 import { WorkspaceSwitcherDialog } from "./WorkspaceSwitcherDialog";
 import {
-  addUserSidebarMember as addUserSidebarMemberApi,
   assignTask as assignTaskApi,
   createTaskComment as createTaskCommentApi,
   createLabelWithAccess as createLabelWithAccessApi,
@@ -174,7 +172,6 @@ import {
   deleteTaskComment as deleteTaskCommentApi,
   deleteCustomTaskView,
   purgeTrashedTask as purgeTrashedTaskApi,
-  removeUserSidebarMember as removeUserSidebarMemberApi,
   loadDateTimePreferences,
   loadAiFeatureSettings,
   loadAiWorkSettings,
@@ -356,6 +353,7 @@ import {
   positionsFromGroupKeys,
   resolveCustomGroupKey,
   resolveSystemSmartViewOrder,
+  resolveSystemSmartViewVisible,
   resolveTaskListPreference,
   resolveTaskListFilters,
   SMART_VIEW_FILTER_PRESETS,
@@ -363,8 +361,6 @@ import {
   taskSectionOrderAfterInsert,
   taskSectionOrderAfterMove,
   taskListKey,
-  userTaskViewId,
-  userTaskViewKey,
   UNGROUPED_GROUP_ID,
   type SystemSmartViewKey,
 } from "./lib/taskList";
@@ -576,14 +572,10 @@ import type {
 
 type SmartView = import("./lib/appRoute").AppSmartView;
 
-function normalizeLegacyAssignedView(view: SmartView, currentUserId: string): SmartView {
-  return view === "assigned" ? userTaskViewKey(currentUserId) : view;
-}
-
-function smartViewForListRoute(route: AppRoute | null, currentUserId: string): SmartView {
-  if (route?.kind === "view") return normalizeLegacyAssignedView(route.view, currentUserId);
+function smartViewForListRoute(route: AppRoute | null): SmartView {
+  if (route?.kind === "view") return route.view;
   if (route?.kind === "tag") return "all";
-  return normalizeLegacyAssignedView(DEFAULT_SMART_VIEW, currentUserId);
+  return DEFAULT_SMART_VIEW;
 }
 type AppSection = PrimaryAppSection;
 type SettingsTab =
@@ -608,7 +600,8 @@ const SIDEBAR_MAX_WIDTH = 450;
 const CALENDAR_SIDEBAR_DEFAULT_WIDTH = 242;
 const CALENDAR_SIDEBAR_COLLAPSED_KEY = "anttodo:calendar-sidebar-collapsed";
 const DETAIL_MIN_WIDTH = 320;
-const DETAIL_MAX_WIDTH = 440;
+const DETAIL_DEFAULT_WIDTH = 440;
+const DETAIL_MAX_WIDTH = 1320;
 
 const ROOT_LABEL_DROP_TARGET = "__root__";
 
@@ -2613,6 +2606,9 @@ function RemoteApplication({
               return;
             }
           }
+          // OKR owns its queries and batches its own Realtime refreshes. Its
+          // writes must not refetch the unrelated task/workspace bundle per row.
+          if (table?.startsWith("okr_")) return;
           if (table === "task_okr_links") {
             const change = payload as {
               new?: { task_id?: unknown };
@@ -2628,7 +2624,11 @@ function RemoteApplication({
               void queryClient.invalidateQueries({ queryKey: ["task-okr-link-ids"] });
             }
             void queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", workspaceId] });
+            void queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", workspaceId], refetchType: "none" });
             return;
+          }
+          if (table === "tasks" || table === "task_labels") {
+            void queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", workspaceId], refetchType: "none" });
           }
           if (
             table === "tasks"
@@ -3025,7 +3025,10 @@ function RemoteApplication({
   }
 
   async function assignTask(taskId: string, target: AssigneeTarget) {
+    if (!online || !navigator.onLine) throw new Error("离线时无法修改任务");
     const queryKey = ["workspace-bundle", activeWorkspaceId];
+    await queryClient.cancelQueries({ queryKey });
+    if (!navigator.onLine) throw new Error("离线时无法修改任务");
     const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
     const assigneeId = target.kind === "user" ? target.userId : null;
     const cliAssignee = target.kind === "cli" ? target.tool : null;
@@ -3606,55 +3609,6 @@ function RemoteApplication({
       }
     }
     return created;
-  }
-
-  async function toggleUserSidebarMember(memberUserId: string, selected: boolean) {
-    if (!workspaceId || memberUserId === userId) return;
-    const queryKey = ["workspace-bundle", workspaceId];
-    await queryClient.cancelQueries({ queryKey });
-    const previous = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-    const optimistic = {
-      user_id: userId,
-      workspace_id: workspaceId,
-      member_user_id: memberUserId,
-      created_at: new Date().toISOString(),
-    };
-    queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
-      ? {
-          ...current,
-          userSidebarMembers: selected
-            ? [
-                ...(current.userSidebarMembers ?? []).filter(
-                  (item) => item.member_user_id !== memberUserId,
-                ),
-                optimistic,
-              ]
-            : (current.userSidebarMembers ?? []).filter(
-                (item) => item.member_user_id !== memberUserId,
-              ),
-        }
-      : current);
-    try {
-      if (selected) {
-        const saved = await addUserSidebarMemberApi(client, optimistic);
-        queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => current
-          ? {
-              ...current,
-              userSidebarMembers: [
-                ...(current.userSidebarMembers ?? []).filter(
-                  (item) => item.member_user_id !== memberUserId,
-                ),
-                saved,
-              ],
-            }
-          : current);
-      } else {
-        await removeUserSidebarMemberApi(client, workspaceId, memberUserId);
-      }
-    } catch (error) {
-      queryClient.setQueryData(queryKey, previous);
-      throw error;
-    }
   }
 
   async function updateTaskListPreference(next: TaskListPreference) {
@@ -4284,7 +4238,6 @@ function RemoteApplication({
       onUpdateLabel={updateLabel}
       onReorderChildLabels={reorderChildLabels}
       onSetUserTopLevelLabelOrder={setUserTopLevelLabelOrder}
-      onToggleUserSidebarMember={toggleUserSidebarMember}
       onDeleteLabel={deleteLabel}
       onMoveLabelToInbox={moveLabelToInbox}
       onUpdateMemberRole={updateMemberRole}
@@ -5176,27 +5129,6 @@ function DemoApplication({
           userLabelOrder: userLabelOrderRows("demo-user", workspaceId, orderedIds),
         }));
       }}
-      onToggleUserSidebarMember={async (memberUserId, selected) => {
-        if (memberUserId === "demo-user") return;
-        setBundle((current) => ({
-          ...current,
-          userSidebarMembers: selected
-            ? [
-                ...(current.userSidebarMembers ?? []).filter(
-                  (item) => item.member_user_id !== memberUserId,
-                ),
-                {
-                  user_id: "demo-user",
-                  workspace_id: workspaceId,
-                  member_user_id: memberUserId,
-                  created_at: new Date().toISOString(),
-                },
-              ]
-            : (current.userSidebarMembers ?? []).filter(
-                (item) => item.member_user_id !== memberUserId,
-              ),
-        }));
-      }}
       onDeleteLabel={async (labelId) => {
         setBundle((current) => removeLabelSubtreeFromBundle(current, labelId));
       }}
@@ -5667,7 +5599,6 @@ type WorkspaceAppProps = {
   onUpdateLabel: (labelId: string, patch: Partial<Label>) => Promise<void>;
   onReorderChildLabels: (parentId: string, orderedIds: string[]) => Promise<void>;
   onSetUserTopLevelLabelOrder: (orderedIds: string[]) => Promise<void>;
-  onToggleUserSidebarMember: (memberUserId: string, selected: boolean) => Promise<void>;
   onDeleteLabel: (labelId: string) => Promise<void>;
   onMoveLabelToInbox: (sourceLabelId: string) => Promise<void>;
   onUpdateMemberRole: (memberId: string, role: WorkspaceRole) => Promise<void>;
@@ -5799,7 +5730,6 @@ function PanelResizeHandle({
 
 function WorkspaceApplication(props: WorkspaceAppProps) {
   const workspace = props.workspaces.find((item) => item.id === props.workspaceId)!;
-  const ownUserView = userTaskViewKey(props.currentUserId);
   const renderedRoute = currentApplicationRoute();
   const embeddedNavigationMode = embeddedNavigationEnabled({
     search: window.location.search,
@@ -5825,7 +5755,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     )
     : workspaceInitialRoute;
   const [smartView, setSmartView] = useState<SmartView>(
-    smartViewForListRoute(initialListRoute, props.currentUserId),
+    smartViewForListRoute(initialListRoute),
   );
   const [appSection, setAppSection] = useState<AppSection>(
     isOverlayAppRoute(workspaceInitialRoute)
@@ -5913,7 +5843,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   const [mindMapCreateLabel, setMindMapCreateLabel] = useState<{
     parentId: string | null;
   } | null>(null);
-  const [detailWidth, setDetailWidth] = useState(DETAIL_MAX_WIDTH);
+  const [detailWidth, setDetailWidth] = useState(DETAIL_DEFAULT_WIDTH);
   const [matrixDetailAnchor, setMatrixDetailAnchor] = useState<DOMRect | null>(null);
   const [visibleCalendarIds, setVisibleCalendarIds] = useState<Set<string>>(
     () => new Set(["inbox", ...props.bundle.labels.map((label) => label.id)]),
@@ -6009,6 +5939,13 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     setRouteRevision((value) => value + 1);
   }
 
+  function canonicalizeLegacyUserSpaceRoute(route: AppRoute) {
+    const rawPath = window.location.hash.replace(/^#/, "") || window.location.pathname;
+    if (route.kind === "view" && route.view === "assigned" && rawPath.includes("/users/")) {
+      writeRoute(route, true, window.history.state);
+    }
+  }
+
   function sectionRoute(): AppRoute {
     if (appSection === "okr") {
       const route = currentApplicationRoute();
@@ -6018,7 +5955,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return { workspaceId: props.workspaceId, kind: "okr" };
     }
     if (appSection === "calendar") return { workspaceId: props.workspaceId, kind: "calendar" };
-    if (appSection === "weekly_reports") return { workspaceId: props.workspaceId, kind: "weekly_reports" };
+    if (appSection === "weekly_reports") {
+      const route = currentApplicationRoute();
+      if (route?.kind === "weekly_reports" && route.workspaceId === props.workspaceId) return route;
+      const returnRoute = currentTaskReturnRoute(props.workspaceId);
+      return returnRoute?.kind === "weekly_reports" ? returnRoute : { workspaceId: props.workspaceId, kind: "weekly_reports" };
+    }
     if (appSection === "matrix") return { workspaceId: props.workspaceId, kind: "matrix" };
     if (appSection === "mindmap") return { workspaceId: props.workspaceId, kind: "mindmap" };
     if (appSection === "focus") return { workspaceId: props.workspaceId, kind: "focus" };
@@ -6034,7 +5976,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return;
     }
     setAppSection("tasks");
-    setSmartView(smartViewForListRoute(returnRoute, props.currentUserId));
+    setSmartView(smartViewForListRoute(returnRoute));
     setSelectedLabelId(returnRoute?.kind === "tag" ? returnRoute.tagId : null);
     if (returnRoute?.kind === "view" || returnRoute?.kind === "tag") {
       setViewMode(returnRoute.mode ?? "list");
@@ -6164,10 +6106,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   }
 
   function selectSmartView(view: SmartView) {
-    const normalizedView = normalizeLegacyAssignedView(view, props.currentUserId);
-    const mode = savedViewMode(normalizedView, null);
-    writeRoute({ workspaceId: props.workspaceId, kind: "view", view: normalizedView, mode });
-    setSmartView(normalizedView);
+    const mode = savedViewMode(view, null);
+    writeRoute({ workspaceId: props.workspaceId, kind: "view", view, mode });
+    setSmartView(view);
     setViewMode(mode);
     setSelectedLabelId(null);
     syncTaskSelection(null);
@@ -6176,14 +6117,13 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   function selectLabel(labelId: string) {
     const mode = savedViewMode("all", labelId);
     writeRoute({ workspaceId: props.workspaceId, kind: "tag", tagId: labelId, mode });
-    if (userTaskViewId(smartView)) setSmartView("all");
     setSelectedLabelId(labelId);
     setViewMode(mode);
     syncTaskSelection(null);
   }
 
   function changeWorkspace(workspaceId: string) {
-    writeRoute({ workspaceId, kind: "view", view: ownUserView });
+    writeRoute({ workspaceId, kind: "view", view: DEFAULT_SMART_VIEW });
     props.onWorkspaceChange(workspaceId);
   }
 
@@ -6204,7 +6144,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         return;
       }
       syncTaskSelection(null);
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
   }, [props.bundle.tasks, props.workspaceId, selectedTask, selectedTaskId, selectedTaskIds, selectionAnchorId]);
 
@@ -6222,9 +6162,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     if (selectedLabelId && !props.bundle.labels.some((label) => label.id === selectedLabelId)) {
       setSelectedLabelId(null);
-      setSmartView(ownUserView);
+      setSmartView(DEFAULT_SMART_VIEW);
       setViewMode("list");
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
     }
   }, [props.bundle.labels, props.workspaceId, selectedLabelId]);
 
@@ -6233,13 +6173,14 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setRouteRevision((value) => value + 1);
       const route = currentApplicationRoute();
       if (!route) return;
+      canonicalizeLegacyUserSpaceRoute(route);
       if (route.workspaceId !== props.workspaceId) {
         if (props.workspaces.some((workspace) => workspace.id === route.workspaceId)) {
           props.onWorkspaceChange(route.workspaceId);
         } else {
-          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
           setAppSection("tasks");
-          setSmartView(ownUserView);
+          setSmartView(DEFAULT_SMART_VIEW);
           setViewMode("list");
           setSelectedLabelId(null);
           syncTaskSelection(null);
@@ -6252,9 +6193,9 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setSearchDialogOpen(false);
       if (route.kind === "search") {
         syncTaskSelection(null);
-        writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+        writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
         setAppSection("tasks");
-        setSmartView(ownUserView);
+        setSmartView(DEFAULT_SMART_VIEW);
         setSelectedLabelId(null);
         setViewMode("list");
         setSearchDialogOpen(true);
@@ -6282,19 +6223,20 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   useEffect(() => {
     const route = currentApplicationRoute();
     if (route?.workspaceId !== props.workspaceId) {
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
       setAppSection("tasks");
-      setSmartView(ownUserView);
+      setSmartView(DEFAULT_SMART_VIEW);
       setViewMode("list");
       setSelectedLabelId(null);
       syncTaskSelection(null);
       return;
     }
+    canonicalizeLegacyUserSpaceRoute(route);
     if (route.kind === "search") {
       syncTaskSelection(null);
-      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+      writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
       setAppSection("tasks");
-      setSmartView(ownUserView);
+      setSmartView(DEFAULT_SMART_VIEW);
       setSelectedLabelId(null);
       setViewMode("list");
       setSearchDialogOpen(true);
@@ -6304,14 +6246,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       setAppSection(route.kind);
       syncTaskSelection(null);
       return;
-    }
-    if (route.kind === "view" && route.view === "assigned") {
-      writeRoute({
-        workspaceId: props.workspaceId,
-        kind: "view",
-        view: ownUserView,
-        mode: route.mode,
-      }, true);
     }
     const task = route.kind === "task"
       ? props.bundle.tasks.find((item) => item.id === route.taskId) ?? null
@@ -6342,7 +6276,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         if (!loaded) {
           props.onNotice("链接指定的任务不存在或无权访问。");
           syncTaskSelection(null);
-          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
+          writeRoute({ workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }, true);
           return;
         }
         const resolvedReturnRoute = currentTaskReturnRoute(props.workspaceId)
@@ -6365,18 +6299,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     }
     syncTaskSelection(null);
   }, [props.bundle, props.onEnsureTask, props.onNotice, props.workspaceId]);
-
-  useEffect(() => {
-    const viewedUserId = userTaskViewId(smartView);
-    if (!viewedUserId || props.bundle.members.some((member) => member.user_id === viewedUserId)) {
-      return;
-    }
-    setSmartView(ownUserView);
-    setViewMode(savedViewMode(ownUserView, null));
-    setSelectedLabelId(null);
-    syncTaskSelection(null);
-    writeRoute({ workspaceId: props.workspaceId, kind: "view", view: ownUserView }, true);
-  }, [props.bundle.members, ownUserView, props.workspaceId, smartView]);
 
   function toggleCalendarSidebar() {
     if (
@@ -6439,12 +6361,12 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       return;
     }
     const route: AppRoute = section === "tasks"
-      ? { workspaceId: props.workspaceId, kind: "view", view: ownUserView }
+      ? { workspaceId: props.workspaceId, kind: "view", view: DEFAULT_SMART_VIEW }
       : { workspaceId: props.workspaceId, kind: section } as AppRoute;
     writeRoute(route);
     setAppSection(section);
     if (section === "tasks") {
-      setSmartView(ownUserView);
+      setSmartView(DEFAULT_SMART_VIEW);
       setSelectedLabelId(null);
     }
     syncTaskSelection(null);
@@ -6540,7 +6462,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             }
             const returnRoute = appSection === "tasks"
               ? sectionRoute()
-              : { workspaceId: targetWorkspaceId, kind: "view" as const, view: ownUserView, mode: "list" as const };
+              : { workspaceId: targetWorkspaceId, kind: "view" as const, view: DEFAULT_SMART_VIEW, mode: "list" as const };
             setAppSection("tasks");
             syncTaskSelection(task.id);
             writeRoute({
@@ -6974,10 +6896,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           selectSmartView(view);
           setMobileAppSidebar(false);
         }}
-        onUser={(userId) => {
-          selectSmartView(userTaskViewKey(userId));
-          setMobileAppSidebar(false);
-        }}
         onLabel={(labelId) => {
           selectLabel(labelId);
           setMobileAppSidebar(false);
@@ -7043,7 +6961,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onDeleteCustomTaskView={props.onDeleteCustomTaskView}
         onToggleSystemViewVisibility={props.onToggleSystemViewVisibility}
         onToggleCustomViewVisibility={props.onToggleCustomViewVisibility}
-        onToggleUserSidebarMember={props.onToggleUserSidebarMember}
       />
       {embeddedNavigation}
       {appSection === "tasks" ? <Sidebar
@@ -7057,9 +6974,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onSmartView={(view) => {
           selectSmartView(view);
         }}
-        onUser={(userId) => {
-          selectSmartView(userTaskViewKey(userId));
-        }}
         onLabel={(labelId) => {
           selectLabel(labelId);
         }}
@@ -7072,7 +6986,6 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         onUpdateLabel={props.onUpdateLabel}
         onReorderChildLabels={props.onReorderChildLabels}
         onSetUserTopLevelLabelOrder={props.onSetUserTopLevelLabelOrder}
-        onToggleUserSidebarMember={props.onToggleUserSidebarMember}
         onDeleteLabel={props.onDeleteLabel}
         onMoveLabelToInbox={props.onMoveLabelToInbox}
         onCreateCustomTaskView={props.onCreateCustomTaskView}
@@ -7853,7 +7766,6 @@ function MobileAppSidebar({
   onCreateWorkspace,
   onSectionChange,
   onSmartView,
-  onUser,
   onLabel,
   onToggleCalendar,
   onShowAllCalendars,
@@ -7874,7 +7786,6 @@ function MobileAppSidebar({
   onDeleteCustomTaskView,
   onToggleSystemViewVisibility,
   onToggleCustomViewVisibility,
-  onToggleUserSidebarMember,
 }: {
   open: boolean;
   activeSection: AppSection;
@@ -7899,7 +7810,6 @@ function MobileAppSidebar({
   onCreateWorkspace: () => void;
   onSectionChange: (section: AppSection) => void;
   onSmartView: (view: SmartView) => void;
-  onUser: (userId: string) => void;
   onLabel: (id: string) => void;
   onToggleCalendar: (id: string) => void;
   onShowAllCalendars: () => void;
@@ -7920,7 +7830,6 @@ function MobileAppSidebar({
   onDeleteCustomTaskView: WorkspaceAppProps["onDeleteCustomTaskView"];
   onToggleSystemViewVisibility: WorkspaceAppProps["onToggleSystemViewVisibility"];
   onToggleCustomViewVisibility: WorkspaceAppProps["onToggleCustomViewVisibility"];
-  onToggleUserSidebarMember: WorkspaceAppProps["onToggleUserSidebarMember"];
 }) {
   const [workspaceListOpen, setWorkspaceListOpen] = useState(false);
   const [collapsedLabels, setCollapsedLabels] = useState<Record<string, boolean>>({});
@@ -8248,7 +8157,7 @@ function MobileAppSidebar({
         <div className="mobile-sidebar-context">
           {activeSection === "tasks" && (
             <>
-              <div className="mobile-sidebar-section-title">智能视图</div>
+              <div className="mobile-sidebar-section-title">我的空间</div>
               <div className="mobile-task-views">
                 <SmartViewsSidebarList
                   bundle={bundle}
@@ -8264,17 +8173,6 @@ function MobileAppSidebar({
                   onToggleCustomViewVisibility={onToggleCustomViewVisibility}
                 />
               </div>
-              <UserSidebarSection
-                bundle={bundle}
-                currentUserId={currentUserId}
-                smartView={smartView}
-                selectedLabelId={selectedLabelId}
-                online={online}
-                mobile
-                onSelect={onUser}
-                onToggle={onToggleUserSidebarMember}
-                onNotice={onNotice}
-              />
               <div className="mobile-sidebar-section-title">标签</div>
               <div className="label-tree mobile-label-tree">
                 <LabelTree
@@ -8619,176 +8517,6 @@ function SearchBinoculars() {
   );
 }
 
-function UserSidebarSection({
-  bundle,
-  currentUserId,
-  smartView,
-  selectedLabelId = null,
-  online,
-  mobile = false,
-  onSelect,
-  onToggle,
-  onNotice,
-}: {
-  bundle: WorkspaceBundle;
-  currentUserId: string;
-  smartView: SmartView;
-  selectedLabelId?: string | null;
-  online: boolean;
-  mobile?: boolean;
-  onSelect: (userId: string) => void;
-  onToggle: WorkspaceAppProps["onToggleUserSidebarMember"];
-  onNotice: (message: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
-  const rootRef = useRef<HTMLElement>(null);
-  const selectedUserId = selectedLabelId ? null : userTaskViewId(smartView);
-  const currentMember = bundle.members.find((member) => member.user_id === currentUserId) ?? null;
-  const userSidebarMembers = bundle.userSidebarMembers ?? [];
-  const followedIds = new Set(userSidebarMembers.map((item) => item.member_user_id));
-  const followedMembers = userSidebarMembers
-    .map((item) => ({
-      item,
-      member: bundle.members.find((member) => member.user_id === item.member_user_id) ?? null,
-    }))
-    .filter((entry): entry is { item: typeof entry.item; member: Member } => Boolean(entry.member))
-    .sort((left, right) => left.item.created_at.localeCompare(right.item.created_at))
-    .map((entry) => entry.member);
-  const selectedMember = selectedUserId
-    ? bundle.members.find((member) => member.user_id === selectedUserId) ?? null
-    : null;
-  const visibleMembers = [
-    ...(currentMember ? [currentMember] : []),
-    ...followedMembers,
-    ...(selectedMember
-      && selectedMember.user_id !== currentUserId
-      && !followedIds.has(selectedMember.user_id)
-      ? [selectedMember]
-      : []),
-  ].filter((member, index, members) =>
-    members.findIndex((candidate) => candidate.user_id === member.user_id) === index);
-  const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
-  const pickerMembers = [...bundle.members]
-    .sort((left, right) => {
-      if (left.user_id === currentUserId) return -1;
-      if (right.user_id === currentUserId) return 1;
-      return memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-Hans-CN");
-    })
-    .filter((member) => !normalizedQuery
-      || memberDisplayName(member).toLocaleLowerCase("zh-CN").includes(normalizedQuery));
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", close);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", close);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [open]);
-
-  async function toggleMember(userId: string) {
-    if (!online || userId === currentUserId || busyIds.has(userId)) return;
-    const selected = !followedIds.has(userId);
-    setBusyIds((current) => new Set(current).add(userId));
-    try {
-      await onToggle(userId, selected);
-      if (!selected && selectedUserId === userId) onSelect(currentUserId);
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : "用户关注设置保存失败，请重试");
-    } finally {
-      setBusyIds((current) => {
-        const next = new Set(current);
-        next.delete(userId);
-        return next;
-      });
-    }
-  }
-
-  return (
-    <section
-      ref={rootRef}
-      className={clsx("sidebar-user-section", mobile && "mobile-sidebar-user-section")}
-      aria-label="用户空间"
-    >
-      <div className={mobile ? "mobile-sidebar-section-title sidebar-user-section-title" : "sidebar-section-header"}>
-        <span>用户空间</span>
-        <button
-          type="button"
-          aria-label="管理关注用户"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          disabled={!online}
-          onClick={() => {
-            setOpen((value) => !value);
-            setQuery("");
-          }}
-        >
-          <Plus />
-        </button>
-      </div>
-      <div className={clsx("sidebar-user-list", mobile && "mobile-calendar-list")}>
-        {visibleMembers.map((member) => (
-          <button
-            key={member.user_id}
-            type="button"
-            className={clsx("sidebar-user-row", selectedUserId === member.user_id && "active")}
-            aria-pressed={selectedUserId === member.user_id}
-            onClick={() => onSelect(member.user_id)}
-          >
-            <MemberAvatar member={member} className="sidebar-user-avatar" />
-            <span>{memberDisplayName(member)}</span>
-          </button>
-        ))}
-      </div>
-      {open && (
-        <div className="sidebar-user-picker" role="menu" aria-label="管理关注用户">
-          <label className="sidebar-user-search">
-            <Search aria-hidden="true" />
-            <input
-              value={query}
-              autoFocus
-              placeholder="搜索团队成员"
-              aria-label="搜索团队成员"
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <div className="sidebar-user-picker-list">
-            {pickerMembers.map((member) => {
-              const self = member.user_id === currentUserId;
-              const checked = self || followedIds.has(member.user_id);
-              return (
-                <button
-                  key={member.user_id}
-                  type="button"
-                  role="menuitemcheckbox"
-                  aria-checked={checked}
-                  disabled={self || !online || busyIds.has(member.user_id)}
-                  onClick={() => void toggleMember(member.user_id)}
-                >
-                  <MemberAvatar member={member} className="sidebar-user-picker-avatar" />
-                  <span>{memberDisplayName(member)}</span>
-                  {self && <small>自己</small>}
-                  {checked && <Check />}
-                </button>
-              );
-            })}
-            {pickerMembers.length === 0 && <p>没有匹配的成员</p>}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function Sidebar({
   openMobile,
   bundle,
@@ -8798,7 +8526,6 @@ function Sidebar({
   selectedLabelId,
   onCloseMobile,
   onSmartView,
-  onUser,
   onLabel,
   onOpenAiWorkSettings,
   onNotice,
@@ -8807,7 +8534,6 @@ function Sidebar({
   onUpdateLabel,
   onReorderChildLabels,
   onSetUserTopLevelLabelOrder,
-  onToggleUserSidebarMember,
   onDeleteLabel,
   onMoveLabelToInbox,
   onCreateCustomTaskView,
@@ -8823,7 +8549,6 @@ function Sidebar({
   selectedLabelId: string | null;
   onCloseMobile: () => void;
   onSmartView: (view: SmartView) => void;
-  onUser: (userId: string) => void;
   onLabel: (id: string) => void;
   onOpenAiWorkSettings: (labelName: string) => void;
   onNotice: (message: string) => void;
@@ -8832,7 +8557,6 @@ function Sidebar({
   onUpdateLabel: WorkspaceAppProps["onUpdateLabel"];
   onReorderChildLabels: WorkspaceAppProps["onReorderChildLabels"];
   onSetUserTopLevelLabelOrder: WorkspaceAppProps["onSetUserTopLevelLabelOrder"];
-  onToggleUserSidebarMember: WorkspaceAppProps["onToggleUserSidebarMember"];
   onDeleteLabel: WorkspaceAppProps["onDeleteLabel"];
   onMoveLabelToInbox: WorkspaceAppProps["onMoveLabelToInbox"];
   onCreateCustomTaskView: WorkspaceAppProps["onCreateCustomTaskView"];
@@ -9088,6 +8812,9 @@ function Sidebar({
     <>
       {openMobile && <button className="sidebar-scrim" onClick={onCloseMobile} aria-label="关闭侧栏" />}
       <aside className={clsx("sidebar", openMobile && "mobile-open")}>
+        <div className="sidebar-section-header sidebar-smart-view-header">
+          <span>我的空间</span>
+        </div>
         <div className="sidebar-list">
           <SmartViewsSidebarList
             bundle={bundle}
@@ -9103,16 +8830,6 @@ function Sidebar({
             onToggleCustomViewVisibility={onToggleCustomViewVisibility}
           />
         </div>
-        <UserSidebarSection
-          bundle={bundle}
-          currentUserId={currentUserId}
-          smartView={smartView}
-          selectedLabelId={selectedLabelId}
-          online={online}
-          onSelect={onUser}
-          onToggle={onToggleUserSidebarMember}
-          onNotice={onNotice}
-        />
         <div className="sidebar-section-header">
           <span>标签</span>
           <button
@@ -9158,7 +8875,7 @@ function Sidebar({
           </DndContext>
         </div>
       </aside>
-      {menu && (
+      {menu && createPortal(
         <>
           <button
             className="label-menu-scrim"
@@ -9249,7 +8966,8 @@ function Sidebar({
             )}
             {menuError && <p className="label-menu-error" role="alert">{menuError}</p>}
           </div>
-        </>
+        </>,
+        document.body,
       )}
       {creatingLabel && (
         <LabelEditorDialog
@@ -10208,7 +9926,6 @@ function SmartViewsSidebarList({
 
   function fallbackSmartView(hidden: SmartView): SmartView {
     const candidates: SmartView[] = [
-      "all",
       ...systemOrder,
       ...customViews.map((view) => customTaskViewKey(view.id)),
     ];
@@ -10278,42 +9995,28 @@ function SmartViewsSidebarList({
   function renderSystemView(view: SystemSmartViewKey) {
     if (!systemSmartViewVisible(bundle, view, smartView)) return null;
     switch (view) {
-      case "all":
+      case "inbox":
         return (
           <SidebarItem
             key={view}
-            active={!selectedLabelId && smartView === "all"}
-            icon={<LayoutList />}
-            label="所有"
-            count={openTasks.length}
-            onClick={() => onSmartView("all")}
-            {...itemProps("all")}
-          />
-        );
-      case "today":
-        return (
-          <SidebarItem
-            key={view}
-            active={!selectedLabelId && smartView === "today"}
-            icon={<CalendarDays />}
-            label="今天"
+            active={!selectedLabelId && smartView === "inbox"}
+            icon={<Inbox />}
+            label="收集箱"
             count={openTasks.filter((task) =>
-              task.assignee_id === currentUserId
-              && task.due_at
-              && isSameDay(new Date(task.due_at), new Date())).length}
-            onClick={() => onSmartView("today")}
-            {...itemProps("today")}
+              task.label_ids.length === 0 && task.created_by === currentUserId).length}
+            onClick={() => onSmartView("inbox")}
+            {...itemProps("inbox")}
           />
         );
-      case "week":
+      case "assigned":
         return (
           <SidebarItem
             key={view}
-            active={!selectedLabelId && smartView === "week"}
-            icon={<CalendarDays />}
-            label="本周"
-            onClick={() => onSmartView("week")}
-            {...itemProps("week")}
+            active={!selectedLabelId && smartView === "assigned"}
+            icon={<UserRound />}
+            label="指派给我"
+            onClick={() => onSmartView("assigned")}
+            {...itemProps("assigned")}
           />
         );
       case "watching":
@@ -10327,17 +10030,15 @@ function SmartViewsSidebarList({
             {...itemProps("watching")}
           />
         );
-      case "inbox":
+      case "week":
         return (
           <SidebarItem
             key={view}
-            active={!selectedLabelId && smartView === "inbox"}
-            icon={<Inbox />}
-            label="收集箱"
-            count={openTasks.filter((task) =>
-              task.label_ids.length === 0 && task.created_by === currentUserId).length}
-            onClick={() => onSmartView("inbox")}
-            {...itemProps("inbox")}
+            active={!selectedLabelId && smartView === "week"}
+            icon={<CalendarDays />}
+            label="本周"
+            onClick={() => onSmartView("week")}
+            {...itemProps("week")}
           />
         );
       case "trash":
@@ -10357,9 +10058,9 @@ function SmartViewsSidebarList({
     }
   }
 
-  // Keep custom views before inbox/trash when those sit in the trailing
+  // Keep custom views before week/trash when those sit in the trailing
   // segment; otherwise respect the full system order as one contiguous group.
-  const footerStart = systemOrder.findIndex((view) => view === "inbox" || view === "trash");
+  const footerStart = systemOrder.findIndex((view) => view === "week" || view === "trash");
   const mainSystemViews = footerStart === -1 ? systemOrder : systemOrder.slice(0, footerStart);
   const footerSystemViews = footerStart === -1 ? [] : systemOrder.slice(footerStart);
 
@@ -10379,7 +10080,7 @@ function SmartViewsSidebarList({
         )
       ))}
       {footerSystemViews.map((view) => renderSystemView(view))}
-      {menu && (
+      {menu && createPortal(
         <>
           <button
             type="button"
@@ -10434,7 +10135,8 @@ function SmartViewsSidebarList({
               </button>
             )}
           </div>
-        </>
+        </>,
+        document.body,
       )}
       <SaveTaskViewDialog
         open={createFrom !== null}
@@ -10452,7 +10154,7 @@ function systemSmartViewPreferredVisible(
   bundle: WorkspaceBundle,
   view: SystemSmartViewKey,
 ) {
-  return bundle.taskSystemViewPreferences?.find((item) => item.view_key === view)?.visible ?? true;
+  return resolveSystemSmartViewVisible(bundle.taskSystemViewPreferences, view);
 }
 
 function systemSmartViewVisible(
@@ -10763,11 +10465,9 @@ function TaskWorkspace({
   const taskScrollRef = useRef<HTMLDivElement>(null);
   const taskLoadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const selectedLabel = bundle.labels.find((label) => label.id === selectedLabelId);
-  const selectedUserViewId = selectedLabelId ? null : userTaskViewId(smartView);
-  const selectedUserViewMember = selectedUserViewId
-    ? bundle.members.find((member) => member.user_id === selectedUserViewId) ?? null
+  const defaultViewAssigneeId = !selectedLabelId && smartView === "assigned"
+    ? currentUserId
     : null;
-  const defaultViewAssigneeId = selectedUserViewMember?.user_id ?? null;
   const defaultLabelIds = selectedLabelId ? [selectedLabelId] : [];
   const customView = bundle.customTaskViews.find(
     (view) => view.id === customTaskViewId(smartView),
@@ -10805,7 +10505,6 @@ function TaskWorkspace({
   );
   const isTrashView = !selectedLabelId && (smartView === "trash" || customView?.definition.scope === "trash");
   const title = selectedLabel?.name
-    ?? (selectedUserViewMember ? memberDisplayName(selectedUserViewMember) : null)
     ?? customView?.name
     ?? ({
     all: "所有",
@@ -10984,8 +10683,7 @@ function TaskWorkspace({
     ],
   );
   // System smart-view presets stay fixed; custom views keep editable, auto-saved filters.
-  const filtersLocked = !selectedLabelId
-    && (Boolean(SMART_VIEW_FILTER_PRESETS[smartView]) || Boolean(userTaskViewId(smartView)));
+  const filtersLocked = !selectedLabelId && Boolean(SMART_VIEW_FILTER_PRESETS[smartView]);
 
   const groups = useMemo(() => {
     if (viewMode === "kanban") return [];

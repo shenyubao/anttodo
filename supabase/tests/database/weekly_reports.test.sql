@@ -20,6 +20,9 @@ insert into public.workspace_members(workspace_id, user_id, role) values
   ('bb000000-0000-0000-0000-000000000001', 'aa000000-0000-0000-0000-000000000002', 'admin'),
   ('bb000000-0000-0000-0000-000000000001', 'aa000000-0000-0000-0000-000000000003', 'member'),
   ('bb000000-0000-0000-0000-000000000001', 'aa000000-0000-0000-0000-000000000004', 'member');
+-- These fixtures explicitly opt existing test authors into the workspace roster.
+update public.weekly_report_groups set participant_ids=(select array_agg(user_id) from public.workspace_members
+where workspace_id='bb000000-0000-0000-0000-000000000001') where workspace_id='bb000000-0000-0000-0000-000000000001';
 insert into public.user_groups(id, workspace_id, name, created_by) values
   ('cc000000-0000-0000-0000-000000000001', 'bb000000-0000-0000-0000-000000000001', 'Readers', 'aa000000-0000-0000-0000-000000000001');
 insert into public.user_group_members(group_id, workspace_id, user_id) values
@@ -66,15 +69,15 @@ select lives_ok(
     'bb000000-0000-0000-0000-000000000001', date_trunc('week', current_date)::date, '完成发布', '', '', 'users',
     array['aa000000-0000-0000-0000-000000000003'::uuid], '{}', null, false
   )$$,
-  'published report can switch to direct users'
+  'legacy user audience arguments remain compatible'
 );
-select is((select count(*)::integer from public.weekly_report_user_acl), 1, 'user ACL is saved');
+select is((select count(*)::integer from public.weekly_report_user_acl), 0, 'legacy per-report audience is superseded by the group');
 select is((select count(*)::integer from public.weekly_report_group_acl), 0, 'opposite ACL is empty');
 select set_config('request.jwt.claims', '{"sub":"aa000000-0000-0000-0000-000000000003","role":"authenticated"}', true);
 select is((select count(*)::integer from public.weekly_reports), 1, 'selected user can read the report');
 select is((select count(*)::integer from public.weekly_report_user_acl), 0, 'ACL subjects remain private to author');
 select set_config('request.jwt.claims', '{"sub":"aa000000-0000-0000-0000-000000000004","role":"authenticated"}', true);
-select is((select count(*)::integer from public.weekly_reports), 0, 'unselected user cannot read a direct-user report');
+select is((select count(*)::integer from public.weekly_reports), 1, 'group audience replaces legacy per-report audience');
 
 select set_config('request.jwt.claims', '{"sub":"aa000000-0000-0000-0000-000000000001","role":"authenticated"}', true);
 select lives_ok(
@@ -82,7 +85,7 @@ select lives_ok(
     'bb000000-0000-0000-0000-000000000001', date_trunc('week', current_date)::date, '完成发布', '', '', 'groups', '{}',
     array['cc000000-0000-0000-0000-000000000001'::uuid], null, false
   )$$,
-  'published report can switch to groups'
+  'legacy user-group audience arguments remain compatible'
 );
 select is((select count(*)::integer from public.weekly_report_user_acl), 0, 'switching scope clears user ACL');
 select set_config('request.jwt.claims', '{"sub":"aa000000-0000-0000-0000-000000000004","role":"authenticated"}', true);
@@ -181,7 +184,7 @@ select lives_ok(
   )$$,
   'published report can select a team notification group created by another member'
 );
-select is((select notification_revision from public.weekly_reports limit 1), 4::bigint, 'adding a target increments the notification revision');
+select is((select notification_revision from public.weekly_reports limit 1), 2::bigint, 'adding a target increments the notification revision');
 select is((select count(*)::integer from public.weekly_report_notification_targets), 1, 'notification target is saved');
 select is((select count(*)::integer from public.weekly_report_notification_deliveries), 1, 'published update creates one delivery');
 select is((select status from public.weekly_report_notification_deliveries limit 1), 'pending'::public.weekly_report_notification_delivery_status, 'new delivery is pending');
@@ -199,7 +202,7 @@ select lives_ok(
   )$$,
   'saving an unchanged published report succeeds'
 );
-select is((select notification_revision from public.weekly_reports limit 1), 4::bigint, 'unchanged save does not increment notification revision');
+select is((select notification_revision from public.weekly_reports limit 1), 2::bigint, 'unchanged save does not increment notification revision');
 select is((select count(*)::integer from public.weekly_report_notification_deliveries), 1, 'unchanged save does not duplicate delivery');
 
 select lives_ok(
@@ -215,15 +218,15 @@ select lives_ok(
   )$$,
   'changing a published report creates a new notification revision'
 );
-select is((select notification_revision from public.weekly_reports limit 1), 5::bigint, 'changed report increments notification revision');
+select is((select notification_revision from public.weekly_reports limit 1), 3::bigint, 'changed report increments notification revision');
 select is((select count(*)::integer from public.weekly_report_notification_deliveries), 2, 'changed report creates a second delivery');
 select is(
-  (select status from public.weekly_report_notification_deliveries where revision = 4),
+  (select status from public.weekly_report_notification_deliveries where revision = 2),
   'superseded'::public.weekly_report_notification_delivery_status,
   'old retryable delivery is superseded'
 );
 select is(
-  (select status from public.weekly_report_notification_deliveries where revision = 5),
+  (select status from public.weekly_report_notification_deliveries where revision = 3),
   'pending'::public.weekly_report_notification_delivery_status,
   'latest delivery remains pending'
 );
@@ -240,7 +243,7 @@ select throws_ok(
 
 select throws_ok(
   $$select * from public.claim_weekly_report_notification_deliveries(
-    (select id from public.weekly_reports limit 1), 5,
+    (select id from public.weekly_reports limit 1), 3,
     'aa000000-0000-0000-0000-000000000001', false
   )$$,
   '42501', null, 'notification dispatch claim is not callable by authenticated users'
@@ -249,37 +252,37 @@ select throws_ok(
 reset role;
 select is(
   (select count(*)::integer from public.claim_weekly_report_notification_deliveries(
-    (select id from public.weekly_reports limit 1), 5,
+    (select id from public.weekly_reports limit 1), 3,
     'aa000000-0000-0000-0000-000000000001', false
   )),
   1,
   'service role claims the latest pending delivery'
 );
 select is(
-  (select status from public.weekly_report_notification_deliveries where revision = 5),
+  (select status from public.weekly_report_notification_deliveries where revision = 3),
   'sending'::public.weekly_report_notification_delivery_status,
   'claim marks the delivery as sending'
 );
 select is(
   (select count(*)::integer from public.claim_weekly_report_notification_deliveries(
-    (select id from public.weekly_reports limit 1), 5,
+    (select id from public.weekly_reports limit 1), 3,
     'aa000000-0000-0000-0000-000000000001', false
   )),
   0,
   'a concurrent normal dispatch cannot claim the same delivery twice'
 );
 update public.weekly_report_notification_deliveries
-set status = 'failed' where revision = 5;
+set status = 'failed' where revision = 3;
 select is(
   (select count(*)::integer from public.claim_weekly_report_notification_deliveries(
-    (select id from public.weekly_reports limit 1), 5,
+    (select id from public.weekly_reports limit 1), 3,
     'aa000000-0000-0000-0000-000000000001', true
   )),
   1,
   'manual retry claims the failed latest delivery'
 );
 select is(
-  (select attempts from public.weekly_report_notification_deliveries where revision = 5),
+  (select attempts from public.weekly_report_notification_deliveries where revision = 3),
   2,
   'manual retry increments the attempt count'
 );

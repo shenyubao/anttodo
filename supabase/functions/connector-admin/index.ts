@@ -5,6 +5,8 @@ import {
   getWorkitemWorkflow,
   isYunxiaoQuickCreateConfig,
   listProjectWorkitemTypes,
+  normalizeYunxiaoOrganizationId,
+  normalizeYunxiaoPersonalToken,
   searchProjects,
   searchWorkitems,
   validateYunxiaoPublicConfig,
@@ -172,6 +174,14 @@ function requiredText(value: unknown, label: string, max = 500) {
     throw new Error(`${label}无效`);
   }
   return value.trim();
+}
+
+function requiredYunxiaoOrganizationId(value: unknown) {
+  return normalizeYunxiaoOrganizationId(requiredText(value, "组织 ID"));
+}
+
+function requiredYunxiaoToken(value: unknown) {
+  return normalizeYunxiaoPersonalToken(requiredText(value, "个人令牌", 10000));
 }
 
 async function requireWorkspaceAdmin(
@@ -417,8 +427,8 @@ export default {
       try {
         return Response.json({
           projects: await searchProjects(
-            requiredText(body.organizationId, "组织 ID"),
-            requiredText(body.token, "个人令牌", 10000),
+            requiredYunxiaoOrganizationId(body.organizationId),
+            requiredYunxiaoToken(body.token),
           ),
         });
       } catch (error) {
@@ -430,9 +440,9 @@ export default {
       try {
         return Response.json({
           types: await listProjectWorkitemTypes(
-            requiredText(body.organizationId, "组织 ID"),
+            requiredYunxiaoOrganizationId(body.organizationId),
             requiredText(body.projectId, "项目 ID"),
-            requiredText(body.token, "个人令牌", 10000),
+            requiredYunxiaoToken(body.token),
           ),
         });
       } catch (error) {
@@ -444,10 +454,10 @@ export default {
       try {
         return Response.json({
           statuses: await getWorkitemWorkflow(
-            requiredText(body.organizationId, "组织 ID"),
+            requiredYunxiaoOrganizationId(body.organizationId),
             requiredText(body.projectId, "项目 ID"),
             requiredText(body.workitemTypeId, "工作项类型"),
-            requiredText(body.token, "个人令牌", 10000),
+            requiredYunxiaoToken(body.token),
           ),
         });
       } catch (error) {
@@ -458,9 +468,9 @@ export default {
     if (body.action === "install-yunxiao") {
       try {
         const workspaceId = requiredText(body.workspaceId, "团队空间 ID");
-        const organizationId = requiredText(body.organizationId, "组织 ID");
+        const organizationId = requiredYunxiaoOrganizationId(body.organizationId);
         const projectId = requiredText(body.projectId, "项目 ID");
-        const token = requiredText(body.token, "个人令牌", 10000);
+        const token = requiredYunxiaoToken(body.token);
         if (!(YUNXIAO_INTERVALS as readonly number[]).includes(body.scheduleMinutes)) {
           return jsonError("同步间隔无效", 422);
         }
@@ -539,8 +549,8 @@ export default {
         if (!(await requireWorkspaceAdmin(ctx.supabaseAdmin, workspaceId, userId))) {
           return jsonError("Workspace administrator access required", 403);
         }
-        const organizationId = requiredText(body.organizationId, "组织 ID");
-        const token = requiredText(body.token, "个人令牌", 10000);
+        const organizationId = requiredYunxiaoOrganizationId(body.organizationId);
+        const token = requiredYunxiaoToken(body.token);
         const { data: canUseLabel, error: labelError } = await ctx.supabaseAdmin.rpc(
           "can_user_manage_connector_label",
           { p_workspace_id: workspaceId, p_label_id: body.targetLabelId, p_user_id: userId },
@@ -651,7 +661,7 @@ export default {
       }
       if (body.action === "rotate-yunxiao-token") {
         try {
-          const token = requiredText(body.token, "个人令牌", 10000);
+          const token = requiredYunxiaoToken(body.token);
           if (isQuickCreate) {
             const config = validateYunxiaoQuickCreateConfig(connector.public_config);
             const projects = await searchProjects(config.organizationId, token);

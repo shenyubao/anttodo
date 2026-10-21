@@ -19,6 +19,7 @@ import clsx from "clsx";
 import { Eye, EyeOff, GripVertical, Trash2 } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 import {
+  resolveSystemSmartViewVisible,
   resolveSystemSmartViewOrder,
   type SystemSmartViewKey,
 } from "./lib/taskList";
@@ -27,20 +28,12 @@ import type { CustomTaskView, TaskSystemViewPreference } from "./types";
 export type { SystemSmartViewKey };
 
 const SYSTEM_VIEW_LABELS: Record<SystemSmartViewKey, string> = {
-  all: "所有",
-  today: "今天",
-  week: "本周",
-  watching: "我关注的",
   inbox: "收集箱",
+  assigned: "指派给我",
+  watching: "我关注的",
+  week: "本周",
   trash: "回收站",
 };
-
-function visibleSystemView(
-  preferences: TaskSystemViewPreference[],
-  id: string,
-) {
-  return preferences.find((item) => item.view_key === id)?.visible ?? true;
-}
 
 export function SmartViewsSettingsPanel({
   customViews,
@@ -100,7 +93,7 @@ export function SmartViewsSettingsPanel({
             <div className="smart-views-settings-list" role="list" aria-label="系统视图列表">
               {systemOrder.map((viewKey) => {
                 const label = SYSTEM_VIEW_LABELS[viewKey] ?? viewKey;
-                const checked = visibleSystemView(systemPreferences, viewKey);
+                const checked = resolveSystemSmartViewVisible(systemPreferences, viewKey);
                 return (
                   <SortableSmartViewRow
                     key={viewKey}

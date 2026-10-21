@@ -12,8 +12,8 @@ export type FeatureModulePreferences = {
 export const FEATURE_MODULE_PREFERENCES_STORAGE_KEY = "anttodo:feature-modules";
 
 export const DEFAULT_FEATURE_MODULE_PREFERENCES: FeatureModulePreferences = {
-  weeklyReportsEnabled: true,
-  okrEnabled: true,
+  weeklyReportsEnabled: false,
+  okrEnabled: false,
   calendarEnabled: true,
   matrixEnabled: true,
   focusEnabled: true,

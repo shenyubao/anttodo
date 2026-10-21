@@ -1,8 +1,14 @@
+import { createDemoOkrData } from "./demoOkr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildOkrChanges,
+  saveOkrChanges,
+  updateOkrObjective,
   createOkrKeyResultWithBalancedWeights,
   loadOkrSet,
+  loadOkrLinkedTaskCounts,
+  okrLinkedTaskCountsKey,
   publishOkrSet,
 } from "./okrApi";
 
@@ -134,5 +140,150 @@ describe("OKR network round trips", () => {
       "无法发布：「增长」的 Key Result 权重之和必须等于 100%",
     );
     expect(rpc).toHaveBeenCalledWith("publish_okr_set", { p_set_id: "set-1" });
+  });
+});
+
+describe("batched OKR saves", () => {
+  function fixture() {
+    return createDemoOkrData().sets.find((set) => set.owner_id === "demo-user" && set.objectives.length === 2)!;
+  }
+
+  it("ignores server metadata and unchanged relationship arrays", () => {
+    const before = fixture();
+    const next = structuredClone(before.objectives);
+    next[0].updated_at = "later";
+    next[0].key_results[0].updated_at = "later";
+    expect(buildOkrChanges(next, before.objectives)).toEqual({ objectives: [] });
+    next[0].title = "  New title  ";
+    expect(buildOkrChanges(next, before.objectives)).toEqual({
+      objectives: [{ id: next[0].id, fields: { title: "New title" } }],
+    });
+    expect(buildOkrChanges(next, structuredClone(next))).toEqual({ objectives: [] });
+  });
+
+  it("sends all changed Objectives, KRs and relationships in one RPC", async () => {
+    const before = fixture();
+    const next = structuredClone(before);
+    next.objectives[0].title = "Updated";
+    next.objectives[0].responsible_ids = ["demo-member"];
+    next.objectives[0].alignment_target_id = next.objectives[1].id;
+    next.objectives[0].key_results[0].title = "KR changed";
+    next.objectives[0].key_results[1].user_acl_ids = ["demo-member"];
+    next.objectives[1].key_results[0].weight = 40;
+    next.objectives[1].key_results[1].weight = 60;
+    const changes = buildOkrChanges(next.objectives, before.objectives);
+    const rpc = vi.fn().mockResolvedValue({ data: next, error: null });
+    const from = vi.fn();
+    const client = { rpc, from } as unknown as SupabaseClient;
+    const saved = await saveOkrChanges(client, before.id, changes);
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("save_okr_changes", {
+      p_set_id: before.id, p_changes: changes, p_publish: false,
+    });
+    expect(from).not.toHaveBeenCalled();
+    expect(saved?.objectives[0].title).toBe("Updated");
+    expect(changes.objectives[0].key_results?.[0]).toEqual({
+      id: next.objectives[0].key_results[0].id, fields: { title: "KR changed" },
+    });
+  });
+
+  it("uses the same atomic RPC for standalone Objective edits without rewriting KRs", async () => {
+    const set = fixture();
+    const rpc = vi.fn().mockResolvedValue({ data: set, error: null });
+    const from = vi.fn();
+    const client = { rpc, from } as unknown as SupabaseClient;
+    const result = await updateOkrObjective(client, set.objectives[0]);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc.mock.calls[0][0]).toBe("save_okr_changes");
+    expect(rpc.mock.calls[0][1].p_changes.objectives[0].key_results).toBeUndefined();
+    expect(from).not.toHaveBeenCalled();
+    expect(result.id).toBe(set.objectives[0].id);
+  });
+
+  it("skips unchanged saves and still publishes an unchanged set with one RPC", async () => {
+    const set = fixture();
+    const rpc = vi.fn().mockResolvedValue({ data: set, error: null });
+    const client = { rpc } as unknown as SupabaseClient;
+    expect(await saveOkrChanges(client, set.id, { objectives: [] })).toBeNull();
+    expect(rpc).not.toHaveBeenCalled();
+    await saveOkrChanges(client, set.id, { objectives: [] }, true);
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("save_okr_changes", {
+      p_set_id: set.id, p_changes: { objectives: [] }, p_publish: true,
+    });
+  });
+
+  it("explicitly sends cleared relations without including generated breakdown metadata", () => {
+    const set = fixture();
+    const before = set.objectives[0];
+    before.responsible_ids = ["demo-user"];
+    const next = structuredClone(before);
+    next.responsible_ids = [];
+    next.key_results[0].breakdowns = [{ id: "generated", key_result_id: "kr", workspace_id: "workspace", user_id: "demo-user", allocated_value: 100, position: 0 }];
+    const changes = buildOkrChanges([next], [before]);
+    expect(changes.objectives[0].responsible_ids).toEqual([]);
+    expect(changes.objectives[0].key_results?.[0].breakdowns).toEqual([{ user_id: "demo-user", allocated_value: 100 }]);
+  });
+
+  it("propagates save failures and preserves publish validation messages", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: "Save failed" } });
+    const client = { rpc } as unknown as SupabaseClient;
+    await expect(saveOkrChanges(client, "set", { objectives: [{ id: "o", fields: { title: "New" } }] })).rejects.toThrow("Save failed");
+    rpc.mockResolvedValue({ data: null, error: { message: 'Key Result weights must add up to 100 for objective "增长"' } });
+    await expect(saveOkrChanges(client, "set", { objectives: [] }, true)).rejects.toThrow("无法发布：「增长」的 Key Result 权重之和必须等于 100%");
+  });
+});
+
+describe("OKR linked task counts", () => {
+  function clientFor(rows: Array<{ task_id: string; key_result_id: string }>, error?: string) {
+    let batch: string[] = [];
+    const query = {
+      select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
+      in: vi.fn((_: string, ids: string[]) => { batch = ids; return query; }),
+      is: vi.fn().mockReturnThis(), order: vi.fn().mockReturnThis(),
+      range: vi.fn(async (from: number, to: number) => ({
+        data: rows.filter((row) => batch.includes(row.key_result_id)).slice(from, to + 1),
+        error: error ? { message: error } : null,
+      })),
+    };
+    const from = vi.fn(() => query);
+    return { client: { from } as unknown as SupabaseClient, from, query };
+  }
+
+  it("counts all KRs in one request using the detail list's task visibility and deletion filter", async () => {
+    const { client, from, query } = clientFor([
+      { task_id: "a", key_result_id: "kr1" }, { task_id: "b", key_result_id: "kr1" },
+      { task_id: "c", key_result_id: "kr2" },
+    ]);
+    expect(await loadOkrLinkedTaskCounts(client, "workspace", ["kr1", "kr2", "kr3"]))
+      .toEqual({ kr1: 2, kr2: 1, kr3: 0 });
+    expect(from).toHaveBeenCalledExactlyOnceWith("task_okr_links");
+    expect(query.select).toHaveBeenCalledWith("task_id,key_result_id,tasks!inner(id)");
+    expect(query.eq).toHaveBeenCalledWith("workspace_id", "workspace");
+    expect(query.is).toHaveBeenCalledWith("tasks.deleted_at", null);
+    expect(query.range).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not query an empty set and uses a stable key across KR reorderings", async () => {
+    const { client, from } = clientFor([]);
+    expect(await loadOkrLinkedTaskCounts(client, "workspace", [])).toEqual({});
+    expect(from).not.toHaveBeenCalled();
+    expect(okrLinkedTaskCountsKey("workspace", "set", ["b", "a"]))
+      .toEqual(okrLinkedTaskCountsKey("workspace", "set", ["a", "b"]));
+  });
+
+  it("paginates links and bounds ID batches instead of truncating counts", async () => {
+    const rows = Array.from({ length: 501 }, (_, index) => ({ task_id: String(index), key_result_id: "kr-000" }));
+    rows.push({ task_id: "last", key_result_id: "kr-080" });
+    const { client, query } = clientFor(rows);
+    const ids = Array.from({ length: 81 }, (_, index) => `kr-${String(index).padStart(3, "0")}`);
+    const counts = await loadOkrLinkedTaskCounts(client, "workspace", ids);
+    expect(counts["kr-000"]).toBe(501);
+    expect(counts["kr-080"]).toBe(1);
+    expect(query.in.mock.calls.every((call) => call[1].length <= 80)).toBe(true);
+    expect(query.range).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports failed reads rather than caching a false zero", async () => {
+    const { client } = clientFor([], "Permission changed");
+    await expect(loadOkrLinkedTaskCounts(client, "workspace", ["kr1"])).rejects.toThrow("Permission changed");
   });
 });

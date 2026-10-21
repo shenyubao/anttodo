@@ -606,7 +606,7 @@ export function QuickCreateSettingsPanel({
                     <span className="connector-logo dingtalk"><Bot aria-hidden="true" /></span>
                     <div className="connector-market-copy">
                       <strong>钉钉群机器人</strong>
-                      <p>在钉钉群中 @机器人，把消息快速创建为团队任务。</p>
+                      <p>在钉钉群中 @机器人，把文本或图文消息快速创建为团队任务。</p>
                     </div>
                     <div className="connector-market-action">
                       {!data.ssoEnabled ? (

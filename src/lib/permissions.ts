@@ -54,3 +54,26 @@ export function canOrganizeTask(
 ) {
   return currentTaskPermissionLevel(bundle, task, currentUserId) >= 2;
 }
+
+export function isYunxiaoQuickCreateTask(bundle: WorkspaceBundle, task: Task) {
+  if (task.connector_platform !== "yunxiao" || !task.connector_id) return false;
+  return bundle.connectors.some((connector) =>
+    connector.id === task.connector_id
+    && connector.workspace_id === task.workspace_id
+    && connector.type === "yunxiao"
+    && connector.public_config != null
+    && "kind" in connector.public_config
+    && connector.public_config?.kind === "quick_create",
+  );
+}
+
+export function canAssignQuickCreateTask(
+  bundle: WorkspaceBundle,
+  task: Task,
+  currentUserId: string,
+) {
+  return isYunxiaoQuickCreateTask(bundle, task)
+    && task.kind === "todo"
+    && !task.deleted_at
+    && canOrganizeTask(bundle, task, currentUserId);
+}

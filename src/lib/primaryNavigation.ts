@@ -30,10 +30,10 @@ export const PRIMARY_NAVIGATION_ITEMS: readonly PrimaryNavigationItem[] = [
     enabled: () => true,
   },
   {
-    section: "weekly_reports",
-    label: "周报",
-    icon: FileText,
-    enabled: (preferences) => preferences.weeklyReportsEnabled,
+    section: "calendar",
+    label: "日历",
+    icon: CalendarDays,
+    enabled: (preferences) => preferences.calendarEnabled,
   },
   {
     section: "okr",
@@ -42,10 +42,10 @@ export const PRIMARY_NAVIGATION_ITEMS: readonly PrimaryNavigationItem[] = [
     enabled: (preferences) => preferences.okrEnabled,
   },
   {
-    section: "calendar",
-    label: "日历",
-    icon: CalendarDays,
-    enabled: (preferences) => preferences.calendarEnabled,
+    section: "weekly_reports",
+    label: "周报",
+    icon: FileText,
+    enabled: (preferences) => preferences.weeklyReportsEnabled,
   },
   {
     section: "matrix",

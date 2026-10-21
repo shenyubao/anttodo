@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("anttodo:feature-modules", JSON.stringify({
+      okrEnabled: true,
+    }));
+  });
+});
+
 async function dismissDemoNotice(page: import("@playwright/test").Page) {
   const close = page.getByRole("button", { name: "关闭提示" });
   if (await close.isVisible()) await close.click();

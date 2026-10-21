@@ -1,3 +1,4 @@
+import { AssigneePicker } from "./AssigneePicker";
 import { SortableTaskTree } from "./SortableTaskTree";
 import { TaskStatusMenuItems, useTaskStatusActions } from "./TaskStatusActions";
 import { TaskStatusIcon } from "./TaskStatusIcon";
@@ -51,7 +52,6 @@ import { shouldDismissTaskDetailOnPointerDown } from "./lib/taskDetailDismiss";
 import { DueDateControl, dueTargetFromChildTask } from "./DueDateControl";
 import { TaskDependencyList } from "./TaskDependencyList";
 import { FocusTaskPicker } from "./FocusTaskPicker";
-import { AiCliAvatar } from "./AiCliAvatar";
 import { MemberAvatar } from "./MemberAvatar";
 import { getPriorityOption, PRIORITY_OPTIONS, PriorityControl } from "./PriorityControl";
 import { TaskComments, type CreateCommentInput } from "./TaskComments";
@@ -76,7 +76,7 @@ import { loadTaskOkrLink, setTaskOkrLink, taskOkrLinkKey } from "./lib/okrApi";
 import { formatDueWithPreferences, systemTimeZone, toDateInput } from "./lib/dateTimePreferences";
 import { supabase } from "./lib/supabase";
 import { getAssignableMembers } from "./lib/taskAssignment";
-import { canOrganizeTask } from "./lib/permissions";
+import { canAssignQuickCreateTask, canOrganizeTask, isYunxiaoQuickCreateTask } from "./lib/permissions";
 import { LabelTreeMenuItems } from "./LabelTreeMenuItems";
 import {
   dependencyTargetKey,
@@ -100,15 +100,10 @@ import {
   buildTaskCliPrompt,
   isAiWorkConfigured,
   requestAiWorkSettings,
-  sameAssignee,
   taskAssigneeTarget,
   taskTerminalSessionKey,
 } from "./lib/aiWork";
 import { trackAiTerminalSession, untrackAiTerminalSession } from "./lib/aiTerminalSessions";
-import {
-  formatContactDisplayName,
-  useShowContactNames,
-} from "./lib/displayPreference";
 import {
   formatHoursDetail,
   formatHoursValue,
@@ -242,240 +237,16 @@ function TaskAssigneeControl({
   target?: AssigneeTarget;
   compact?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const showContactNames = useShowContactNames();
-  const assignee = target.kind === "user"
-    ? bundle.members.find((member) => member.user_id === target.userId)
-    : undefined;
-  const cliTools = window.anttodoDesktop?.aiWork ? aiWorkSettings.cli_tools : [];
-  // Local member cache filtered by the task's current label ACLs / groups.
   const candidates = useMemo(
     () => getAssignableMembers(bundle, task, currentUserId),
     [bundle, currentUserId, task],
   );
-  const needle = query.trim().toLowerCase();
-  const matchesQuery = (labels: string[]) =>
-    !needle || labels.some((label) => label.toLowerCase().includes(needle));
-  const showUnassigned = matchesQuery(["不指派"]);
-  const filteredCliTools = cliTools.filter((tool) => matchesQuery([aiCliLabel(tool), tool]));
-  const filteredCandidates = candidates.filter((member) => {
-    const displayName = member.profile?.display_name ?? "团队成员";
-    const labels = member.user_id === currentUserId
-      ? [displayName, "我"]
-      : [displayName];
-    return matchesQuery(labels);
-  });
-  const pinnedCandidate = target.kind === "user"
-    ? filteredCandidates.find((member) => member.user_id === target.userId)
-    : undefined;
-  const restCandidates = pinnedCandidate
-    ? filteredCandidates.filter((member) => member.user_id !== pinnedCandidate.user_id)
-    : filteredCandidates;
-  const hasMatches = showUnassigned || filteredCliTools.length > 0 || filteredCandidates.length > 0;
-
-  useEffect(() => {
-    setOpen(false);
-    setError("");
-  }, [task.id]);
-
-  useEffect(() => {
-    if (!open) {
-      setQuery("");
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      searchRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
-
-  async function choose(nextTarget: AssigneeTarget) {
-    if (saving || !online) return;
-    if (sameAssignee(target, nextTarget)) {
-      setOpen(false);
-      triggerRef.current?.focus();
-      return;
-    }
-    setSaving(true);
-    setError("");
-    try {
-      await onAssign(nextTarget);
-      setOpen(false);
-      triggerRef.current?.focus();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "负责人保存失败，请重试");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function moveMenuFocus(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const items = Array.from(
-      event.currentTarget.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitemradio"]:not(:disabled)',
-      ),
-    );
-    if (items.length === 0) return;
-    event.preventDefault();
-    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
-    const direction = event.key === "ArrowDown" ? 1 : -1;
-    const nextIndex = currentIndex < 0
-      ? direction > 0 ? 0 : items.length - 1
-      : (currentIndex + direction + items.length) % items.length;
-    items[nextIndex]?.focus();
-  }
-
-  const assigneeName = target.kind === "cli"
-    ? aiCliLabel(target.tool)
-    : assignee?.profile?.display_name ?? "未指派";
-  const showAssigneeName = showContactNames && Boolean(assignee);
-
-  function renderMemberOption(member: (typeof candidates)[number]) {
-    return (
-      <button
-        key={member.user_id}
-        type="button"
-        role="menuitemradio"
-        aria-checked={target.kind === "user" && target.userId === member.user_id}
-        disabled={saving}
-        onClick={() => void choose({ kind: "user", userId: member.user_id })}
-      >
-        <MemberAvatar member={member} className="assignee-menu-avatar" />
-        <span>{member.user_id === currentUserId ? "我" : member.profile?.display_name ?? "团队成员"}</span>
-        <Check className="assignee-selected-icon" />
-      </button>
-    );
-  }
-
-  return (
-    <div
-      className={clsx(
-        "task-assignee-control",
-        compact && "childTask-assignee-control",
-        showAssigneeName && "has-contact-name",
-      )}
-      ref={rootRef}
-    >
-      <button
-        ref={triggerRef}
-        type="button"
-        className={clsx(
-          "task-assignee-trigger",
-          open && "active",
-          showAssigneeName && "has-contact-name",
-        )}
-        aria-label={`负责人：${assigneeName}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={!online || saving}
-        onClick={() => setOpen((value) => !value)}
-      >
-        {target.kind === "cli" ? (
-          <AiCliAvatar tool={target.tool} className="detail-assignee-avatar" />
-        ) : assignee ? (
-          <MemberAvatar member={assignee} className="detail-assignee-avatar" />
-        ) : (
-          <UserRound />
-        )}
-        {showAssigneeName && assignee ? (
-          <span className="task-assignee-name">
-            {formatContactDisplayName(assignee.profile?.display_name ?? "团队成员")}
-          </span>
-        ) : null}
-      </button>
-      {open && (
-        <div
-          className="task-assignee-menu"
-          role="menu"
-          aria-label="选择负责人"
-          onKeyDown={moveMenuFocus}
-        >
-          <label className="task-assignee-search">
-            <Search aria-hidden="true" />
-            <input
-              ref={searchRef}
-              type="search"
-              value={query}
-              placeholder="搜索"
-              aria-label="搜索负责人"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Escape") {
-                  return;
-                }
-                event.stopPropagation();
-              }}
-            />
-          </label>
-          <div className="task-assignee-menu-list">
-            {showUnassigned && (
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={target.kind === "none"}
-                disabled={saving}
-                onClick={() => void choose({ kind: "none" })}
-              >
-                <UserRound className="assignee-none-icon" />
-                <span>不指派</span>
-                <Check className="assignee-selected-icon" />
-              </button>
-            )}
-            {pinnedCandidate && renderMemberOption(pinnedCandidate)}
-            {filteredCliTools.map((tool) => (
-              <button
-                key={tool}
-                type="button"
-                role="menuitemradio"
-                aria-checked={target.kind === "cli" && target.tool === tool}
-                disabled={saving}
-                onClick={() => void choose({ kind: "cli", tool })}
-              >
-                <AiCliAvatar tool={tool} className="assignee-menu-avatar" />
-                <span>{aiCliLabel(tool)}</span>
-                <Check className="assignee-selected-icon" />
-              </button>
-            ))}
-            {filteredCliTools.length > 0 && <div className="task-assignee-divider" aria-hidden="true" />}
-            {restCandidates.map((member) => renderMemberOption(member))}
-            {!needle && candidates.length === 0 && (
-              <p className="task-assignee-status">暂无可指派成员</p>
-            )}
-            {needle && !hasMatches && (
-              <p className="task-assignee-status">未找到匹配成员</p>
-            )}
-            {error && <p className="task-assignee-error" role="alert">{error}</p>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return <AssigneePicker
+    members={bundle.members} candidates={candidates} currentUserId={currentUserId}
+    target={target} onAssign={onAssign} disabled={!online}
+    cliTools={window.anttodoDesktop?.aiWork ? aiWorkSettings.cli_tools : []}
+    resetKey={task.id} compact={compact}
+  />;
 }
 
 function TaskParticipantsControl({
@@ -1829,6 +1600,8 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   );
   const writable = editable && online;
   const completionWritable = completable && online;
+  const quickCreateTask = isYunxiaoQuickCreateTask(bundle, task);
+  const assignmentWritable = online && (editable || canAssignQuickCreateTask(bundle, task, currentUserId));
   const canOrganize = canOrganizeTask(bundle, task, currentUserId);
   const organizable = online && canOrganize;
   const queryClient = useQueryClient();
@@ -1877,6 +1650,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     }
     try {
       await setTaskOkrLink(supabase!, task.id, null);
+      await queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", task.workspace_id] });
       await queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", task.workspace_id] });
     } catch (cause) {
       queryClient.setQueryData(key, previous);
@@ -2231,6 +2005,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   }
 
   async function handleAssign(target: AssigneeTarget) {
+    if (!assignmentWritable) throw new Error("当前任务无法修改负责人");
     await onAssign(target);
     if (target.kind === "cli") {
       await showTaskTerminal(target.tool);
@@ -2330,9 +2105,6 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       <button type="button" onClick={() => void closeDetail()} aria-label="关闭详情"><X /></button>
       {parentTrigger}
       {completeTrigger}
-      {task.connector_platform === "yunxiao" && (
-        <span className="task-source-badge" title="内容由云效同步，只读">云效</span>
-      )}
     </>
   );
 
@@ -2363,6 +2135,11 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
     )}>
       <header className="detail-toolbar">
         {toolbarLeading}
+        {task.connector_platform === "yunxiao" && (
+          <span className="task-source-badge" title={quickCreateTask
+            ? "负责人可在本地修改，其他内容由云效同步；负责人修改不会回写云效"
+            : "内容由云效同步，只读"}>云效</span>
+        )}
         {presentation === "panel" && task.kind === "note" && (
           <span className="detail-note-icon" aria-label="笔记"><NotebookPen /></span>
         )}
@@ -2382,7 +2159,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
             bundle={bundle}
             currentUserId={currentUserId}
             aiWorkSettings={aiWorkSettings}
-            online={writable}
+            online={assignmentWritable}
             onAssign={handleAssign}
           />
         )}
@@ -2399,6 +2176,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
               aria-pressed={Boolean(activeTerminal)}
               aria-haspopup={aiWorkConfigured && !task.cli_assignee ? "menu" : undefined}
               aria-expanded={aiWorkConfigured && !task.cli_assignee ? cliPickerOpen : undefined}
+              disabled={!assignmentWritable && !task.cli_assignee && !activeTerminal}
               onClick={() => {
                 if (activeTerminal) {
                   leaveCliView();
@@ -2428,6 +2206,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
                     key={tool}
                     type="button"
                     role="menuitem"
+                    disabled={!assignmentWritable}
                     onClick={() => void assignCliAndOpenTerminal(tool)}
                   >
                     <SquareTerminal />

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDemoBundle } from "./lib/demo";
 import { weeklyReportWeekStart } from "./lib/weeklyReports";
-import { WeeklyReportsWorkspace } from "./WeeklyReportsWorkspace";
+import { WeeklyReportContent, WeeklyReportsWorkspace } from "./WeeklyReportsWorkspace";
 
 vi.mock("./lib/supabase", () => ({ supabase: null }));
 
@@ -44,7 +44,7 @@ describe("weekly reports workspace", () => {
       </QueryClientProvider>,
     ));
 
-    expect(container.querySelector("h1")?.textContent).toBe("周报");
+    expect(container.querySelector("h1")?.textContent).toBe("默认周报组");
     expect(container.querySelectorAll(".weekly-report-card").length).toBeGreaterThan(0);
     expect(container.querySelector(".weekly-report-card h2")?.textContent).toContain("周周报");
     expect(container.textContent).not.toContain("完成产品体验优化");
@@ -53,7 +53,7 @@ describe("weekly reports workspace", () => {
     expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({
       kind: "weekly_reports",
       page: "view",
-    }));
+    }), undefined);
   });
 
   it("renders the standalone editor as read-only in demo mode", async () => {
@@ -173,10 +173,42 @@ describe("weekly reports workspace", () => {
     expect(container.querySelector(".weekly-report-content a")?.getAttribute("href"))
       .toBe("https://app.anttodo.com/workspaces/workspace-team/tasks/demo-product");
     expect(container.querySelector(".weekly-report-content a")?.textContent).toBe("产品体验优化");
+    expect(container.querySelector(".weekly-report-content ul")).toBeTruthy();
+    expect([...container.querySelectorAll(".weekly-report-content code")]
+      .some((element) => element.textContent === "周报模块联调")).toBe(true);
     for (const name of ["编辑", "发布", "删除"]) {
       const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
         .find((item) => item.textContent?.includes(name));
       expect(button?.disabled).toBe(true);
     }
+  });
+
+  it("renders GFM tables and formatting in report content", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <WeeklyReportContent
+        title="本周完成"
+        value={[
+          "### 产品进度",
+          "",
+          "| 模块 | 状态 |",
+          "| --- | --- |",
+          "| 任务中心 | **已完成** |",
+          "",
+          "- [x] 已验收",
+          "- ~~旧计划~~",
+        ].join("\n")}
+      />,
+    ));
+
+    const content = container.querySelector(".weekly-report-content");
+    expect(content?.querySelector("h3")?.textContent).toBe("产品进度");
+    expect(content?.querySelector("table")).toBeTruthy();
+    expect(content?.querySelectorAll("thead th")).toHaveLength(2);
+    expect(content?.querySelector("tbody td")?.textContent).toBe("任务中心");
+    expect(content?.querySelector("input[type=checkbox]")?.hasAttribute("checked")).toBe(true);
+    expect(content?.querySelector("del")?.textContent).toBe("旧计划");
   });
 });

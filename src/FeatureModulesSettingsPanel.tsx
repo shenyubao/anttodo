@@ -7,9 +7,9 @@ const MODULE_OPTIONS: Array<{
   icon: typeof CalendarDays;
 }> = [
   {
-    key: "weeklyReportsEnabled",
-    label: "周报",
-    icon: FileText,
+    key: "calendarEnabled",
+    label: "日历",
+    icon: CalendarDays,
   },
   {
     key: "okrEnabled",
@@ -17,9 +17,9 @@ const MODULE_OPTIONS: Array<{
     icon: Goal,
   },
   {
-    key: "calendarEnabled",
-    label: "日历",
-    icon: CalendarDays,
+    key: "weeklyReportsEnabled",
+    label: "周报",
+    icon: FileText,
   },
   {
     key: "matrixEnabled",

@@ -54,7 +54,6 @@ export function okrProgressPercent(input: {
 }
 
 export function okrObjectiveProgress(objective: OkrObjective) {
-  if (objective.progress_mode === "manual") return okrProgressPercent(objective);
   if (!objective.key_results.length) return null;
   const measured = objective.key_results
     .map((kr) => ({ percent: okrProgressPercent(kr) ?? 0, weight: Number(kr.weight) }));

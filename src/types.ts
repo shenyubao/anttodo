@@ -144,11 +144,35 @@ export type WeeklyReportNotificationSummary = {
   failed_group_names: string[];
 };
 
+export type WeeklyReportReminderTime = { day: number; time: string };
+export type WeeklyReportConfiguration = {
+  participant_ids: string[];
+  enabled: boolean;
+  schedules: WeeklyReportReminderTime[];
+  notification_group_ids: string[];
+};
+
+export type WeeklyReportGroup = WeeklyReportConfiguration & {
+  /** Caller-specific audience access; historical authors may only read their own reports. */
+  can_view_published?: boolean;
+  id: string;
+  workspace_id: string;
+  name: string;
+  is_default: boolean;
+  visibility: "workspace" | "selected";
+  viewer_user_ids: string[];
+  viewer_group_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
 export type WeeklyReport = {
   id: string;
+  weekly_report_group_id: string;
   workspace_id: string;
   author_id: string;
   week_start: string;
+  okr_progress_text: string;
   completed_text: string;
   next_plan_text: string;
   reflection_text: string;
@@ -758,13 +782,6 @@ export type UserLabelOrder = {
   position: number;
 };
 
-export type UserSidebarMember = {
-  user_id: string;
-  workspace_id: string;
-  member_user_id: string;
-  created_at: string;
-};
-
 export type WorkspaceBundle = {
   members: Member[];
   userGroups: UserGroup[];
@@ -774,7 +791,6 @@ export type WorkspaceBundle = {
   labelGroupAcls: LabelGroupAcl[];
   labelPermissionLevels: Record<string, LabelPermissionLevel>;
   userLabelOrder: UserLabelOrder[];
-  userSidebarMembers: UserSidebarMember[];
   labelTaskCounts: Record<string, number>;
   tasks: Task[];
   connectors: Connector[];

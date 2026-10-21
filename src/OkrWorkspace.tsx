@@ -1,3 +1,6 @@
+import { AssigneePicker } from "./AssigneePicker";
+import { okrObjectiveHistory } from "./lib/okrHistory";
+import { loadOkrKeyResultHistory } from "./lib/weeklyReportOkrApi";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ChevronLeft,
@@ -29,6 +32,7 @@ import { MemberAvatar } from "./MemberAvatar";
 import { TaskStatusIcon } from "./TaskStatusIcon";
 import type {
   Member,
+  MyActiveOkrTree,
   OkrBreakdown,
   OkrCycle,
   OkrDisplayPreferences,
@@ -44,6 +48,8 @@ import type {
 } from "./types";
 import { supabase } from "./lib/supabase";
 import {
+  buildOkrChanges,
+  saveOkrChanges,
   createOkrCycle,
   createOkrKeyResult,
   createOkrKeyResultWithBalancedWeights,
@@ -57,11 +63,13 @@ import {
   loadOkrDisplayPreferences,
   loadOkrProgressRecordCounts,
   loadOkrProgressRecords,
+  updateOkrObjectiveStatus,
   loadOkrLinkedTasks,
+  loadOkrLinkedTaskCounts,
+  okrLinkedTaskCountsKey,
   loadOkrSet,
   loadOkrVersions,
   loadVisibleOkrOwnerIds,
-  publishOkrSet,
   saveOkrDisplayPreferences,
   saveOkrSetVisibility,
   updateOkrCycle,
@@ -72,7 +80,7 @@ import {
   okrLinkedTasksKey,
 } from "./lib/okrApi";
 import { parseAppRoute } from "./lib/appRoute";
-import { createDemoOkrData } from "./lib/demoOkr";
+import { createDemoOkrData, createDemoOkrLinkedTasks } from "./lib/demoOkr";
 import {
   automaticOkrStatus,
   equalOkrWeights,
@@ -196,21 +204,75 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   const persistGenerationRef = useRef(0);
   const lastPersistedDraftRef = useRef<OkrObjective | null>(null);
 
-  const persistObjectiveDraft = useCallback(async (draft: OkrObjective, previous: OkrObjective | null) => {
-    const previousShell = previous ? { ...previous, key_results: [] } : null;
-    const nextShell = { ...draft, key_results: [] };
-    if (!previousShell || JSON.stringify(previousShell) !== JSON.stringify(nextShell)) {
-      await updateOkrObjective(client, draft);
-    }
-    const previousKeyResults = new Map(
-      (previous?.key_results ?? []).map((keyResult) => [keyResult.id, keyResult]),
-    );
-    await Promise.all(draft.key_results.map((keyResult) => {
-      const before = previousKeyResults.get(keyResult.id);
-      if (before && JSON.stringify(before) === JSON.stringify(keyResult)) return Promise.resolve();
-      return updateOkrKeyResult(client, keyResult, before);
-    }));
-  }, [client]);
+  const latestDraftRef = useRef(objectiveDraft);
+  latestDraftRef.current = objectiveDraft;
+  const writableRef = useRef(props.online && backendAvailable);
+  writableRef.current = props.online && backendAvailable;
+  const contextRef = useRef("");
+  contextRef.current = `${props.workspaceId}:${cycleId}:${ownerId}`;
+  const saveTailRef = useRef<Promise<unknown>>(Promise.resolve());
+  const saveRequestRef = useRef(0);
+  const pendingOkrSavesRef = useRef(0);
+  const manualSavingRef = useRef(false);
+  const [savingObjective, setSavingObjective] = useState(false);
+
+  const persistObjectiveDraft = useCallback((draft: OkrObjective, publish = false, others: OkrObjective[] = []) => {
+    const request = ++saveRequestRef.current;
+    const context = contextRef.current;
+    const key = setKey(props.workspaceId, cycleId, ownerId);
+    const save = async () => {
+      // A queued autosave is superseded by the latest draft or an explicit save.
+      if (!publish && request !== saveRequestRef.current) return false;
+      if (hydratedObjectiveIdRef.current !== draft.id || context !== contextRef.current) return false;
+      if (!writableRef.current || !navigator.onLine) throw new Error("离线时 OKR 仅可查看");
+      const cached = queryClient.getQueryData<OkrSet | null>(key);
+      const previous = lastPersistedDraftRef.current;
+      const changes = buildOkrChanges([draft, ...others], [
+        ...(previous ? [previous] : []),
+        ...(cached?.objectives.filter((item) => item.id !== draft.id) ?? []),
+      ]);
+      pendingOkrSavesRef.current += 1;
+      try {
+        if (changes.objectives.length || publish) await queryClient.cancelQueries({ queryKey: key });
+        const saved = await saveOkrChanges(client, draft.set_id, changes, publish);
+        if (saved) {
+          queryClient.setQueryData(key, saved);
+          queryClient.setQueriesData<MyActiveOkrTree | null>(
+            { queryKey: ["my-active-okr-tree", props.workspaceId, ownerId] },
+            (current) => current?.set?.id === saved.id ? { ...current, set: saved } : current,
+          );
+        }
+        // Advance the baseline before the next queued request computes its diff.
+        if (hydratedObjectiveIdRef.current === draft.id) {
+          lastPersistedDraftRef.current = structuredClone(draft);
+          autosaveSignatureRef.current = JSON.stringify(draft);
+        }
+        return true;
+      } finally {
+        pendingOkrSavesRef.current -= 1;
+      }
+    };
+    const pending = saveTailRef.current.then(save, save);
+    saveTailRef.current = pending.catch(() => {});
+    return pending;
+  }, [client, props.online, props.workspaceId, cycleId, ownerId, queryClient]);
+
+  useEffect(() => () => {
+    hydratedObjectiveIdRef.current = null;
+    saveRequestRef.current += 1;
+    persistGenerationRef.current += 1;
+  }, []);
+
+  useEffect(() => {
+    if (props.online) return;
+    // Unsent editor work must never turn into an offline write queue.
+    saveRequestRef.current += 1;
+    persistGenerationRef.current += 1;
+    hydratedObjectiveIdRef.current = null;
+    lastPersistedDraftRef.current = null;
+    setEditingObjectiveId(null);
+    setObjectiveDraft(null);
+  }, [props.online]);
 
   const cyclesQuery = useQuery({
     queryKey: cycleKey(props.workspaceId),
@@ -283,6 +345,20 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     : alignableObjectivesQuery.data ?? [];
   const objectiveIds = okrSet?.objectives.map((objective) => objective.id) ?? [];
   const keyResultIds = okrSet?.objectives.flatMap((objective) => objective.key_results.map((keyResult) => keyResult.id)) ?? [];
+  const linkedTaskCountsQuery = useQuery({
+    queryKey: okrLinkedTaskCountsKey(props.workspaceId, okrSet?.id, keyResultIds),
+    queryFn: () => loadOkrLinkedTaskCounts(client, props.workspaceId, keyResultIds),
+    enabled: backendAvailable && Boolean(okrSet),
+  });
+  const demoTaskCounts = useMemo(() => {
+    if (!demoMode) return undefined;
+    const counts: Record<string, number> = {};
+    for (const task of createDemoOkrLinkedTasks(props.workspaceId)) {
+      counts[task.key_result_id] = (counts[task.key_result_id] ?? 0) + 1;
+    }
+    return counts;
+  }, [demoMode, props.workspaceId]);
+  const linkedTaskCounts = demoMode ? demoTaskCounts : linkedTaskCountsQuery.data;
   const progressCountsQuery = useQuery({
     queryKey: ["okr-progress-counts", okrSet?.id, okrSet?.updated_at],
     queryFn: () => loadOkrProgressRecordCounts(client, objectiveIds, keyResultIds),
@@ -314,12 +390,12 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         id: objective.id,
         label: `O${objectiveIndex + 1}`,
         title: objective.title,
-        startValue: objective.progress_mode === "key_results" ? 0 : objective.start_value,
-        targetValue: objective.progress_mode === "key_results" ? 100 : objective.target_value,
-        currentValue: objective.progress_mode === "key_results" ? progress : objective.current_value,
+        startValue: 0,
+        targetValue: 100,
+        currentValue: progress,
         status: objective.status_mode === "automatic" ? automaticOkrStatus(progress, selectedCycle) : objective.progress_status,
         score: objective.score,
-        progressMode: objective.progress_mode,
+        progressMode: "key_results",
         statusMode: objective.status_mode,
         metricUnit: objective.metric_unit,
         customUnit: objective.custom_unit,
@@ -362,6 +438,10 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     let pendingDiscoverabilityChange = false;
     const flushRefresh = () => {
       refreshTimer = undefined;
+      if (pendingOkrSavesRef.current > 0) {
+        refreshTimer = window.setTimeout(flushRefresh, 120);
+        return;
+      }
       const changedTables = new Set(pendingTables);
       pendingTables.clear();
       const discoverabilityChanged = pendingDiscoverabilityChange;
@@ -369,6 +449,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
       const invalidations: Array<Promise<unknown>> = [];
       const contentChanged = [...changedTables].some((table) => ![
         "okr_versions", "okr_progress_records", "task_okr_links",
+        "tasks", "task_labels", "labels", "label_user_acl", "label_group_acl",
       ].includes(table));
       if (contentChanged) {
         invalidations.push(
@@ -389,9 +470,17 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         invalidations.push(
           queryClient.invalidateQueries({ queryKey: ["okr-progress-records"] }),
           queryClient.invalidateQueries({ queryKey: ["okr-progress-counts"] }),
+          queryClient.invalidateQueries({ queryKey: ["okr-objective-history", props.workspaceId] }),
+          queryClient.invalidateQueries({ queryKey: ["weekly-report-okr", props.workspaceId] }),
         );
       }
-      if (changedTables.has("task_okr_links")) {
+      const taskContentChanged = ["task_okr_links", "tasks", "task_labels", "labels", "label_user_acl", "label_group_acl"]
+        .some((table) => changedTables.has(table));
+      const accessChanged = changedTables.has("okr_access_revisions") || changedTables.has("user_group_members");
+      if (taskContentChanged || accessChanged) {
+        invalidations.push(queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", props.workspaceId] }));
+      }
+      if (contentChanged || taskContentChanged) {
         invalidations.push(queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", props.workspaceId] }));
       }
       void Promise.all(invalidations);
@@ -410,13 +499,19 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
       "okr_progress_records", "okr_versions",
       "okr_access_revisions",
       "user_group_members",
-      "task_okr_links",
+      "task_okr_links", "tasks", "task_labels", "labels", "label_user_acl", "label_group_acl",
     ];
     for (const table of tables) {
       channel.on(
         "postgres_changes",
-        { event: "*", schema: "public", table, filter: `workspace_id=eq.${props.workspaceId}` },
-        (payload) => scheduleRefresh(table, payload.eventType),
+        { event: "*", schema: "public", table,
+          // task_labels has no workspace_id; DELETE link events only carry the primary key.
+          ...(["task_labels", "task_okr_links"].includes(table) ? {} : { filter: `workspace_id=eq.${props.workspaceId}` }) },
+        (payload) => {
+          const changedWorkspace = (payload.new as { workspace_id?: string } | undefined)?.workspace_id;
+          if (changedWorkspace && changedWorkspace !== props.workspaceId) return;
+          scheduleRefresh(table, payload.eventType);
+        },
       );
     }
     channel.on(
@@ -526,6 +621,8 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
 
   useEffect(() => {
     if (!editingObjectiveId) {
+      persistGenerationRef.current += 1;
+      saveRequestRef.current += 1;
       hydratedObjectiveIdRef.current = null;
       lastPersistedDraftRef.current = null;
       setObjectiveDraft(null);
@@ -536,6 +633,8 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     if (!objective) return;
     const draft = structuredClone(objective);
     draft.key_results = withDefaultOkrWeights(draft.key_results);
+    persistGenerationRef.current += 1;
+    saveRequestRef.current += 1;
     hydratedObjectiveIdRef.current = editingObjectiveId;
     lastPersistedDraftRef.current = structuredClone(objective);
     autosaveSignatureRef.current = JSON.stringify(objective);
@@ -544,7 +643,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   }, [editingObjectiveId, okrSet]);
 
   useEffect(() => {
-    if (!objectiveDraft || !editingObjectiveId) return;
+    if (!objectiveDraft || !editingObjectiveId || manualSavingRef.current) return;
     const signature = JSON.stringify(objectiveDraft);
     if (signature === autosaveSignatureRef.current) return;
     if (!props.online) {
@@ -559,15 +658,14 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     }
     setAutosaveStatus("saving");
     const generation = persistGenerationRef.current;
-    const previous = lastPersistedDraftRef.current;
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
           if (generation !== persistGenerationRef.current) return;
-          await persistObjectiveDraft(objectiveDraft, previous);
-          if (generation !== persistGenerationRef.current) return;
-          lastPersistedDraftRef.current = structuredClone(objectiveDraft);
-          autosaveSignatureRef.current = signature;
+          const saved = await persistObjectiveDraft(objectiveDraft);
+          if (!saved) return;
+          if (generation !== persistGenerationRef.current
+            || signature !== JSON.stringify(latestDraftRef.current)) return;
           setAutosaveStatus("saved");
         } catch (error) {
           if (generation !== persistGenerationRef.current) return;
@@ -580,7 +678,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   }, [client, editingObjectiveId, objectiveDraft, persistObjectiveDraft, props.online]);
 
   async function saveObjective(publish: boolean) {
-    if (!objectiveDraft || !okrSet) return;
+    if (!objectiveDraft || !okrSet || manualSavingRef.current) return;
     if (!objectiveDraft.title.trim()) {
       props.onNotice("Objective 标题不能为空", "error");
       return;
@@ -615,24 +713,20 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     persistGenerationRef.current += 1;
     const generation = persistGenerationRef.current;
     if (draft !== objectiveDraft) setObjectiveDraft(draft);
-    await runOnline(async () => {
-      await persistObjectiveDraft(draft, lastPersistedDraftRef.current);
-      if (publish) {
-        await Promise.all(objectives.filter((item) => item.id !== draft.id).map(async (objective) => {
-          const original = okrSet.objectives.find((item) => item.id === objective.id);
-          if (!original) return;
-          const changed = original.key_results.some((keyResult, index) =>
-            Number(keyResult.weight) !== Number(objective.key_results[index]?.weight));
-          if (changed) await updateOkrKeyResultWeights(client, objective.key_results);
-        }));
-        await publishOkrSet(client, okrSet.id);
-      }
-      if (generation !== persistGenerationRef.current) return;
-      lastPersistedDraftRef.current = structuredClone(draft);
-      autosaveSignatureRef.current = JSON.stringify(draft);
-      setEditingObjectiveId(null);
-      await refresh();
-    }, publish ? "OKR 已发布" : "草稿已保存");
+    manualSavingRef.current = true;
+    setSavingObjective(true);
+    try {
+      await runOnline(async () => {
+        const saved = await persistObjectiveDraft(draft, publish,
+          publish ? objectives.filter((item) => item.id !== draft.id) : []);
+        if (!saved || generation !== persistGenerationRef.current) return;
+        setEditingObjectiveId(null);
+        props.onNotice(publish ? "OKR 已发布" : "草稿已保存");
+      });
+    } finally {
+      manualSavingRef.current = false;
+      setSavingObjective(false);
+    }
   }
 
   async function reorderObjectives(targetId: string) {
@@ -725,7 +819,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     const succeeded = await runOptimistic((current) => ({
       ...current,
       objectives: current.objectives.map((objective) => target.kind === "objective" && objective.id === target.id
-        ? { ...objective, current_value: value, progress_status: status }
+        ? { ...objective, progress_status: status }
         : {
             ...objective,
             key_results: objective.key_results.map((keyResult) => target.kind === "key_result" && keyResult.id === target.id
@@ -733,14 +827,15 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
               : keyResult),
           }),
     }), async () => {
-      await updateOkrProgress(client, { kind: target.kind, id: target.id }, value, status, detail);
+      if (target.kind === "objective") await updateOkrObjectiveStatus(client, target.id, status);
+      else await updateOkrProgress(client, { kind: target.kind, id: target.id }, value, status, detail);
     }, "进度已更新");
     if (succeeded) {
       setProgressTarget((current) => current?.id === target.id
-        ? { ...current, currentValue: value, status }
+        ? { ...current, ...(target.kind === "key_result" ? { currentValue: value } : {}), status }
         : current);
       setStatusEditor((current) => current?.target.id === target.id
-        ? { ...current, target: { ...current.target, currentValue: value, status } }
+        ? { ...current, target: { ...current.target, ...(target.kind === "key_result" ? { currentValue: value } : {}), status } }
         : current);
     }
     return succeeded;
@@ -868,7 +963,9 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
                 <ObjectiveEditor
                   key={objective.id}
                   objective={objectiveDraft}
+                  busy={savingObjective}
                   index={objectiveIndex}
+                  currentUserId={props.currentUserId}
                   members={props.members}
                   groups={props.userGroups}
                   preferences={preferences}
@@ -909,6 +1006,8 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
                   alignmentLabel={alignableObjectives.find((item) => item.id === objective.alignment_target_id)?.title}
                   objectiveRecordCount={progressCounts.objectives[objective.id] ?? 0}
                   keyResultRecordCounts={progressCounts.keyResults}
+                  objectiveTaskCount={linkedTaskCounts ? objective.key_results.reduce((sum, kr) => sum + (linkedTaskCounts[kr.id] ?? 0), 0) : undefined}
+                  keyResultTaskCounts={linkedTaskCounts}
                   onAlign={() => setAlignmentObjective(objective)}
                   onDragStart={() => setDraggingObjectiveId(objective.id)}
                   onDrop={() => void reorderObjectives(objective.id)}
@@ -1046,6 +1145,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
       />
       <ProgressDialog
         backendAvailable={backendAvailable}
+        objective={okrSet?.objectives.find((objective) => objective.id === progressTarget?.id)}
         open={Boolean(progressTarget)}
         onOpenChange={(open) => { if (!open) setProgressTarget(null); }}
         target={progressTarget}
@@ -1304,13 +1404,18 @@ function ObjectiveNoteField({
     const area = areaRef.current;
     if (!area || typeof ResizeObserver === "undefined") return;
     let width = area.clientWidth;
+    let frame = 0;
     const observer = new ResizeObserver(() => {
       if (area.clientWidth === width) return;
       width = area.clientWidth;
-      resizeOkrNote(area);
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => resizeOkrNote(area));
     });
     observer.observe(area);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
   }, []);
   return (
     <div
@@ -1343,7 +1448,7 @@ function ObjectiveNoteField({
   );
 }
 
-function ObjectiveCard({ objective, index, members, cycle, preferences, editable, dragging, alignmentLabel, objectiveRecordCount, keyResultRecordCounts, onAlign, onDragStart, onDrop, onEdit, onDelete, onProgress, onStatus, onNote, onScore, statusTargetId }: {
+function ObjectiveCard({ objective, index, members, cycle, preferences, editable, dragging, alignmentLabel, objectiveRecordCount, keyResultRecordCounts, objectiveTaskCount, keyResultTaskCounts, onAlign, onDragStart, onDrop, onEdit, onDelete, onProgress, onStatus, onNote, onScore, statusTargetId }: {
   objective: OkrObjective;
   index: number;
   members: Member[];
@@ -1354,6 +1459,8 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
   alignmentLabel?: string;
   objectiveRecordCount: number;
   keyResultRecordCounts: Record<string, number>;
+  objectiveTaskCount?: number;
+  keyResultTaskCounts?: Record<string, number>;
   onAlign: () => void;
   onDragStart: () => void;
   onDrop: () => void;
@@ -1376,12 +1483,12 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
     id: objective.id,
     label: `O${index + 1}`,
     title: objective.title,
-    startValue: objective.progress_mode === "key_results" ? 0 : objective.start_value,
-    targetValue: objective.progress_mode === "key_results" ? 100 : objective.target_value,
-    currentValue: objective.progress_mode === "key_results" ? progress : objective.current_value,
+    startValue: 0,
+    targetValue: 100,
+    currentValue: progress,
     status: displayedStatus,
     score: objective.score,
-    progressMode: objective.progress_mode,
+    progressMode: "key_results",
     statusMode: objective.status_mode,
     metricUnit: objective.metric_unit,
     customUnit: objective.custom_unit,
@@ -1416,6 +1523,7 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
           {preferences.show_progress && <span>进度</span>}
           {preferences.show_score && <span>分数</span>}
           <span>记录</span>
+          <span>待办</span>
         </div>
         {editable && <div className="okr-card-actions">
           <span className="okr-drag-handle" aria-label="拖拽排序"><GripVertical /></span>
@@ -1445,6 +1553,7 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
           <ScoreInput value={objective.score} editable={editable} onCommit={(score) => onScore("objective", objective.id, score)} />
         )}
         <button className="okr-record-count" type="button" aria-label={`查看 ${progressTarget.label} 进展记录`} onClick={() => onProgress({ ...progressTarget, initialTab: "records" })}>{objectiveRecordCount}</button>
+        <button className="okr-task-count" type="button" aria-label={`查看 ${progressTarget.label} 待办清单`} title="查看关联待办" onClick={() => onProgress({ ...progressTarget, initialTab: "tasks" })}>{objectiveTaskCount ?? "—"}</button>
       </div>
       <div className="okr-kr-list">
         {objective.key_results.map((kr, index) => (
@@ -1456,6 +1565,7 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
             cycle={cycle}
             preferences={preferences}
             recordCount={keyResultRecordCounts[kr.id] ?? 0}
+            taskCount={keyResultTaskCounts ? keyResultTaskCounts[kr.id] ?? 0 : undefined}
             editable={editable}
             onProgress={onProgress}
             onStatus={onStatus}
@@ -1477,7 +1587,7 @@ function ObjectiveCard({ objective, index, members, cycle, preferences, editable
   );
 }
 
-function KeyResultRow({ keyResult, index, members, cycle, preferences, editable, recordCount, onProgress, onStatus, onScore, statusTargetId }: {
+function KeyResultRow({ keyResult, index, members, cycle, preferences, editable, recordCount, taskCount, onProgress, onStatus, onScore, statusTargetId }: {
   keyResult: OkrKeyResult;
   index: number;
   members: Member[];
@@ -1485,6 +1595,7 @@ function KeyResultRow({ keyResult, index, members, cycle, preferences, editable,
   preferences: OkrDisplayPreferences;
   editable: boolean;
   recordCount: number;
+  taskCount?: number;
   onProgress: (target: ProgressTarget) => void;
   onStatus: (target: ProgressTarget, anchor: HTMLElement) => void;
   onScore: (score: number | null) => Promise<void>;
@@ -1530,6 +1641,7 @@ function KeyResultRow({ keyResult, index, members, cycle, preferences, editable,
       )}
       {preferences.show_score && <ScoreInput value={keyResult.score} editable={editable} onCommit={onScore} />}
       <button className="okr-record-count" type="button" aria-label={`查看 ${progressTarget.label} 进展记录`} onClick={() => onProgress({ ...progressTarget, initialTab: "records" })}>{recordCount}</button>
+      <button className="okr-task-count" type="button" aria-label={`查看 ${progressTarget.label} 待办清单`} title="查看关联待办" onClick={() => onProgress({ ...progressTarget, initialTab: "tasks" })}>{taskCount ?? "—"}</button>
     </div>
   );
 }
@@ -1558,7 +1670,7 @@ function ScoreInput({ value, editable, onCommit }: {
   />;
 }
 
-function ObjectiveEditor({ objective, index, members, groups, preferences, online, autosaveStatus, onChange, onAddKeyResult, onRemoveKeyResult, onCancel, onSave, onPublish }: {
+function ObjectiveEditor({ objective, busy, index, currentUserId, members, groups, preferences, online, autosaveStatus, onChange, onAddKeyResult, onRemoveKeyResult, onCancel, onSave, onPublish }: {
   objective: OkrObjective;
   index: number;
   members: Member[];
@@ -1572,8 +1684,11 @@ function ObjectiveEditor({ objective, index, members, groups, preferences, onlin
   onCancel: () => void;
   onSave: () => void;
   onPublish: () => void;
+  currentUserId: string;
+  busy: boolean;
 }) {
   const [advancedKrId, setAdvancedKrId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [draggingKrId, setDraggingKrId] = useState<string | null>(null);
   const patchKr = (id: string, patch: Partial<OkrKeyResult>) => onChange({
     ...objective,
@@ -1591,25 +1706,23 @@ function ObjectiveEditor({ objective, index, members, groups, preferences, onlin
     setDraggingKrId(null);
   };
   return (
-    <article className="okr-objective-card editing">
+    <article inert={busy} aria-busy={busy} className={clsx(
+      "okr-objective-card editing",
+      preferences.show_progress && "has-progress",
+      preferences.show_score && "has-score",
+      preferences.show_progress && okrObjectiveProgress(objective) !== null && "has-objective-progress",
+    )}>
       <div className="okr-editor-body">
+        <div className="okr-objective-toolbar">
+          <button className="okr-align-trigger" type="button" aria-expanded={settingsOpen} aria-controls={`okr-objective-settings-${objective.id}`} onClick={() => setSettingsOpen((open) => !open)}>
+            <Settings2 />目标设置
+          </button>
+        </div>
         <div className="okr-editor-objective-line">
           <span className="okr-index objective">O{index + 1}</span>
           <input value={objective.title} onChange={(event) => onChange({ ...objective, title: event.target.value })} aria-label="Objective 标题" />
-          <MemberSelect members={members} selected={objective.responsible_ids} onChange={(ids) => onChange({ ...objective, responsible_ids: ids })} />
+          <MemberSelect currentUserId={currentUserId} online={online} members={members} selected={objective.responsible_ids} onChange={(ids) => onChange({ ...objective, responsible_ids: ids })} />
         </div>
-        <div className="okr-editor-progress-settings">
-          <label>进度方式<select value={objective.progress_mode} onChange={(event) => onChange({ ...objective, progress_mode: event.target.value as OkrObjective["progress_mode"] })}><option value="manual">手动更新</option><option value="key_results">基于 KR 自动更新</option></select></label>
-          <label>状态方式<select value={objective.status_mode} onChange={(event) => onChange({ ...objective, status_mode: event.target.value as OkrObjective["status_mode"] })}><option value="manual">手动更新</option><option value="automatic">按周期自动更新</option></select></label>
-          <label>查看权限<select value={objective.visibility} onChange={(event) => onChange({ ...objective, visibility: event.target.value as OkrObjective["visibility"] })}><option value="inherit">继承周期权限</option><option value="workspace">团队内公开</option><option value="restricted">指定成员/用户组</option></select></label>
-        </div>
-        {objective.visibility === "restricted" && <PermissionSubjects
-          members={members}
-          groups={groups}
-          userIds={objective.user_acl_ids}
-          groupIds={objective.group_acl_ids}
-          onChange={(userIds, groupIds) => onChange({ ...objective, user_acl_ids: userIds, group_acl_ids: groupIds })}
-        />}
         <div className="okr-editor-krs">
           {objective.key_results.map((kr, index) => (
             <div
@@ -1624,7 +1737,7 @@ function ObjectiveEditor({ objective, index, members, groups, preferences, onlin
                 <span className="okr-drag-handle"><GripVertical /></span>
                 <span className="okr-index kr">KR{index + 1}</span>
                 <input value={kr.title} onChange={(event) => patchKr(kr.id, { title: event.target.value })} aria-label={`KR${index + 1} 标题`} />
-                <MemberSelect members={members} selected={kr.responsible_ids} onChange={(ids) => patchKr(kr.id, { responsible_ids: ids })} />
+                <MemberSelect currentUserId={currentUserId} online={online} members={members} selected={kr.responsible_ids} onChange={(ids) => patchKr(kr.id, { responsible_ids: ids })} />
                 {preferences.show_weight && <input className="okr-weight-input" type="number" min="0" max="100" placeholder="平均" value={Number(kr.weight) > 0 ? kr.weight : ""} onChange={(event) => patchKr(kr.id, { weight: event.target.value === "" ? 0 : Number(event.target.value) })} aria-label="权重" />}
                 <button type="button" aria-label="高级设置" onClick={() => setAdvancedKrId((current) => current === kr.id ? null : kr.id)}><Settings2 /></button>
                 <button type="button" aria-label="删除 Key Result" onClick={() => onRemoveKeyResult(kr.id)}><X /></button>
@@ -1639,6 +1752,20 @@ function ObjectiveEditor({ objective, index, members, groups, preferences, onlin
           editable
           onChange={(note) => onChange({ ...objective, note })}
         />
+        <div id={`okr-objective-settings-${objective.id}`} hidden={!settingsOpen}>
+          <div className="okr-editor-progress-settings">
+            <span>进度方式：基于 KR 自动更新</span>
+            <label>状态方式<select value={objective.status_mode} onChange={(event) => onChange({ ...objective, status_mode: event.target.value as OkrObjective["status_mode"] })}><option value="manual">手动更新</option><option value="automatic">按周期自动更新</option></select></label>
+            <label>查看权限<select value={objective.visibility} onChange={(event) => onChange({ ...objective, visibility: event.target.value as OkrObjective["visibility"] })}><option value="inherit">继承周期权限</option><option value="workspace">团队内公开</option><option value="restricted">指定成员/用户组</option></select></label>
+          </div>
+          {objective.visibility === "restricted" && <PermissionSubjects
+            members={members}
+            groups={groups}
+            userIds={objective.user_acl_ids}
+            groupIds={objective.group_acl_ids}
+            onChange={(userIds, groupIds) => onChange({ ...objective, user_acl_ids: userIds, group_acl_ids: groupIds })}
+          />}
+        </div>
       </div>
       <footer className="okr-editor-footer">
         <button className="button primary" disabled={!online} onClick={onPublish}>发布</button>
@@ -1650,18 +1777,16 @@ function ObjectiveEditor({ objective, index, members, groups, preferences, onlin
   );
 }
 
-function MemberSelect({ members, selected, onChange }: { members: Member[]; selected: string[]; onChange: (ids: string[]) => void }) {
-  return (
-    <select
-      className="okr-member-select"
-      value={selected[0] ?? ""}
-      onChange={(event) => onChange(event.target.value ? [event.target.value] : [])}
-      aria-label="负责人"
-    >
-      <option value="">添加负责人</option>
-      {members.map((member) => <option key={member.user_id} value={member.user_id}>{member.profile?.display_name ?? "团队成员"}</option>)}
-    </select>
-  );
+function MemberSelect({ members, selected, onChange, currentUserId, online }: {
+  members: Member[]; selected: string[]; onChange: (ids: string[]) => void;
+  currentUserId: string; online: boolean;
+}) {
+  return <AssigneePicker
+    members={members} currentUserId={currentUserId} resetKey={currentUserId}
+    target={selected[0] ? { kind: "user", userId: selected[0] } : { kind: "none" }}
+    onAssign={async (target) => onChange(target.kind === "user" ? [target.userId] : [])}
+    disabled={!online} className="okr-member-control" showName placeholder="添加负责人" portal
+  />;
 }
 
 function PermissionSubjects({ members, groups, userIds, groupIds, onChange }: {
@@ -1884,7 +2009,8 @@ function formatProgressRecordDate(value: string) {
   }).format(new Date(value)).replace("/", "-");
 }
 
-function ProgressDialog({ open, onOpenChange, target, editable, cycle, members, workspaceId, demoMode, onOpenTask, onSave, backendAvailable }: {
+function ProgressDialog({ objective, open, onOpenChange, target, editable, cycle, members, workspaceId, demoMode, onOpenTask, onSave, backendAvailable }: {
+  objective?: OkrObjective;
   backendAvailable: boolean;
   demoMode: boolean;
   workspaceId: string;
@@ -1920,6 +2046,11 @@ function ProgressDialog({ open, onOpenChange, target, editable, cycle, members, 
     queryFn: () => loadOkrProgressRecords(supabase!, { kind: target!.kind, id: target!.id }),
     enabled: backendAvailable && open && Boolean(target),
   });
+  const aggregateHistory = useQuery({
+    queryKey: ["okr-objective-history", workspaceId, objective?.id, objective?.key_results.map((kr) => kr.id)],
+    queryFn: () => loadOkrKeyResultHistory(supabase!, workspaceId, objective!.key_results.map((kr) => kr.id)),
+    enabled: backendAvailable && open && Boolean(objective),
+  });
   const linkedTasks = useQuery({
     queryKey: okrLinkedTasksKey(workspaceId, {
       kind: target?.kind ?? "objective",
@@ -1928,28 +2059,17 @@ function ProgressDialog({ open, onOpenChange, target, editable, cycle, members, 
     queryFn: () => loadOkrLinkedTasks(supabase!, { kind: target!.kind, id: target!.id }),
     enabled: backendAvailable && open && Boolean(target),
   });
-  const demoTasks = useMemo<OkrLinkedTaskSummary[]>(() => {
+  const demoTasks = useMemo(() => {
     if (!demoMode || !target) return [];
-    const rows: OkrLinkedTaskSummary[] = [{
-      task_id: "task-1",
-      workspace_id: workspaceId,
-      parent_task_id: null,
-      title: "完成 AntTodo 项目框架验收",
-      kind: "todo",
-      status: "open",
-      due_at: null,
-      assignee_id: "demo-user",
-      updated_at: new Date().toISOString(),
-      key_result_id: target.kind === "key_result" ? target.id : `${target.id}-kr1`,
-      key_result_title: "核心任务流程验收通过率达到 100%",
-      key_result_position: 0,
-    }];
-    return rows;
-  }, [demoMode, target?.id, target?.kind, workspaceId]);
+    return createDemoOkrLinkedTasks(workspaceId).filter((task) => target.kind === "key_result"
+      ? task.key_result_id === target.id
+      : objective?.key_results.some((kr) => kr.id === task.key_result_id));
+  }, [demoMode, target?.id, target?.kind, workspaceId, objective]);
   const tasks = demoMode ? demoTasks : linkedTasks.data ?? [];
   if (!target) return null;
-  const progress = progressPercentForValue(target, target.currentValue);
+  const progress = objective ? okrObjectiveProgress(objective) : progressPercentForValue(target, target.currentValue);
   const submitProgress = async () => {
+    if (target.kind !== "key_result" || !editable) return;
     setSubmitting(true);
     const succeeded = await onSave(value.trim() === "" ? null : Number(value), status, detail.trim());
     setSubmitting(false);
@@ -1993,9 +2113,9 @@ function ProgressDialog({ open, onOpenChange, target, editable, cycle, members, 
           {tab === "tasks"
             ? <OkrTaskListPanel target={target} tasks={tasks} members={members} loading={linkedTasks.isLoading && !demoMode} onOpenTask={onOpenTask} />
             : tab === "progress" && target.kind === "objective"
-            ? <ObjectiveProgressPanel target={target} cycle={cycle} records={records.data ?? []} onUpdate={() => { setTab("records"); setComposerOpen(true); }} editable={editable} />
+            ? <ObjectiveProgressPanel target={target} cycle={cycle} records={objective ? okrObjectiveHistory(objective, aggregateHistory.data ?? []) : []} />
             : <ProgressRecordPanel
-                target={target} records={records.data ?? []} members={members} editable={editable}
+                target={target} records={records.data ?? []} members={members} editable={editable && target.kind === "key_result"}
                 value={value} status={status} detail={detail} composerOpen={composerOpen} submitting={submitting}
                 onValueChange={setValue} onStatusChange={setStatus} onDetailChange={setDetail}
                 onComposerOpen={openComposer}
@@ -2053,12 +2173,10 @@ function OkrTaskListPanel({ target, tasks, members, loading, onOpenTask }: {
   </div>;
 }
 
-function ObjectiveProgressPanel({ target, cycle, records, editable, onUpdate }: {
+function ObjectiveProgressPanel({ target, cycle, records }: {
   target: ProgressTarget;
   cycle: OkrCycle | null;
   records: OkrProgressRecord[];
-  editable: boolean;
-  onUpdate: () => void;
 }) {
   const width = 600;
   const height = 186;
@@ -2093,8 +2211,7 @@ function ObjectiveProgressPanel({ target, cycle, records, editable, onUpdate }: 
     </svg>
     <div className="okr-progress-settings-card">
       <span>状态</span><strong>{target.statusMode === "automatic" ? "按周期自动更新" : "手动更新"}</strong>
-      <span>进度值</span><strong>{target.progressMode === "key_results" ? "基于 KR 自动更新" : "手动更新"}</strong>
-      {editable && <button type="button" onClick={onUpdate}><Settings2 />高级设置</button>}
+      <span>进度值</span><strong>基于 KR 自动更新</strong>
     </div>
   </section>;
 }
@@ -2119,13 +2236,13 @@ export function ProgressRecordPanel({ target, records, members, editable, value,
   const unit = okrMetricUnitLabel(target.metricUnit, target.customUnit);
   const detailInputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (editable) onComposerOpen();
-  }, [editable, onComposerOpen, target.id]);
+    if (editable && target.kind === "key_result") onComposerOpen();
+  }, [editable, onComposerOpen, target.id, target.kind]);
   useEffect(() => {
     if (editable && composerOpen) detailInputRef.current?.focus();
   }, [composerOpen, editable]);
   return <section className="okr-detail-records" role="tabpanel">
-    {editable && <div className={clsx("okr-progress-composer", composerOpen && "expanded")}>
+    {editable && target.kind === "key_result" && <div className={clsx("okr-progress-composer", composerOpen && "expanded")}>
       <textarea ref={detailInputRef} aria-label="记录进展" value={detail} onFocus={onComposerOpen} onChange={(event) => onDetailChange(event.target.value)} placeholder="保持更新，让小伙伴看到你的进展" />
       {composerOpen && <div className="okr-progress-composer-fields">
         <label><span>进度值</span><span className="okr-composer-value"><input type="number" value={value} onChange={(event) => onValueChange(event.target.value)} />{unit}</span></label>

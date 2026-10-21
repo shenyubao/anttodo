@@ -8,10 +8,10 @@ import {
 } from "./featureModulePreferences";
 
 describe("featureModulePreferences", () => {
-  it("defaults to weekly reports, OKR, calendar, matrix and focus enabled with mind map disabled", () => {
+  it("defaults to weekly reports, OKR and mind map hidden with the core modules enabled", () => {
     expect(DEFAULT_FEATURE_MODULE_PREFERENCES).toEqual({
-      weeklyReportsEnabled: true,
-      okrEnabled: true,
+      weeklyReportsEnabled: false,
+      okrEnabled: false,
       calendarEnabled: true,
       matrixEnabled: true,
       focusEnabled: true,
@@ -39,8 +39,8 @@ describe("featureModulePreferences", () => {
       mindMapEnabled: true,
     });
     expect(parseFeatureModulePreferences(JSON.stringify({ mindMapEnabled: true }))).toEqual({
-      weeklyReportsEnabled: true,
-      okrEnabled: true,
+      weeklyReportsEnabled: false,
+      okrEnabled: false,
       calendarEnabled: true,
       matrixEnabled: true,
       focusEnabled: true,
@@ -59,8 +59,8 @@ describe("featureModulePreferences", () => {
       focusEnabled: false,
       mindMapEnabled: 1,
     }))).toEqual({
-      weeklyReportsEnabled: true,
-      okrEnabled: true,
+      weeklyReportsEnabled: false,
+      okrEnabled: false,
       calendarEnabled: true,
       matrixEnabled: true,
       focusEnabled: false,

@@ -9,6 +9,7 @@ import type {
   TaskSection,
   WorkspaceBundle,
 } from "../types";
+import { withoutSystemLabels } from "./labels";
 import {
   applyLiveLabelCountDelta,
   adjustLabelTaskCounts,
@@ -90,6 +91,7 @@ export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBund
   }));
   return {
     ...bundle,
+    labels: withoutSystemLabels(bundle.labels ?? []),
     tasks,
     connectors: (bundle.connectors ?? []).map((connector) => ({
       ...connector,
@@ -98,7 +100,12 @@ export function normalizeWorkspaceBundle(bundle: WorkspaceBundle): WorkspaceBund
     customTaskViews: bundle.customTaskViews ?? [],
     taskSystemViewPreferences: bundle.taskSystemViewPreferences ?? [],
     matrixQuadrantPreferences: bundle.matrixQuadrantPreferences ?? [],
-    userSidebarMembers: bundle.userSidebarMembers ?? [],
+    taskListPreferences: (bundle.taskListPreferences ?? [])
+      .filter((item) => !item.list_key.startsWith("user:")),
+    taskSections: (bundle.taskSections ?? [])
+      .filter((item) => !item.list_key.startsWith("user:")),
+    taskPlacements: (bundle.taskPlacements ?? [])
+      .filter((item) => !item.list_key.startsWith("user:")),
     labelTaskCounts: bundle.labelTaskCounts ?? countLiveTasksByLabel(tasks),
   };
 }

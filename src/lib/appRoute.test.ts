@@ -27,9 +27,6 @@ describe("application routes", () => {
     { workspaceId: "workspace-1", kind: "view", view: "trash", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "custom:00000000-0000-4000-8000-000000000001", mode: "list" },
     { workspaceId: "workspace-1", kind: "view", view: "custom:00000000-0000-4000-8000-000000000001", mode: "kanban" },
-    { workspaceId: "workspace-1", kind: "view", view: "user:00000000-0000-4000-8000-000000000002", mode: "list" },
-    { workspaceId: "workspace-1", kind: "view", view: "user:00000000-0000-4000-8000-000000000002", mode: "kanban" },
-    { workspaceId: "workspace-team", kind: "view", view: "user:demo-member", mode: "timeline" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "list" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "kanban" },
     { workspaceId: "workspace-1", kind: "tag", tagId: "tag/研发", mode: "timeline" },
@@ -154,6 +151,15 @@ describe("application routes", () => {
       mode: "timeline",
     })).toBe("/workspaces/workspace-1/tasks/timeline");
   });
+
+  it("redirects legacy user-space URLs to the assigned view", () => {
+    expect(parseAppRoute("/workspaces/workspace-1/users/00000000-0000-4000-8000-000000000002/kanban")).toEqual({
+      workspaceId: "workspace-1",
+      kind: "view",
+      view: "assigned",
+      mode: "kanban",
+    });
+  });
 });
 
 describe("task return routes", () => {
@@ -203,7 +209,7 @@ describe("task return routes", () => {
     }, workspaceId)).toEqual({
       workspaceId,
       kind: "view",
-      view: "user:00000000-0000-4000-8000-000000000002",
+      view: "assigned",
       mode: "list",
     });
     expect(parseTaskReturnRoute({
@@ -281,5 +287,20 @@ describe("task return routes", () => {
     }, workspaceId)).toBeNull();
     expect(isOverlayAppRoute({ workspaceId, kind: "view", view: "all", mode: "list" })).toBe(false);
     expect(isOverlayAppRoute(null)).toBe(false);
+  });
+});
+
+
+describe("weekly report group routes", () => {
+  it.each([
+    { workspaceId: "workspace-1", kind: "weekly_reports" as const, groupId: "dd000000-0000-4000-8000-000000000001" },
+    { workspaceId: "workspace-1", kind: "weekly_reports" as const, groupId: "dd000000-0000-4000-8000-000000000001", page: "new" as const, weekStart: "2026-10-12" },
+  ])("round-trips group context", (route) => {
+    expect(parseAppRoute(appRoutePath(route))).toEqual(route);
+    expect(parseTaskReturnRoute(route, "workspace-1")).toEqual(route);
+  });
+  it("rejects malformed group and creation paths", () => {
+    expect(parseAppRoute("/workspaces/w/weekly-reports/groups/invalid")).toBeNull();
+    expect(parseAppRoute("/workspaces/w/weekly-reports/groups/dd000000-0000-4000-8000-000000000001/new/2026-99-99")).toBeNull();
   });
 });

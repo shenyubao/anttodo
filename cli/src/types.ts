@@ -35,6 +35,7 @@ export type WeeklyReport = {
   workspace_id: string;
   author_id: string;
   week_start: string;
+  okr_progress_text: string;
   completed_text: string;
   next_plan_text: string;
   reflection_text: string;

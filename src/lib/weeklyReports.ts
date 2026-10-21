@@ -154,6 +154,7 @@ export function appendWeeklyReportTaskLines(
 }
 
 export function weeklyReportPublishError(input: {
+  okrProgressText?: string;
   completedText: string;
   nextPlanText: string;
   reflectionText: string;
@@ -161,7 +162,7 @@ export function weeklyReportPublishError(input: {
   userIds: string[];
   groupIds: string[];
 }) {
-  if (![input.completedText, input.nextPlanText, input.reflectionText].some((value) => value.trim())) {
+  if (![input.okrProgressText ?? "", input.completedText, input.nextPlanText, input.reflectionText].some((value) => value.trim())) {
     return "至少填写一个周报栏目后才能发布";
   }
   if (input.visibility === "users" && input.userIds.length === 0) {
