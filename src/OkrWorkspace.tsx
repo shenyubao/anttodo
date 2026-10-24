@@ -34,6 +34,8 @@ import clsx from "clsx";
 import { MemberAvatar } from "./MemberAvatar";
 import { TaskStatusIcon } from "./TaskStatusIcon";
 import { OkrTaskComposer, type OkrTaskCreation } from "./OkrTaskComposer";
+import { readAfterTaskCreations } from "./lib/taskCreation";
+import { isOptimisticTaskId } from "./lib/taskCache";
 import type {
   CommentMention,
   Member,
@@ -364,7 +366,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   const keyResultIds = okrSet?.objectives.flatMap((objective) => objective.key_results.map((keyResult) => keyResult.id)) ?? [];
   const linkedTaskCountsQuery = useQuery({
     queryKey: okrLinkedTaskCountsKey(props.workspaceId, okrSet?.id, keyResultIds),
-    queryFn: () => loadOkrLinkedTaskCounts(client, props.workspaceId, keyResultIds),
+    queryFn: ({ signal }) => readAfterTaskCreations(queryClient, props.workspaceId, () => loadOkrLinkedTaskCounts(client, props.workspaceId, keyResultIds), signal),
     enabled: backendAvailable && Boolean(okrSet),
   });
   const demoTaskCounts = useMemo(() => {
@@ -2023,6 +2025,7 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
   onOpenTask: (taskId: string) => void;
   onSave: (value: number | null, status: OkrProgressStatus, detail: string) => Promise<boolean>;
 }) {
+  const queryClient = useQueryClient();
   const noteEditorRef = useRef<TaskRichTextEditorHandle>(null);
   const flushNote = async (action: () => void) => {
     try { await noteEditorRef.current?.flush(); action(); } catch { /* Keep the editor open for retry. */ }
@@ -2060,7 +2063,7 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
       kind: target?.kind ?? "objective",
       id: target?.id ?? "",
     }),
-    queryFn: () => loadOkrLinkedTasks(supabase!, { kind: target!.kind, id: target!.id }),
+    queryFn: ({ signal }) => readAfterTaskCreations(queryClient, workspaceId, () => loadOkrLinkedTasks(supabase!, { kind: target!.kind, id: target!.id }), signal),
     enabled: backendAvailable && open && Boolean(target),
   });
   const demoTasks = useMemo(() => {
@@ -2127,7 +2130,7 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
               editable={editable && online} loadCandidates={() => loadNoteCandidates(target.kind, target.id)} onSave={onSaveNote} />
           </section> : tab === "tasks"
             ? <>
-                {taskCreation && <OkrTaskComposer key={`${target.kind}:${target.id}`} workspaceId={workspaceId} target={target} keyResults={objective?.key_results}
+                {taskCreation && <OkrTaskComposer key={`${target.kind}:${target.id}`} workspaceId={workspaceId} target={target} keyResults={objective?.key_results ?? (noteEntity && "objective_id" in noteEntity ? [noteEntity] : [])}
                   creation={taskCreation} online={online} editable={editable} onNotice={onNotice} onOpenTask={onOpenTask} />}
                 <OkrTaskListPanel target={target} tasks={tasks} members={members} loading={linkedTasks.isLoading && !demoMode} onOpenTask={onOpenTask} />
               </>
@@ -2180,9 +2183,11 @@ function OkrTaskListPanel({ target, tasks, members, loading, onOpenTask }: {
           const assignee = task.assignee_id
             ? members.find((member) => member.user_id === task.assignee_id)
             : null;
-          return <button type="button" className="okr-linked-task" key={task.task_id} onClick={() => onOpenTask(task.task_id)}>
+          const pending = isOptimisticTaskId(task.task_id);
+          return <button type="button" className="okr-linked-task" key={task.task_id} disabled={pending} aria-busy={pending || undefined} onClick={() => onOpenTask(task.task_id)}>
             <span className="okr-linked-task-status"><TaskStatusIcon status={task.status} /></span>
             <span className="okr-linked-task-title">{task.title}</span>
+            {pending && <span className="task-save-state">保存中</span>}
             {task.due_at && <time dateTime={task.due_at}>{new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(new Date(task.due_at))}</time>}
             {assignee && <MemberAvatar member={assignee} className="okr-linked-task-avatar" title={assignee.profile?.display_name ?? "团队成员"} />}
           </button>;

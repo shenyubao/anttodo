@@ -110,13 +110,14 @@ import { ConnectorSettingsPanel } from "./ConnectorSettingsPanel";
 import { CliDevicesSettings } from "./CliDevicesSettings";
 import { QuickCreateSettingsPanel } from "./QuickCreateSettingsPanel";
 import { QuickAddForm } from "./QuickAddForm";
+import { useCreateTask } from "./useCreateTask";
+import { hasPendingTaskCreations, readAfterTaskCreations, type TaskCreationInput, type TaskCreationResult, type TaskCreationOkrTarget } from "./lib/taskCreation";
 import {
   patchWorkspaceConnector,
   setConnectorEnabledInCache,
 } from "./lib/connectorAdmin";
 import {
   canCompleteYunxiaoExternalTask,
-  importYunxiaoWorkitemFromText,
   isYunxiaoQuickCreateInput,
 } from "./lib/yunxiaoQuickCreate";
 import {
@@ -2265,7 +2266,6 @@ function RemoteApplication({
   const { notice, noticeTone, noticeOptions, setNotice } = useNotice();
   const [commentsRevision, setCommentsRevision] = useState(0);
   const [activityRevision, setActivityRevision] = useState(0);
-  const pendingTaskCreatesRef = useRef(0);
   const pendingSectionMutationsRef = useRef(0);
   const pendingSmartViewMutationsRef = useRef(0);
   const recentLocalRealtimeChangesRef = useRef<Map<string, number>>(new Map());
@@ -2274,6 +2274,7 @@ function RemoteApplication({
   const taskPageWorkspaceRef = useRef<string | null>(null);
   const [tasksHasMore, setTasksHasMore] = useState(false);
   const [tasksLoadingMore, setTasksLoadingMore] = useState(false);
+  const taskCreation = useCreateTask({ client, workspaceId, userId, online, rememberLocalChange: rememberLocalRealtimeChanges });
 
   useEffect(() => {
     if (workspaceId) {
@@ -2367,7 +2368,7 @@ function RemoteApplication({
 
   const bundleQuery = useQuery({
     queryKey: ["workspace-bundle", workspaceId],
-    queryFn: () => loadWorkspaceBundle(client, workspaceId!),
+    queryFn: ({ signal }) => readAfterTaskCreations(queryClient, workspaceId!, () => loadWorkspaceBundle(client, workspaceId!), signal),
     enabled: Boolean(workspaceId),
     select: normalizeWorkspaceBundle,
   });
@@ -2507,7 +2508,7 @@ function RemoteApplication({
       if (ids.length === 0) return;
       void (async () => {
         try {
-          const tasks = await loadWorkspaceTasksByIds(client, ids);
+          const tasks = await readAfterTaskCreations(queryClient, workspaceId, () => loadWorkspaceTasksByIds(client, ids));
           queryClient.setQueryData<WorkspaceBundle>(
             ["workspace-bundle", workspaceId],
             (current) => current
@@ -2527,7 +2528,7 @@ function RemoteApplication({
       const timer = setTimeout(() => {
         realtimeRefreshTimersRef.current.delete(timer);
         if (isRecentLocalChange(table, taskId)) return;
-        const waitingForCreate = pendingTaskCreatesRef.current > 0
+        const waitingForCreate = hasPendingTaskCreations(queryClient, workspaceId)
           && (table === "tasks" || table === "task_labels");
         if (waitingForCreate && attempt < 40) {
           scheduleTaskRefresh(table, taskId, attempt + 1);
@@ -4145,70 +4146,8 @@ function RemoteApplication({
           queryClient.removeQueries({ queryKey: ["workspace-invite-link", targetWorkspaceId] }),
         ]);
       }}
-      onCreateTask={async (input) => {
-        const queryKey = ["workspace-bundle", workspaceId];
-        const currentBundle = queryClient.getQueryData<WorkspaceBundle>(queryKey);
-        const parentTaskId = input.parentTaskId ?? null;
-        if (!parentTaskId) {
-          const imported = await importYunxiaoWorkitemFromText(workspaceId, input.title);
-          if (imported) {
-            await queryClient.invalidateQueries({ queryKey });
-            return { id: imported.taskId };
-          }
-          assertCanAssociateTaskLabels(
-            currentBundle?.labelTaskCounts,
-            input.labelIds,
-          );
-        }
-        const taskInput = {
-          ...input,
-          parentTaskId,
-          position: parentTaskId ? nextSiblingPosition(currentBundle?.tasks ?? [], parentTaskId) : 0,
-          labelIds: parentTaskId ? [] : input.labelIds,
-        };
-        const optimisticTask = createOptimisticTask({
-          workspaceId,
-          userId,
-          ...taskInput,
-        });
-        queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) => {
-          if (!current) return current;
-          const appended = appendTaskToBundle(current, optimisticTask);
-          return input.optimisticOrder
-            ? applyTaskListOrderToBundle(appended, {
-                workspaceId,
-                listKey: input.optimisticOrder.listKey,
-                sectionId: input.optimisticOrder.sectionId,
-                taskIds: [optimisticTask.id, ...input.optimisticOrder.taskIds],
-              })
-            : appended;
-        });
-        pendingTaskCreatesRef.current += 1;
-        try {
-          const created = await createTask(client, {
-            workspaceId,
-            ...taskInput,
-          });
-          rememberLocalRealtimeChanges("tasks", [created.id]);
-          rememberLocalRealtimeChanges("task_labels", [created.id]);
-          queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
-            current
-              ? replaceOptimisticTask(
-                  current,
-                  optimisticTask.id,
-                  created,
-                  taskInput.labelIds,
-                )
-              : current);
-          return created;
-        } catch (error) {
-          queryClient.setQueryData<WorkspaceBundle>(queryKey, (current) =>
-            current ? removeTaskFromBundle(current, optimisticTask.id) : current);
-          throw error;
-        } finally {
-          pendingTaskCreatesRef.current = Math.max(0, pendingTaskCreatesRef.current - 1);
-        }
-      }}
+      onCreateTask={taskCreation.create}
+      onRetryTaskOkrLink={(taskId, target) => taskCreation.retryLink({ taskId, target })}
       onUpdateTask={updateTask}
       onSaveTaskSchedule={saveTaskSchedule}
       onSaveChildTaskSchedule={saveChildTaskSchedule}
@@ -4685,6 +4624,7 @@ function DemoApplication({
         appendDemoActivity(createdId, "task.created", { title: input.title });
         return { id: createdId };
       }}
+      onRetryTaskOkrLink={async () => undefined}
       onUpdateTask={patchTask}
       onSaveTaskSchedule={async (taskId, patch, schedule) => {
         const createdAt = new Date().toISOString();
@@ -5521,23 +5461,8 @@ type WorkspaceAppProps = {
     slug: string;
   }) => Promise<Workspace>;
   onDeleteWorkspace: (workspaceId: string, confirmationName: string) => Promise<void>;
-  onCreateTask: (input: {
-    title: string;
-    labelIds: string[];
-    description?: string;
-    dueAt?: string | null;
-    dueTimezone?: string | null;
-    estimateHours?: number | null;
-    priority?: TaskPriority;
-    kind?: TaskKind;
-    assigneeId?: string | null;
-    parentTaskId?: string | null;
-    optimisticOrder?: {
-      listKey: string;
-      sectionId: string | null;
-      taskIds: string[];
-    };
-  }) => Promise<unknown>;
+  onCreateTask: (input: TaskCreationInput) => Promise<TaskCreationResult>;
+  onRetryTaskOkrLink: (taskId: string, target: TaskCreationOkrTarget) => Promise<void>;
   onUpdateTask: (
     taskId: string,
     patch: Partial<Task>,
@@ -7133,8 +7058,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               userLabelOrder: props.bundle.userLabelOrder,
               currentUserId: props.currentUserId,
             },
-            onCreateTask: async (payload) => {
+            onRetryLink: props.onRetryTaskOkrLink,
+            onCreateTask: async (payload, okrTarget) => {
               const created = await props.onCreateTask({
+                okrTarget,
                 title: payload.title,
                 labelIds: payload.labelIds,
                 kind: "todo",
@@ -7157,7 +7084,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
                   props.onNotice(`待办已创建，但排期保存失败：${cause instanceof Error ? cause.message : "请重试"}`, "error");
                 }
               }
-              return taskId;
+              return created;
             },
           }}
           workspaceId={props.workspaceId}

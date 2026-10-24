@@ -6,13 +6,6 @@ import { OkrTaskComposer, type OkrTaskCreation } from "./OkrTaskComposer";
 import { createDemoBundle } from "./lib/demo";
 import { createDemoOkrData } from "./lib/demoOkr";
 import { DEFAULT_DATE_TIME_PREFERENCES } from "./lib/dateTimePreferences";
-import { setTaskOkrLink, taskOkrLinkKey } from "./lib/okrApi";
-
-vi.mock("./lib/supabase", () => ({ supabase: {} }));
-vi.mock("./lib/okrApi", async (original) => ({
-  ...await original<typeof import("./lib/okrApi")>(),
-  setTaskOkrLink: vi.fn(),
-}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
@@ -21,12 +14,11 @@ let container: HTMLDivElement;
 let creation: OkrTaskCreation;
 const notice = vi.fn();
 const openTask = vi.fn();
-const target = { kind: "key_result" as const, id: "kr-1", label: "KR1" };
 const keyResults = createDemoOkrData().sets[0]!.objectives[0]!.key_results;
+const target = { kind: "key_result" as const, id: keyResults[0]!.id, label: "KR1" };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(setTaskOkrLink).mockResolvedValue(null);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -39,7 +31,8 @@ beforeEach(() => {
       currentUserId: "demo-user", members: bundle.members, labels: bundle.labels,
       labelPermissionLevels: bundle.labelPermissionLevels,
     },
-    onCreateTask: vi.fn().mockResolvedValue("created-task"),
+    onCreateTask: vi.fn().mockResolvedValue({ id: "created-task" }),
+    onRetryLink: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -72,19 +65,15 @@ async function submit() {
 }
 
 describe("OKR quick task creation", () => {
-  it("reuses title parsing, links the created task, and refreshes lists and counts", async () => {
-    client.setQueryData(["okr-linked-tasks", "workspace-team", "key_result", target.id], []);
-    client.setQueryData(["okr-linked-task-counts", "workspace-team"], {});
+  it("delegates parsed input and KR context to the shared creation operation", async () => {
     await render();
     await input("明天 验收输入框 ~2h");
     await submit();
     expect(creation.onCreateTask).toHaveBeenCalledWith(expect.objectContaining({
       title: "验收输入框", estimateHours: 2, due: expect.objectContaining({ due_is_all_day: true }),
-    }));
-    expect(setTaskOkrLink).toHaveBeenCalledWith(expect.anything(), "created-task", "kr-1");
-    expect(client.getQueryData(taskOkrLinkKey("created-task"))).toBeNull();
-    expect(client.getQueryState(["okr-linked-tasks", "workspace-team", "key_result", target.id])?.isInvalidated).toBe(true);
-    expect(client.getQueryState(["okr-linked-task-counts", "workspace-team"])?.isInvalidated).toBe(true);
+    }), { keyResultId: target.id, objectiveId: keyResults[0]!.objective_id,
+      title: keyResults[0]!.title, position: keyResults[0]!.position });
+    expect(creation.onRetryLink).not.toHaveBeenCalled();
     expect(container.querySelector("input")!.value).toBe("");
   });
 
@@ -94,7 +83,7 @@ describe("OKR quick task creation", () => {
     await input("不应写入");
     await submit();
     expect(creation.onCreateTask).not.toHaveBeenCalled();
-    expect(setTaskOkrLink).not.toHaveBeenCalled();
+    expect(creation.onRetryLink).not.toHaveBeenCalled();
   });
 
   it("restores the input when task creation fails", async () => {
@@ -103,12 +92,12 @@ describe("OKR quick task creation", () => {
     await input("保留输入");
     await submit();
     expect(container.querySelector("input")!.value).toBe("保留输入");
-    expect(setTaskOkrLink).not.toHaveBeenCalled();
+    expect(creation.onRetryLink).not.toHaveBeenCalled();
     expect(notice).toHaveBeenCalledWith("保存失败", "error");
   });
 
   it("retries a failed association without creating a second task and disables retry offline", async () => {
-    vi.mocked(setTaskOkrLink).mockRejectedValueOnce(new Error("网络错误"));
+    vi.mocked(creation.onCreateTask).mockResolvedValueOnce({ id: "created-task", okrLinkError: "网络错误" });
     await render();
     await input("只创建一次");
     await submit();
@@ -120,7 +109,8 @@ describe("OKR quick task creation", () => {
     await render();
     await act(async () => retry.click());
     expect(creation.onCreateTask).toHaveBeenCalledTimes(1);
-    expect(setTaskOkrLink).toHaveBeenCalledTimes(2);
+    expect(creation.onRetryLink).toHaveBeenCalledTimes(1);
+    expect(creation.onRetryLink).toHaveBeenCalledWith("created-task", expect.objectContaining({ keyResultId: target.id }));
     expect(container.querySelector("input")!.disabled).toBe(false);
   });
 
@@ -133,6 +123,6 @@ describe("OKR quick task creation", () => {
     });
     await input("关联第二个 KR");
     await submit();
-    expect(setTaskOkrLink).toHaveBeenCalledWith(expect.anything(), "created-task", keyResults[1]!.id);
+    expect(creation.onCreateTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ keyResultId: keyResults[1]!.id }));
   });
 });

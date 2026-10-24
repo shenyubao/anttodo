@@ -1,16 +1,15 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useRef, useState, type ComponentProps } from "react";
 import { QuickAddForm, type QuickAddSubmitPayload } from "./QuickAddForm";
-import { setTaskOkrLink, taskOkrLinkKey } from "./lib/okrApi";
-import { supabase } from "./lib/supabase";
+import type { TaskCreationOkrTarget, TaskCreationResult } from "./lib/taskCreation";
 import type { OkrKeyResult } from "./types";
 
 export type OkrTaskCreation = {
   formProps: Pick<ComponentProps<typeof QuickAddForm>,
     "now" | "dateTimePreferences" | "members" | "labels" | "labelPermissionLevels"
     | "userLabelOrder" | "currentUserId">;
-  onCreateTask: (payload: QuickAddSubmitPayload) => Promise<string>;
+  onCreateTask: (payload: QuickAddSubmitPayload, target: TaskCreationOkrTarget) => Promise<TaskCreationResult>;
+  onRetryLink: (taskId: string, target: TaskCreationOkrTarget) => Promise<void>;
 };
 
 export function OkrTaskComposer({ workspaceId, target, keyResults = [], creation, online, editable, onNotice, onOpenTask }: {
@@ -23,38 +22,37 @@ export function OkrTaskComposer({ workspaceId, target, keyResults = [], creation
   onNotice: (message: string, tone?: "success" | "error") => void;
   onOpenTask: (taskId: string) => void;
 }) {
-  const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState(keyResults[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  const [unlinkedTask, setUnlinkedTask] = useState<{ taskId: string; keyResultId: string } | null>(null);
+  const [unlinkedTask, setUnlinkedTask] = useState<{ taskId: string; target: TaskCreationOkrTarget } | null>(null);
   const keyResultId = target.kind === "key_result" ? target.id
     : keyResults.some((result) => result.id === selectedId) ? selectedId : keyResults[0]?.id ?? "";
-  const canCreate = editable && Boolean(keyResultId) && !unlinkedTask;
+  const keyResult = keyResults.find((result) => result.id === keyResultId);
+  const canCreate = editable && Boolean(keyResult) && !unlinkedTask;
 
-  async function linkTask(taskId: string, resultId: string) {
+  async function linkTask(taskId: string, linkTarget: TaskCreationOkrTarget) {
     try {
-      const link = await setTaskOkrLink(supabase!, taskId, resultId);
-      queryClient.setQueryData(taskOkrLinkKey(taskId), link);
+      await creation.onRetryLink(taskId, linkTarget);
       setUnlinkedTask(null);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", workspaceId] }),
-        queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", workspaceId] }),
-      ]);
     } catch (cause) {
-      // Keep the created task available for an explicit retry without creating it twice.
-      setUnlinkedTask({ taskId, keyResultId: resultId });
       onNotice(`待办已创建，关联 KR 失败：${cause instanceof Error ? cause.message : "请重试"}`, "error");
     }
   }
 
   async function submit(payload: QuickAddSubmitPayload) {
-    if (!online || !canCreate || busyRef.current) return;
+    if (!online || !canCreate || !keyResult || busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     try {
-      const taskId = await creation.onCreateTask(payload);
-      await linkTask(taskId, keyResultId);
+      const linkTarget: TaskCreationOkrTarget = {
+        keyResultId, objectiveId: keyResult.objective_id, title: keyResult.title, position: keyResult.position,
+      };
+      const created = await creation.onCreateTask(payload, linkTarget);
+      if (created.okrLinkError) {
+        setUnlinkedTask({ taskId: created.id, target: linkTarget });
+        onNotice(`待办已创建，关联 KR 失败：${created.okrLinkError}`, "error");
+      }
     } catch (cause) {
       onNotice(cause instanceof Error ? cause.message : "创建待办失败，请重试", "error");
       throw cause;
@@ -88,7 +86,7 @@ export function OkrTaskComposer({ workspaceId, target, keyResults = [], creation
         if (busyRef.current) return;
         busyRef.current = true;
         setBusy(true);
-        try { await linkTask(unlinkedTask.taskId, unlinkedTask.keyResultId); }
+        try { await linkTask(unlinkedTask.taskId, unlinkedTask.target); }
         finally { busyRef.current = false; setBusy(false); }
       }}>重试关联</button>
       <button type="button" onClick={() => onOpenTask(unlinkedTask.taskId)}>查看待办</button>

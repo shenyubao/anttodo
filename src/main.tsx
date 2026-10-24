@@ -69,7 +69,7 @@ async function bootstrap() {
       },
     },
   });
-  const queryPersister = createQueryPersister(instanceConfig?.namespace);
+  const queryPersister = createQueryPersister(instanceConfig?.namespace, queryClient);
 
   createRoot(document.getElementById("root")!, {
     onUncaughtError: Sentry.reactErrorHandler((error, errorInfo) => {
@@ -87,6 +87,7 @@ async function bootstrap() {
           maxAge: 24 * 60 * 60 * 1000,
           dehydrateOptions: {
             shouldDehydrateQuery: (query) => query.state.status === "success",
+            shouldDehydrateMutation: () => false,
           },
         }}
       >

@@ -247,10 +247,19 @@ export function replaceOptimisticTask(
       : placement,
   );
 
+  // Realtime can deliver the real row before the create response. Count the
+  // optimistic and real rows only once when reconciling them.
+  let labelTaskCounts = bundle.labelTaskCounts ?? countLiveTasksByLabel(bundle.tasks);
+  for (const previous of bundle.tasks.filter((item) => item.id === optimisticId || item.id === created.id)) {
+    if (isLiveTask(previous)) labelTaskCounts = adjustLabelTaskCounts(labelTaskCounts, previous.label_ids, -1);
+  }
+  if (isLiveTask(task)) labelTaskCounts = adjustLabelTaskCounts(labelTaskCounts, task.label_ids, 1);
+
   return normalizeWorkspaceBundle({
     ...bundle,
     tasks,
     taskPlacements: deduplicatePlacements(placements),
+    labelTaskCounts,
   });
 }
 

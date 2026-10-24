@@ -140,6 +140,10 @@ export function QuickAddForm({
   const dueChipRef = useRef<HTMLButtonElement>(null);
   const timeZone = systemTimeZone();
   const title = tokens.title;
+  const submittedTitleRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (submittedTitleRef.current !== title) submittedTitleRef.current = null;
+  }, [title]);
 
   function openDuePicker() {
     const rect = dueChipRef.current?.getBoundingClientRect();
@@ -204,7 +208,8 @@ export function QuickAddForm({
     if (tokens.token) return;
     const payload = tokens.toSubmitPayload();
     const raw = payload.title;
-    if (!raw || !online || busy || !canManage) return;
+    if (!raw || !online || busy || !canManage || submittedTitleRef.current === tokens.title) return;
+    submittedTitleRef.current = tokens.title;
 
     if (isYunxiaoQuickCreateInput(raw)) {
       const previous = {
@@ -231,6 +236,8 @@ export function QuickAddForm({
         tokens.setAssigneeId((current) =>
           current === (defaultAssigneeId ?? null) ? previous.assigneeId : current);
         tokens.setLabelIds((current) => (current.length > 0 ? current : previous.labelIds));
+      } finally {
+        if (submittedTitleRef.current === previous.title) submittedTitleRef.current = null;
       }
       return;
     }
@@ -295,6 +302,8 @@ export function QuickAddForm({
       tokens.setAssigneeId((current) =>
         current === (defaultAssigneeId ?? null) ? previous.assigneeId : current);
       tokens.setLabelIds((current) => (current.length > 0 ? current : previous.labelIds));
+    } finally {
+      if (submittedTitleRef.current === previous.title) submittedTitleRef.current = null;
     }
   }
 
