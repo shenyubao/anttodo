@@ -12,7 +12,7 @@ describe("command tree", () => {
     const program = buildProgram();
     expect(program.commands.map((command) => command.name())).toEqual([
       "service", "auth", "workspace", "task", "note", "tag", "user",
-      "group", "weekly-report", "search", "comment", "activity", "attachment", "pomodoro", "stopwatch", "man",
+      "group", "okr", "weekly-report", "search", "comment", "activity", "attachment", "pomodoro", "stopwatch", "man",
     ]);
   });
 
@@ -70,6 +70,7 @@ describe("command tree", () => {
     const create = weeklyReport?.commands.find((command) => command.name() === "create");
     expect(create?.options.map((option) => option.flags)).toEqual([
       "--week <week>",
+      "--okr-progress <markdown>",
       "--completed <markdown>",
       "--next-plan <markdown>",
       "--reflection <markdown>",

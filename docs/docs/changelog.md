@@ -5,6 +5,13 @@ title: ChangeLog
 description: AntTodo 的版本更新记录。
 ---
 
+## CLI 1.0.202610241558
+
+### CLI
+
+- Feature: [OKR] 支持周期查询、目标与 Key Result 管理、进度记录、发布和待办关联
+- Enhance: [周报] 创建和更新支持 `--okr-progress`，可编辑或清空 OKR 进展栏目
+
 ## 1.0.10.20260917
 
 ### ALL

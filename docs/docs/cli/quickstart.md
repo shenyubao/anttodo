@@ -232,6 +232,51 @@ anttodo weekly-report publish <周报 ID>
 
 可见范围默认为团队空间内不限。指定用户或用户组时，配合 `--visibility users|groups` 与可重复的 `--user` / `--group`。`create --publish` 可以在创建时直接发布，发布前至少一个栏目需要有内容。
 
+### 周报 OKR 进展
+
+```bash
+anttodo weekly-report create --okr-progress "本周核心指标提升至 80%"
+anttodo weekly-report update <周报ID> --okr-progress "补充 KR 进展"
+anttodo weekly-report update <周报ID> --okr-progress ""
+```
+
+省略 `--okr-progress` 会保留原内容，传空字符串会清空；仅填写 OKR 进展也可发布。
+
+## OKR
+
+```bash
+anttodo okr cycle list --format table
+anttodo okr cycle get <周期ID>
+anttodo okr get --cycle current --owner me
+anttodo okr objective list --cycle <周期ID> --owner <成员ID>
+anttodo okr objective create --title "提升交付质量"
+anttodo okr objective get <目标ID>
+anttodo okr objective update <目标ID> --note "**重点：**减少生产故障" --status normal
+anttodo okr key-result create --objective <目标ID> --title "降低生产故障数量"
+anttodo okr key-result list --objective <目标ID>
+anttodo okr key-result update <KR-ID> --start 10 --target 0 --unit none
+anttodo okr key-result update <KR-ID> --status-mode automatic
+anttodo okr key-result progress <KR-ID> --value 3 --status normal --detail "本周减少 7 次故障"
+anttodo okr key-result get <KR-ID>
+anttodo okr publish --cycle current
+anttodo okr task link <待办ID> --key-result <KR-ID>
+anttodo okr task list --objective <目标ID>
+anttodo okr task list --key-result <KR-ID>
+anttodo okr task unlink <待办ID>
+anttodo okr key-result delete <KR-ID> --yes
+anttodo okr objective delete <目标ID> --yes
+```
+
+默认查询自己在当前周期的 OKR。当前周期优先选择覆盖今天的 active 周期，否则使用应用顺序中的第一个 active 周期；没有 active 周期时提示错误，可用 `--cycle <周期ID>` 查询历史。使用实体 ID 的命令按实体所属周期操作，不依赖默认周期；所有命令均受 `--workspace` 和服务选择约束。
+
+创建时沿用应用默认值，通过 `update` 设置 KR 指标。单位 `--unit` 支持 `percent|cny|usd|none|custom`，自定义单位配合 `--custom-unit "次"`。目标进度按 KR 权重计算；详情及完整树提供 `progress_percent` 和 `effective_status`。状态支持 `none|normal|risk|delayed`，状态模式支持 `manual|automatic`。
+
+仅所有者可在 active 周期内修改或发布。新增和删除 KR 会平均分配同级权重；删除会移除依赖关系和进展记录，关联待办保留。非交互删除需要 `--yes`；删除成功但权重调整失败时会返回 `okr_partial_failure` 及已完成步骤，请在应用内检查剩余权重后发布，不要重试删除。
+
+更新只修改传入字段，`--note ""` 清空 Markdown 备注；保留文本中仍存在的已有提及，不新增提及通知。进度命令省略当前值或状态时保留原值，`--value null` 清空当前值；每次记录进展历史，说明最多 2000 个字符。
+
+待办只能关联同一团队空间内、属于自己的 active 周期 KR，且需要待办整理权限；重新关联会改绑。解除关联不要求原 KR 仍可见。OKR 命令直连服务端，断网时不会暂存写操作。周期管理、权限设置、自定义权重及历史版本查询仍在应用内操作。
+
 ## 10. 搜索、评论、附件和活动记录
 
 ```bash

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import assert from "node:assert/strict";
 
 const cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(cliRoot, "..");
@@ -45,6 +46,16 @@ function runCli(...arguments_) {
   const envelope = JSON.parse(stdout);
   if (!envelope.ok) throw new Error(`CLI command failed: ${arguments_.join(" ")}`);
   return envelope.data;
+}
+
+function failCli(...arguments_) {
+  try {
+    runCli(...arguments_);
+  } catch (error) {
+    if (error.stderr) return JSON.parse(String(error.stderr)).error;
+    throw error;
+  }
+  throw new Error(`Expected command to fail: ${arguments_.join(" ")}`);
 }
 
 async function deviceRequest(body, accessToken) {
@@ -228,6 +239,57 @@ try {
   runCli("note", "delete", note.id);
   runCli("user", "list");
 
+  stage = "OKR lifecycle";
+  const { data: cycle, error: cycleError } = await admin.from("okr_cycles").insert({
+    workspace_id: workspaceId, created_by: userId, name: "CLI OKR cycle",
+    starts_on: `${new Date().getFullYear()}-01-01`, ends_on: `${new Date().getFullYear()}-12-31`, status: "active",
+  }).select("id").single();
+  if (cycleError) throw cycleError;
+  assert.equal(runCli("okr", "cycle", "list")[0].id, cycle.id);
+  assert.equal(runCli("okr", "cycle", "get", cycle.id).id, cycle.id);
+  assert.equal(runCli("okr", "get").set, null);
+  const objective = runCli("okr", "objective", "create", "--title", "CLI objective");
+  assert.equal(objective.progress_mode, "key_results");
+  runCli("okr", "objective", "update", objective.id, "--note", "**Markdown**\n\nCLI note", "--status", "normal");
+  const firstKr = runCli("okr", "key-result", "create", "--objective", objective.id, "--title", "First KR");
+  const secondKr = runCli("okr", "key-result", "create", "--objective", objective.id, "--title", "Second KR");
+  assert.deepEqual(runCli("okr", "key-result", "list", "--objective", objective.id).map((kr) => kr.weight), [50, 50]);
+  runCli("okr", "key-result", "update", firstKr.id, "--start", "100", "--target", "0", "--unit", "custom", "--custom-unit", "次", "--note", "# KR note");
+  assert.equal(runCli("okr", "publish").published_version, 1);
+  runCli("okr", "key-result", "progress", firstKr.id, "--value", "25", "--status", "normal", "--detail", "CLI progress record");
+  assert.equal(runCli("okr", "key-result", "get", firstKr.id).progress_percent, 75);
+  assert.equal(runCli("okr", "objective", "get", objective.id).progress_percent, 38);
+  const { data: records, error: recordsError } = await publicClient.from("okr_progress_records").select("detail").eq("key_result_id", firstKr.id);
+  if (recordsError) throw recordsError;
+  assert.equal(records[0].detail, "CLI progress record");
+  if (process.env.ANTTODO_CLI_BROWSER_URL || process.env.ANTTODO_OKR_ELECTRON_PATH) {
+    stage = "OKR browser and packaged client realtime/offline smoke";
+    const { verifyOkrClients } = await import("./okr-client-smoke.mjs");
+    await verifyOkrClients({ runCli, session: signedIn.session, local, objectiveId: objective.id,
+      keyResultId: firstKr.id, workspaceId, repositoryRoot });
+    stage = "OKR task links and deletion";
+  }
+  runCli("okr", "task", "link", task.id, "--key-result", firstKr.id);
+  assert.equal(runCli("okr", "task", "list", "--objective", objective.id)[0].task_id, task.id);
+  runCli("okr", "task", "link", task.id, "--key-result", secondKr.id);
+  assert.equal(runCli("okr", "task", "list", "--key-result", firstKr.id).length, 0);
+  assert.equal(failCli("okr", "key-result", "delete", secondKr.id).code, "confirmation_required");
+  const closed = await admin.from("okr_cycles").update({ status: "closed" }).eq("id", cycle.id);
+  if (closed.error) throw closed.error;
+  assert.equal(failCli("okr", "objective", "update", objective.id, "--title", "blocked").code, "okr_not_writable");
+  assert.equal(failCli("okr", "publish", "--cycle", cycle.id).code, "okr_not_writable");
+  runCli("okr", "task", "unlink", task.id);
+  const reopened = await admin.from("okr_cycles").update({ status: "active" }).eq("id", cycle.id);
+  if (reopened.error) throw reopened.error;
+  runCli("okr", "task", "link", task.id, "--key-result", secondKr.id);
+  runCli("okr", "key-result", "delete", secondKr.id, "--yes");
+  assert.equal(runCli("okr", "key-result", "get", firstKr.id).weight, 100);
+  assert.equal(runCli("okr", "task", "list", "--objective", objective.id).length, 0);
+  assert.equal(runCli("task", "get", task.id).id, task.id);
+  runCli("okr", "objective", "delete", objective.id, "--yes");
+  assert.equal(runCli("okr", "objective", "list").length, 0);
+
+  stage = "weekly report OKR section";
   const weekDate = new Date();
   const weekStartDate = new Date(weekDate.getFullYear(), weekDate.getMonth(), weekDate.getDate());
   const weekday = weekStartDate.getDay();
@@ -236,12 +298,15 @@ try {
   const weeklyReport = runCli(
     "weekly-report", "create",
     "--week", weekStart,
-    "--completed", "CLI weekly report",
+    "--okr-progress", "CLI weekly report OKR progress",
   );
   runCli("weekly-report", "list", "--week", weekStart);
   runCli("weekly-report", "get", weeklyReport.id);
   runCli("weekly-report", "update", weeklyReport.id, "--next-plan", "Next week");
+  assert.equal(runCli("weekly-report", "get", weeklyReport.id).okr_progress_text, "CLI weekly report OKR progress");
   runCli("weekly-report", "publish", weeklyReport.id);
+  runCli("weekly-report", "update", weeklyReport.id, "--okr-progress", "");
+  assert.equal(runCli("weekly-report", "get", weeklyReport.id).okr_progress_text, "");
 
   runCli("task", "delete", task.id);
   runCli("task", "list", "--trash");
@@ -250,7 +315,8 @@ try {
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
-    commands: 33,
+    okrLifecycle: "verified",
+    weeklyReportOkr: "verified",
     deviceAuthorization: "approved-and-consumed",
     oauthTokenExchange: "verified",
   })}\n`);

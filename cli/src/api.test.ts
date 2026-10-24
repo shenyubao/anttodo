@@ -213,6 +213,34 @@ describe("weekly reports API", () => {
 
 
 describe("OKR report CLI compatibility", () => {
+  it.each(["# 本周 OKR\n\n- 达成 80%", ""])("writes explicitly supplied OKR text, including clearing it: %j", async (text) => {
+    let payload: Record<string, unknown> = {};
+    const row = { ...weeklyReportRow, okr_progress_text: "previous" };
+    const client = {
+      from: (table: string) => createQuery(table === "weekly_reports" ? [row] : []),
+      rpc: (_name: string, input: Record<string, unknown>) => {
+        payload = input;
+        return Promise.resolve({ data: { ...row, okr_progress_text: text }, error: null });
+      },
+    } as unknown as SupabaseClient;
+    await updateWeeklyReport(client, "workspace-1", "report-1", { okrProgressText: text });
+    expect(payload.p_okr_progress_text).toBe(text);
+    expect(payload.p_completed_text).toBe(row.completed_text);
+    expect(payload.p_next_plan_text).toBe(row.next_plan_text);
+  });
+  it("publishes a new report containing only the OKR section", async () => {
+    const rpc = async (_name: string, input: Record<string, unknown>) => {
+      expect(input.p_okr_progress_text).toBe("OKR only");
+      expect(input.p_publish).toBe(true);
+      return { data: { ...weeklyReportRow, okr_progress_text: "OKR only" }, error: null };
+    };
+    const client = { rpc } as unknown as SupabaseClient;
+    await expect(saveWeeklyReport(client, {
+      workspaceId: "workspace-1", weekStart: "2026-08-31", okrProgressText: "OKR only",
+      completedText: "", nextPlanText: "", reflectionText: "", visibility: "workspace",
+      userIds: [], groupIds: [], notificationGroupIds: [], publish: true,
+    })).resolves.toMatchObject({ okr_progress_text: "OKR only" });
+  });
   it("preserves OKR-only content when publishing or updating existing reports", async () => {
     let payload: Record<string, unknown> = {};
     const row = { ...weeklyReportRow, okr_progress_text: "- Saved OKR", completed_text: "", next_plan_text: "", reflection_text: "" };

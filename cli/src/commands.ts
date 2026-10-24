@@ -82,6 +82,7 @@ import {
   validateTimeZone,
 } from "./validation.js";
 import { getCliVersion } from "./version.js";
+import { registerOkrCommands } from "./okr-commands.js";
 
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
@@ -756,6 +757,8 @@ export function buildProgram() {
     emit(command, data, { count: data.length });
   }), "read");
 
+  registerOkrCommands(program, { businessContext, emit });
+
   const weeklyReport = program.command("weekly-report").description("Weekly report operations");
   setRisk(addListOptions(weeklyReport.command("list").description("List weekly reports"), false)
     .option("--week <week>", "current|last|yyyy-MM-dd (Monday)", "current")
@@ -780,6 +783,7 @@ export function buildProgram() {
   }), "read");
   setRisk(weeklyReport.command("create").description("Create a weekly report")
     .option("--week <week>", "current|last|yyyy-MM-dd (Monday)", "current")
+    .option("--okr-progress <markdown>", "this week's OKR progress")
     .option("--completed <markdown>", "this week's completed work")
     .option("--next-plan <markdown>", "next week's plan")
     .option("--reflection <markdown>", "reflection")
@@ -793,6 +797,7 @@ export function buildProgram() {
       emit(command, await createWeeklyReport(context.client, context.user.id, {
         workspaceId: context.workspace.id,
         weekStart: parseWeekStart(options.week),
+        okrProgressText: options.okrProgress,
         completedText: options.completed ?? "",
         nextPlanText: options.nextPlan ?? "",
         reflectionText: options.reflection ?? "",
@@ -804,6 +809,7 @@ export function buildProgram() {
       }));
     }), "write");
   setRisk(weeklyReport.command("update <report-id>").description("Update a weekly report")
+    .option("--okr-progress <markdown>", "this week's OKR progress; empty string clears it")
     .option("--completed <markdown>", "this week's completed work")
     .option("--next-plan <markdown>", "next week's plan")
     .option("--reflection <markdown>", "reflection")
@@ -830,7 +836,8 @@ export function buildProgram() {
         });
       }
       if (
-        options.completed === undefined
+        options.okrProgress === undefined
+        && options.completed === undefined
         && options.nextPlan === undefined
         && options.reflection === undefined
         && options.visibility === undefined
@@ -850,6 +857,7 @@ export function buildProgram() {
         context.workspace.id,
         assertUuid(id, "report-id"),
         {
+          ...(options.okrProgress === undefined ? {} : { okrProgressText: options.okrProgress }),
           ...(options.completed === undefined ? {} : { completedText: options.completed }),
           ...(options.nextPlan === undefined ? {} : { nextPlanText: options.nextPlan }),
           ...(options.reflection === undefined ? {} : { reflectionText: options.reflection }),

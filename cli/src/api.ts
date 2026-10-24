@@ -45,7 +45,7 @@ async function invalidateTaskCache(workspaceId: string) {
   await invalidateTaskCachesForWorkspace(workspaceId, getActiveServiceKey() ?? "official").catch(() => undefined);
 }
 
-function throwError(error: { message: string; code?: string; details?: string } | null) {
+export function throwError(error: { message: string; code?: string; details?: string } | null) {
   if (!error) return;
   const message = error.message.toLowerCase();
   if (message.includes("label_task_limit_exceeded")) {
@@ -79,7 +79,7 @@ function throwError(error: { message: string; code?: string; details?: string } 
   });
 }
 
-function requireRow<T>(data: T | null, resource: string): T {
+export function requireRow<T>(data: T | null, resource: string): T {
   if (data) return data;
   throw new CliError({ type: "not_found", code: "not_found", message: `${resource} not found or not accessible` });
 }
@@ -960,6 +960,7 @@ export async function createWeeklyReport(
 }
 
 export type UpdateWeeklyReportInput = {
+  okrProgressText?: string;
   completedText?: string;
   nextPlanText?: string;
   reflectionText?: string;
@@ -989,7 +990,7 @@ function mergeWeeklyReportUpdate(current: WeeklyReport, patch: UpdateWeeklyRepor
     id: current.id,
     workspaceId: current.workspace_id,
     weekStart: String(current.week_start).slice(0, 10),
-    okrProgressText: current.okr_progress_text ?? "",
+    okrProgressText: patch.okrProgressText ?? current.okr_progress_text ?? "",
     completedText: patch.completedText ?? current.completed_text,
     nextPlanText: patch.nextPlanText ?? current.next_plan_text,
     reflectionText: patch.reflectionText ?? current.reflection_text,
