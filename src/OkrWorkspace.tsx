@@ -1,3 +1,5 @@
+import { assertPermissionReady, requestPermissionRefresh } from "./lib/permissionRefresh";
+import { usePermissionRefresh } from "./lib/usePermissionRefresh";
 import { OkrNoteContent, OkrNoteEditor } from "./OkrNoteEditor";
 import type { TaskRichTextEditorHandle } from "./TaskRichTextEditor";
 import { AssigneePicker } from "./AssigneePicker";
@@ -178,7 +180,9 @@ function emptyPreferences(userId: string, workspaceId: string, cycleId: string):
   };
 }
 
-export function OkrWorkspace(props: OkrWorkspaceProps) {
+export function OkrWorkspace(sourceProps: OkrWorkspaceProps) {
+  const accessStatus = usePermissionRefresh(sourceProps.workspaceId, "okr");
+  const props = { ...sourceProps, online: sourceProps.online && accessStatus === "ready" };
   const client = supabase!;
   const queryClient = useQueryClient();
   const demoMode = new URLSearchParams(window.location.search).get("demo") === "1";
@@ -230,6 +234,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     const context = contextRef.current;
     const key = setKey(props.workspaceId, cycleId, ownerId);
     const save = async () => {
+      assertPermissionReady(queryClient, props.workspaceId, "okr");
       // A queued autosave is superseded by the latest draft or an explicit save.
       if (!publish && request !== saveRequestRef.current) return false;
       if (hydratedObjectiveIdRef.current !== draft.id || context !== contextRef.current) return false;
@@ -273,7 +278,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   }, []);
 
   useEffect(() => {
-    if (props.online) return;
+    if (sourceProps.online) return;
     // Unsent editor work must never turn into an offline write queue.
     saveRequestRef.current += 1;
     persistGenerationRef.current += 1;
@@ -281,7 +286,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     lastPersistedDraftRef.current = null;
     setEditingObjectiveId(null);
     setObjectiveDraft(null);
-  }, [props.online]);
+  }, [sourceProps.online]);
 
   useEffect(() => {
     if (!props.initialTarget) return;
@@ -380,6 +385,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   const linkedTaskCounts = demoMode ? demoTaskCounts : linkedTaskCountsQuery.data;
   const progressCountsQuery = useQuery({
     queryKey: ["okr-progress-counts", okrSet?.id, okrSet?.updated_at],
+    meta: { workspaceId: props.workspaceId },
     queryFn: () => loadOkrProgressRecordCounts(client, objectiveIds, keyResultIds),
     enabled: backendAvailable && Boolean(okrSet),
   });
@@ -387,6 +393,11 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
   const editable = backendAvailable && props.online
     && ownerId === props.currentUserId
     && selectedCycle?.status === "active";
+  function canContribute(target: Pick<ProgressTarget, "kind" | "id">) {
+    return editable || (backendAvailable && props.online && selectedCycle?.status === "active"
+      && target.kind === "key_result" && Boolean(okrSet?.objectives.some((objective) =>
+        objective.key_results.some((kr) => kr.id === target.id && kr.responsible_ids.includes(props.currentUserId)))));
+  }
   const preferences = preferencesQuery.data
     ?? emptyPreferences(props.currentUserId, props.workspaceId, cycleId);
   const owner = props.members.find((member) => member.user_id === ownerId);
@@ -507,6 +518,10 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
       void Promise.all(invalidations);
     };
     const scheduleRefresh = (table: string, eventType?: string) => {
+      if (table === "user_group_members" || table === "okr_access_revisions") {
+        requestPermissionRefresh(queryClient, props.workspaceId, table === "user_group_members" ? "workspace" : "okr");
+        return;
+      }
       pendingTables.add(table);
       pendingDiscoverabilityChange ||= okrRealtimeAffectsDiscoverability(table, eventType);
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
@@ -560,6 +575,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
       return;
     }
     try {
+      assertPermissionReady(queryClient, props.workspaceId, "okr");
       await action();
       if (success) props.onNotice(success);
     } catch (error) {
@@ -580,6 +596,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     const previous = queryClient.getQueryData<OkrSet | null>(key);
     if (previous) queryClient.setQueryData(key, update(previous));
     try {
+      assertPermissionReady(queryClient, props.workspaceId, "okr");
       await action();
       if (success) props.onNotice(success);
       return true;
@@ -867,6 +884,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
     status: OkrProgressStatus,
     detail: string,
   ) {
+    if (!canContribute(target) || !navigator.onLine) return false;
     const succeeded = await runOptimistic((current) => ({
       ...current,
       objectives: current.objectives.map((objective) => target.kind === "objective" && objective.id === target.id
@@ -1201,6 +1219,7 @@ export function OkrWorkspace(props: OkrWorkspaceProps) {
         onOpenChange={(open) => { if (!open) setProgressTarget(null); }}
         target={progressTarget}
         editable={editable}
+        canContribute={Boolean(progressTarget && canContribute(progressTarget))}
         cycle={selectedCycle}
         members={props.members}
         workspaceId={props.workspaceId}
@@ -1910,7 +1929,7 @@ function DisplaySettingsDialog({ open, onOpenChange, preferences, cycleId, onSav
 }
 
 function HistoryDialog({ open, onOpenChange, set }: { open: boolean; onOpenChange: (open: boolean) => void; set: OkrSet | null }) {
-  const query = useQuery({ queryKey: ["okr-versions", set?.id], queryFn: () => loadOkrVersions(supabase!, set!.id), enabled: open && Boolean(set) });
+  const query = useQuery({ queryKey: ["okr-versions", set?.id], meta: { workspaceId: set?.workspace_id }, queryFn: () => loadOkrVersions(supabase!, set!.id), enabled: open && Boolean(set) });
   const [selected, setSelected] = useState(0);
   const version = query.data?.[selected];
   const previousVersion = query.data?.[selected + 1];
@@ -2004,7 +2023,7 @@ function formatProgressRecordDate(value: string) {
   }).format(new Date(value)).replace("/", "-");
 }
 
-export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveNote, objective, open, onOpenChange, target, editable, cycle, members, workspaceId, demoMode, onOpenTask, onSave, backendAvailable, taskCreation, online, onNotice }: {
+export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveNote, objective, open, onOpenChange, target, editable, canContribute = editable, cycle, members, workspaceId, demoMode, onOpenTask, onSave, backendAvailable, taskCreation, online, onNotice }: {
   noteEntity?: OkrObjective | OkrKeyResult;
   currentUserId: string;
   preferences: OkrDisplayPreferences;
@@ -2020,6 +2039,7 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
   onOpenChange: (open: boolean) => void;
   target: ProgressTarget | null;
   editable: boolean;
+  canContribute?: boolean;
   cycle: OkrCycle | null;
   members: Member[];
   onOpenTask: (taskId: string) => void;
@@ -2050,6 +2070,7 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
   }, [target?.currentValue, target?.status]);
   const records = useQuery({
     queryKey: ["okr-progress-records", target?.kind, target?.id],
+    meta: { workspaceId },
     queryFn: () => loadOkrProgressRecords(supabase!, { kind: target!.kind, id: target!.id }),
     enabled: backendAvailable && open && Boolean(target),
   });
@@ -2076,7 +2097,7 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
   if (!target) return null;
   const progress = objective ? okrObjectiveProgress(objective) : progressPercentForValue(target, target.currentValue);
   const submitProgress = async () => {
-    if (target.kind !== "key_result" || !editable) return;
+    if (target.kind !== "key_result" || !canContribute || !online) return;
     setSubmitting(true);
     const succeeded = await onSave(value.trim() === "" ? null : Number(value), status, detail.trim());
     setSubmitting(false);
@@ -2131,13 +2152,13 @@ export function ProgressDialog({ noteEntity, currentUserId, preferences, onSaveN
           </section> : tab === "tasks"
             ? <>
                 {taskCreation && <OkrTaskComposer key={`${target.kind}:${target.id}`} workspaceId={workspaceId} target={target} keyResults={objective?.key_results ?? (noteEntity && "objective_id" in noteEntity ? [noteEntity] : [])}
-                  creation={taskCreation} online={online} editable={editable} onNotice={onNotice} onOpenTask={onOpenTask} />}
+                  creation={taskCreation} online={online} editable={canContribute && online} onNotice={onNotice} onOpenTask={onOpenTask} />}
                 <OkrTaskListPanel target={target} tasks={tasks} members={members} loading={linkedTasks.isLoading && !demoMode} onOpenTask={onOpenTask} />
               </>
             : tab === "progress" && target.kind === "objective"
             ? <ObjectiveProgressPanel target={target} cycle={cycle} records={objective ? okrObjectiveHistory(objective, aggregateHistory.data ?? []) : []} />
             : <ProgressRecordPanel
-                target={target} records={records.data ?? []} members={members} editable={editable && target.kind === "key_result"}
+                target={target} records={records.data ?? []} members={members} editable={canContribute && online && target.kind === "key_result"}
                 value={value} status={status} detail={detail} composerOpen={composerOpen} submitting={submitting}
                 onValueChange={setValue} onStatusChange={setStatus} onDetailChange={setDetail}
                 onComposerOpen={openComposer}

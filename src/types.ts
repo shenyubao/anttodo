@@ -153,6 +153,9 @@ export type WeeklyReportConfiguration = {
 };
 
 export type WeeklyReportGroup = WeeklyReportConfiguration & {
+  created_by: string | null;
+  participant_mode: "users" | "groups";
+  participant_group_ids: string[];
   /** Caller-specific audience access; historical authors may only read their own reports. */
   can_view_published?: boolean;
   id: string;

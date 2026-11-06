@@ -1,22 +1,23 @@
+import { assertPermissionReady } from "./lib/permissionRefresh";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MemberAvatar } from "./MemberAvatar";
 import { WeeklyReportNotificationGroupDialog } from "./WeeklyReportNotificationGroupDialog";
-import { saveWeeklyReportGroup, weeklyReportGroupsKey, type SaveWeeklyReportGroupInput } from "./lib/weeklyReportGroupsApi";
+import { normalizeWeeklyReportGroup, saveWeeklyReportGroup, weeklyReportGroupsKey, type SaveWeeklyReportGroupInput } from "./lib/weeklyReportGroupsApi";
 import { createWeeklyReportNotificationGroup, loadWeeklyReportNotificationGroups, weeklyReportNotificationGroupsKey } from "./lib/weeklyReportNotificationsApi";
 import { supabase } from "./lib/supabase";
 import { memberDisplayName } from "./lib/taskTitleTokens";
-import type { Member, NoticeHandler, UserGroup, WeeklyReportGroup, WeeklyReportNotificationGroup } from "./types";
+import type { Member, NoticeHandler, UserGroup, UserGroupMember, WeeklyReportGroup, WeeklyReportNotificationGroup } from "./types";
 
-export function WeeklyReportGroupDialog({ workspaceId, group, members, userGroups, disabled, online = true, demoMode = false, onClose, onSaved, onNotice }: {
-  workspaceId: string; group: WeeklyReportGroup | null; members: Member[]; userGroups: UserGroup[];
+export function WeeklyReportGroupDialog({ workspaceId, group, members, userGroups, userGroupMembers = [], disabled, online = true, demoMode = false, onClose, onSaved, onNotice }: {
+  workspaceId: string; group: WeeklyReportGroup | null; members: Member[]; userGroups: UserGroup[]; userGroupMembers?: UserGroupMember[];
   disabled: boolean; online?: boolean; demoMode?: boolean; onClose: () => void; onSaved: (group: WeeklyReportGroup) => void; onNotice: NoticeHandler;
 }) {
   const client = useQueryClient();
-  const [draft, setDraft] = useState<SaveWeeklyReportGroupInput>(() => group ? { ...group } : {
-    name: "", participant_ids: [], visibility: "workspace", viewer_user_ids: [], viewer_group_ids: [],
+  const [draft, setDraft] = useState<SaveWeeklyReportGroupInput>(() => group ? { ...normalizeWeeklyReportGroup(group), participant_ids: group.participant_mode === "groups" ? [] : group.participant_ids } : {
+    name: "", participant_mode: "users", participant_group_ids: [], participant_ids: [], visibility: "workspace", viewer_user_ids: [], viewer_group_ids: [],
     enabled: false, schedules: [], notification_group_ids: [],
   });
   const [search, setSearch] = useState("");
@@ -25,12 +26,26 @@ export function WeeklyReportGroupDialog({ workspaceId, group, members, userGroup
   const [notificationOpen, setNotificationOpen] = useState(false);
   const notifications = useQuery({ queryKey: weeklyReportNotificationGroupsKey(workspaceId),
     queryFn: () => loadWeeklyReportNotificationGroups(supabase!, workspaceId), enabled: Boolean(supabase) && online && !demoMode });
-  const readOnly = disabled || busy || !supabase;
-  const validReminder = !draft.enabled || Boolean(draft.participant_ids.length && draft.schedules.length
+  const readOnly = disabled || !online || demoMode || busy || !supabase;
+  const groupMode = draft.participant_mode === "groups";
+  const selectedGroups = userGroups.filter((item) => item.workspace_id === workspaceId && draft.participant_group_ids.includes(item.id));
+  const memberIds = new Set(members.filter((member) => member.workspace_id === workspaceId).map((member) => member.user_id));
+  const participantIds = groupMode ? [...new Set(userGroupMembers
+    .filter((item) => item.workspace_id === workspaceId && selectedGroups.some((group) => group.id === item.group_id) && memberIds.has(item.user_id))
+    .map((item) => item.user_id))].sort() : draft.participant_ids;
+  const reminderEnabled = draft.enabled && participantIds.length > 0;
+  useEffect(() => {
+    if (!participantIds.length) setDraft((value) => value.enabled ? { ...value, enabled: false } : value);
+  }, [participantIds.length]);
+  const filteredMembers = members.filter((member) => memberDisplayName(member).toLowerCase().includes(search.trim().toLowerCase()));
+  const availableGroups = userGroups.filter((item) => item.workspace_id === workspaceId);
+  const filteredGroups = availableGroups.filter((item) => item.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const payload = { ...draft, participant_ids: participantIds, participant_group_ids: groupMode ? draft.participant_group_ids : [], enabled: reminderEnabled };
+  const validReminder = !reminderEnabled || Boolean(participantIds.length && draft.schedules.length
     && draft.notification_group_ids.length && draft.schedules.every((item) => /^[1-7]$/.test(String(item.day)) && /^([01]\d|2[0-3]):[0-5]\d$/.test(item.time)));
   const valid = draft.name.trim().length > 0 && draft.name.trim().length <= 100
-    && (Boolean(group) || draft.participant_ids.length > 0) && validReminder;
-  const toggle = (field: "participant_ids" | "viewer_user_ids" | "viewer_group_ids" | "notification_group_ids", id: string, checked: boolean) =>
+    && (groupMode ? selectedGroups.length > 0 || Boolean(group) : Boolean(group) || participantIds.length > 0) && validReminder;
+  const toggle = (field: "participant_ids" | "participant_group_ids" | "viewer_user_ids" | "viewer_group_ids" | "notification_group_ids", id: string, checked: boolean) =>
     setDraft((value) => ({ ...value, [field]: checked ? [...value[field], id] : value[field].filter((item) => item !== id),
       ...(field === "participant_ids" && !checked && value.participant_ids.length === 1 ? { enabled: false } : {}) }));
   const save = async () => {
@@ -40,9 +55,10 @@ export function WeeklyReportGroupDialog({ workspaceId, group, members, userGroup
     await client.cancelQueries({ queryKey: key });
     const previous = client.getQueryData<WeeklyReportGroup[]>(key);
     if (group) client.setQueryData<WeeklyReportGroup[]>(key, (items) => items?.map((item) => item.id === group.id
-      ? { ...item, ...draft, name: draft.name.trim() } : item));
+      ? { ...item, ...payload, name: draft.name.trim() } : item));
     try {
-      const saved = await saveWeeklyReportGroup(supabase!, workspaceId, draft);
+      assertPermissionReady(client, workspaceId, "weekly");
+      const saved = await saveWeeklyReportGroup(supabase!, workspaceId, payload);
       client.setQueryData<WeeklyReportGroup[]>(key, (items = []) => group
         ? items.map((item) => item.id === saved.id ? saved : item) : [...items, saved]);
       // Audience changes also affect cached reports belonging to this group.
@@ -65,27 +81,36 @@ export function WeeklyReportGroupDialog({ workspaceId, group, members, userGroup
           <Dialog.Description className="weekly-report-config-description">按组收集周报，独立配置填写人员、可见范围和每周提醒。</Dialog.Description>
           <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
             <div className="weekly-report-config-body">
-              {disabled && <p className="weekly-report-config-hint">当前配置只读，修改需要在线且拥有团队空间管理权限。</p>}
+              {disabled && <p className="weekly-report-config-hint">当前配置只读，创建需要在线且为团队空间成员，修改需要为周报组创建者、团队空间所有者或管理员。</p>}
               <h3><label htmlFor="weekly-report-group-name">组名</label></h3>
               <input id="weekly-report-group-name" autoFocus maxLength={100} placeholder="例如：研发周报" disabled={readOnly} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
               <h3>人员配置 <small>应填人员自动可查看组内已发布周报</small></h3>
-              <input aria-label="搜索应填人员" placeholder="搜索成员" disabled={readOnly} value={search} onChange={(event) => setSearch(event.target.value)} />
-              <div className="weekly-report-config-selection"><span>已选 {draft.participant_ids.length} 人</span>
-                <button type="button" disabled={readOnly} onClick={() => setDraft({ ...draft, participant_ids: members.map((item) => item.user_id) })}>全选</button>
-                <button type="button" disabled={readOnly} onClick={() => setDraft({ ...draft, participant_ids: [], enabled: false })}>清空</button></div>
-              <div className="weekly-report-config-members">{members.filter((member) => memberDisplayName(member).toLowerCase().includes(search.toLowerCase())).map((member) => <label key={member.user_id}>
+              <div className="weekly-report-participant-mode" role="radiogroup" aria-label="应填人员类型">
+                <label className="weekly-report-config-toggle"><input type="radio" name="participant-mode" disabled={readOnly} checked={!groupMode} onChange={() => { setDraft({ ...draft, participant_mode: "users" }); setSearch(""); }} />特定用户</label>
+                <label className="weekly-report-config-toggle"><input type="radio" name="participant-mode" disabled={readOnly} checked={groupMode} onChange={() => { setDraft({ ...draft, participant_mode: "groups" }); setSearch(""); }} />特定用户组</label>
+              </div>
+              <input aria-label={groupMode ? "搜索应填用户组" : "搜索应填人员"} placeholder={groupMode ? "搜索用户组" : "搜索成员"} disabled={readOnly} value={search} onChange={(event) => setSearch(event.target.value)} />
+              <div className="weekly-report-config-selection"><span>{groupMode ? `已选 ${selectedGroups.length} 个用户组，应填 ${participantIds.length} 人` : `已选 ${participantIds.length} 人`}</span>
+                <button type="button" disabled={readOnly} onClick={() => setDraft({ ...draft, ...(groupMode ? { participant_group_ids: availableGroups.map((item) => item.id) } : { participant_ids: members.map((item) => item.user_id) }) })}>全选</button>
+                <button type="button" disabled={readOnly} onClick={() => setDraft({ ...draft, ...(groupMode ? { participant_group_ids: [] } : { participant_ids: [] }), enabled: false })}>清空</button></div>
+              <div className="weekly-report-config-members">{groupMode ? filteredGroups.map((item) => <label key={item.id}>
+                <input type="checkbox" disabled={readOnly} checked={draft.participant_group_ids.includes(item.id)} onChange={(event) => toggle("participant_group_ids", item.id, event.target.checked)} />
+                <span>{item.name}</span></label>) : filteredMembers.map((member) => <label key={member.user_id}>
                 <input type="checkbox" disabled={readOnly} checked={draft.participant_ids.includes(member.user_id)} onChange={(event) => toggle("participant_ids", member.user_id, event.target.checked)} />
-                <MemberAvatar member={member} className="weekly-report-filter-avatar" /><span>{memberDisplayName(member)}</span></label>)}</div>
-              {!draft.participant_ids.length && <p className="weekly-report-config-hint">{group ? "无人可填写周报，保存后将关闭提醒并保留历史周报。" : "请选择至少一名应填人员。"}</p>}
+                <MemberAvatar member={member} className="weekly-report-filter-avatar" /><span>{memberDisplayName(member)}</span></label>)}
+                {!(groupMode ? filteredGroups.length : filteredMembers.length) && <p className="weekly-report-config-hint">{groupMode && !availableGroups.length ? "暂无用户组" : "无搜索结果"}</p>}
+              </div>
+              {groupMode && <p className="weekly-report-config-hint">应填人员随所选用户组成员自动更新，多个用户组的成员合并去重。</p>}
+              {!participantIds.length && <p className="weekly-report-config-hint">{groupMode && selectedGroups.length ? "当前暂无应填人员，成员加入后自动生效；提醒需手动开启。" : group ? "无人可填写周报，保存后将关闭提醒并保留历史周报。" : groupMode ? "请选择至少一个用户组。" : "请选择至少一名应填人员。"}</p>}
               <h3>可见范围</h3>
               <label className="weekly-report-config-toggle"><input type="radio" name="group-visibility" disabled={readOnly} checked={draft.visibility === "workspace"} onChange={() => setDraft({ ...draft, visibility: "workspace" })} />团队空间全员可见</label>
               <label className="weekly-report-config-toggle"><input type="radio" name="group-visibility" disabled={readOnly} checked={draft.visibility === "selected"} onChange={() => setDraft({ ...draft, visibility: "selected" })} />指定用户和用户组</label>
-              {draft.visibility === "selected" && <div className="weekly-report-group-audience"><p className="weekly-report-config-hint">应填人员和团队空间管理员自动可见。以下人员和用户组可查看，无需填写。</p>
+              {draft.visibility === "selected" && <div className="weekly-report-group-audience"><p className="weekly-report-config-hint">应填人员、周报组创建者和团队空间管理员自动可见。以下人员和用户组可查看，无需填写。</p>
                 <h4>用户</h4>{members.map((member) => <label className="weekly-report-config-toggle" key={member.user_id}><input type="checkbox" disabled={readOnly} checked={draft.viewer_user_ids.includes(member.user_id)} onChange={(event) => toggle("viewer_user_ids", member.user_id, event.target.checked)} /><MemberAvatar member={member} className="weekly-report-filter-avatar" />{memberDisplayName(member)}</label>)}
                 <h4>用户组</h4>{userGroups.length ? userGroups.map((item) => <label className="weekly-report-config-toggle" key={item.id}><input type="checkbox" disabled={readOnly} checked={draft.viewer_group_ids.includes(item.id)} onChange={(event) => toggle("viewer_group_ids", item.id, event.target.checked)} />{item.name}</label>) : <p className="weekly-report-config-hint">暂无用户组</p>}
               </div>}
               <h3>提醒配置</h3>
-              <label className="weekly-report-config-toggle"><input type="checkbox" disabled={readOnly || !draft.participant_ids.length} checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />开启每周提醒</label>
+              <label className="weekly-report-config-toggle"><input type="checkbox" disabled={readOnly || !participantIds.length} checked={reminderEnabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />开启每周提醒</label>
               <p className="weekly-report-config-hint">按北京时间重复，汇总本组当周周报。各通知群收到本组全员完成汇总后，本周停止提醒。</p>
               {draft.schedules.map((item, index) => <div className="weekly-report-config-time" key={index}>
                 <select aria-label={`提醒星期${index + 1}`} disabled={readOnly} value={item.day} onChange={(event) => setDraft({ ...draft, schedules: draft.schedules.map((entry, i) => i === index ? { ...entry, day: Number(event.target.value) } : entry) })}>{["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((day, i) => <option key={day} value={i + 1}>{day}</option>)}</select>

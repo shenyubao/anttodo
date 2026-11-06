@@ -10,6 +10,7 @@ import {
   MDXEditor,
   StrikeThroughSupSubToggles,
   applyBlockType$,
+  activeEditor$,
   headingsPlugin,
   imagePlugin,
   insertMarkdown$,
@@ -21,10 +22,12 @@ import {
   thematicBreakPlugin,
   toolbarPlugin,
   usePublisher,
+  useCellValue,
   type MDXEditorMethods,
 } from "@mdxeditor/editor";
 import "@mdxeditor/editor/style.css";
 import { format } from "date-fns";
+import { $createRangeSelection, $setSelection, type LexicalEditor } from "lexical";
 import {
   Clock3,
   Ellipsis,
@@ -55,7 +58,6 @@ import {
 import {
   caretClientRect,
   detectMentionQuery,
-  expandSelectionBackward,
   filterMentionCandidates,
   getPlainTextBeforeCaret,
   memberDisplayName,
@@ -103,6 +105,7 @@ type TaskRichTextEditorProps = {
   online: boolean;
   onImmersiveChange: (immersive: boolean) => void;
   onLoadMentionCandidates?: () => Promise<string[]>;
+  onSendMentionNotification?: (recipientId: string, requestId: string) => Promise<void>;
   onSave: (markdown: string, mentionedUserIds?: string[]) => Promise<void>;
   toolbarHost: HTMLElement | null;
   toolbarOpen: boolean;
@@ -120,6 +123,15 @@ type EditorToolbarProps = {
   attachmentsEnabled?: boolean;
   immersiveEnabled?: boolean;
 };
+
+function MentionEditorBridge({ onEditor }: { onEditor: (editor: LexicalEditor | null) => void }) {
+  const editor = useCellValue(activeEditor$);
+  useEffect(() => {
+    onEditor(editor);
+    return () => onEditor(null);
+  }, [editor, onEditor]);
+  return null;
+}
 
 function ImmersiveButton({
   immersive,
@@ -298,6 +310,7 @@ export const TaskRichTextEditor = forwardRef<
     online,
     onImmersiveChange,
     onLoadMentionCandidates,
+    onSendMentionNotification,
     onSave,
     toolbarHost,
     toolbarOpen,
@@ -329,6 +342,21 @@ export const TaskRichTextEditor = forwardRef<
   const [mentionMenuPos, setMentionMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [selectedMentionIds, setSelectedMentionIds] = useState<string[]>(initialMentionUserIds);
   const [mentionError, setMentionError] = useState("");
+  const mentionRangeRef = useRef<Range | null>(null);
+  const lexicalEditorRef = useRef<LexicalEditor | null>(null);
+  const setLexicalEditor = useCallback((editor: LexicalEditor | null) => {
+    lexicalEditorRef.current = editor;
+  }, []);
+  const notificationRef = useRef<{ recipientId: string; requestId: string } | null>(null);
+  const sendingNotificationRef = useRef(false);
+  const [notification, setNotification] = useState<{
+    recipientId: string;
+    requestId: string;
+    position: { top: number; left: number };
+  } | null>(null);
+  const [sendingNotification, setSendingNotification] = useState(false);
+  const [notificationError, setNotificationError] = useState("");
+  const [notificationStatus, setNotificationStatus] = useState("");
   const queueRef = useRef<SerialSaveQueue<string> | null>(null);
   const trackMentionsRef = useRef(Boolean(onLoadMentionCandidates && currentUserId));
 
@@ -361,6 +389,12 @@ export const TaskRichTextEditor = forwardRef<
     if (queueRef.current?.acceptExternal(initialMarkdown)) {
       setSelectedMentionIds(initialMentionUserIds);
       if (editorRef.current?.getMarkdown() !== initialMarkdown) editorRef.current?.setMarkdown(initialMarkdown);
+      const pending = notificationRef.current;
+      if (pending && !visibleMentionIds(initialMarkdown, initialMentionUserIds, membersRef.current).includes(pending.recipientId)) {
+        notificationRef.current = null;
+        setNotification(null);
+        setNotificationError("");
+      }
     }
   }, [initialMarkdown, initialMentionSignature]);
 
@@ -412,6 +446,8 @@ export const TaskRichTextEditor = forwardRef<
       return;
     }
     ensureCandidates();
+    const selection = window.getSelection();
+    if (selection?.rangeCount) mentionRangeRef.current = selection.getRangeAt(0).cloneRange();
     const rect = caretClientRect();
     if (rect) {
       setMentionMenuPos({ top: rect.bottom + 6, left: rect.left });
@@ -425,25 +461,123 @@ export const TaskRichTextEditor = forwardRef<
 
   const selectMention = useCallback((member: Member) => {
     const active = mentionUiRef.current.mention;
-    if (!active) return;
+    if (!active || !onlineRef.current) return;
+    const range = mentionRangeRef.current;
+    const content = rootRef.current?.querySelector<HTMLElement>(".rich-editor-content");
+    const editor = lexicalEditorRef.current;
+    if (!range || !editor || !content?.contains(range.startContainer)) return;
+    content.focus();
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range.cloneRange());
+    const anchor = caretClientRect();
     const insertion = `@${memberDisplayName(member)} `;
-    const replaced = expandSelectionBackward(active.query.length + 1);
-    if (replaced) {
-      document.execCommand("insertText", false, insertion);
-    } else {
-      editorRef.current?.insertMarkdown(insertion);
-    }
-    setSelectedMentionIds((current) => [...new Set([...current, member.user_id])]);
+    const nextIds = [...new Set([...selectedMentionIdsRef.current, member.user_id])];
+    selectedMentionIdsRef.current = nextIds;
+    setSelectedMentionIds(nextIds);
+    editor.update(() => {
+      const lexicalSelection = $createRangeSelection();
+      lexicalSelection.applyDOMRange(range);
+      $setSelection(lexicalSelection);
+      for (let i = 0; i < Array.from(active.query).length + 1; i += 1) {
+        lexicalSelection.modify("extend", true, "character");
+      }
+      lexicalSelection.insertText(insertion);
+    }, { discrete: true });
     setMention(null);
     setMentionMenuPos(null);
+    setNotificationError("");
+    setNotificationStatus("");
+    if (onSendMentionNotification && anchor) {
+      const next = {
+        recipientId: member.user_id,
+        requestId: crypto.randomUUID(),
+        position: { top: anchor.top - 42, left: anchor.left },
+      };
+      notificationRef.current = next;
+      setNotification(next);
+    }
+  }, [onSendMentionNotification]);
+
+  const dismissNotification = useCallback(() => {
+    notificationRef.current = null;
+    setNotification(null);
+    setNotificationError("");
   }, []);
+
+  useEffect(() => {
+    if (!online) {
+      dismissNotification();
+      setMention(null);
+      setMentionMenuPos(null);
+    }
+  }, [online, dismissNotification]);
+
+  useEffect(() => {
+    if (!notification) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".rich-editor-mention-notify")) return;
+      dismissNotification();
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismissNotification();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onEscape, true);
+    };
+  }, [notification, dismissNotification]);
+
+  async function sendMentionNotification() {
+    const pending = notificationRef.current;
+    if (!pending || !onSendMentionNotification || !onlineRef.current || sendingNotificationRef.current) return;
+    sendingNotificationRef.current = true;
+    setSendingNotification(true);
+    setNotificationError("");
+    try {
+      // Lexical publishes Markdown after the insertion event has completed.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const markdown = editorRef.current?.getMarkdown() ?? "";
+      if (!visibleMentionIds(markdown, selectedMentionIdsRef.current, membersRef.current).includes(pending.recipientId)) {
+        throw new Error("正文中已没有此提及");
+      }
+      queueRef.current?.schedule(markdown);
+      await queueRef.current?.flush();
+      if (!mountedRef.current || !onlineRef.current || notificationRef.current?.requestId !== pending.requestId) return;
+      await onSendMentionNotification(pending.recipientId, pending.requestId);
+      if (mountedRef.current && notificationRef.current?.requestId === pending.requestId) {
+        dismissNotification();
+        setNotificationStatus("已提交发送");
+      }
+    } catch (cause) {
+      if (mountedRef.current && notificationRef.current?.requestId === pending.requestId) {
+        setNotificationError(cause instanceof Error ? cause.message : "通知发送失败，请重试");
+      }
+    } finally {
+      sendingNotificationRef.current = false;
+      if (mountedRef.current) setSendingNotification(false);
+    }
+  }
 
   useEffect(() => {
     if (!mentionsEnabled) return;
     const root = rootRef.current;
     if (!root) return;
 
-    const onInput = () => syncMentionFromCaret();
+    const onInput = () => {
+      dismissNotification();
+      setNotificationStatus("");
+      syncMentionFromCaret();
+    };
+    const onBeforeInput = () => {
+      dismissNotification();
+      setNotificationStatus("");
+    };
     const onKeyDown = (event: KeyboardEvent) => {
       const ui = mentionUiRef.current;
       if (!ui.mention) return;
@@ -476,16 +610,18 @@ export const TaskRichTextEditor = forwardRef<
     };
 
     root.addEventListener("input", onInput);
+    root.addEventListener("beforeinput", onBeforeInput, true);
     root.addEventListener("keyup", onKeyUp);
     root.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("selectionchange", onSelectionChange);
     return () => {
       root.removeEventListener("input", onInput);
+      root.removeEventListener("beforeinput", onBeforeInput, true);
       root.removeEventListener("keyup", onKeyUp);
       root.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("selectionchange", onSelectionChange);
     };
-  }, [mentionsEnabled, selectMention, syncMentionFromCaret]);
+  }, [mentionsEnabled, selectMention, syncMentionFromCaret, dismissNotification]);
 
   useImperativeHandle(
     forwardedRef,
@@ -570,8 +706,9 @@ export const TaskRichTextEditor = forwardRef<
       thematicBreakPlugin(),
       markdownShortcutPlugin(),
       toolbarPlugin({
-        toolbarContents: () =>
-          toolbarHost && toolbarOpen
+        toolbarContents: () => <>
+          <MentionEditorBridge onEditor={setLexicalEditor} />
+          {toolbarHost && toolbarOpen
             ? createPortal(
                 <EditorToolbar
                   attachmentService={attachmentService}
@@ -584,7 +721,8 @@ export const TaskRichTextEditor = forwardRef<
                 />,
                 toolbarHost,
               )
-            : null,
+            : null}
+          </>,
       }),
     ],
     [
@@ -598,6 +736,7 @@ export const TaskRichTextEditor = forwardRef<
       toolbarOpen,
       uploadAttachment,
       uploadState.status,
+      setLexicalEditor,
     ],
   );
 
@@ -607,6 +746,20 @@ export const TaskRichTextEditor = forwardRef<
       : saveState.status === "error"
         ? saveState.error
         : null;
+
+  // Keep floating controls inside Radix's focus/pointer boundary. Dialogs may
+  // transform their content, so convert viewport coordinates to that host.
+  const mentionPortalHost = rootRef.current?.closest<HTMLElement>(".rich-editor-immersive, [role='dialog']") ?? document.body;
+  function floatingStyle(position: { top: number; left: number }, width: number, height: number) {
+    const left = Math.max(12, Math.min(position.left, window.innerWidth - width - 12));
+    const top = Math.max(12, Math.min(position.top, window.innerHeight - height - 12));
+    const bounds = mentionPortalHost === document.body ? null : mentionPortalHost.getBoundingClientRect();
+    return {
+      position: bounds ? "absolute" as const : "fixed" as const,
+      left: left - (bounds?.left ?? 0) + (bounds ? mentionPortalHost.scrollLeft : 0),
+      top: top - (bounds?.top ?? 0) + (bounds ? mentionPortalHost.scrollTop : 0),
+    };
+  }
 
   return (
     <div className="task-rich-editor" ref={rootRef}>
@@ -640,7 +793,7 @@ export const TaskRichTextEditor = forwardRef<
           className="comment-mention-menu rich-editor-mention-menu"
           role="listbox"
           aria-label="可引用成员"
-          style={{ top: mentionMenuPos.top, left: mentionMenuPos.left }}
+          style={floatingStyle(mentionMenuPos, Math.min(280, window.innerWidth - 24), 190)}
         >
           {candidates.map((member, index) => (
             <button
@@ -648,7 +801,7 @@ export const TaskRichTextEditor = forwardRef<
               type="button"
               role="option"
               aria-selected={index === activeCandidate}
-              onMouseDown={(event) => event.preventDefault()}
+              onPointerDown={(event) => event.preventDefault()}
               onClick={() => selectMention(member)}
             >
               <MemberAvatar member={member} className="comment-candidate-avatar" />
@@ -657,17 +810,36 @@ export const TaskRichTextEditor = forwardRef<
           ))}
           {candidateIds !== null && candidates.length === 0 && <p>没有匹配的成员</p>}
         </div>,
-        document.body,
+        mentionPortalHost,
+      )}
+      {notification && createPortal(
+        <div
+          className="rich-editor-mention-notify"
+          role="group"
+          aria-label="发送提及通知"
+          style={floatingStyle(notification.position, 160, 36)}
+        >
+          <span>发送通知</span>
+          <button
+            type="button"
+            disabled={!online || sendingNotification}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => void sendMentionNotification()}
+          >{sendingNotification ? "发送中…" : notificationError ? "重试" : "发送"}</button>
+          {notificationError && <span className="mention-notify-error" role="alert">{notificationError}</span>}
+        </div>,
+        mentionPortalHost,
       )}
       <div
         className={`rich-editor-status${error || mentionError ? " error" : ""}`}
         role="status"
         aria-live="polite"
       >
+        {notificationStatus && <span>{notificationStatus}</span>}
         {uploadState.status === "uploading" && "正在上传附件…"}
         {!error && !mentionError && uploadState.status !== "uploading" && saveState.status === "saving" &&
           "正在保存…"}
-        {!error && !mentionError && uploadState.status !== "uploading" && saveState.status === "saved" &&
+        {!notificationStatus && !error && !mentionError && uploadState.status !== "uploading" && saveState.status === "saved" &&
           "已保存"}
         {(error || mentionError) && (
           <>

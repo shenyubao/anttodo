@@ -193,6 +193,7 @@ async function confirmLink(deps: Dependencies, pending: PendingCreation, task: T
   const link = await deps.link(task.id, pending.target.keyResultId);
   pending.countKeys.clear();
   deps.rememberLocalChange?.("task_okr_links", [task.id]);
+  deps.queryClient.setQueryDefaults(taskOkrLinkKey(task.id), { meta: { workspaceId: deps.workspaceId } });
   deps.queryClient.setQueryData(taskOkrLinkKey(task.id), link);
   updateOkrLists(deps.queryClient, pending, task);
 }

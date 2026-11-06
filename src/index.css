@@ -11074,6 +11074,45 @@ html.dark .task-detail {
   left: auto;
 }
 
+.rich-editor-mention-notify {
+  z-index: 2401;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 1px solid rgb(25 25 25 / 14%);
+  border-radius: 4px;
+  background: #fff;
+  color: rgb(25 25 25 / 60%);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 12%);
+  font-size: 14px;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.rich-editor-mention-notify > button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #4772fa;
+  font: inherit;
+  cursor: pointer;
+}
+
+.rich-editor-mention-notify > button:disabled { opacity: .5; cursor: default; }
+.rich-editor-mention-notify > button:focus-visible { outline: 2px solid #4772fa; outline-offset: 2px; }
+.rich-editor-mention-notify .mention-notify-error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 6px 10px;
+  background: #fff;
+  color: #c43b3b;
+  white-space: normal;
+}
+
 .task-rich-editor {
   position: relative;
   margin: 7px 0 15px;
@@ -25074,3 +25113,33 @@ html.dark .weekly-report-group-dialog input, html.dark .weekly-report-group-dial
   .okr-editor-body > .okr-note-editor { margin: 12px 18px; }
 }
 .rich-editor-mention-menu { pointer-events: auto; }
+
+.permission-refresh-banner {
+  position: fixed;
+  z-index: 1000;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border: 1px solid rgba(25, 25, 25, .1);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .1);
+  font-size: 13px;
+}
+.permission-refresh-banner .button { flex-shrink: 0; }
+
+.weekly-report-participant-mode { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 8px; }
+
+.weekly-report-group-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.weekly-report-group-delete { color: #d14343; }
+.weekly-report-delete-group-dialog { width: min(420px, calc(100vw - 32px)); }
+.weekly-report-delete-group-dialog > h2 { margin: 0 0 12px; font-size: 16px; }
+.weekly-report-delete-group-dialog > p { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.weekly-report-delete-group-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.weekly-report-delete-group-dialog .button { min-width: 88px; }

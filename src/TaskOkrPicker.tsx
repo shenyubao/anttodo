@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { assertPermissionReady } from "./lib/permissionRefresh";
 import clsx from "clsx";
 import { Check, ChevronDown, ChevronRight, Link2Off, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -62,6 +63,7 @@ export function TaskOkrPicker({
   });
   const linksQuery = useQuery({
     queryKey: ["task-okr-link-ids", ...taskIds],
+    meta: { workspaceId },
     queryFn: () => loadTaskOkrLinkIds(supabase!, taskIds),
     enabled: backendAvailable && open && taskIds.length > 0,
   });
@@ -161,6 +163,7 @@ export function TaskOkrPicker({
         queryClient.setQueryData(listKey, sortLinkedTasks(next));
       }
       try {
+        assertPermissionReady(queryClient, workspaceId, "okr");
         const saved = await setTaskOkrLink(supabase!, task.id, draft);
         queryClient.setQueryData(key, saved);
       } catch (cause) {

@@ -16,7 +16,7 @@ import type {
 import { nextOkrPosition, publishOkrErrorMessage } from "./okr";
 
 function assertNoError(error: { message: string } | null) {
-  if (error) throw new Error(error.message);
+  if (error) throw Object.assign(new Error(error.message), error);
 }
 
 export function taskOkrLinkKey(taskId: string) {

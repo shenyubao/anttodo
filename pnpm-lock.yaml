@@ -83,6 +83,9 @@ importers:
       idb-keyval:
         specifier: 6.3.0
         version: 6.3.0
+      lexical:
+        specifier: 0.48.0
+        version: 0.48.0(typescript@7.0.2)
       lucide-react:
         specifier: 1.26.0
         version: 1.26.0(react@19.2.8)

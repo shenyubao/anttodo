@@ -23,6 +23,7 @@ export const TASK_DETAIL_DISMISS_IGNORE_SELECTOR = [
   ".task-group-quick-add",
   ".task-hours-dialog",
   ".comment-mention-menu",
+  ".rich-editor-mention-notify",
   ".task-title-token-menu",
   ".toast",
   "[data-radix-dialog-content]",

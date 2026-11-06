@@ -5,7 +5,10 @@ import { createDemoBundle } from "./demo";
 import { createOptimisticTask } from "./taskCache";
 import { submitTaskCreation } from "./taskCreation";
 import { okrLinkedTaskCountsKey } from "./okrApi";
-import type { Task, WorkspaceBundle } from "../types";
+import type { Task, WeeklyReport, WeeklyReportGroup, WorkspaceBundle } from "../types";
+import { clearDeletedWeeklyReportGroupCache, createDemoWeeklyReportGroups, normalizeWeeklyReportGroup, weeklyReportGroupsKey } from "./weeklyReportGroupsApi";
+import { weeklyReportDetailKey, weeklyReportsKey } from "./weeklyReportsApi";
+import { requestPermissionRefresh } from "./permissionRefresh";
 
 const storage = vi.hoisted(() => new Map<string, string>());
 vi.mock("idb-keyval", () => ({
@@ -13,7 +16,47 @@ vi.mock("idb-keyval", () => ({
   set: async (key: string, value: string) => { storage.set(key, value); },
   del: async (key: string) => { storage.delete(key); },
 }));
-afterEach(() => storage.clear());
+afterEach(() => { storage.clear(); vi.unstubAllGlobals(); });
+
+it("rejects a stale disk snapshot after a restart before the asynchronous purge finished", async () => {
+  const markers = new Map<string, string>();
+  vi.stubGlobal("window", { localStorage: {
+    getItem: (key: string) => markers.get(key) ?? null,
+    setItem: (key: string, value: string) => markers.set(key, value),
+    removeItem: (key: string) => markers.delete(key),
+  } });
+  const client = new QueryClient();
+  client.setQueryData(["workspace-bundle", "team"], createDemoBundle());
+  const persister = createQueryPersister("restart-test", client);
+  await persister.persistClient({ timestamp: Date.now(), buster: "same", clientState: dehydrate(client) });
+  const oldDisk = storage.get("ANTTODO_QUERY_CACHE:restart-test")!;
+  requestPermissionRefresh(client, "team");
+  expect(markers.has("ANTTODO_QUERY_CACHE:restart-test:pending-permissions")).toBe(true);
+  // Simulate termination before the new IndexedDB transaction committed.
+  storage.set("ANTTODO_QUERY_CACHE:restart-test", oldDisk);
+  const restarted = new QueryClient();
+  const snapshot = await createQueryPersister("restart-test", restarted).restoreClient();
+  expect(snapshot?.clientState.queries).toEqual([]);
+  expect(client.getQueryData(["workspace-bundle", "team"])).toBeDefined();
+  client.clear(); restarted.clear();
+});
+
+it("removes unverified permission snapshots from IDB while retaining readable in-memory content", async () => {
+  const client = new QueryClient();
+  const key = ["workspace-bundle", "team"];
+  client.setQueryData(key, { ...createDemoBundle(), private: "old permissions" });
+  client.setQueryData(["workspace-bundle", "other-team"], { ...createDemoBundle(), title: "other" });
+  client.setQueryData(["date-time-preferences", "user"], { weekStartsOn: 1 });
+  const persister = createQueryPersister("access-test", client);
+  await persister.persistClient({ timestamp: Date.now(), buster: "same", clientState: dehydrate(client) });
+  requestPermissionRefresh(client, "team");
+  const snapshot = await persister.restoreClient();
+  expect(snapshot?.clientState.queries.map((query) => query.queryKey)).not.toContainEqual(key);
+  expect(snapshot?.clientState.queries).toHaveLength(2);
+  expect(client.getQueryData(key)).toEqual({ ...createDemoBundle(), private: "old permissions" });
+  expect(snapshot?.buster).toBe("same");
+  client.clear();
+});
 
 it("preserves legacy offline caches and preferences while removing unfinished task rows", async () => {
   const client = new QueryClient();
@@ -69,4 +112,43 @@ it("round-trips confirmed data while excluding pending writes from offline start
   await request;
   client.clear();
   restored.clear();
+});
+
+it("never restores deleted weekly groups or their report snapshots offline", async () => {
+  const client = new QueryClient();
+  const group = createDemoWeeklyReportGroups("team", ["user"])[0];
+  const sibling = { ...group, id: "keep-group", is_default: false };
+  const report = { id: "deleted-report", workspace_id: "team", weekly_report_group_id: group.id } as WeeklyReport;
+  const feedKey = weeklyReportsKey("team", "2026-11-02", group.id);
+  const detailKey = weeklyReportDetailKey("team", report.id);
+  client.setQueryData(weeklyReportGroupsKey("team"), [group, sibling]);
+  client.setQueryData(feedKey, [report]); client.setQueryData(detailKey, report);
+  const persister = createQueryPersister("deleted-weekly-group", client);
+  await persister.persistClient({ timestamp: Date.now(), buster: "same", clientState: dehydrate(client) });
+  await clearDeletedWeeklyReportGroupCache(client, "team", group.id);
+  await persister.persistClient({ timestamp: Date.now(), buster: "same", clientState: dehydrate(client) });
+  const snapshot = await persister.restoreClient();
+  const restored = new QueryClient(); hydrate(restored, snapshot!.clientState);
+  expect(restored.getQueryData(weeklyReportGroupsKey("team"))).toEqual([sibling]);
+  expect(restored.getQueryData(feedKey)).toBeUndefined();
+  expect(restored.getQueryData(detailKey)).toBeUndefined();
+  client.clear(); restored.clear();
+});
+
+it("restores creator attribution and safely reads legacy group snapshots", async () => {
+  const client = new QueryClient();
+  const key = weeklyReportGroupsKey("team");
+  const created = { ...createDemoWeeklyReportGroups("team", ["writer"])[0], created_by: "creator" };
+  const legacy = { ...created, id: "legacy" } as Partial<WeeklyReportGroup>;
+  delete legacy.created_by;
+  client.setQueryData(key, [created, legacy]);
+  const persister = createQueryPersister("weekly-creators", client);
+  await persister.persistClient({ timestamp: Date.now(), buster: "same", clientState: dehydrate(client) });
+  const restored = new QueryClient();
+  hydrate(restored, (await persister.restoreClient())!.clientState);
+  const groups = restored.getQueryData<WeeklyReportGroup[]>(key)!.map(normalizeWeeklyReportGroup);
+  expect(groups[0].created_by).toBe("creator");
+  expect(groups[1].created_by).toBeNull();
+  expect(groups[1].participant_ids).toEqual(["writer"]);
+  client.clear(); restored.clear();
 });

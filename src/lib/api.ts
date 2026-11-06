@@ -211,7 +211,7 @@ function normalizeTaskRows(rows: TaskRow[]): Task[] {
 
 function assertNoError(error: { message: string } | null) {
   if (!error) return;
-  throw new Error(mapLabelTaskLimitError(error.message) ?? error.message);
+  throw Object.assign(new Error(mapLabelTaskLimitError(error.message) ?? error.message), { code: (error as { code?: string }).code });
 }
 
 function labelAccessRpcParams(draft: LabelAccessDraft) {
@@ -349,6 +349,20 @@ export async function updateTaskDescription(
   });
   assertNoError(error);
   return data as Task;
+}
+
+export async function sendTaskDescriptionMentionNotification(
+  client: SupabaseClient,
+  input: { taskId: string; recipientId: string; requestId: string },
+) {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) throw new Error("离线时无法发送通知");
+  const { data, error } = await client.rpc("send_task_description_mention_notification", {
+    p_task_id: input.taskId,
+    p_recipient_id: input.recipientId,
+    p_request_id: input.requestId,
+  });
+  assertNoError(error);
+  return data as string;
 }
 
 export async function createTaskComment(

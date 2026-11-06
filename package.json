@@ -1,6 +1,6 @@
 {
   "name": "anttodo",
-  "version": "1.0.202610241903",
+  "version": "1.0.202611052144",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -89,6 +89,7 @@
     "date-fns": "4.4.0",
     "electron-updater": "6.6.2",
     "idb-keyval": "6.3.0",
+    "lexical": "0.48.0",
     "lucide-react": "1.26.0",
     "node-html-markdown": "2.0.0",
     "node-pty": "1.1.0",

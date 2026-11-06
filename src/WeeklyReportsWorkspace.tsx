@@ -1,6 +1,8 @@
+import { assertPermissionReady, requestPermissionRefresh } from "./lib/permissionRefresh";
+import { usePermissionRefresh } from "./lib/usePermissionRefresh";
 import * as Dialog from "@radix-ui/react-dialog";
 import { WeeklyReportGroupDialog } from "./WeeklyReportGroupDialog";
-import { createDemoWeeklyReportGroups, useWeeklyReportGroups, weeklyReportGroupsKey } from "./lib/weeklyReportGroupsApi";
+import { clearDeletedWeeklyReportGroupCache, deleteWeeklyReportGroup, createDemoWeeklyReportGroups, useWeeklyReportGroups, weeklyReportGroupsKey } from "./lib/weeklyReportGroupsApi";
 import { WeeklyReportNotificationGroupDialog } from "./WeeklyReportNotificationGroupDialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
@@ -66,6 +68,7 @@ import type {
   NoticeHandler,
   Task,
   UserGroup,
+  UserGroupMember,
   WeeklyReport,
   WeeklyReportGroup,
   WeeklyReportNotificationGroup,
@@ -80,6 +83,7 @@ type WeeklyReportsProps = {
   currentUserId: string;
   members: Member[];
   userGroups: UserGroup[];
+  userGroupMembers?: UserGroupMember[];
   labels: Label[];
   tasks: Task[];
   online: boolean;
@@ -91,7 +95,9 @@ type WeeklyReportsProps = {
 };
 type WeeklyReportNavigationGuard = { dirty: boolean; busy: boolean; save: () => Promise<boolean> };
 
-export function WeeklyReportsWorkspace(props: WeeklyReportsProps) {
+export function WeeklyReportsWorkspace(sourceProps: WeeklyReportsProps) {
+  const accessStatus = usePermissionRefresh(sourceProps.workspaceId, "weekly");
+  const props = { ...sourceProps, online: sourceProps.online && accessStatus === "ready" };
   const { workspaceId, currentUserId, members, userGroups, route, onNavigate, online, demoMode } = props;
   const queryClient = useQueryClient();
   const query = useWeeklyReportGroups(workspaceId, demoMode);
@@ -113,11 +119,32 @@ export function WeeklyReportsWorkspace(props: WeeklyReportsProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [weekStart, setWeekStart] = useState(() => weeklyReportWeekStart());
   const [dialog, setDialog] = useState<"new" | "edit" | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WeeklyReportGroup | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const guard = useRef<WeeklyReportNavigationGuard | null>(null);
   const [pendingRoute, setPendingRoute] = useState<WeeklyReportsRoute | null>(null);
   const [savingBeforeLeave, setSavingBeforeLeave] = useState(false);
-  const role = members.find((member) => member.user_id === currentUserId)?.role;
-  const canManage = role === "owner" || role === "admin";
+  const role = members.find((member) => member.workspace_id === workspaceId && member.user_id === currentUserId)?.role;
+  const canCreate = Boolean(role);
+  const canManage = canCreate && (role === "owner" || role === "admin" || group?.created_by === currentUserId);
+  const deleteDisabled = !canManage || !online || demoMode || query.isError || deletingGroup || !supabase;
+  const removeGroup = async () => {
+    if (deleteDisabled || !deleteTarget) return;
+    setDeletingGroup(true); setDeleteError("");
+    try {
+      assertPermissionReady(queryClient, workspaceId, "weekly");
+      await deleteWeeklyReportGroup(supabase!, workspaceId, deleteTarget.id);
+      await clearDeletedWeeklyReportGroupCache(queryClient, workspaceId, deleteTarget.id);
+      const remaining = queryClient.getQueryData<WeeklyReportGroup[]>(weeklyReportGroupsKey(workspaceId)) ?? [];
+      const next = remaining.find((item) => item.is_default) ?? remaining[0];
+      setDeleteTarget(null); setSearch("");
+      onNavigate({ workspaceId, kind: "weekly_reports", ...(next ? { groupId: next.id } : {}) }, true);
+      props.onNotice("周报组及组内周报已永久删除");
+    } catch (cause) {
+      setDeleteError(cause instanceof Error ? cause.message : "删除周报组失败，请重试");
+    } finally { setDeletingGroup(false); }
+  };
   const selectGroup = (next: WeeklyReportsRoute) => {
     if (guard.current?.busy) return;
     if (guard.current?.dirty) { setPendingRoute(next); return; }
@@ -125,14 +152,7 @@ export function WeeklyReportsWorkspace(props: WeeklyReportsProps) {
   };
   useEffect(() => {
     if (!supabase || demoMode) return;
-    const refreshAccess = () => {
-      // The workspace-level revision also reaches clients whose group access was revoked.
-      queryClient.removeQueries({ queryKey: ["weekly-reports", workspaceId], type: "inactive" });
-      queryClient.removeQueries({ queryKey: ["weekly-report", workspaceId], type: "inactive" });
-      void queryClient.invalidateQueries({ queryKey: weeklyReportGroupsKey(workspaceId) });
-      void queryClient.invalidateQueries({ queryKey: ["weekly-reports", workspaceId] });
-      void queryClient.invalidateQueries({ queryKey: ["weekly-report", workspaceId] });
-    };
+    const refreshAccess = () => requestPermissionRefresh(queryClient, workspaceId, "weekly");
     const channel = supabase.channel(`weekly-report-group-access:${workspaceId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "weekly_report_groups", filter: `workspace_id=eq.${workspaceId}` }, refreshAccess)
       .on("postgres_changes", { event: "*", schema: "public", table: "weekly_report_access_revisions", filter: `workspace_id=eq.${workspaceId}` }, refreshAccess)
@@ -140,7 +160,7 @@ export function WeeklyReportsWorkspace(props: WeeklyReportsProps) {
     return () => { void supabase!.removeChannel(channel); };
   }, [workspaceId, demoMode, queryClient]);
   useEffect(() => {
-    if (!online || demoMode || !query.isSuccess || query.isFetching) return;
+    if (!sourceProps.online || demoMode || !query.isSuccess || query.isFetching) return;
     const allowed = new Map((query.data ?? []).map((item) => [item.id, item]));
     for (const cached of queryClient.getQueryCache().findAll({ queryKey: ["weekly-reports", workspaceId] })) {
       const scope = allowed.get(String(cached.queryKey[3]));
@@ -166,18 +186,28 @@ export function WeeklyReportsWorkspace(props: WeeklyReportsProps) {
     <button className={clsx("sidebar-scrim", mobileOpen && "visible")} type="button" aria-label="关闭周报组列表" onClick={() => setMobileOpen(false)} />
     <aside className={clsx("weekly-report-group-sidebar", mobileOpen && "mobile-open")} aria-label="周报组">
       <div className="okr-member-search"><Search aria-hidden="true" /><input aria-label="搜索周报组" placeholder="搜索周报组" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
-      <div className="weekly-report-group-caption"><span>周报组</span>{canManage && <button type="button" aria-label="新建周报组" title="新建周报组" disabled={!online || demoMode || query.isError} onClick={() => setDialog("new")}><Plus /></button>}</div>
+      <div className="weekly-report-group-caption"><span>周报组</span>{canCreate && <button type="button" aria-label="新建周报组" title="新建周报组" disabled={!online || demoMode || query.isError} onClick={() => setDialog("new")}><Plus /></button>}</div>
       <div className="weekly-report-group-list">{groups.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item) => <button type="button" key={item.id} className={clsx("weekly-report-group-row", item.id === selectedId && "active")} aria-current={item.id === selectedId ? "page" : undefined} onClick={() => selectGroup({ workspaceId, kind: "weekly_reports", groupId: item.id })}><Users /><span>{item.name}</span></button>)}</div>
       {query.isLoading && !demoMode ? <p className="okr-sidebar-empty">正在读取周报组…</p> : query.isError ? <p role="alert" className="okr-sidebar-empty">周报组加载失败<button type="button" className="button secondary" onClick={() => void query.refetch()}>重新加载</button></p> : !groups.length ? <p className="okr-sidebar-empty">暂无可查看的周报组</p> : groups.every((item) => !item.name.toLowerCase().includes(search.toLowerCase())) && <p className="okr-sidebar-empty">没有匹配的周报组</p>}
-      {canManage && <button type="button" className="weekly-report-group-add" disabled={!online || demoMode || query.isError} onClick={() => setDialog("new")}><Plus />新建周报组</button>}
+      {canCreate && <button type="button" className="weekly-report-group-add" disabled={!online || demoMode || query.isError} onClick={() => setDialog("new")}><Plus />新建周报组</button>}
     </aside>
     <div className="weekly-report-group-main">
       <div className="weekly-report-mobile-toolbar"><button type="button" className="button secondary" aria-label="打开导航" onClick={props.onMenu}><Menu /></button><button type="button" className="button secondary" onClick={() => setMobileOpen(true)}><Users />{group?.name ?? "周报组"}<ChevronDown /></button></div>
       {group ? <WeeklyReportGroupWorkspace {...props} key={group.id} group={group} groupError={query.isError}
-        navigationGuard={guard} weekStart={weekStart} onWeekChange={setWeekStart} configuration={<button type="button" className="weekly-report-config-button" onClick={() => setDialog("edit")}><Settings />周报组配置</button>} />
-        : <div className="weekly-reports-workspace"><WeeklyReportEmpty icon={query.isLoading || detail.isLoading ? "loading" : "error"} text={query.isLoading || detail.isLoading ? "正在读取周报组…" : query.isError ? "周报组加载失败，请重试" : "周报组不存在或你无权查看"} /></div>}
+        navigationGuard={guard} weekStart={weekStart} onWeekChange={setWeekStart} configuration={<div className="weekly-report-group-actions"><button type="button" className="weekly-report-config-button" onClick={() => setDialog("edit")}><Settings />周报组配置</button>
+          {canManage && <button type="button" className="weekly-report-config-button weekly-report-group-delete" disabled={deleteDisabled} onClick={() => { setDeleteError(""); setDeleteTarget(group); }}><Trash2 />删除周报组</button>}</div>} />
+        : <div className="weekly-reports-workspace"><WeeklyReportEmpty icon={query.isLoading || detail.isLoading ? "loading" : "error"} text={query.isLoading || detail.isLoading ? "正在读取周报组…" : query.isError ? "周报组加载失败，请重试" : !groups.length ? "暂无可查看的周报组" : "周报组不存在或你无权查看"} /></div>}
     </div>
-    {dialog && (dialog === "new" || group) && <WeeklyReportGroupDialog key={dialog === "new" ? "new" : group!.id} workspaceId={workspaceId} group={dialog === "edit" ? group! : null} members={members} userGroups={userGroups} online={online} demoMode={demoMode} disabled={!online || demoMode || !canManage || query.isError} onClose={() => setDialog(null)} onSaved={(saved) => { setDialog(null); if (dialog === "new") selectGroup({ workspaceId, kind: "weekly_reports", groupId: saved.id }); }} onNotice={props.onNotice} />}
+    {dialog && (dialog === "new" || group) && <WeeklyReportGroupDialog key={dialog === "new" ? "new" : group!.id} workspaceId={workspaceId} group={dialog === "edit" ? group! : null} members={members} userGroups={userGroups} userGroupMembers={props.userGroupMembers} online={online} demoMode={demoMode} disabled={!online || demoMode || !(dialog === "new" ? canCreate : canManage) || query.isError} onClose={() => setDialog(null)} onSaved={(saved) => { setDialog(null); if (dialog === "new") selectGroup({ workspaceId, kind: "weekly_reports", groupId: saved.id }); }} onNotice={props.onNotice} />}
+    <Dialog.Root open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open && !deletingGroup) setDeleteTarget(null); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" />
+      <Dialog.Content className="dialog-content weekly-report-delete-group-dialog" onEscapeKeyDown={(event) => { if (deletingGroup) event.preventDefault(); }} onPointerDownOutside={(event) => { if (deletingGroup) event.preventDefault(); }}>
+        <Dialog.Title>删除周报组</Dialog.Title>
+        <Dialog.Description>确定永久删除周报组“{deleteTarget?.name}”吗？组内所有周报（包括草稿）、周报权限配置和提醒记录将一并删除，此操作无法撤销。</Dialog.Description>
+        {deleteError && <p role="alert">{deleteError}</p>}
+        <div className="dialog-actions"><Dialog.Close asChild><button type="button" className="button secondary" disabled={deletingGroup}>取消</button></Dialog.Close>
+          <button type="button" className="button danger" disabled={deleteDisabled} onClick={() => void removeGroup()}>{deletingGroup ? "删除中…" : "永久删除"}</button></div>
+      </Dialog.Content>
+    </Dialog.Portal></Dialog.Root>
     <Dialog.Root open={Boolean(pendingRoute)} onOpenChange={(open) => { if (!open && !savingBeforeLeave) setPendingRoute(null); }}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content weekly-report-leave-dialog"><Dialog.Title>有尚未保存的周报</Dialog.Title><Dialog.Description>切换周报组前，可以保存当前内容或放弃修改。</Dialog.Description><div className="dialog-actions"><button type="button" className="button secondary" disabled={savingBeforeLeave} onClick={() => setPendingRoute(null)}>继续编辑</button><button type="button" className="button secondary" disabled={savingBeforeLeave} onClick={() => { const next = pendingRoute; setPendingRoute(null); setMobileOpen(false); if (next) onNavigate(next); }}>放弃修改</button><button type="button" className="button primary" disabled={savingBeforeLeave || !online || demoMode || !group?.participant_ids.includes(currentUserId) || query.isError} onClick={async () => { setSavingBeforeLeave(true); try { if (await guard.current?.save()) { const next = pendingRoute; setPendingRoute(null); setMobileOpen(false); if (next) onNavigate(next); } } finally { setSavingBeforeLeave(false); } }}>{savingBeforeLeave ? "保存中…" : "保存并切换"}</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>;
 }
@@ -235,7 +265,7 @@ function WeeklyReportGroupWorkspace({
       }, invalidate)
       .on("postgres_changes", {
         event: "*", schema: "public", table: "weekly_report_access_revisions", filter: `workspace_id=eq.${workspaceId}`,
-      }, invalidate)
+      }, () => requestPermissionRefresh(queryClient, workspaceId, "weekly"))
       .on("postgres_changes", {
         event: "*", schema: "public", table: "weekly_report_notification_groups", filter: `workspace_id=eq.${workspaceId}`,
       }, invalidateNotificationGroups)
@@ -538,6 +568,7 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
     const previous = queryClient.getQueryData<WeeklyReport[]>(listKey);
     queryClient.setQueryData<WeeklyReport[]>(listKey, (items) => items?.filter((item) => item.id !== report.id));
     try {
+      assertPermissionReady(queryClient, report.workspace_id, "weekly");
       await deleteWeeklyReport(supabase!, report.id);
       queryClient.removeQueries({ queryKey: weeklyReportDetailKey(report.workspace_id, report.id) });
       onNotice("周报已删除");
@@ -576,6 +607,7 @@ function WeeklyReportViewer({ report, member, isAuthor, readOnly, onBack, onEdit
       items?.map((item) => item.id === report.id ? optimistic : item));
     queryClient.setQueryData(detailKey, optimistic);
     try {
+      assertPermissionReady(queryClient, report.workspace_id, "weekly");
       const saved = await saveWeeklyReport(supabase!, {
         id: report.id,
         workspaceId: report.workspace_id,
@@ -843,6 +875,7 @@ function WeeklyReportEditor({
       queryClient.setQueryData(detailKey!, optimistic);
     }
     try {
+      assertPermissionReady(queryClient, workspaceId, "weekly");
       const saved = await saveWeeklyReport(supabase!, {
         id: report?.id,
         workspaceId,

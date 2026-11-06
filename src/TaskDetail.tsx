@@ -209,6 +209,7 @@ export type TaskDetailProps = {
   onLoadActivity: (cursor?: TaskActivityPage["nextCursor"]) => Promise<TaskActivityPage>;
   onLoadComments: (taskId: string) => Promise<TaskComment[]>;
   onLoadCommentCandidates: () => Promise<string[]>;
+  onSendMentionNotification?: (recipientId: string, requestId: string) => Promise<void>;
   onCreateComment: (
     taskId: string,
     input: CreateCommentInput,
@@ -1531,6 +1532,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   onLoadActivity,
   onLoadComments,
   onLoadCommentCandidates,
+  onSendMentionNotification,
   onCreateComment,
   onUpdateComment,
   onDeleteComment,
@@ -1609,6 +1611,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
   const backendAvailable = Boolean(supabase) && !demoMode;
   const okrLinkQuery = useQuery({
     queryKey: taskOkrLinkKey(task.id),
+    meta: { workspaceId: task.workspace_id },
     queryFn: () => loadTaskOkrLink(supabase!, task.id),
     enabled: backendAvailable && task.kind !== "note",
   });
@@ -1649,6 +1652,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
       if (current) queryClient.setQueryData(listKey, current.filter((item) => item.task_id !== task.id));
     }
     try {
+      assertPermissionReady(queryClient, task.workspace_id, "workspace");
       await setTaskOkrLink(supabase!, task.id, null);
       await queryClient.invalidateQueries({ queryKey: ["okr-linked-task-counts", task.workspace_id] });
       await queryClient.invalidateQueries({ queryKey: ["okr-linked-tasks", task.workspace_id] });
@@ -2325,6 +2329,7 @@ const TaskDetailContent = forwardRef<TaskDetailContentHandle, TaskDetailProps & 
           online={writable}
           onImmersiveChange={setImmersive}
           onLoadMentionCandidates={onLoadCommentCandidates}
+          onSendMentionNotification={onSendMentionNotification}
           onSave={(description, mentionedUserIds) =>
             onUpdate(
               { description },
@@ -2997,7 +3002,7 @@ export function TaskDetailDialog(props: TaskDetailProps & {
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             if (document.querySelector(
-              ".due-popover, .priority-menu, .task-more-menu, .ai-smart-process-menu, .ai-childTask-suggest-panel, .ai-format-suggest-panel, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open]",
+              ".due-popover, .priority-menu, .task-more-menu, .ai-smart-process-menu, .ai-childTask-suggest-panel, .ai-format-suggest-panel, .task-detail-dialog .task-assignee-menu, .task-detail-dialog .task-label-menu, .task-detail-dialog .task-activity, .task-detail-dialog .rich-editor-immersive, .task-detail-dialog .rich-toolbar-more[open], .task-detail-dialog .rich-editor-mention-menu, .task-detail-dialog .rich-editor-mention-notify",
             )) return;
             void contentRef.current?.close();
           }}
@@ -3032,3 +3037,4 @@ export function TaskDetailDialog(props: TaskDetailProps & {
     </Dialog.Root>
   );
 }
+import { assertPermissionReady } from "./lib/permissionRefresh";

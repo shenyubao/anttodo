@@ -6,7 +6,7 @@ import type {
 } from "../types";
 
 function assertNoError(error: { message: string } | null) {
-  if (error) throw new Error(error.message);
+  if (error) throw Object.assign(new Error(error.message), error);
 }
 
 type WeeklyReportRow = Omit<WeeklyReport,

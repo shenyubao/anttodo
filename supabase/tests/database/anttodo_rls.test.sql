@@ -1807,7 +1807,7 @@ select lives_ok(
 reset role;
 select ok(
   anttodo_private.force_flush_notification_dispatch_buffer() >= 0,
-  'flush buffered description mention notification'
+  'flushing the buffer does not notify silent description mentions'
 );
 select is(
   (
@@ -1828,8 +1828,8 @@ select is(
       and notification_type = 'todo_mentioned'
       and coalesce(payload->>'source', '') = 'description'
   ),
-  1,
-  'new description mentions create 待办-被提及 notifications'
+  0,
+  'saving description mentions does not create notifications'
 );
 
 select * from finish();

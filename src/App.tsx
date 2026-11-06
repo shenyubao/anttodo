@@ -1,3 +1,7 @@
+import { PermissionRefreshBanner } from "./PermissionRefreshBanner";
+import { applySavedUserGroup, saveUserGroup, type UserGroupSnapshot } from "./lib/userGroupsApi";
+import { assertPermissionReady, beginUserGroupSave, readAfterUserGroupSaves, requestPermissionRefresh, requestUserGroupsRefresh, retryPermissionRefresh } from "./lib/permissionRefresh";
+import { usePermissionRefresh } from "./lib/usePermissionRefresh";
 import { notificationOkrRoute } from "./lib/notificationCopy";
 import { SortableTaskTree } from "./SortableTaskTree";
 import { NoticeToast, useNotice } from "./NoticeToast";
@@ -210,6 +214,7 @@ import {
   toggleTaskLabel as toggleTaskLabelApi,
   toggleTaskParticipant as toggleTaskParticipantApi,
   updateTaskDescription as updateTaskDescriptionApi,
+  sendTaskDescriptionMentionNotification,
   updateTaskSection,
   updateTaskComment as updateTaskCommentApi,
   updateLabelWithAccess as updateLabelWithAccessApi,
@@ -2275,6 +2280,15 @@ function RemoteApplication({
   const [tasksHasMore, setTasksHasMore] = useState(false);
   const [tasksLoadingMore, setTasksLoadingMore] = useState(false);
   const taskCreation = useCreateTask({ client, workspaceId, userId, online, rememberLocalChange: rememberLocalRealtimeChanges });
+  useEffect(() => {
+    if (!workspaceId) return;
+    const retry = () => { if (navigator.onLine) retryPermissionRefresh(queryClient, workspaceId); };
+    retry();
+    window.addEventListener("online", retry);
+    window.addEventListener("focus", retry);
+    return () => { window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
+  }, [queryClient, workspaceId]);
+
 
   useEffect(() => {
     if (workspaceId) {
@@ -2368,7 +2382,7 @@ function RemoteApplication({
 
   const bundleQuery = useQuery({
     queryKey: ["workspace-bundle", workspaceId],
-    queryFn: ({ signal }) => readAfterTaskCreations(queryClient, workspaceId!, () => loadWorkspaceBundle(client, workspaceId!), signal),
+    queryFn: ({ signal }) => readAfterTaskCreations(queryClient, workspaceId!, () => readAfterUserGroupSaves(queryClient, workspaceId!, () => loadWorkspaceBundle(client, workspaceId!), signal), signal),
     enabled: Boolean(workspaceId),
     select: normalizeWorkspaceBundle,
   });
@@ -2555,6 +2569,8 @@ function RemoteApplication({
         { event: "*", schema: "public" },
         (payload) => {
           const table = (payload as { table?: string }).table;
+          const changedWorkspace = (payload.new as { workspace_id?: string } | undefined)?.workspace_id;
+          if (changedWorkspace && changedWorkspace !== workspaceId) return;
           if (table === "attachment_cleanup_queue") return;
           if (table === "task_comments") {
             setCommentsRevision((value) => value + 1);
@@ -2570,8 +2586,23 @@ function RemoteApplication({
             void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
             return;
           }
-          if (table === "okr_access_revisions" || table === "user_group_members" || table === "workspace_members") {
-            void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
+          if (table === "user_groups") {
+            requestUserGroupsRefresh(queryClient, workspaceId, async () => {
+              const { data, error } = await client.from("user_groups").select("*")
+                .eq("workspace_id", workspaceId).order("created_at");
+              if (error) throw error;
+              return data as UserGroup[];
+            });
+            if (payload.eventType === "DELETE") requestPermissionRefresh(queryClient, workspaceId);
+            return;
+          }
+          if (table === "user_group_members" || table === "workspace_members") {
+            requestPermissionRefresh(queryClient, workspaceId);
+            return;
+          }
+          if (table === "okr_access_revisions" || table === "weekly_report_access_revisions") {
+            requestPermissionRefresh(queryClient, workspaceId, table === "okr_access_revisions" ? "okr" : "weekly");
+            return;
           }
           if (table === "notifications") {
             void queryClient.invalidateQueries({ queryKey: ["notifications", workspaceId] });
@@ -2718,7 +2749,7 @@ function RemoteApplication({
   if (!workspaceId || bundleQuery.isLoading || dateTimePreferencesQuery.isLoading || notificationPreferencesQuery.isLoading) {
     return <Splash label="正在整理任务…" />;
   }
-  if (bundleQuery.error || !bundleQuery.data) {
+  if (!bundleQuery.data) {
     return (
       <FatalState
         title="工作区暂时不可用"
@@ -3191,69 +3222,44 @@ function RemoteApplication({
     await refresh();
   }
 
-  async function createUserGroup(name: string, memberIds: string[]) {
-    const { data: group, error } = await client
-      .from("user_groups")
-      .insert({ workspace_id: activeWorkspaceId, name: name.trim(), created_by: userId })
-      .select("*")
-      .single();
-    if (error) throw error;
-    if (memberIds.length) {
-      const { error: membersError } = await client.from("user_group_members").insert(
-        memberIds.map((memberId) => ({
-          group_id: group.id,
-          workspace_id: activeWorkspaceId,
-          user_id: memberId,
-        })),
-      );
-      if (membersError) {
-        await client.from("user_groups").delete().eq("id", group.id);
-        throw membersError;
-      }
-    }
-    await refresh();
+  async function persistUserGroup(id: string, name: string, memberIds: string[], expected?: UserGroupSnapshot) {
+    if (!online || !navigator.onLine) throw new Error("离线时无法保存用户组");
+    const finish = beginUserGroupSave(queryClient, activeWorkspaceId);
+    const started = performance.now();
+    try {
+      await queryClient.cancelQueries({ queryKey: ["workspace-bundle", activeWorkspaceId] });
+      if (!navigator.onLine) throw new Error("离线时无法保存用户组");
+      const saved = await saveUserGroup(client, activeWorkspaceId, { id, name, memberIds, expected });
+      queryClient.setQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId], (bundle) =>
+        bundle ? applySavedUserGroup(bundle, saved) : bundle);
+      if (saved.members_changed) requestPermissionRefresh(queryClient, activeWorkspaceId);
+      performance.measure("anttodo.user-group-save", { start: started });
+    } finally { finish(); }
   }
 
-  async function updateUserGroup(groupId: string, name: string, memberIds: string[]) {
-    const { error } = await client
-      .from("user_groups")
-      .update({ name: name.trim() })
-      .eq("id", groupId);
-    if (error) throw error;
+  async function createUserGroup(name: string, memberIds: string[]) {
+    await persistUserGroup(crypto.randomUUID(), name, memberIds);
+  }
 
-    const currentIds = new Set(
-      activeBundle.userGroupMembers
-        .filter((item) => item.group_id === groupId)
-        .map((item) => item.user_id),
-    );
-    const nextIds = new Set(memberIds);
-    const removedIds = [...currentIds].filter((memberId) => !nextIds.has(memberId));
-    const addedIds = memberIds.filter((memberId) => !currentIds.has(memberId));
-    if (removedIds.length) {
-      const { error: removeError } = await client
-        .from("user_group_members")
-        .delete()
-        .eq("group_id", groupId)
-        .in("user_id", removedIds);
-      if (removeError) throw removeError;
-    }
-    if (addedIds.length) {
-      const { error: addError } = await client.from("user_group_members").insert(
-        addedIds.map((memberId) => ({
-          group_id: groupId,
-          workspace_id: activeWorkspaceId,
-          user_id: memberId,
-        })),
-      );
-      if (addError) throw addError;
-    }
-    await refresh();
+  async function updateUserGroup(groupId: string, name: string, memberIds: string[], expected: UserGroupSnapshot) {
+    await persistUserGroup(groupId, name, memberIds, expected);
   }
 
   async function deleteUserGroup(groupId: string) {
-    const { error } = await client.from("user_groups").delete().eq("id", groupId);
-    if (error) throw error;
-    await refresh();
+    if (!online || !navigator.onLine) throw new Error("离线时无法删除用户组");
+    const finish = beginUserGroupSave(queryClient, activeWorkspaceId);
+    try {
+      const { data, error } = await client.from("user_groups").delete().eq("id", groupId)
+        .eq("workspace_id", activeWorkspaceId).select("id");
+      if (error) throw error;
+      if (!data?.length) throw new Error("用户组已被删除或你无权管理，请重新加载核对。");
+      queryClient.setQueryData<WorkspaceBundle>(["workspace-bundle", activeWorkspaceId], (bundle) => bundle ? {
+        ...bundle,
+        userGroups: bundle.userGroups.filter((group) => group.id !== groupId),
+        userGroupMembers: bundle.userGroupMembers.filter((member) => member.group_id !== groupId),
+      } : bundle);
+      requestPermissionRefresh(queryClient, activeWorkspaceId);
+    } finally { finish(); }
   }
 
   async function createChildTask(
@@ -4165,6 +4171,11 @@ function RemoteApplication({
       onLoadTaskComments={(taskId) => loadTaskComments(client, taskId)}
       onLoadTaskActivity={(taskId, cursor) => loadTaskActivity(client, taskId, cursor)}
       onLoadCommentCandidates={(taskId) => listTaskCommentCandidateIds(client, taskId)}
+      onSendMentionNotification={async (taskId, recipientId, requestId) => {
+        if (!online || !navigator.onLine) throw new Error("离线时无法发送通知");
+        assertPermissionReady(queryClient, activeWorkspaceId, "workspace");
+        await sendTaskDescriptionMentionNotification(client, { taskId, recipientId, requestId });
+      }}
       onCreateComment={createComment}
       onUpdateComment={updateComment}
       onDeleteComment={deleteComment}
@@ -4392,9 +4403,6 @@ function DemoApplication({
       field in nextPatch && task?.[field] !== nextPatch[field]
         ? [[field, { before: task?.[field] ?? null, after: nextPatch[field] ?? null }]]
         : []));
-    const previousMentionIds = new Set(
-      (task?.description_mentions ?? []).map((item) => item.user_id),
-    );
     const nextDescriptionMentions = options?.mentionedUserIds
       ? bundle.members
           .filter((member) => options.mentionedUserIds!.includes(member.user_id))
@@ -4403,9 +4411,6 @@ function DemoApplication({
             display_name_snapshot: member.profile?.display_name?.trim() || "团队成员",
           }))
       : null;
-    const newlyMentioned = (nextDescriptionMentions ?? []).filter(
-      (item) => !previousMentionIds.has(item.user_id),
-    );
     setBundle((current) => {
       const moving = nextPatch.parent_task_id !== undefined || nextPatch.position !== undefined;
       const moved = moving
@@ -4446,33 +4451,6 @@ function DemoApplication({
       });
     });
     if (Object.keys(changes).length) appendDemoActivity(taskId, "task.updated", { changes });
-    if (newlyMentioned.length > 0 && task) {
-      const mentionType = task.kind === "note" ? "note_mentioned" : "todo_mentioned";
-      setDemoNotifications((current) => [
-        ...newlyMentioned.map((mention) => ({
-          id: crypto.randomUUID(),
-          workspace_id: task.workspace_id,
-          task_id: taskId,
-          comment_id: null,
-          recipient_id: mention.user_id,
-          actor_id: "demo-user",
-          notification_type: mentionType as Exclude<NotificationType, "okr_mentioned">,
-          payload: { source: "description" },
-          read_at: null,
-          created_at: new Date().toISOString(),
-          actor: bundle.members.find((member) => member.user_id === "demo-user")?.profile,
-          task: {
-            id: task.id,
-            title: nextPatch.title ?? task.title,
-            kind: task.kind,
-            description: typeof nextPatch.description === "string"
-              ? nextPatch.description
-              : task.description,
-          },
-        })),
-        ...current,
-      ]);
-    }
     return Promise.resolve();
   }
 
@@ -4903,6 +4881,26 @@ function DemoApplication({
         };
       }}
       onLoadCommentCandidates={async () => bundle.members.map((member) => member.user_id)}
+      onSendMentionNotification={async (taskId, recipientId, requestId) => {
+        if (!online || !navigator.onLine) throw new Error("离线时无法发送通知");
+        const task = bundle.tasks.find((item) => item.id === taskId);
+        const member = bundle.members.find((item) => item.user_id === recipientId);
+        if (!task || !member) throw new Error("找不到任务或成员");
+        setDemoNotifications((current) => current.some((item) => item.id === requestId) ? current : [{
+          id: requestId,
+          workspace_id: task.workspace_id,
+          task_id: taskId,
+          comment_id: null,
+          recipient_id: recipientId,
+          actor_id: "demo-user",
+          notification_type: task.kind === "note" ? "note_mentioned" : "todo_mentioned",
+          payload: { source: "description", manual_send: true },
+          read_at: null,
+          created_at: new Date().toISOString(),
+          actor: bundle.members.find((item) => item.user_id === "demo-user")?.profile,
+          task: { id: task.id, title: task.title, kind: task.kind, description: task.description },
+        }, ...current]);
+      }}
       onCreateComment={async (taskId, input) => {
         const createdAt = new Date().toISOString();
         const commentId = crypto.randomUUID();
@@ -5515,6 +5513,7 @@ type WorkspaceAppProps = {
     cursor?: TaskActivityPage["nextCursor"],
   ) => Promise<TaskActivityPage>;
   onLoadCommentCandidates: (taskId: string) => Promise<string[]>;
+  onSendMentionNotification: (taskId: string, recipientId: string, requestId: string) => Promise<void>;
   onCreateComment: (
     taskId: string,
     input: CreateCommentInput,
@@ -5532,7 +5531,7 @@ type WorkspaceAppProps = {
   onMoveLabelToInbox: (sourceLabelId: string) => Promise<void>;
   onUpdateMemberRole: (memberId: string, role: WorkspaceRole) => Promise<void>;
   onCreateUserGroup: (name: string, memberIds: string[]) => Promise<void>;
-  onUpdateUserGroup: (groupId: string, name: string, memberIds: string[]) => Promise<void>;
+  onUpdateUserGroup: (groupId: string, name: string, memberIds: string[], expected: UserGroupSnapshot) => Promise<void>;
   onDeleteUserGroup: (groupId: string) => Promise<void>;
   onLoadInviteLink: (workspaceId: string) => Promise<WorkspaceInviteLink | null>;
   onEnableInviteLink: (
@@ -5657,7 +5656,32 @@ function PanelResizeHandle({
   );
 }
 
-function WorkspaceApplication(props: WorkspaceAppProps) {
+function WorkspaceApplication(sourceProps: WorkspaceAppProps) {
+  const queryClient = useQueryClient();
+  const accessStatus = usePermissionRefresh(sourceProps.workspaceId, "workspace");
+  const contentOnline = sourceProps.online && accessStatus === "ready";
+  const props = { ...sourceProps };
+  props.attachmentService = useMemo(() => {
+    const service = { ...sourceProps.attachmentService };
+    for (const key of ["upload", "uploadCommentImage", "remove"] as const) {
+      const action = service[key];
+      Object.assign(service, { [key]: async (...args: unknown[]) => {
+        if (!navigator.onLine) throw new Error("离线时无法修改附件");
+        assertPermissionReady(queryClient, sourceProps.workspaceId, "workspace");
+        return Reflect.apply(action, undefined, args);
+      } });
+    }
+    return service;
+  }, [queryClient, sourceProps.attachmentService, sourceProps.workspaceId]);
+  for (const key of Object.keys(props) as Array<keyof WorkspaceAppProps>) {
+    if (!/^on(WriteTask|CreateTask|RetryTask|UpdateTask|SaveTask|ToggleTask|Assign|CreateChild|ToggleChild|UpdateChild|DeleteChild|DeleteTask|ReorderTask|AddTask|RemoveTask|PurgeTask|CreateComment|UpdateComment|DeleteComment|CreateLabel|SaveLabel|UpdateLabel|ReorderChild|SetUserTop|DeleteLabel|MoveLabel|SetTask)/.test(key)) continue;
+    const action = props[key];
+    if (typeof action === "function") Object.assign(props, { [key]: async (...args: unknown[]) => {
+      if (!navigator.onLine) throw new Error("离线时无法修改内容");
+      assertPermissionReady(queryClient, sourceProps.workspaceId, "workspace");
+      return Reflect.apply(action, undefined, args);
+    } });
+  }
   const workspace = props.workspaces.find((item) => item.id === props.workspaceId)!;
   const renderedRoute = currentApplicationRoute();
   const embeddedNavigationMode = embeddedNavigationEnabled({
@@ -6714,7 +6738,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
     <EmbeddedNavigation
       activeSection={appSection}
       featureModulePreferences={featureModulePreferences}
-      online={props.online}
+      online={sourceProps.online}
       userName={props.currentUserName}
       avatarUrl={currentAvatarUrl}
       workspaces={props.workspaces}
@@ -6737,9 +6761,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
   ) : null;
 
   return (
-    <TaskStatusActionsProvider key={props.workspaceId} tasks={props.bundle.tasks} online={props.online}
+    <TaskStatusActionsProvider key={props.workspaceId} tasks={props.bundle.tasks} online={contentOnline}
       canEdit={workspaceCanEditTask} write={props.onWriteTaskStatus} onNotice={props.onNotice}>
     <ShortcutProvider initialScope={shortcutScope}>
+    {!settingsDialogOpen && <PermissionRefreshBanner workspaceId={props.workspaceId} online={sourceProps.online} />}
     <WorkspaceShortcutBindings
       appSection={shortcutScope}
       settingsOpen={settingsDialogOpen}
@@ -6747,7 +6772,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       smartView={smartView}
       selectedTask={selectedTask}
       selectedTasks={selectedTasks}
-      online={props.online}
+      online={contentOnline}
       onOpenSearch={openSearch}
       onOpenWorkspaceSwitcher={() => setWorkspaceSwitcherOpen(true)}
       onOpenSettings={() => openSettings("account")}
@@ -6785,7 +6810,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       {!embeddedNavigationMode && <NavigationRail
         activeSection={appSection}
         featureModulePreferences={featureModulePreferences}
-        online={props.online}
+        online={sourceProps.online}
         userName={props.currentUserName}
         avatarUrl={currentAvatarUrl}
         workspaces={props.workspaces}
@@ -6809,7 +6834,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         open={mobileAppSidebar}
         activeSection={appSection}
         featureModulePreferences={featureModulePreferences}
-        online={props.online}
+        online={sourceProps.online}
         userName={props.currentUserName}
         currentUserId={props.currentUserId}
         avatarUrl={currentAvatarUrl}
@@ -6897,7 +6922,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         openMobile={mobileSidebar}
         bundle={props.bundle}
         currentUserId={props.currentUserId}
-        online={props.online}
+        online={contentOnline}
         smartView={smartView}
         selectedLabelId={selectedLabelId}
         onCloseMobile={() => setMobileSidebar(false)}
@@ -6988,7 +7013,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           selectedLabelId={selectedLabelId}
           selectedTaskId={selectedTaskId}
           selectedTaskIds={selectedTaskIds}
-          online={props.online}
+          online={contentOnline}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
           aiWorkSettings={props.aiWorkSettings}
@@ -7037,9 +7062,10 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           currentUserId={props.currentUserId}
           members={props.bundle.members}
           userGroups={props.bundle.userGroups}
+          userGroupMembers={props.bundle.userGroupMembers}
           labels={props.bundle.labels}
           tasks={props.bundle.tasks}
-          online={props.online}
+          online={sourceProps.online}
           demoMode={props.demoMode}
           route={renderedRoute?.kind === "weekly_reports"
             ? renderedRoute
@@ -7094,7 +7120,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             ?? "member"}
           members={props.bundle.members}
           userGroups={props.bundle.userGroups}
-          online={props.online}
+          online={sourceProps.online}
           initialOwnerId={renderedRoute?.kind === "okr"
             ? renderedRoute.ownerId
             : undefined}
@@ -7117,7 +7143,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : appSection === "calendar" ? <CalendarWorkspace
           bundle={props.bundle}
           currentUserId={props.currentUserId}
-          online={props.online}
+          online={contentOnline}
           visibleCalendarIds={visibleCalendarIds}
           visibleAssigneeIds={visibleAssigneeIds}
           activeSmartViewIds={activeCalendarSmartViewIds}
@@ -7166,7 +7192,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           workspaceId={props.workspaceId}
           currentUserId={props.currentUserId}
           bundle={props.bundle}
-          online={props.online}
+          online={contentOnline}
           now={now}
           dateTimePreferences={props.dateTimePreferences}
           selectedTaskId={selectedTaskId}
@@ -7189,7 +7215,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         /> : appSection === "focus" ? <FocusWorkspace
           workspaceId={props.workspaceId}
           userId={props.currentUserId}
-          online={props.online}
+          online={contentOnline}
           tasks={props.bundle.tasks}
           settings={props.focusSettings}
           sessions={props.focusSessions}
@@ -7208,7 +7234,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           bundle={props.bundle}
           currentUserId={props.currentUserId}
           dateTimePreferences={props.dateTimePreferences}
-          online={props.online}
+          online={contentOnline}
           onMenu={openMobileNavigation}
           onSelectTask={selectTask}
           onCreateTask={props.onCreateTask}
@@ -7235,7 +7261,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
               tasks={selectedTasks}
               bundle={props.bundle}
               currentUserId={props.currentUserId}
-              online={props.online}
+              online={contentOnline}
               now={now}
               dateTimePreferences={props.dateTimePreferences}
               aiWorkSettings={props.aiWorkSettings}
@@ -7283,7 +7309,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             task={selectedTask}
             bundle={props.bundle}
             currentUserId={props.currentUserId}
-            online={props.online}
+            online={contentOnline}
             editable={selectedTaskEditable}
             completable={selectedTaskCompletable}
             attachmentService={props.attachmentService}
@@ -7321,6 +7347,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
             onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
             onLoadComments={props.onLoadTaskComments}
             onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
+            onSendMentionNotification={(recipientId, requestId) => props.onSendMentionNotification(selectedTask.id, recipientId, requestId)}
             onCreateComment={props.onCreateComment}
             onUpdateComment={props.onUpdateComment}
             onDeleteComment={props.onDeleteComment}
@@ -7339,7 +7366,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           task={selectedTask}
           bundle={props.bundle}
           currentUserId={props.currentUserId}
-          online={props.online}
+          online={contentOnline}
           editable={selectedTaskEditable}
           completable={selectedTaskCompletable}
           attachmentService={props.attachmentService}
@@ -7376,6 +7403,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           onLoadActivity={(cursor) => props.onLoadTaskActivity(selectedTask.id, cursor)}
           onLoadComments={props.onLoadTaskComments}
           onLoadCommentCandidates={() => props.onLoadCommentCandidates(selectedTask.id)}
+          onSendMentionNotification={(recipientId, requestId) => props.onSendMentionNotification(selectedTask.id, recipientId, requestId)}
           onCreateComment={props.onCreateComment}
           onUpdateComment={props.onUpdateComment}
           onDeleteComment={props.onDeleteComment}
@@ -7387,7 +7415,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
           bundle={props.bundle}
           currentUserId={props.currentUserId}
           parentId={mindMapCreateLabel.parentId}
-          online={props.online}
+          online={contentOnline}
           onClose={() => setMindMapCreateLabel(null)}
           onCreate={props.onCreateLabel}
         />
@@ -7425,7 +7453,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         currentWorkspaceId={props.workspaceId}
         bundle={props.bundle}
         workspaceName={workspace.name}
-        online={props.online}
+        online={sourceProps.online}
         onLoadInviteLink={props.onLoadInviteLink}
         onEnableInviteLink={props.onEnableInviteLink}
         onUpdateInviteLinkRole={props.onUpdateInviteLinkRole}
@@ -7469,7 +7497,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
       <CreateWorkspaceDialog
         open={createWorkspaceDialogOpen}
         onOpenChange={setCreateWorkspaceDialogOpen}
-        online={props.online}
+        online={contentOnline}
         ownedCount={props.workspaces.filter((item) => item.role === "owner").length}
         limit={props.quota.workspace_limit}
         onCreate={props.onCreateWorkspace}
@@ -7493,7 +7521,7 @@ function WorkspaceApplication(props: WorkspaceAppProps) {
         />
       )}
       {props.notice && <NoticeToast key={props.noticeOptions.id} message={props.notice} tone={props.noticeTone}
-        options={props.noticeOptions} online={props.online} onDismiss={props.onDismissNotice} onNotice={props.onNotice} />}
+        options={props.noticeOptions} online={sourceProps.online} onDismiss={props.onDismissNotice} onNotice={props.onNotice} />}
 
     </main>
     </ShortcutProvider>
@@ -13382,6 +13410,8 @@ function UserGroupsPanel({
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const expectedRef = useRef<UserGroupSnapshot>({ name: "", memberIds: [] });
+  const busyRef = useRef(false);
 
   function openEditor(group: UserGroup | "new") {
     setEditingGroup(group);
@@ -13393,28 +13423,39 @@ function UserGroupsPanel({
             .filter((item) => item.group_id === group.id)
             .map((item) => item.user_id),
     ));
+    expectedRef.current = { name: group === "new" ? "" : group.name,
+      memberIds: group === "new" ? [] : bundle.userGroupMembers.filter((item) => item.group_id === group.id).map((item) => item.user_id) };
     setError("");
   }
 
   async function saveGroup(event: FormEvent) {
     event.preventDefault();
+    if (busyRef.current) return;
+    if (!online || !navigator.onLine) { setError("离线时无法保存用户组"); return; }
     const trimmedName = name.trim();
     if (!trimmedName) {
       setError("请输入用户组名称。");
       return;
     }
+    if (editingGroup !== "new" && trimmedName === expectedRef.current.name
+      && [...memberIds].sort().join(",") === [...expectedRef.current.memberIds].sort().join(",")) {
+      setEditingGroup(null);
+      return;
+    }
+    busyRef.current = true;
     setBusy(true);
     setError("");
     try {
       if (editingGroup === "new") {
         await onCreateUserGroup(trimmedName, [...memberIds]);
       } else if (editingGroup) {
-        await onUpdateUserGroup(editingGroup.id, trimmedName, [...memberIds]);
+        await onUpdateUserGroup(editingGroup.id, trimmedName, [...memberIds], expectedRef.current);
       }
       setEditingGroup(null);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "保存用户组失败");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -13488,7 +13529,7 @@ function UserGroupsPanel({
             <form onSubmit={(event) => void saveGroup(event)}>
               <label className="user-group-name-field">
                 <span>名称</span>
-                <input autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：产品组" />
+                <input disabled={busy} autoFocus maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：产品组" />
               </label>
               <fieldset className="user-group-member-picker">
                 <legend>成员</legend>
@@ -13499,6 +13540,7 @@ function UserGroupsPanel({
                       <label key={member.user_id}>
                         <input
                           type="checkbox"
+                          disabled={busy}
                           checked={checked}
                           onChange={() => setMemberIds((current) => {
                             const next = new Set(current);
@@ -13521,7 +13563,7 @@ function UserGroupsPanel({
                 <button className="button primary" disabled={!online || busy || !name.trim()}>{busy ? "保存中…" : "保存"}</button>
               </div>
             </form>
-            <Dialog.Close className="dialog-close" aria-label="关闭"><X /></Dialog.Close>
+            <Dialog.Close disabled={busy} className="dialog-close" aria-label="关闭"><X /></Dialog.Close>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
@@ -14472,6 +14514,7 @@ function SettingsDialog({
               ? "配置云效连接器。令牌只写入 Vault。"
               : "管理 AntTodo 的账户、安全和应用偏好。"}
           </Dialog.Description>
+          <PermissionRefreshBanner workspaceId={workspace.id} online={online} />
           {connectorConfigOpen ? (
             <Dialog.Title className="sr-only">接入云效中心版</Dialog.Title>
           ) : (

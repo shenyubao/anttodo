@@ -8,6 +8,7 @@ import {
 import { sendDingtalkNotification } from "../_shared/dingtalk-messaging.ts";
 import { buildEventNotificationCard } from "../_shared/dingtalk-notification-cards.ts";
 import { buildTaskOpenUrl } from "../_shared/app-url.ts";
+import { isManualDescriptionMention } from "../_shared/mention-notification-policy.ts";
 
 const SCENARIO_BY_TYPE: Record<string, string> = {
   comment_mention: "todo_mentioned",
@@ -113,7 +114,7 @@ export default {
 
     const { data: notification, error } = await ctx.supabaseAdmin
       .from("notifications")
-      .select("id, workspace_id, task_id, recipient_id, actor_id, notification_type, payload")
+      .select("id, workspace_id, task_id, comment_id, recipient_id, actor_id, notification_type, payload")
       .eq("id", notificationId)
       .maybeSingle();
     if (error) return Response.json({ error: error.message }, { status: 500 });
@@ -129,7 +130,7 @@ export default {
       scenario,
       "system",
     );
-    const dingtalkOn = await prefEnabled(
+    const dingtalkOn = isManualDescriptionMention(notification) || await prefEnabled(
       ctx.supabaseAdmin,
       notification.recipient_id,
       scenario,

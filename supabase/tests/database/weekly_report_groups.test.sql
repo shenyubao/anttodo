@@ -35,7 +35,7 @@ select throws_ok($$select public.save_weekly_report_group('bd000000-0000-0000-00
 select throws_ok($$select public.save_weekly_report_group('bd000000-0000-0000-0000-000000000001','Outside viewer','{ad000000-0000-0000-0000-000000000001}','selected','{ad000000-0000-0000-0000-000000000006}')$$,'23514',null,'cross-workspace viewer rejected');
 select set_config('request.jwt.claims','{"sub":"ad000000-0000-0000-0000-000000000003","role":"authenticated"}',true);
 select is((select count(*)::int from public.weekly_report_groups where id in(current_setting('test.weekly_group_a')::uuid,current_setting('test.weekly_group_b')::uuid)),2,'participants automatically see both groups');
-select throws_ok($$select public.save_weekly_report_group('bd000000-0000-0000-0000-000000000001','Member created','{ad000000-0000-0000-0000-000000000003}')$$,'42501',null,'ordinary member cannot create groups');
+select throws_ok($$select public.save_weekly_report_group('bd000000-0000-0000-0000-000000000001','Member changed','{ad000000-0000-0000-0000-000000000003}',p_id=>current_setting('test.weekly_group_a')::uuid)$$,'42501',null,'ordinary member cannot edit another creator group');
 select results_eq($$update public.weekly_report_groups set name='Member changed' where id=current_setting('test.weekly_group_a')::uuid returning id$$,$$select null::uuid where false$$,'ordinary member cannot directly edit groups');
 select set_config('test.weekly_report_a',(public.save_group_weekly_report(current_setting('test.weekly_group_a')::uuid,
  'bd000000-0000-0000-0000-000000000001',date_trunc('week',current_date)::date,'A content','','','workspace','{}','{}',null,true)).id::text,true);

@@ -52,4 +52,10 @@ describe("shouldDismissTaskDetailOnPointerDown", () => {
     const heading = el("<h1>指派给我</h1>");
     expect(shouldDismissTaskDetailOnPointerDown(heading, 2)).toBe(false);
   });
+
+  it("keeps the panel open when sending a mention notification", () => {
+    expect(shouldDismissTaskDetailOnPointerDown(
+      el('<div class="rich-editor-mention-notify"><button>发送</button></div>')?.querySelector("button") ?? null,
+    )).toBe(false);
+  });
 });

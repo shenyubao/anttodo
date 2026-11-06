@@ -1,3 +1,5 @@
+import { requestPermissionRefresh } from "./lib/permissionRefresh";
+import { usePermissionRefresh } from "./lib/usePermissionRefresh";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Plus, X } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,6 +20,8 @@ export function WeeklyReportOkrSection({ workspaceId, currentUserId, weekStart, 
   readOnly: boolean; demoMode: boolean; value: string; onChange: (value: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const accessStatus = usePermissionRefresh(workspaceId, "okr");
+  readOnly = readOnly || accessStatus !== "ready";
   const [pickerOpen, setPickerOpen] = useState(false);
   const [all, setAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -63,7 +67,11 @@ export function WeeklyReportOkrSection({ workspaceId, currentUserId, weekStart, 
     const channel = supabase.channel(`weekly-report-okr:${workspaceId}:${currentUserId}`);
     for (const table of ["okr_cycles", "okr_sets", "okr_objectives", "okr_key_results", "okr_objective_responsibles",
       "okr_key_result_responsibles", "okr_progress_records", "okr_access_revisions", "user_group_members"]) {
-      channel.on("postgres_changes", { event: "*", schema: "public", table, filter: `workspace_id=eq.${workspaceId}` }, invalidate);
+      channel.on("postgres_changes", { event: "*", schema: "public", table, filter: `workspace_id=eq.${workspaceId}` }, () => {
+        if (table === "okr_access_revisions" || table === "user_group_members") {
+          requestPermissionRefresh(queryClient, workspaceId, "workspace");
+        } else invalidate();
+      });
     }
     channel.subscribe();
     return () => { clearTimeout(timer); void supabase!.removeChannel(channel); };
