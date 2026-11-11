@@ -1,6 +1,7 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "@supabase/server";
-import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2.110.8";
+import { resolveUser } from "../_shared/resolveUser.ts";
 
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const REQUEST_LIMIT = 24 * 1024;
@@ -110,10 +111,7 @@ function accessExpiry(bundle: Record<string, unknown>) {
 }
 
 async function authenticatedUser(req: Request, admin: SupabaseClient) {
-  const token = bearerToken(req);
-  if (!token) return null;
-  const { data, error } = await admin.auth.getUser(token);
-  return error ? null : data.user;
+  return resolveUser(req, admin);
 }
 
 async function tokenRequest(parameters: URLSearchParams) {
@@ -159,6 +157,13 @@ async function refreshBundle(bundle: Record<string, unknown>) {
 
 export default {
   fetch: withSupabase({ auth: "none" }, async (req, ctx) => {
+    const admin = ctx.supabaseAdmin as SupabaseClient;
+    const rpc = (name:string,args:Record<string,unknown>) => admin.rpc(name,args).returns<{
+      request_id:string; pkce_verifier:string; user_id:string; expires_at:string;
+      client_metadata:Record<string,unknown>; status:string; retry_after:number;
+      token_bundle:Record<string,unknown>; refresh_required:boolean; lease_acquired:boolean;
+      credential_expires_at:string;
+    }[]>();
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) });
 
     if (req.method === "GET") {
@@ -168,7 +173,7 @@ export default {
       const oauthError = url.searchParams.get("error");
       if (oauthError) return redirect(`${publicAppUrl()}/auth/cli?oauth_result=denied`);
       if (!state || !code) return json(req, { error: "Invalid OAuth callback", code: "invalid_oauth_callback" }, 400);
-      const { data: context, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_callback_v2", {
+      const { data: context, error } = await rpc("cli_device_auth_callback_v2", {
         p_state_hash: await sha256(state),
       }).maybeSingle();
       if (error || !context) return json(req, { error: "OAuth state is invalid or expired", code: "invalid_oauth_state" }, 400);
@@ -180,7 +185,7 @@ export default {
           code_verifier: context.pkce_verifier,
         }));
         const verified = validateTokenBundle(bundle, context.user_id);
-        const { data: completed, error: completionError } = await ctx.supabaseAdmin.rpc("cli_device_auth_complete_v2", {
+        const { data: completed, error: completionError } = await rpc("cli_device_auth_complete_v2", {
           p_request_id: context.request_id,
           p_user_id: verified.userId,
           p_oauth_client_id: env("CLI_OAUTH_CLIENT_ID"),
@@ -213,7 +218,7 @@ export default {
       if (!isSha256(body.deviceCodeHash)) return json(req, { error: "Invalid device request", code: "invalid_device_request" }, 400);
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const userCode = generateUserCode();
-        const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_init_v2", {
+        const { data, error } = await rpc("cli_device_auth_init_v2", {
           p_device_code_hash: body.deviceCodeHash,
           p_user_code_hash: await sha256(userCode),
           p_client_metadata: body.client && typeof body.client === "object" ? body.client : {},
@@ -232,7 +237,7 @@ export default {
 
     if (body.action === "inspect") {
       if (typeof body.userCode !== "string") return json(req, { error: "Invalid user code", code: "invalid_user_code" }, 400);
-      const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_inspect_v2", {
+      const { data, error } = await rpc("cli_device_auth_inspect_v2", {
         p_user_code_hash: await sha256(body.userCode.toUpperCase()),
       }).maybeSingle();
       if (error) return json(req, { error: error.message, code: error.code ?? "inspect_failed" }, 400);
@@ -241,14 +246,14 @@ export default {
     }
 
     if (["authorize", "deny", "validate_consent", "list", "revoke"].includes(body.action)) {
-      const user = await authenticatedUser(req, ctx.supabaseAdmin);
+      const user = await authenticatedUser(req, admin);
       const selfCredential = body.action === "revoke" ? parseCredential(bearerToken(req)) : null;
       if (!user && !selfCredential) return json(req, { error: "Authentication required", code: "authentication_required" }, 401);
 
       if (body.action === "list") {
-        const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_list_v2", { p_user_id: user!.id });
+        const { data, error } = await rpc("cli_device_auth_list_v2", { p_user_id: user!.id });
         if (error) return json(req, { error: error.message, code: error.code ?? "list_failed" }, 400);
-        return json(req, { devices: (data ?? []).map((item: Record<string, unknown>) => ({
+        return json(req, { devices: (Array.isArray(data) ? data : []).map((item: Record<string, unknown>) => ({
           id: item.id, client: item.client_metadata, createdAt: item.created_at,
           lastUsedAt: item.last_used_at, expiresAt: item.expires_at,
         })) });
@@ -259,7 +264,7 @@ export default {
           || body.clientId !== env("CLI_OAUTH_CLIENT_ID")) {
           return json(req, { error: "Invalid consent context", code: "invalid_consent_context" }, 400);
         }
-        const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_bind_oauth_v2", {
+        const { data, error } = await rpc("cli_device_auth_bind_oauth_v2", {
           p_request_id: body.requestId, p_user_id: user!.id,
           p_nonce_hash: await sha256(body.nonce), p_authorization_id: body.authorizationId,
         });
@@ -269,7 +274,7 @@ export default {
 
       if (body.action === "deny") {
         if (!isUuid(body.requestId) || typeof body.userCode !== "string") return json(req, { error: "Invalid authorization request", code: "invalid_request" }, 400);
-        const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_deny_v2", {
+        const { data, error } = await rpc("cli_device_auth_deny_v2", {
           p_request_id: body.requestId, p_user_code_hash: await sha256(body.userCode.toUpperCase()), p_user_id: user!.id,
         });
         if (error || !data) return json(req, { error: error?.message ?? "Authorization request is no longer pending", code: "request_not_pending" }, 409);
@@ -283,11 +288,11 @@ export default {
         const state = randomValue();
         const nonce = randomValue();
         const verifier = randomValue();
-        const { error: registrationError } = await ctx.supabaseAdmin.rpc("cli_device_auth_register_client_v2", {
+        const { error: registrationError } = await rpc("cli_device_auth_register_client_v2", {
           p_client_id: env("CLI_OAUTH_CLIENT_ID"),
         });
         if (registrationError) return json(req, { error: registrationError.message, code: "oauth_client_registration_failed" }, 500);
-        const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_authorize_v2", {
+        const { data, error } = await rpc("cli_device_auth_authorize_v2", {
           p_request_id: body.requestId, p_user_code_hash: await sha256(body.userCode.toUpperCase()),
           p_user_id: user!.id, p_lifetime: String(body.lifetime), p_state_hash: await sha256(state),
           p_nonce_hash: await sha256(nonce), p_pkce_verifier: verifier,
@@ -304,7 +309,7 @@ export default {
         const credentialId = selfCredential?.id ?? (isUuid(body.credentialId) ? body.credentialId : null);
         if (!credentialId) return json(req, { error: "Invalid credential", code: "invalid_device_credentials" }, 400);
         const credentialHash = selfCredential ? await sha256(selfCredential.secret) : null;
-        const { data: context, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_revoke_context_v2", {
+        const { data: context, error } = await rpc("cli_device_auth_revoke_context_v2", {
           p_credential_id: credentialId, p_user_id: user?.id ?? null, p_credential_hash: credentialHash,
         }).maybeSingle();
         if (error || !context) return json(req, { error: "Credential was not found", code: "credential_not_found" }, 404);
@@ -317,7 +322,7 @@ export default {
             signal: AbortSignal.timeout(15_000),
           }).catch(() => undefined);
         }
-        const { data, error: revokeError } = await ctx.supabaseAdmin.rpc("cli_device_auth_revoke_v2", {
+        const { data, error: revokeError } = await rpc("cli_device_auth_revoke_v2", {
           p_credential_id: credentialId, p_user_id: user?.id ?? null, p_credential_hash: credentialHash,
         });
         if (revokeError || !data) return json(req, { error: revokeError?.message ?? "Unable to revoke credential", code: "revoke_failed" }, 400);
@@ -331,11 +336,11 @@ export default {
       }
       const deviceCodeHash = await sha256(body.deviceCode);
       if (body.action === "consume") {
-        const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_consume_v2", { p_request_id: body.requestId, p_device_code_hash: deviceCodeHash });
+        const { data, error } = await rpc("cli_device_auth_consume_v2", { p_request_id: body.requestId, p_device_code_hash: deviceCodeHash });
         if (error || !data) return json(req, { error: error?.message ?? "Authorization cannot be consumed", code: "not_consumable" }, 409);
         return json(req, { status: "consumed" });
       }
-      const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_poll_v2", { p_request_id: body.requestId, p_device_code_hash: deviceCodeHash }).maybeSingle();
+      const { data, error } = await rpc("cli_device_auth_poll_v2", { p_request_id: body.requestId, p_device_code_hash: deviceCodeHash }).maybeSingle();
       if (error) return json(req, { error: error.message, code: error.code ?? "poll_failed" }, 400);
       if (!data) return json(req, { error: "Invalid device credentials", code: "invalid_device_credentials" }, 404);
       return json(req, { status: data.status, userId: data.user_id, expiresAt: data.expires_at, retryAfter: data.retry_after });
@@ -345,7 +350,7 @@ export default {
       const credential = parseCredential(bearerToken(req));
       if (!credential) return json(req, { error: "Invalid CLI credential", code: "invalid_device_credentials" }, 401);
       const leaseId = crypto.randomUUID();
-      const { data, error } = await ctx.supabaseAdmin.rpc("cli_device_auth_exchange_v2", {
+      const { data, error } = await rpc("cli_device_auth_exchange_v2", {
         p_credential_id: credential.id, p_credential_hash: await sha256(credential.secret), p_lease_id: leaseId,
       }).maybeSingle();
       if (error || !data) return json(req, { error: "Credential is expired or revoked", code: "credential_inactive" }, 401);
@@ -355,12 +360,12 @@ export default {
         try {
           bundle = await refreshBundle(bundle);
           const verified = validateTokenBundle(bundle, data.user_id);
-          const { data: completed, error: refreshError } = await ctx.supabaseAdmin.rpc("cli_device_auth_refresh_v2", {
+          const { data: completed, error: refreshError } = await rpc("cli_device_auth_refresh_v2", {
             p_credential_id: credential.id, p_lease_id: leaseId, p_access_expires_at: verified.expiresAt, p_token_bundle: bundle,
           });
           if (refreshError || !completed) throw new Error(refreshError?.message ?? "Refresh lease expired");
         } catch (cause) {
-          await ctx.supabaseAdmin.rpc("cli_device_auth_abort_refresh_v2", { p_credential_id: credential.id, p_lease_id: leaseId });
+          await rpc("cli_device_auth_abort_refresh_v2", { p_credential_id: credential.id, p_lease_id: leaseId });
           throw cause;
         }
       }

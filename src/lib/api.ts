@@ -1410,11 +1410,13 @@ export async function moveTask(
   taskId: string,
   parentTaskId: string | null,
   position = 0,
+  options?: { placement?: import("./taskTreeDrop").TaskListMovePlacement; expectedVersion?: number },
 ) {
-  const { data, error } = await client.rpc("move_task", {
+  const { data, error } = await client.rpc(options ? "move_task_in_list" : "move_task", {
     p_task_id: taskId,
     p_parent_task_id: parentTaskId,
     p_position: position,
+    ...(options ? { p_placement: options.placement ?? null, p_expected_version: options.expectedVersion ?? null } : {}),
   });
   assertNoError(error);
   return data as Task;

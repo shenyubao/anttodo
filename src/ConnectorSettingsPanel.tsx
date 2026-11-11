@@ -1,5 +1,4 @@
 import {
-  Bot,
   ChevronLeft,
   CircleHelp,
   Power,
@@ -10,6 +9,7 @@ import {
 import { useRef, useState } from "react";
 import clsx from "clsx";
 import { ConnectorDetailsToggle } from "./ConnectorDetailsToggle";
+import { QuickCreateSettingsPanel } from "./QuickCreateSettingsPanel";
 import {
   formatLastEvent,
   invokeConnectorAdmin,
@@ -40,6 +40,9 @@ export function ConnectorSettingsPanel({
   labels,
   labelPermissionLevels,
   online,
+  section,
+  onSectionChange,
+  onNavigateToSso,
   configOpen,
   onConfigOpenChange,
   onNotice,
@@ -49,6 +52,9 @@ export function ConnectorSettingsPanel({
   labels: Label[];
   labelPermissionLevels: Record<string, LabelPermissionLevel>;
   online: boolean;
+  section: "sync" | "quick-create";
+  onSectionChange: (section: "sync" | "quick-create") => void;
+  onNavigateToSso: () => void;
   configOpen: boolean;
   onConfigOpenChange: (open: boolean) => void;
   onNotice: (message: string) => void;
@@ -57,8 +63,6 @@ export function ConnectorSettingsPanel({
     workspace,
     bundleConnectors,
   );
-  const [section, setSection] = useState<"market" | "connected">("market");
-  const [marketCategory, setMarketCategory] = useState<"all" | "development">("all");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [yunxiaoStepBusy, setYunxiaoStepBusy] = useState(false);
@@ -67,7 +71,7 @@ export function ConnectorSettingsPanel({
   const [yunxiaoTypes, setYunxiaoTypes] = useState<YunxiaoType[]>([]);
   const [yunxiaoStatuses, setYunxiaoStatuses] = useState<YunxiaoStatus[]>([]);
   const [yunxiaoDraft, setYunxiaoDraft] = useState({
-    name: "云效工作项同步",
+    name: "云效-自动同步",
     organizationId: "",
     projectId: "",
     token: "",
@@ -209,7 +213,6 @@ export function ConnectorSettingsPanel({
       });
       await refresh();
       onConfigOpenChange(false);
-      setSection("connected");
       onNotice("云效连接器已接入，首次同步已排队");
     } catch (cause) {
       setError(cause instanceof SyntaxError
@@ -314,7 +317,7 @@ export function ConnectorSettingsPanel({
             返回
           </button>
           <div>
-            <h2 id="yunxiao-config-title">接入云效中心版</h2>
+            <h2 id="yunxiao-config-title">接入云效-自动同步</h2>
             {error ? <p className="form-error" role="alert">{error}</p> : null}
           </div>
         </header>
@@ -435,7 +438,6 @@ export function ConnectorSettingsPanel({
       <header className="connector-module-header">
         <div>
           <h1 id="connector-module-title">连接器</h1>
-          <p>连接团队常用工具，让任务收集和协作更顺畅。</p>
         </div>
       </header>
 
@@ -443,198 +445,191 @@ export function ConnectorSettingsPanel({
         <button
           type="button"
           role="tab"
-          aria-selected={section === "market"}
-          className={section === "market" ? "active" : undefined}
-          onClick={() => setSection("market")}
+          id="connector-sync-tab"
+          aria-controls="connector-sync-panel"
+          aria-selected={section === "sync"}
+          className={section === "sync" ? "active" : undefined}
+          onClick={() => {
+            setError("");
+            onSectionChange("sync");
+          }}
         >
-          连接器市场
+          自动同步
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected={section === "connected"}
-          className={section === "connected" ? "active" : undefined}
-          onClick={() => setSection("connected")}
+          id="connector-quick-create-tab"
+          aria-controls="connector-quick-create-panel"
+          aria-selected={section === "quick-create"}
+          className={section === "quick-create" ? "active" : undefined}
+          onClick={() => {
+            setError("");
+            onSectionChange("quick-create");
+          }}
         >
-          已接入{connectedCount ? ` ${connectedCount}` : ""}
+          快速创建
         </button>
       </div>
 
-      {connectorQuery.isLoading && !demo ? (
+      {section === "quick-create" ? (
+        <div role="tabpanel" id="connector-quick-create-panel" aria-labelledby="connector-quick-create-tab">
+          <QuickCreateSettingsPanel
+            workspace={workspace}
+            connectors={bundleConnectors}
+            labels={labels}
+            labelPermissionLevels={labelPermissionLevels}
+            online={online}
+            onNavigateToSso={onNavigateToSso}
+            onNotice={onNotice}
+          />
+        </div>
+      ) : connectorQuery.isLoading && !demo ? (
         <div className="connector-empty">正在加载连接器…</div>
       ) : connectorQuery.isError && !demo ? (
         <div className="connector-empty is-error">连接器暂时无法加载，请稍后重试。</div>
-      ) : section === "market" ? (
-        <div className="connector-market-panel" role="tabpanel">
-          <div className="connector-category-tabs" role="tablist" aria-label="连接器市场分类">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={marketCategory === "all"}
-              className={marketCategory === "all" ? "active" : undefined}
-              onClick={() => setMarketCategory("all")}
-            >
-              全部
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={marketCategory === "development"}
-              className={marketCategory === "development" ? "active" : undefined}
-              onClick={() => setMarketCategory("development")}
-            >
-              研发工具
-            </button>
-          </div>
-
-          <div className="connector-market-grid">
-            <article className="connector-market-card">
-              <span className="connector-logo yunxiao">云</span>
-              <div className="connector-market-copy">
-                <strong>云效</strong>
-                <p>按更新时间同步项目工作项，并将完成状态双向回写到云效。</p>
-              </div>
-              <div className="connector-market-action">
-                <button
-                  type="button"
-                  className="button primary"
-                  disabled={!online || editableLabels.length === 0}
-                  onClick={() => {
-                    setError("");
-                    setYunxiaoDraft((current) => ({
-                      ...current,
-                      targetLabelId: current.targetLabelId || editableLabels[0]?.id || "",
-                    }));
-                    onConfigOpenChange(true);
-                  }}
-                >
-                  接入
-                </button>
-              </div>
-            </article>
-          </div>
-        </div>
       ) : (
-        <div className="connector-connected-panel" role="tabpanel">
-          {connectedCount === 0 ? (
-            <div className="connector-empty">
-              <Bot aria-hidden="true" />
-              <strong>还没有接入连接器</strong>
-              <span>前往连接器市场，选择适合团队的连接器。</span>
-              <button type="button" className="button primary" onClick={() => setSection("market")}>
-                浏览连接器市场
-              </button>
+        <div className="connector-tab-panel" role="tabpanel" id="connector-sync-panel" aria-labelledby="connector-sync-tab">
+          <div className="connector-market-panel">
+            <div className="connector-market-grid">
+              <article className="connector-market-card">
+                <span className="connector-logo yunxiao">云</span>
+                <div className="connector-market-copy">
+                  <strong>云效-自动同步</strong>
+                  <p>同步云效工作项，双向更新完成状态。</p>
+                </div>
+                <div className="connector-market-action">
+                  <button
+                    type="button"
+                    className="button primary"
+                    disabled={!online || editableLabels.length === 0}
+                    onClick={() => {
+                      setError("");
+                      setYunxiaoDraft((current) => ({
+                        ...current,
+                        targetLabelId: current.targetLabelId || editableLabels[0]?.id || "",
+                      }));
+                      onConfigOpenChange(true);
+                    }}
+                  >
+                    接入
+                  </button>
+                </div>
+              </article>
             </div>
-          ) : (
-            <div className="connector-connected-list">
-            {data.yunxiaoConnectors.map((item) => {
-              const label = labels.find((candidate) => candidate.id === item.targetLabelId);
-              const runFailed = item.lastRun?.status === "failed";
-              const detailsId = `connector-details-${item.id}`;
-              const expanded = expandedConnectorIds.has(item.id);
-              return (
-                <article className={clsx("connector-connected-card", expanded && "is-expanded")} key={item.id}>
-                  <header>
-                    <span className="connector-logo yunxiao">云</span>
-                    <div>
-                      <strong>{item.name}</strong>
-                      <span className={clsx(
-                        "connector-status",
-                        runFailed ? "blocked" : item.enabled ? "enabled" : "disabled",
-                      )}>
-                        {runFailed ? "同步失败" : item.enabled ? "已启用" : "已停用"}
-                      </span>
-                    </div>
-                    <div className="connector-connected-actions">
-                      <button
-                        type="button"
-                        className="button secondary"
-                        disabled={!online || busyAction !== null || !item.enabled}
-                        onClick={() => void syncYunxiao(item)}
-                      >
-                        <RefreshCw aria-hidden="true" />同步
-                      </button>
-                      <button
-                        type="button"
-                        className="button secondary"
-                        disabled={!online || busyAction !== null}
-                        onClick={() => void toggleYunxiao(item)}
-                      >
-                        <Power aria-hidden="true" />{item.enabled ? "停用" : "启用"}
-                      </button>
-                      <button
-                        type="button"
-                        className="button secondary danger"
-                        disabled={!online || busyAction !== null}
-                        onClick={() => void removeYunxiao(item)}
-                      >
-                        <Trash2 aria-hidden="true" />移除
-                      </button>
-                    </div>
-                  </header>
-                  {expanded ? (
-                    <div id={detailsId} className="connector-connected-details">
-                      <dl className="connector-detail-list">
-                        <div><dt>项目 / 类型</dt><dd>{item.config.projectId} · {item.config.workitemTypeName}</dd></div>
-                        <div><dt>目标标签</dt><dd>{label?.name ?? "标签不可见"}</dd></div>
-                        <div><dt>同步间隔</dt><dd>{item.scheduleMinutes < 60 ? `${item.scheduleMinutes} 分钟` : `${item.scheduleMinutes / 60} 小时`}</dd></div>
-                        <div><dt>完成状态</dt><dd>{item.config.completedStatusName}</dd></div>
-                        <div><dt>个人令牌</dt><dd>{item.credentialHint ?? "未配置"}</dd></div>
-                        <div><dt>最近同步</dt><dd>{item.lastSyncedAt ? formatLastEvent(item.lastSyncedAt) : "尚未同步"}</dd></div>
-                      </dl>
-                      {runFailed && item.lastRun?.error_message ? (
-                        <p className="form-error connector-run-error">{item.lastRun.error_message}</p>
-                      ) : null}
-                      <div className="connector-token-rotation">
-                        {rotatingConnectorId === item.id ? (
-                          <>
-                            <input
-                              type="password"
-                              value={rotationToken}
-                              autoComplete="new-password"
-                              placeholder="输入新的云效个人令牌"
-                              onChange={(event) => setRotationToken(event.target.value)}
-                              disabled={!online || busyAction !== null}
-                            />
-                            <button
-                              type="button"
-                              className="button primary"
-                              disabled={!rotationToken.trim() || busyAction !== null}
-                              onClick={() => void rotateYunxiaoToken(item)}
-                            >保存令牌</button>
+          </div>
+          {connectedCount > 0 ? (
+            <div className="connector-connected-panel">
+              <div className="connector-connected-list">
+              {data.yunxiaoConnectors.map((item) => {
+                const label = labels.find((candidate) => candidate.id === item.targetLabelId);
+                const runFailed = item.lastRun?.status === "failed";
+                const detailsId = `connector-details-${item.id}`;
+                const expanded = expandedConnectorIds.has(item.id);
+                return (
+                  <article className={clsx("connector-connected-card", expanded && "is-expanded")} key={item.id}>
+                    <header>
+                      <span className="connector-logo yunxiao">云</span>
+                      <div>
+                        <strong>{item.name}</strong>
+                        <span className={clsx(
+                          "connector-status",
+                          runFailed ? "blocked" : item.enabled ? "enabled" : "disabled",
+                        )}>
+                          {runFailed ? "同步失败" : item.enabled ? "已启用" : "已停用"}
+                        </span>
+                      </div>
+                      <div className="connector-connected-actions">
+                        <button
+                          type="button"
+                          className="button secondary"
+                          disabled={!online || busyAction !== null || !item.enabled}
+                          onClick={() => void syncYunxiao(item)}
+                        >
+                          <RefreshCw aria-hidden="true" />同步
+                        </button>
+                        <button
+                          type="button"
+                          className="button secondary"
+                          disabled={!online || busyAction !== null}
+                          onClick={() => void toggleYunxiao(item)}
+                        >
+                          <Power aria-hidden="true" />{item.enabled ? "停用" : "启用"}
+                        </button>
+                        <button
+                          type="button"
+                          className="button secondary danger"
+                          disabled={!online || busyAction !== null}
+                          onClick={() => void removeYunxiao(item)}
+                        >
+                          <Trash2 aria-hidden="true" />移除
+                        </button>
+                      </div>
+                    </header>
+                    {expanded ? (
+                      <div id={detailsId} className="connector-connected-details">
+                        <dl className="connector-detail-list">
+                          <div><dt>项目 / 类型</dt><dd>{item.config.projectId} · {item.config.workitemTypeName}</dd></div>
+                          <div><dt>目标标签</dt><dd>{label?.name ?? "标签不可见"}</dd></div>
+                          <div><dt>同步间隔</dt><dd>{item.scheduleMinutes < 60 ? `${item.scheduleMinutes} 分钟` : `${item.scheduleMinutes / 60} 小时`}</dd></div>
+                          <div><dt>完成状态</dt><dd>{item.config.completedStatusName}</dd></div>
+                          <div><dt>个人令牌</dt><dd>{item.credentialHint ?? "未配置"}</dd></div>
+                          <div><dt>最近同步</dt><dd>{item.lastSyncedAt ? formatLastEvent(item.lastSyncedAt) : "尚未同步"}</dd></div>
+                        </dl>
+                        {runFailed && item.lastRun?.error_message ? (
+                          <p className="form-error connector-run-error">{item.lastRun.error_message}</p>
+                        ) : null}
+                        <div className="connector-token-rotation">
+                          {rotatingConnectorId === item.id ? (
+                            <>
+                              <input
+                                type="password"
+                                value={rotationToken}
+                                autoComplete="new-password"
+                                placeholder="输入新的云效个人令牌"
+                                onChange={(event) => setRotationToken(event.target.value)}
+                                disabled={!online || busyAction !== null}
+                              />
+                              <button
+                                type="button"
+                                className="button primary"
+                                disabled={!rotationToken.trim() || busyAction !== null}
+                                onClick={() => void rotateYunxiaoToken(item)}
+                              >保存令牌</button>
+                              <button
+                                type="button"
+                                className="button secondary"
+                                disabled={busyAction !== null}
+                                onClick={() => {
+                                  setRotatingConnectorId(null);
+                                  setRotationToken("");
+                                }}
+                              >取消</button>
+                            </>
+                          ) : (
                             <button
                               type="button"
                               className="button secondary"
-                              disabled={busyAction !== null}
-                              onClick={() => {
-                                setRotatingConnectorId(null);
-                                setRotationToken("");
-                              }}
-                            >取消</button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            className="button secondary"
-                            disabled={!online || busyAction !== null}
-                            onClick={() => setRotatingConnectorId(item.id)}
-                          >
-                            <RotateCw aria-hidden="true" />更新个人令牌
-                          </button>
-                        )}
+                              disabled={!online || busyAction !== null}
+                              onClick={() => setRotatingConnectorId(item.id)}
+                            >
+                              <RotateCw aria-hidden="true" />更新个人令牌
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
-                  <ConnectorDetailsToggle
-                    expanded={expanded}
-                    detailsId={detailsId}
-                    onToggle={() => toggleConnectorDetails(item.id)}
-                  />
-                </article>
-              );
-            })}
+                    ) : null}
+                    <ConnectorDetailsToggle
+                      expanded={expanded}
+                      detailsId={detailsId}
+                      onToggle={() => toggleConnectorDetails(item.id)}
+                    />
+                  </article>
+                );
+              })}
+              </div>
             </div>
-          )}
+          ) : null}
         </div>
       )}
       {error ? <p className="form-error connector-module-error" role="alert">{error}</p> : null}

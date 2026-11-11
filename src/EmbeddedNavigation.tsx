@@ -381,7 +381,7 @@ export function EmbeddedNavigation({
                 <Download /><span><strong>下载客户端</strong></span>
               </button>
             )}
-            <button type="button" className="embedded-more-action" onClick={() => {
+            <button type="button" className="embedded-more-action" data-open-settings onClick={() => {
               closeMore();
               onSettings();
             }}>

@@ -6,6 +6,13 @@ export type AppSmartView = SystemSmartView | `custom:${string}`;
 
 export const DEFAULT_SMART_VIEW: AppSmartView = "assigned";
 
+export const SETTINGS_TABS = [
+  "account", "date", "appearance", "feature-modules", "smart-views", "notifications",
+  "ai-features", "team-mgmt", "team", "user-groups", "sso", "quick-create",
+  "connectors", "open-platform", "shortcuts", "about",
+] as const;
+export type SettingsTab = typeof SETTINGS_TABS[number];
+
 export type AppRoute =
   | { workspaceId: string; kind: "view"; view: AppSmartView; mode?: TaskViewMode }
   | { workspaceId: string; kind: "tag"; tagId: string; mode?: TaskViewMode }
@@ -24,7 +31,8 @@ export type AppRoute =
       cycleId?: string;
       target?: { kind: "objective" | "key_result"; id: string; initialTab?: "tasks" | "notes" };
     }
-  | { workspaceId: string; kind: "search" };
+  | { workspaceId: string; kind: "search" }
+  | { workspaceId: string; kind: "settings"; tab: SettingsTab };
 
 export type OverlayAppRoute = Extract<AppRoute, { kind: "calendar" | "matrix" | "mindmap" | "focus" | "weekly_reports" | "okr" }>;
 
@@ -70,6 +78,12 @@ export function parseAppRoute(pathname: string): AppRoute | null {
 
   if (segments.length === 2) {
     return { workspaceId, kind: "view", view: DEFAULT_SMART_VIEW, mode: "list" };
+  }
+  if (segments[2] === "settings" && (segments.length === 3 || segments.length === 4)) {
+    const tab = segments[3] ?? "account";
+    return SETTINGS_TABS.includes(tab as SettingsTab)
+      ? { workspaceId, kind: "settings", tab: tab as SettingsTab }
+      : null;
   }
   if (segments.length === 3 && segments[2] === "tasks") {
     return { workspaceId, kind: "view", view: "all", mode: "list" };
@@ -201,6 +215,7 @@ export function parseAppRoute(pathname: string): AppRoute | null {
 
 export function appRoutePath(route: AppRoute) {
   const base = `/workspaces/${encodeURIComponent(route.workspaceId)}`;
+  if (route.kind === "settings") return `${base}/settings/${route.tab}`;
   if (route.kind === "view") {
     const path = route.view === "all"
       ? `${base}/tasks`

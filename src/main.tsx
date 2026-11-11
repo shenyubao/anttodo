@@ -4,7 +4,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import * as Sentry from "@sentry/react";
 import { Capacitor } from "@capacitor/core";
-import { createQueryPersister } from "./lib/persistence";
+import { createQueryPersister, confirmedQueryDehydrateOptions } from "./lib/persistence";
 import { bootstrapInstanceConfig, currentBrandName } from "./lib/instanceConfig";
 import { configureSupabase } from "./lib/supabase";
 import { initializeSentry } from "./instrument";
@@ -85,10 +85,7 @@ async function bootstrap() {
           persister: queryPersister,
           buster: "workspace-members-no-embed-v1",
           maxAge: 24 * 60 * 60 * 1000,
-          dehydrateOptions: {
-            shouldDehydrateQuery: (query) => query.state.status === "success",
-            shouldDehydrateMutation: () => false,
-          },
+          dehydrateOptions: confirmedQueryDehydrateOptions,
         }}
       >
       {!window.anttodoDesktop || isTraySurface ? null : window.anttodoDesktop.platform === "darwin" ? (

@@ -556,6 +556,12 @@ verify_jwt = false
 import_map = "./functions/cli-device-auth/deno.json"
 entrypoint = "./functions/cli-device-auth/index.ts"
 
+[functions.open-api]
+enabled = true
+verify_jwt = false
+import_map = "./functions/open-api/deno.json"
+entrypoint = "./functions/open-api/index.ts"
+
 [functions.ai-task-format]
 enabled = true
 verify_jwt = true

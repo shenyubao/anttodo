@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 async function openFeatureModuleSettings(page: Page) {
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
-  const settings = page.getByRole("dialog", { name: "设置" });
+  const settings = page.getByRole("region", { name: "设置", exact: true });
   await settings.getByRole("button", { name: "功能模块" }).click();
   return settings;
 }
@@ -44,7 +44,7 @@ test("feature module settings control desktop and mobile navigation locally", as
   await expect(calendarSwitch).not.toBeChecked();
   await expect(okrSwitch).toBeChecked();
   await expect(matrixSwitch).not.toBeChecked();
-  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await settings.getByRole("button", { name: "返回应用" }).click();
   await expect(rail.getByRole("button", { name: "周报" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "日历" })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "OKR" })).toBeVisible();
@@ -69,7 +69,7 @@ test("feature module settings control desktop and mobile navigation locally", as
   await expect(offlineMindMapSwitch).toBeEnabled();
   await offlineMindMapSwitch.uncheck();
   await expect(offlineMindMapSwitch).not.toBeChecked();
-  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await settings.getByRole("button", { name: "返回应用" }).click();
   await expect(rail.getByRole("button", { name: "思维导图" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "思维导图" })).toBeVisible();
   await context.setOffline(false);

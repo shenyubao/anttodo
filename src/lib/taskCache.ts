@@ -495,12 +495,36 @@ export function applyTaskTreeMoveToBundle(
   position: number,
 ): { bundle: WorkspaceBundle; changedIds: string[] } {
   const moved = applyTaskTreeMove(bundle.tasks, taskId, parentTaskId, position);
+  const original = new Map(bundle.tasks.map((task) => [task.id, task]));
+  const previousMoving = original.get(taskId);
+  if (previousMoving?.parent_task_id && parentTaskId === null) {
+    const oldRoot = original.get(rootTaskId(bundle.tasks, taskId));
+    moved.tasks = moved.tasks.map((task) => task.id === taskId
+      ? { ...task, label_ids: [...(oldRoot?.label_ids ?? task.label_ids)] } : task);
+  }
+  const inherited = applyInheritedTaskLabels({ ...bundle, tasks: moved.tasks });
+  let counts = bundle.labelTaskCounts;
+  const changedIds = new Set(moved.changedIds);
+  for (const task of inherited.tasks) {
+    const previous = original.get(task.id);
+    // Database label quotas count root task_labels rows, not inherited labels.
+    if (counts && previous) counts = applyLiveLabelCountDelta(counts,
+      { ...previous, label_ids: previous.parent_task_id ? [] : previous.label_ids },
+      { ...task, label_ids: task.parent_task_id ? [] : task.label_ids });
+    if (previous && (previous.label_ids.length !== task.label_ids.length
+      || previous.label_ids.some((id, index) => id !== task.label_ids[index]))) {
+      changedIds.add(task.id);
+    }
+  }
+  const moving = original.get(taskId);
+  const demoted = moving?.parent_task_id === null && parentTaskId !== null;
   return {
     bundle: normalizeWorkspaceBundle({
-      ...bundle,
-      tasks: moved.tasks,
+      ...inherited,
+      labelTaskCounts: counts,
+      taskPlacements: demoted ? bundle.taskPlacements.filter((item) => item.task_id !== taskId) : bundle.taskPlacements,
     }),
-    changedIds: moved.changedIds,
+    changedIds: [...changedIds],
   };
 }
 

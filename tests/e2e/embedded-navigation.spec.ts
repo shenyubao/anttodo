@@ -85,7 +85,7 @@ test("embedded account menu exposes retained rail capabilities", async ({ page }
   await expect(more.getByRole("menu", { name: "选择团队空间" })).toBeVisible();
   await more.getByRole("button", { name: "切换团队空间" }).click();
   await more.getByRole("button", { name: "设置" }).click();
-  await expect(page.getByRole("dialog", { name: "设置" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "设置", exact: true })).toBeVisible();
 });
 
 test("embedded navigation compacts labels at a 960px desktop viewport", async ({ page }) => {

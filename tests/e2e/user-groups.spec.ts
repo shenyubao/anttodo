@@ -187,7 +187,9 @@ test.describe("user-group saves and permission verification", () => {
     await page.route("**/rest/v1/rpc/save_user_group", (route) => route.fulfill({ status: 403,
       contentType: "application/json", body: JSON.stringify({ code: "42501", message: "模拟保存被拒绝" }) }));
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(dialog.getByRole("alert")).toContainText("模拟保存被拒绝");
+    const failedRow = page.locator(".user-group-row").filter({ hasText: "保留输入" });
+    await expect(failedRow.getByRole("alert")).toContainText("模拟保存被拒绝");
+    await failedRow.getByRole("button", { name: "编辑", exact: true }).click();
     await expect(dialog.getByPlaceholder("例如：产品组")).toHaveValue("保留输入");
     await page.unroute("**/rest/v1/rpc/save_user_group");
     await dialog.getByRole("button", { name: "取消", exact: true }).click();
@@ -196,7 +198,9 @@ test.describe("user-group saves and permission verification", () => {
     await editor.getByPlaceholder("例如：产品组").fill("我的修改");
     await checked(await api!.from("user_groups").update({ name: "其他人的修改" }).eq("id", groupId));
     await editor.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(editor.getByRole("alert")).toContainText("重新打开");
+    const conflictRow = page.locator(".user-group-row").filter({ hasText: "我的修改" });
+    await expect(conflictRow.getByRole("alert")).toContainText("重新打开");
+    await conflictRow.getByRole("button", { name: "编辑", exact: true }).click();
     await expect(editor.getByPlaceholder("例如：产品组")).toHaveValue("我的修改");
     await checked(await api!.from("user_groups").update({ name: "权限验证组" }).eq("id", groupId));
   });
@@ -216,7 +220,7 @@ test.describe("user-group saves and permission verification", () => {
     await expect(dialog).toBeHidden();
     await expect(page.locator(".user-group-row").filter({ hasText: "已保存待核对" })).toBeVisible();
     await expect(page.locator(".permission-refresh-banner")).toContainText("权限刷新失败");
-    await page.getByRole("button", { name: "关闭设置", exact: true }).first().click();
+    await page.getByRole("button", { name: "返回应用", exact: true }).first().click();
     await page.unroute("**/rest/v1/rpc/get_task_page");
     await page.locator(".permission-refresh-banner").getByRole("button", { name: "重新加载", exact: true }).click();
     await expect(page.locator(".permission-refresh-banner")).toBeHidden();

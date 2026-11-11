@@ -31,6 +31,15 @@ export async function resolveUser(
   const { data, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !data.user) return null;
 
+  // Native OAuth JWTs are valid identities, but a scoped third-party grant is
+  // not permission to call service-role-backed first-party Edge Functions.
+  // Inspect claims only after Auth has verified the token's signature.
+  try {
+    const encoded = token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
+    const claims = JSON.parse(atob(encoded));
+    if (claims.role !== "authenticated") return null;
+  } catch { return null; }
+
   return {
     id: data.user.id,
     email: data.user.email ?? null,

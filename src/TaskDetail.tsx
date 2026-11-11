@@ -2948,19 +2948,19 @@ function MobileTaskDetailSheet({
   );
 }
 
-export function TaskDetailPanel(props: TaskDetailProps) {
+export function TaskDetailPanel({ active = true, ...props }: TaskDetailProps & { active?: boolean }) {
   const mobileSheet = useMobileTaskDetailSheet();
   const contentRef = useRef<TaskDetailContentHandle>(null);
 
   useEffect(() => {
-    if (mobileSheet) return;
+    if (mobileSheet || !active) return;
     const onPointerDown = (event: PointerEvent) => {
       if (!shouldDismissTaskDetailOnPointerDown(event.target, event.button)) return;
       void contentRef.current?.close();
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [mobileSheet]);
+  }, [active, mobileSheet]);
 
   if (!mobileSheet) {
     return <TaskDetailContent ref={contentRef} {...props} presentation="panel" />;

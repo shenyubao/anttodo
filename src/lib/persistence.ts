@@ -3,6 +3,12 @@ import { dehydrate, type QueryClient } from "@tanstack/react-query";
 import type { PersistedClient, Persister } from "@tanstack/react-query-persist-client";
 import { confirmedTaskCreationData } from "./taskCreation";
 import { canPersistPermissionQuery, pendingPermissionRefreshes, restorePendingPermissionRefreshes, subscribePermissionRefresh } from "./permissionRefresh";
+import type { DehydrateOptions } from "@tanstack/react-query";
+
+export const confirmedQueryDehydrateOptions: DehydrateOptions = {
+  shouldDehydrateQuery: (query) => query.state.status === "success" && query.meta?.persist !== false,
+  shouldDehydrateMutation: () => false,
+};
 
 const indexedDbStorage = {
   getItem: async (key: string) => {
@@ -23,7 +29,7 @@ export function createQueryPersister(namespace = "official", client?: QueryClien
     clientState: {
       ...persisted.clientState,
       mutations: [],
-      queries: persisted.clientState.queries.filter((query) => canPersistPermissionQuery(client, query.queryKey, query.meta)).map((query) => ({
+      queries: persisted.clientState.queries.filter((query) => query.meta?.persist !== false && canPersistPermissionQuery(client, query.queryKey, query.meta)).map((query) => ({
         ...query,
         state: { ...query.state, data: confirmedTaskCreationData(client, query.queryKey, query.state.data, includePendingCounts) },
       })),
@@ -73,7 +79,7 @@ export function createQueryPersister(namespace = "official", client?: QueryClien
     }
     if (!latest) return;
     latest = confirmedClient({ ...latest, timestamp: Date.now(), clientState: dehydrate(client, {
-      shouldDehydrateQuery: (query) => query.state.status === "success",
+      shouldDehydrateQuery: (query) => query.state.status === "success" && query.meta?.persist !== false,
       shouldDehydrateMutation: () => false,
     }) }, true);
     revision++;

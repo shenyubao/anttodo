@@ -62,6 +62,7 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
           appUrl,
           deviceAuthorizationEndpoint,
           cliAuthProtocol: 2,
+          openApi: { version: "1", baseUrl: `${appUrl.replace(/\/$/, "")}/api/open/v1`, schemaUrl: `${appUrl.replace(/\/$/, "")}/api/open/v1/openapi.json`, discoveryUrl: `${appUrl.replace(/\/$/, "")}/api/open/v1/discovery` },
         })}\n`,
       });
       this.emitFile({
@@ -78,6 +79,7 @@ function cliPublicConfigPlugin(env: Record<string, string>): Plugin {
           publishableKey,
           deviceAuthorizationEndpoint,
           cliAuthProtocol: 2,
+          openApi: { version: "1", baseUrl: `${appUrl.replace(/\/$/, "")}/api/open/v1`, schemaUrl: `${appUrl.replace(/\/$/, "")}/api/open/v1/openapi.json`, discoveryUrl: `${appUrl.replace(/\/$/, "")}/api/open/v1/discovery` },
         })}\n`,
       });
     },
@@ -105,6 +107,7 @@ export default defineConfig(({ mode }) => {
       "import.meta.env.ANTTODO_WORKSPACE_SLUG": JSON.stringify(parseEnterpriseSlug(env)),
     },
     server: {
+      proxy: env.VITE_SUPABASE_URL ? { "/api/open/v1": { target: env.VITE_SUPABASE_URL, changeOrigin: true, rewrite: (value: string) => value.replace("/api/open/v1", "/functions/v1/open-api") } } : undefined,
       port: 5173,
       strictPort: true,
     },

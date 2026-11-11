@@ -44,7 +44,9 @@ export function descendantIds(tasks: readonly Task[], rootId: string) {
   const byParent = new Map<string, Task[]>();
   for (const task of tasks) {
     const key = parentKey(taskParentId(task));
-    byParent.set(key, [...(byParent.get(key) ?? []), task]);
+    const siblings = byParent.get(key);
+    if (siblings) siblings.push(task);
+    else byParent.set(key, [task]);
   }
   const ids = new Set<string>();
   const stack = [rootId];
@@ -75,9 +77,23 @@ export function taskDepth(tasks: readonly Task[], taskId: string | null) {
 }
 
 export function subtreeExtraDepth(tasks: readonly Task[], rootId: string) {
-  const descendants = descendantIds(tasks, rootId);
+  const byParent = new Map<string, string[]>();
+  for (const task of tasks) {
+    if (!task.parent_task_id) continue;
+    const siblings = byParent.get(task.parent_task_id);
+    if (siblings) siblings.push(task.id);
+    else byParent.set(task.parent_task_id, [task.id]);
+  }
   let maximum = 0;
-  for (const id of descendants) maximum = Math.max(maximum, taskDepth(tasks, id) - taskDepth(tasks, rootId));
+  const stack: Array<[string, number]> = [[rootId, 0]];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const [id, depth] = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    maximum = Math.max(maximum, depth);
+    for (const childId of byParent.get(id) ?? []) stack.push([childId, depth + 1]);
+  }
   return maximum;
 }
 
@@ -146,14 +162,14 @@ export function applyTaskTreeMove(
 
   const afterClose = tasks.map((item) => {
     if (item.id === moving.id) return item;
-    if (sameParent(taskParentId(item), oldParent) && item.position > moving.position) {
+    if (item.workspace_id === moving.workspace_id && sameParent(taskParentId(item), oldParent) && item.position > moving.position) {
       return { ...item, position: item.position - 1 };
     }
     return item;
   });
   const afterOpen = afterClose.map((item) => {
     if (item.id === moving.id) return item;
-    if (sameParent(taskParentId(item), parentTaskId) && item.position >= nextPosition) {
+    if (item.workspace_id === moving.workspace_id && sameParent(taskParentId(item), parentTaskId) && item.position >= nextPosition) {
       return { ...item, position: item.position + 1 };
     }
     return item;

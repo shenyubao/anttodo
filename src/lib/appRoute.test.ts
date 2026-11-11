@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appRoutePath,
   DEFAULT_SMART_VIEW,
+  SETTINGS_TABS,
   isOverlayAppRoute,
   parseAppRoute,
   parseTaskReturnRoute,
@@ -79,6 +80,18 @@ describe("application routes", () => {
 
   it.each(routes)("round-trips $kind routes", (route) => {
     expect(parseAppRoute(appRoutePath(route))).toEqual(route);
+  });
+
+  it("accepts settings categories and rejects unknown settings paths", () => {
+    expect(parseAppRoute("/workspaces/workspace-1/settings")).toEqual({
+      workspaceId: "workspace-1", kind: "settings", tab: "account",
+    });
+    for (const tab of SETTINGS_TABS) {
+      const route: AppRoute = { workspaceId: "workspace-1", kind: "settings", tab };
+      expect(parseAppRoute(appRoutePath(route))).toEqual(route);
+    }
+    expect(parseAppRoute("/workspaces/workspace-1/settings/unknown")).toBeNull();
+    expect(parseAppRoute("/workspaces/workspace-1/settings/account/extra")).toBeNull();
   });
 
   it("rejects unrelated and incomplete paths", () => {

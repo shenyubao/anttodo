@@ -195,10 +195,10 @@ find volumes/functions -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' | sort
       throw new Error(`Refusing to remove unexpected remote function directory: ${name}`);
     }
   }
-  const removeStale = stale.length === 0
-    ? ""
-    : stale.map((name) => `echo "Removing leftover function ${name}"
-rm -rf ${shellQuote(`${dockerDir}/volumes/functions/${name}`)}`).join("\n");
+  // Remote functions may belong to other applications or work in progress.
+  // A web rollout must never delete objects merely absent from this checkout.
+  if (stale.length) console.log(`Preserving remote function directories: ${stale.join(", ")}`);
+  const removeStale = "";
 
   console.log("Restarting the self-hosted Edge Functions service…");
   await runRemoteScript(`set -eu

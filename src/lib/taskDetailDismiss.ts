@@ -1,5 +1,6 @@
 export const TASK_DETAIL_DISMISS_IGNORE_SELECTOR = [
   ".task-detail",
+  "[data-open-settings]",
   ".task-multi-select",
   ".task-multi-select-menu",
   ".task-detail-sheet-root",

@@ -41,7 +41,7 @@ if [ "$deploy_mode" = "onPremises" ] && [ -z "$workspace_slug" ]; then
 fi
 
 if [ "${#ANTTODO_SUPABASE_PUBLISHABLE_KEY}" -lt 20 ] \
-  || printf '%s' "$ANTTODO_SUPABASE_PUBLISHABLE_KEY" | grep -Eq '[[:space:]]' \
+  || ! printf '%s' "$ANTTODO_SUPABASE_PUBLISHABLE_KEY" | grep -Eq '^[A-Za-z0-9._-]+$' \
   || printf '%s' "$ANTTODO_SUPABASE_PUBLISHABLE_KEY" | grep -Eq '^sb_secret_'; then
   echo "ANTTODO_SUPABASE_PUBLISHABLE_KEY must be a public publishable or anon key" >&2
   exit 1
@@ -76,10 +76,36 @@ jq -n \
   --arg deviceAuthorizationEndpoint "$device_endpoint" \
   --arg deployMode "$deploy_mode" \
   --arg workspaceSlug "$workspace_slug" \
-  '{schemaVersion:1,$instanceId,$displayName,deployMode:$deployMode,$appUrl,$supabaseUrl,$publishableKey,$deviceAuthorizationEndpoint,cliAuthProtocol:2} + (if $workspaceSlug == "" then {} else {workspaceSlug:$workspaceSlug} end)' \
+  '{schemaVersion:1,$instanceId,$displayName,deployMode:$deployMode,$appUrl,$supabaseUrl,$publishableKey,$deviceAuthorizationEndpoint,cliAuthProtocol:2,openApi:{version:"1",baseUrl:($appUrl+"/api/open/v1"),schemaUrl:($appUrl+"/api/open/v1/openapi.json"),discoveryUrl:($appUrl+"/api/open/v1/discovery")}} + (if $workspaceSlug == "" then {} else {workspaceSlug:$workspaceSlug} end)' \
   > /tmp/anttodo-config/anttodo.json
 
 jq '{supabaseUrl,publishableKey,appUrl,deviceAuthorizationEndpoint,cliAuthProtocol}' \
   /tmp/anttodo-config/anttodo.json > /tmp/anttodo-config/anttodo-cli.json
 
 chmod 0444 /tmp/anttodo-config/anttodo.json /tmp/anttodo-config/anttodo-cli.json
+
+# Supabase's public URL is trusted instance configuration, never request input.
+# Restrict it before placing it into nginx syntax.
+if ! printf '%s' "$ANTTODO_SUPABASE_URL" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$'; then
+  echo "Invalid Supabase proxy origin" >&2
+  exit 1
+fi
+cat > /tmp/anttodo-config/open-api-proxy.conf <<EOF
+location /api/open/v1/ {
+  resolver 127.0.0.11 valid=30s ipv6=off;
+  set \$open_api_origin "$ANTTODO_SUPABASE_URL";
+  rewrite ^/api/open/v1/(.*)$ /functions/v1/open-api/\$1 break;
+  proxy_pass \$open_api_origin\$uri\$is_args\$args;
+  proxy_ssl_server_name on;
+  proxy_ssl_verify on;
+  proxy_ssl_verify_depth 5;
+  proxy_ssl_trusted_certificate /etc/ssl/cert.pem;
+  proxy_set_header Host \$proxy_host;
+  proxy_set_header apikey "$ANTTODO_SUPABASE_PUBLISHABLE_KEY";
+  proxy_set_header X-AntTodo-Origin "$ANTTODO_PUBLIC_APP_URL";
+  proxy_set_header Authorization \$http_authorization;
+  proxy_set_header Connection "";
+  proxy_read_timeout 60s;
+  client_max_body_size 64k;
+}
+EOF

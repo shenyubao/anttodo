@@ -50,7 +50,7 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
   await page.goto("/?demo=1");
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
 
-  const settings = page.getByRole("dialog", { name: "设置" });
+  const settings = page.getByRole("region", { name: "设置", exact: true });
   await settings.getByRole("button", { name: "AI功能", exact: true }).click();
   await expect(settings.getByRole("heading", { name: "AI功能" })).toBeVisible();
   await expect(settings.getByRole("heading", { name: "关联" })).toBeVisible();
@@ -79,7 +79,7 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
   await expect(formatRow.getByText("默认", { exact: true })).toBeVisible();
 
   await formatRow.getByRole("switch", { name: "智能格式化" }).uncheck();
-  await settings.getByRole("button", { name: "关闭设置" }).click();
+  await settings.getByRole("button", { name: "返回应用" }).click();
   await page.getByText(demoTaskTitle, { exact: true }).click();
   const detail = page.locator(".task-detail-panel");
   await expect(detail.getByRole("button", { name: "智能处理" })).toHaveCount(0);
@@ -88,7 +88,7 @@ test("AI feature settings manage prompt overrides and task-detail entries", asyn
 test("offline AI feature settings stay read-only", async ({ context, page }) => {
   await page.goto("/?demo=1");
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置" }).click();
-  const settings = page.getByRole("dialog", { name: "设置" });
+  const settings = page.getByRole("region", { name: "设置", exact: true });
   await settings.getByRole("button", { name: "AI功能", exact: true }).click();
   await context.setOffline(true);
   await expect(settings.getByRole("switch", { name: "智能格式化" })).toBeDisabled();

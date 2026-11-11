@@ -54,6 +54,47 @@ const emptyBundle = (): WorkspaceBundle => ({
 });
 
 describe("task cache updates", () => {
+  it("moves an entire subtree with inherited labels, root counts and stale placement cleanup", () => {
+    const make = (id: string, parent: string | null, labelIds: string[]) => createOptimisticTask({
+      workspaceId: "workspace", userId: "user", title: id, parentTaskId: parent, labelIds, optimisticId: id,
+    });
+    const bundle = normalizeWorkspaceBundle({ ...emptyBundle(),
+      tasks: [make("a", null, ["first"]), make("child", "a", ["first"]), make("nested", "child", ["first"]), make("b", null, ["second"])],
+      labelTaskCounts: { first: 1, second: 1 },
+    });
+    const moved = applyTaskTreeMoveToBundle(bundle, "child", "b", 0);
+    expect(moved.bundle.tasks.find((task) => task.id === "nested")).toMatchObject({ parent_task_id: "child", label_ids: ["second"] });
+    expect(moved.changedIds).toContain("nested");
+    expect(moved.bundle.labelTaskCounts).toEqual({ first: 1, second: 1 });
+    const promoted = applyTaskTreeMoveToBundle(moved.bundle, "child", null, 1).bundle;
+    expect(promoted.tasks.find((task) => task.id === "child")?.label_ids).toEqual(["second"]);
+    expect(promoted.labelTaskCounts).toEqual({ first: 1, second: 2 });
+    const placed = applyTaskListOrderToBundle(promoted, { workspaceId: "workspace", listKey: "all", sectionId: null, taskIds: ["child", "b", "a"] });
+    const demoted = applyTaskTreeMoveToBundle(placed, "child", "a", 0).bundle;
+    expect(demoted.taskPlacements.some((item) => item.task_id === "child")).toBe(false);
+    expect(demoted.tasks.find((task) => task.id === "nested")?.label_ids).toEqual(["first"]);
+    expect(demoted.labelTaskCounts).toEqual({ first: 1, second: 1 });
+    // Successful caches remain compatible with normalization after persistence.
+    expect(normalizeWorkspaceBundle(JSON.parse(JSON.stringify(demoted))).tasks).toEqual(demoted.tasks);
+    expect(bundle.tasks.find((task) => task.id === "child")?.parent_task_id).toBe("a");
+  });
+
+  it("never changes root positions in a different workspace", () => {
+    const make = (id: string, workspaceId: string, position: number, parentTaskId: string | null = null) => createOptimisticTask({
+      workspaceId, userId: "user", title: id, labelIds: [], optimisticId: id, position, parentTaskId,
+    });
+    const bundle = { ...emptyBundle(), tasks: [make("a", "one", 0), make("child", "one", 0, "a"), make("b", "two", 1)] };
+    expect(applyTaskTreeMoveToBundle(bundle, "child", null, 0).bundle.tasks.find((task) => task.id === "b")?.position).toBe(1);
+  });
+
+  it("copies the old root's labels when promoting an older cached child without inherited labels", () => {
+    const parent = createOptimisticTask({ workspaceId: "workspace", userId: "user", title: "Parent", labelIds: ["label"], optimisticId: "parent" });
+    const child = createOptimisticTask({ workspaceId: "workspace", userId: "user", title: "Child", parentTaskId: "parent", labelIds: [], optimisticId: "child" });
+    const moved = applyTaskTreeMoveToBundle({ ...emptyBundle(), tasks: [parent, child], labelTaskCounts: { label: 1 } }, "child", null, 1).bundle;
+    expect(moved.tasks.find((task) => task.id === "child")?.label_ids).toEqual(["label"]);
+    expect(moved.labelTaskCounts).toEqual({ label: 2 });
+  });
+
   it("normalizes workspace bundles missing newer view fields", () => {
     const stale = emptyBundle();
     const staleTask = createOptimisticTask({
